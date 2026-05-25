@@ -15,7 +15,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Stores job state and results under `data/results/jobs`.
 - Lists audit jobs with a compact summary.
 - Deletes uploaded source files while keeping historical job results.
-- Provides a minimal React UI for uploads, audits, jobs, and results.
+- Provides a minimal React UI for uploads, audits, jobs, readable PDF reports, and raw JSON results.
 - Exposes OpenAPI docs at `http://localhost:8000/docs`.
 
 ## What This MVP Does Not Do
@@ -77,7 +77,17 @@ Open:
 http://localhost:5173
 ```
 
-From the UI you can check backend health, upload PDFs, list uploaded PDFs, launch PDF audits, delete uploaded PDFs, list recent jobs, and inspect full job JSON.
+From the UI you can check backend health, upload PDFs, list uploaded PDFs, launch PDF audits, delete uploaded PDFs, list recent jobs, and inspect job results.
+
+Completed PDF jobs show a readable report with:
+
+- General job summary.
+- Hashes.
+- File identification.
+- PDF metadata from `pdfinfo` and `exiftool`.
+- `qpdf --check` validation.
+- Tool errors and timeouts.
+- Optional raw JSON for debugging.
 
 ## Upload a PDF
 

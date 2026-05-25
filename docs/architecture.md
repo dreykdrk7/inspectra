@@ -33,9 +33,12 @@ The backend does not install or execute PDF audit binaries directly.
   - List and delete uploaded PDFs.
   - Launch PDF audits.
   - List recent jobs.
-  - Fetch and render full job JSON.
+  - Fetch jobs and render readable PDF reports.
+  - Keep raw job JSON available for debugging.
 
 The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
+
+PDF report presentation is normalized client-side in `frontend/src/pdfReport.ts`. This keeps the backend contract stable while making the existing PDF result JSON easier to read.
 
 ### Audit Tools Container
 

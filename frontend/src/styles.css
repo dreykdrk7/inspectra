@@ -271,9 +271,146 @@ pre {
   gap: 0.75rem;
 }
 
+.report-layout {
+  display: grid;
+  gap: 1rem;
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.report-section {
+  display: grid;
+  gap: 0.75rem;
+  border-top: 1px solid #d9e0ea;
+  padding-top: 1rem;
+}
+
+.report-section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.report-section h3 {
+  margin: 0;
+  color: #263246;
+  font-size: 0.96rem;
+}
+
+.section-title-row,
+.tool-card-header,
+.validation-row,
+.badge-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.badge-row,
+.validation-row {
+  justify-content: flex-start;
+}
+
+.summary-list,
+.compact-list {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.35fr) minmax(0, 1fr);
+  gap: 0.45rem 0.75rem;
+  margin: 0;
+}
+
+.compact-list {
+  grid-template-columns: minmax(5rem, 0.35fr) minmax(0, 1fr);
+}
+
+.summary-list dt,
+.compact-list dt {
+  color: #66768a;
+  font-weight: 700;
+}
+
+.summary-list dd,
+.compact-list dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.tool-card {
+  display: grid;
+  gap: 0.65rem;
+  border: 1px solid #d9e0ea;
+  border-radius: 6px;
+  padding: 0.75rem;
+  background: #fbfcfe;
+}
+
+.tool-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.55rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  background: #e8edf4;
+  color: #425267;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.tool-badge.ok {
+  background: #dff5e7;
+  color: #176139;
+}
+
+.tool-badge.error {
+  background: #ffe2e2;
+  color: #9a242d;
+}
+
+.tool-badge.timeout {
+  background: #fff3cf;
+  color: #76540a;
+}
+
+.tool-output,
+.raw-json {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.tool-output summary,
+.raw-json summary {
+  color: #425267;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.tool-output pre {
+  max-height: 12rem;
+}
+
+.warning-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: #76540a;
+}
+
 @media (max-width: 980px) {
   .dashboard-grid,
-  .content-grid {
+  .content-grid,
+  .report-grid,
+  .tool-list {
     grid-template-columns: 1fr;
   }
 }

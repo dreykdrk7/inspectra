@@ -2,6 +2,7 @@ import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, use
 import { Activity, Eye, FilePlus2, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 
 import { api } from "./api";
+import { PdfJobReport } from "./PdfJobReport";
 import type { FileRecord, HealthResponse, JobListItem, JobRecord } from "./types";
 
 type LoadState = {
@@ -64,6 +65,10 @@ export function App() {
   }, [refreshAll]);
 
   const hasActiveJobs = useMemo(() => jobs.some((job) => job.status === "queued" || job.status === "running"), [jobs]);
+  const selectedJobFile = useMemo(
+    () => (selectedJob ? files.find((file) => file.id === selectedJob.file_id) : undefined),
+    [files, selectedJob]
+  );
 
   useEffect(() => {
     if (!hasActiveJobs) {
@@ -260,14 +265,7 @@ export function App() {
 
       <Panel title="Job Result">
         {selectedJob ? (
-          <div className="result-layout">
-            <div className="result-meta">
-              <span className={`status-pill ${selectedJob.status}`}>{selectedJob.status}</span>
-              <span className="mono">{selectedJob.id}</span>
-              {selectedJob.source_file_deleted_at ? <span className="status-pill deleted">source deleted</span> : null}
-            </div>
-            <pre>{JSON.stringify(selectedJob, null, 2)}</pre>
-          </div>
+          <PdfJobReport job={selectedJob} file={selectedJobFile} />
         ) : (
           <EmptyState text="Select a job to view its result." />
         )}
