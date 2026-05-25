@@ -1,0 +1,49 @@
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+JobStatus = Literal["queued", "running", "completed", "failed"]
+
+
+class StoredFile(BaseModel):
+    id: str
+    original_filename: str
+    stored_filename: str
+    content_type: str
+    size_bytes: int
+    sha256: str
+    created_at: datetime
+
+
+class JobRecord(BaseModel):
+    id: str
+    audit_type: Literal["pdf_basic"]
+    file_id: str
+    status: JobStatus
+    created_at: datetime
+    updated_at: datetime
+    source_file_deleted_at: datetime | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class JobCreated(BaseModel):
+    job: JobRecord = Field(description="Current job state.")
+
+
+class JobListItem(BaseModel):
+    id: str
+    audit_type: Literal["pdf_basic"]
+    file_id: str
+    status: JobStatus
+    created_at: datetime
+    updated_at: datetime
+    source_file_deleted_at: datetime | None = None
+    summary: dict[str, Any] | None = None
+
+
+class DeletedFileResponse(BaseModel):
+    deleted_file: StoredFile
+    associated_jobs_marked: int

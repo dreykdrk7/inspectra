@@ -1,0 +1,64 @@
+name: inspectra
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: inspectra-backend
+    environment:
+      INSPECTRA_DATA_DIR: /app/data
+      INSPECTRA_MAX_UPLOAD_BYTES: "20971520"
+      INSPECTRA_TOOL_RUNNER_URL: http://audit-tools:8081
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      audit-tools:
+        condition: service_healthy
+    networks:
+      - inspectra_internal
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  audit-tools:
+    build:
+      context: ./tools
+    container_name: inspectra-audit-tools
+    environment:
+      INSPECTRA_DATA_DIR: /app/data
+      INSPECTRA_TOOL_TIMEOUT_SECONDS: "10"
+    volumes:
+      - ./data:/app/data:ro
+    expose:
+      - "8081"
+    networks:
+      - inspectra_internal
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  inspectra_internal:
+    internal: true
