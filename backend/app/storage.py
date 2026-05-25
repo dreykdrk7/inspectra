@@ -21,6 +21,11 @@ IMAGE_SIGNATURES = (
     ("png", ".png", "image/png", lambda data: data.startswith(b"\x89PNG\r\n\x1a\n")),
     ("webp", ".webp", "image/webp", lambda data: len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"),
 )
+MANIFEST_DEFINITIONS = {
+    "package.json": ("package_json", "application/json"),
+    "requirements.txt": ("requirements_txt", "text/plain"),
+    "pyproject.toml": ("pyproject_toml", "application/toml"),
+}
 
 
 def utc_now() -> datetime:
@@ -124,6 +129,29 @@ class FileStore:
         _atomic_write_json(self._metadata_path(file_id), record.model_dump(mode="json"))
         return record
 
+    async def save_manifest(self, upload: UploadFile) -> StoredFile:
+        original_filename = Path(upload.filename or "").name
+        payload = await _read_limited_upload(upload, self.settings.max_upload_bytes)
+        manifest_type, content_type = _validate_manifest_upload(original_filename, payload)
+
+        file_id = uuid4().hex
+        stored_filename = f"{file_id}-{original_filename.lower()}"
+        target_path = self._safe_upload_path(stored_filename)
+        target_path.write_bytes(payload)
+
+        record = StoredFile(
+            id=file_id,
+            kind="manifest",
+            original_filename=original_filename,
+            stored_filename=stored_filename,
+            content_type=content_type,
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            created_at=utc_now(),
+        )
+        _atomic_write_json(self._metadata_path(file_id), record.model_dump(mode="json"))
+        return record
+
     def list(self) -> list[StoredFile]:
         records = [self._load_metadata_file(path) for path in self.settings.upload_dir.glob("*.json")]
         return sorted(records, key=lambda item: item.created_at, reverse=True)
@@ -175,6 +203,9 @@ class JobStore:
 
     def create_image_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "image_basic")
+
+    def create_manifest_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "manifest_basic")
 
     def _create_job(self, file_id: str, audit_type: str) -> JobRecord:
         now = utc_now()
@@ -254,6 +285,22 @@ async def _iter_initial_and_remaining_chunks(first_chunk: bytes, upload: UploadF
         yield chunk
 
 
+async def _read_limited_upload(upload: UploadFile, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    size_bytes = 0
+    while chunk := await upload.read(UPLOAD_CHUNK_SIZE):
+        size_bytes += len(chunk)
+        if size_bytes > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"File too large. Maximum allowed size is {max_bytes} bytes.",
+            )
+        chunks.append(chunk)
+    if not chunks:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file.")
+    return b"".join(chunks)
+
+
 def _validate_identifier(value: str, label: str) -> None:
     if not IDENTIFIER_PATTERN.fullmatch(value):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid {label}.")
@@ -266,10 +313,51 @@ def _detect_image_type(data: bytes) -> tuple[str, str, str] | None:
     return None
 
 
+def _validate_manifest_upload(filename: str, payload: bytes) -> tuple[str, str]:
+    normalized_name = filename.lower()
+    definition = MANIFEST_DEFINITIONS.get(normalized_name)
+    if definition is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only package.json, requirements.txt, and pyproject.toml manifests are accepted.",
+        )
+    if b"\x00" in payload:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Manifest must be a text file.")
+
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Manifest must be valid UTF-8 text.") from exc
+
+    manifest_type, content_type = definition
+    stripped = text.strip()
+    if not stripped:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Manifest is empty.")
+    if manifest_type == "package_json":
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="package.json must be valid JSON.") from exc
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="package.json must contain a JSON object.")
+    elif manifest_type == "requirements_txt":
+        active_lines = [line for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+        if not active_lines:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="requirements.txt must contain at least one active line.")
+    elif manifest_type == "pyproject_toml" and not re.search(r"^\s*\[(project|tool\.poetry)", text, flags=re.MULTILINE):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="pyproject.toml must include a [project] or [tool.poetry] section.",
+        )
+
+    return manifest_type, content_type
+
+
 def _job_summary(record: JobRecord) -> dict | None:
     if record.result:
         validation = record.result.get("validation", {})
         hashes = record.result.get("hashes", {})
+        manifest_summary = record.result.get("summary", {})
         summary = {
             "analyzer": record.result.get("analyzer"),
             "completed_at": record.result.get("completed_at"),
@@ -282,6 +370,10 @@ def _job_summary(record: JobRecord) -> dict | None:
         if record.audit_type == "image_basic":
             summary["mime_type"] = validation.get("mime_type")
             summary["privacy_indicators"] = record.result.get("privacy_indicators", {})
+        if record.audit_type == "manifest_basic":
+            summary["manifest_type"] = record.result.get("manifest_type")
+            summary["total_dependencies"] = manifest_summary.get("total_dependencies")
+            summary["informational_findings_count"] = manifest_summary.get("informational_findings_count")
         return summary
     if record.error:
         return {"error": record.error}

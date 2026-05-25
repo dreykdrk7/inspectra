@@ -5,7 +5,7 @@ export type HealthResponse = {
 
 export type FileRecord = {
   id: string;
-  kind: 'pdf' | 'image';
+  kind: 'pdf' | 'image' | 'manifest';
   original_filename: string;
   stored_filename: string;
   content_type: string;
@@ -15,7 +15,7 @@ export type FileRecord = {
 };
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
-export type AuditType = 'pdf_basic' | 'image_basic';
+export type AuditType = 'pdf_basic' | 'image_basic' | 'manifest_basic';
 
 export type JobRecord = {
   id: string;

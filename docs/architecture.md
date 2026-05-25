@@ -2,7 +2,7 @@
 
 ## Goal
 
-Inspectra starts as a small defensive audit API for authorized local files. The MVP keeps the backend simple and delegates external security tools to a dedicated Docker container.
+Inspectra starts as a small defensive audit API for authorized local files. The MVP keeps the backend simple and delegates passive analysis to a dedicated Docker container where external tools or local parsers run away from the host.
 
 ## Components
 
@@ -13,7 +13,7 @@ Inspectra starts as a small defensive audit API for authorized local files. The 
 - Public port: `8000`
 - Responsibilities:
   - Healthcheck endpoint.
-  - PDF and image upload endpoints.
+  - PDF, image, and dependency manifest upload endpoints.
   - File listing and deletion endpoints.
   - Basic file metadata registry.
   - Job creation, listing, and status management.
@@ -29,16 +29,16 @@ The backend does not install or execute audit binaries directly.
 - Public port: `5173`
 - Responsibilities:
   - Display backend health.
-  - Upload PDFs and images.
+  - Upload PDFs, images, and dependency manifests.
   - List and delete uploaded files.
-  - Launch PDF and image audits.
+  - Launch PDF, image, and manifest audits.
   - List recent jobs.
-  - Fetch jobs and render readable PDF and image reports.
+  - Fetch jobs and render readable PDF, image, and manifest reports.
   - Keep raw job JSON available for debugging.
 
 The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
 
-Report presentation is normalized client-side in `frontend/src/pdfReport.ts` and `frontend/src/imageReport.ts`. This keeps the backend contract stable while making audit result JSON easier to read.
+Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, and `frontend/src/manifestReport.ts`. This keeps the backend contract stable while making audit result JSON easier to read.
 
 ### Audit Tools Container
 
@@ -51,9 +51,11 @@ Report presentation is normalized client-side in `frontend/src/pdfReport.ts` and
   - `qpdf`
   - `file`
 
-The tool runner is reachable only on the internal Compose network. It receives a relative path for an uploaded file, validates that the path stays inside `data/`, runs passive tools without a shell, and returns structured JSON to the backend.
+The tool runner is reachable only on the internal Compose network. It receives a relative path for an uploaded file, validates that the path stays inside `data/`, runs passive tools without a shell when tools are needed, and returns structured JSON to the backend.
 
 Each external command has an `INSPECTRA_TOOL_TIMEOUT_SECONDS` timeout, defaulting to 10 seconds. A timed-out tool is recorded in that tool's output and in the result summary instead of failing the entire job by itself.
+
+Manifest analysis uses Python parsing inside the tool runner instead of package managers. It reads `package.json`, `requirements.txt`, or `pyproject.toml` as local text and never runs npm, pip, Poetry, pnpm, yarn, project scripts, dependency installation, or network lookups.
 
 ### Local Data
 
@@ -64,12 +66,12 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 
 ## Request Flow
 
-1. A user uploads a PDF to `POST /files/pdf` or an image to `POST /files/image`.
-2. The backend validates file magic bytes, stores it in `data/uploads`, and records metadata.
-3. A user starts analysis with `POST /audits/pdf/{file_id}` or `POST /audits/image/{file_id}`.
+1. A user uploads a PDF to `POST /files/pdf`, an image to `POST /files/image`, or a manifest to `POST /files/manifest`.
+2. The backend validates file magic bytes or manifest name/content, stores it in `data/uploads`, and records metadata.
+3. A user starts analysis with `POST /audits/pdf/{file_id}`, `POST /audits/image/{file_id}`, or `POST /audits/manifest/{file_id}`.
 4. The backend creates a queued job and schedules background execution.
 5. The backend calls `audit-tools` over the internal Compose network.
-6. The tool runner performs passive analysis inside its container.
+6. The tool runner performs passive analysis inside its container. For `manifest_basic`, it parses local text and returns normalized dependencies and informational findings.
 7. The backend stores the final job state and result JSON.
 8. A user reads the job with `GET /jobs/{job_id}` from the API or the UI.
 
@@ -78,11 +80,13 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `GET /health`: backend healthcheck.
 - `POST /files/pdf`: upload and register a PDF.
 - `POST /files/image`: upload and register a JPEG, PNG, or WebP image.
+- `POST /files/manifest`: upload and register `package.json`, `requirements.txt`, or `pyproject.toml`.
 - `GET /files`: list registered files.
 - `GET /files/{file_id}`: read one file record.
 - `DELETE /files/{file_id}`: delete an uploaded source file and its metadata.
 - `POST /audits/pdf/{file_id}`: start a basic passive PDF audit.
 - `POST /audits/image/{file_id}`: start a basic passive image audit.
+- `POST /audits/manifest/{file_id}`: start a basic passive dependency manifest audit.
 - `GET /jobs`: list jobs, newest first, with summaries when available.
 - `GET /jobs/{job_id}`: read one full job record.
 
@@ -117,7 +121,6 @@ Future audit types should follow the same pattern:
 
 Possible next modules:
 
-- Passive image metadata checks.
 - Local archive inspection.
-- SBOM or dependency manifest review.
+- Optional offline SBOM export from parsed manifests.
 - Job history filters and result-specific views in the frontend.

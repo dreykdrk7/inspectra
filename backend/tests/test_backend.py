@@ -7,11 +7,14 @@ from httpx import ASGITransport, AsyncClient
 from app.config import load_settings
 from app.main import app
 from app.models import JobRecord
-from app.services import ImageAuditService, PdfAuditService
+from app.services import ImageAuditService, ManifestAuditService, PdfAuditService
 from app.storage import FileStore, JobStore
 
 
 SAMPLE_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+SAMPLE_PACKAGE_JSON = b'{"name":"demo","version":"1.0.0","dependencies":{"react":"^18.3.1"}}'
+SAMPLE_REQUIREMENTS = b"fastapi==0.115.0\nhttpx>=0.27\n"
+SAMPLE_PYPROJECT = b'[project]\nname = "demo"\nversion = "1.0.0"\ndependencies = ["fastapi>=0.115"]\n'
 
 
 class NoopAuditService:
@@ -19,6 +22,9 @@ class NoopAuditService:
         return None
 
     async def run_image_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_manifest_analysis(self, job_id: str) -> None:
         return None
 
 
@@ -35,6 +41,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.jobs = job_store
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)
     app.state.image_audits = ImageAuditService(settings, file_store, job_store)
+    app.state.manifest_audits = ManifestAuditService(settings, file_store, job_store)
 
 
 @pytest.mark.anyio
@@ -101,6 +108,91 @@ async def test_image_upload_rejects_unsupported_format(monkeypatch, tmp_path):
 
     assert response.status_code == 400
     assert "JPEG, PNG, and WebP" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_manifest_upload_accepts_package_json(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/manifest",
+            files={"file": ("package.json", SAMPLE_PACKAGE_JSON, "application/json")},
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["kind"] == "manifest"
+    assert payload["content_type"] == "application/json"
+    assert payload["stored_filename"].endswith("-package.json")
+    assert (tmp_path / "uploads" / payload["stored_filename"]).exists()
+
+
+@pytest.mark.anyio
+async def test_manifest_upload_accepts_requirements_txt(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/manifest",
+            files={"file": ("requirements.txt", SAMPLE_REQUIREMENTS, "text/plain")},
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["kind"] == "manifest"
+    assert payload["content_type"] == "text/plain"
+    assert payload["stored_filename"].endswith("-requirements.txt")
+
+
+@pytest.mark.anyio
+async def test_manifest_upload_accepts_pyproject_toml(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/manifest",
+            files={"file": ("pyproject.toml", SAMPLE_PYPROJECT, "application/toml")},
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["kind"] == "manifest"
+    assert payload["content_type"] == "application/toml"
+    assert payload["stored_filename"].endswith("-pyproject.toml")
+
+
+@pytest.mark.anyio
+async def test_manifest_upload_rejects_unsupported_file(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/manifest",
+            files={"file": ("setup.py", b"print('nope')\n", "text/x-python")},
+        )
+
+    assert response.status_code == 400
+    assert "package.json, requirements.txt, and pyproject.toml" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_manifest_upload_size_limit_returns_clear_error(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path, max_upload_bytes=10)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/manifest",
+            files={"file": ("requirements.txt", SAMPLE_REQUIREMENTS, "text/plain")},
+        )
+
+    assert response.status_code == 413
+    assert "Maximum allowed size is 10 bytes" in response.json()["detail"]
 
 
 @pytest.mark.anyio
@@ -198,6 +290,44 @@ async def test_image_audit_job_creation_and_cross_type_rejections(monkeypatch, t
     assert image_as_pdf_response.json()["detail"] == "File is not a PDF."
     assert pdf_as_image_response.status_code == 400
     assert pdf_as_image_response.json()["detail"] == "File is not an image."
+
+
+@pytest.mark.anyio
+async def test_manifest_audit_job_creation_and_cross_type_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.pdf_audits = noop
+    app.state.image_audits = noop
+    app.state.manifest_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        image_response = await client.post("/files/image", files={"file": ("pixel.png", SAMPLE_PNG, "image/png")})
+        manifest_response = await client.post(
+            "/files/manifest",
+            files={"file": ("package.json", SAMPLE_PACKAGE_JSON, "application/json")},
+        )
+        pdf_file = pdf_response.json()
+        image_file = image_response.json()
+        manifest_file = manifest_response.json()
+
+        manifest_job_response = await client.post(f"/audits/manifest/{manifest_file['id']}")
+        manifest_as_pdf_response = await client.post(f"/audits/pdf/{manifest_file['id']}")
+        manifest_as_image_response = await client.post(f"/audits/image/{manifest_file['id']}")
+        pdf_as_manifest_response = await client.post(f"/audits/manifest/{pdf_file['id']}")
+        image_as_manifest_response = await client.post(f"/audits/manifest/{image_file['id']}")
+
+    assert manifest_job_response.status_code == 202
+    assert manifest_job_response.json()["audit_type"] == "manifest_basic"
+    assert manifest_as_pdf_response.status_code == 400
+    assert manifest_as_pdf_response.json()["detail"] == "File is not a PDF."
+    assert manifest_as_image_response.status_code == 400
+    assert manifest_as_image_response.json()["detail"] == "File is not an image."
+    assert pdf_as_manifest_response.status_code == 400
+    assert pdf_as_manifest_response.json()["detail"] == "File is not a manifest."
+    assert image_as_manifest_response.status_code == 400
+    assert image_as_manifest_response.json()["detail"] == "File is not a manifest."
 
 
 @pytest.mark.anyio

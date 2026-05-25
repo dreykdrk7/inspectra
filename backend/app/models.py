@@ -4,8 +4,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-FileKind = Literal["pdf", "image"]
-AuditType = Literal["pdf_basic", "image_basic"]
+FileKind = Literal["pdf", "image", "manifest"]
+AuditType = Literal["pdf_basic", "image_basic", "manifest_basic"]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 
 

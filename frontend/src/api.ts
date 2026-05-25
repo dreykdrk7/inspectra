@@ -48,6 +48,16 @@ export async function uploadImage(file: File): Promise<FileRecord> {
   return parseJsonResponse<FileRecord>(response);
 }
 
+export async function uploadManifest(file: File): Promise<FileRecord> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetch(`${API_BASE_URL}/files/manifest`, {
+    method: 'POST',
+    body: formData,
+  });
+  return parseJsonResponse<FileRecord>(response);
+}
+
 export async function deleteFile(fileId: string): Promise<DeletedFileResponse> {
   const response = await fetch(`${API_BASE_URL}/files/${fileId}`, {
     method: 'DELETE',
@@ -69,6 +79,13 @@ export async function launchImageAudit(fileId: string): Promise<JobRecord> {
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function launchManifestAudit(fileId: string): Promise<JobRecord> {
+  const response = await fetch(`${API_BASE_URL}/audits/manifest/${fileId}`, {
+    method: 'POST',
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function listJobs(): Promise<JobListItem[]> {
   const response = await fetch(`${API_BASE_URL}/jobs`);
   return parseJsonResponse<JobListItem[]>(response);
@@ -85,9 +102,11 @@ export const api = {
   listFiles,
   uploadPdf,
   uploadImage,
+  uploadManifest,
   deleteFile,
   launchPdfAudit,
   launchImageAudit,
+  launchManifestAudit,
   listJobs,
   getJob,
 };

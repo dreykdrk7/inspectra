@@ -242,6 +242,11 @@ pre {
   color: #4d3c8f;
 }
 
+.status-pill.manifest-kind {
+  background: #e3f8ed;
+  color: #176139;
+}
+
 .segmented-control {
   display: inline-flex;
   border: 1px solid #cbd5e1;
@@ -382,6 +387,44 @@ pre {
   gap: 0.75rem;
 }
 
+.dependency-groups,
+.finding-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.dependency-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.dependency-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.28fr) minmax(0, 1fr) minmax(6rem, 0.25fr);
+  gap: 0.5rem;
+  align-items: start;
+  border-top: 1px solid #d9e0ea;
+  padding-top: 0.5rem;
+}
+
+.dependency-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.compact-heading {
+  margin: 0.5rem 0 0;
+  color: #526070;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+}
+
+.evidence-line {
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+  background: #eef3f8;
+}
+
 .tool-card {
   display: grid;
   gap: 0.65rem;
@@ -418,6 +461,33 @@ pre {
   color: #76540a;
 }
 
+.finding-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.55rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  background: #e8edf4;
+  color: #425267;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.finding-badge.info {
+  background: #dceeff;
+  color: #15507c;
+}
+
+.finding-badge.low {
+  background: #fff3cf;
+  color: #76540a;
+}
+
+.finding-badge.medium {
+  background: #ffe2e2;
+  color: #9a242d;
+}
+
 .tool-output,
 .raw-json {
   display: grid;
@@ -446,7 +516,8 @@ pre {
   .content-grid,
   .report-grid,
   .tool-list,
-  .privacy-grid {
+  .privacy-grid,
+  .dependency-row {
     grid-template-columns: 1fr;
   }
 }

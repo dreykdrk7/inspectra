@@ -2,7 +2,7 @@
 
 ## Intended Use
 
-Inspectra is for defensive, educational, and authorized local security audits. The MVP is limited to files that the user intentionally uploads, starting with PDF and image metadata and validation checks.
+Inspectra is for defensive, educational, and authorized local security audits. The MVP is limited to files that the user intentionally uploads, starting with PDF/image metadata checks and dependency manifest review.
 
 Use Inspectra only on files, domains, systems, or services that you own or are explicitly authorized to assess.
 
@@ -12,11 +12,15 @@ Allowed in this phase:
 
 - Uploading local PDF files.
 - Uploading local JPEG, PNG, and WebP images.
+- Uploading local dependency manifests named `package.json`, `requirements.txt`, or `pyproject.toml`.
 - Extracting PDF metadata.
 - Extracting image metadata.
+- Parsing dependency manifests as local text.
+- Extracting declared dependencies, scripts, engines, and basic project metadata from supported manifests.
+- Recording informational dependency indicators such as lifecycle scripts, unpinned requirements, broad ranges, and URL/VCS/local dependency references.
 - Calculating cryptographic hashes.
 - Running passive PDF validation.
-- Listing and deleting locally uploaded PDFs and images.
+- Listing and deleting locally uploaded PDFs, images, and manifests.
 - Storing local JSON audit results.
 - Using the local web UI to perform the same API actions.
 
@@ -28,6 +32,8 @@ Tools used in this phase:
 - `file`
 
 For images, Inspectra uses `file` and `exiftool` passively. It records informational privacy indicators when metadata suggests GPS data, author/creator values, serial numbers, device information, or software/toolchain information.
+
+For manifests, Inspectra uses local Python parsing. It does not install dependencies, resolve transitive dependencies, run package managers, run project scripts, or call external vulnerability services. Findings are heuristic indicators for review, not confirmed vulnerabilities.
 
 ## Out of Scope
 
@@ -43,6 +49,10 @@ The MVP does not include:
 - Fuzzing.
 - Aggressive automation against external services.
 - Image rendering, conversion, detonation, or embedded-content execution.
+- Installing dependencies from uploaded manifests.
+- Running npm, pip, Poetry, pnpm, yarn, or package lifecycle scripts against uploaded manifests.
+- External CVE, advisory, package registry, or vulnerability database lookups.
+- Claiming a heuristic dependency signal is a confirmed vulnerability.
 
 These exclusions are intentional. Inspectra should evolve carefully and keep each new capability scoped, documented, and defensive.
 
@@ -59,6 +69,8 @@ The backend limits uploads with `INSPECTRA_MAX_UPLOAD_BYTES`, defaulting to 20 M
 The frontend does not add authentication or authorization. Run Inspectra only on trusted local development machines or behind controls you manage.
 
 Image analysis does not render previews in this phase. Uploaded images are treated as local files for passive metadata and identification only.
+
+Manifest analysis does not execute project code or package scripts. Uploaded manifests are treated as local text inputs for extraction and reporting only.
 
 ## Container Boundary
 

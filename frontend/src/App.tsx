@@ -3,6 +3,7 @@ import { Activity, Eye, FilePlus2, Play, RefreshCw, Trash2, UploadCloud } from "
 
 import { api } from "./api";
 import { ImageJobReport } from "./ImageJobReport";
+import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
 import type { FileRecord, HealthResponse, JobListItem, JobRecord } from "./types";
 
@@ -85,7 +86,7 @@ export function App() {
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedFile) {
-      setUploadState({ loading: false, error: uploadKind === "pdf" ? "Selecciona un PDF." : "Selecciona una imagen." });
+      setUploadState({ loading: false, error: uploadErrorForKind(uploadKind) });
       return;
     }
 
@@ -94,8 +95,10 @@ export function App() {
     try {
       if (uploadKind === "pdf") {
         await api.uploadPdf(selectedFile);
-      } else {
+      } else if (uploadKind === "image") {
         await api.uploadImage(selectedFile);
+      } else {
+        await api.uploadManifest(selectedFile);
       }
       setSelectedFile(null);
       event.currentTarget.reset();
@@ -114,7 +117,12 @@ export function App() {
   async function launchAudit(file: FileRecord) {
     setActionError(null);
     try {
-      const job = file.kind === "pdf" ? await api.launchPdfAudit(file.id) : await api.launchImageAudit(file.id);
+      const job =
+        file.kind === "pdf"
+          ? await api.launchPdfAudit(file.id)
+          : file.kind === "image"
+            ? await api.launchImageAudit(file.id)
+            : await api.launchManifestAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -178,10 +186,13 @@ export function App() {
               <button type="button" className={uploadKind === "image" ? "active" : ""} onClick={() => setUploadKind("image")}>
                 Image
               </button>
+              <button type="button" className={uploadKind === "manifest" ? "active" : ""} onClick={() => setUploadKind("manifest")}>
+                Manifest
+              </button>
             </div>
             <input
               type="file"
-              accept={uploadKind === "pdf" ? "application/pdf,.pdf" : "image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"}
+              accept={acceptForKind(uploadKind)}
               onChange={handleFileChange}
             />
             <button type="submit" disabled={uploadState.loading}>
@@ -219,7 +230,7 @@ export function App() {
                         <span className="subtle-id">{file.id}</span>
                       </td>
                       <td>
-                        <span className={`status-pill ${file.kind === "image" ? "image-kind" : "pdf-kind"}`}>{file.kind}</span>
+                        <span className={`status-pill ${kindClass(file.kind)}`}>{file.kind}</span>
                       </td>
                       <td>{formatBytes(file.size_bytes)}</td>
                       <td className="mono">{shortHash(file.sha256)}</td>
@@ -228,7 +239,7 @@ export function App() {
                         <div className="row-actions">
                           <button onClick={() => void launchAudit(file)}>
                             <Play size={15} aria-hidden="true" />
-                            Analyze
+                            {auditLabel(file.kind)}
                           </button>
                           <button className="danger-button" onClick={() => void deleteFile(file.id)}>
                             <Trash2 size={15} aria-hidden="true" />
@@ -290,6 +301,8 @@ export function App() {
           <PdfJobReport job={selectedJob} file={selectedJobFile} />
         ) : selectedJob?.audit_type === "image_basic" ? (
           <ImageJobReport job={selectedJob} file={selectedJobFile} />
+        ) : selectedJob?.audit_type === "manifest_basic" ? (
+          <ManifestJobReport job={selectedJob} file={selectedJobFile} />
         ) : (
           <EmptyState text="Select a job to view its result." />
         )}
@@ -356,6 +369,46 @@ function shortId(value: string): string {
   return value.slice(0, 10);
 }
 
+function acceptForKind(kind: FileRecord["kind"]): string {
+  if (kind === "pdf") {
+    return "application/pdf,.pdf";
+  }
+  if (kind === "image") {
+    return "image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp";
+  }
+  return "application/json,text/plain,application/toml,.json,.txt,.toml";
+}
+
+function uploadErrorForKind(kind: FileRecord["kind"]): string {
+  if (kind === "pdf") {
+    return "Selecciona un PDF.";
+  }
+  if (kind === "image") {
+    return "Selecciona una imagen.";
+  }
+  return "Selecciona un manifiesto.";
+}
+
+function kindClass(kind: FileRecord["kind"]): string {
+  if (kind === "pdf") {
+    return "pdf-kind";
+  }
+  if (kind === "image") {
+    return "image-kind";
+  }
+  return "manifest-kind";
+}
+
+function auditLabel(kind: FileRecord["kind"]): string {
+  if (kind === "manifest") {
+    return "Analyze manifest";
+  }
+  if (kind === "image") {
+    return "Analyze image";
+  }
+  return "Analyze PDF";
+}
+
 function summarizeJob(job: JobListItem): string {
   if (!job.summary) {
     return job.source_file_deleted_at ? "Source deleted" : "Pending";
@@ -368,8 +421,15 @@ function summarizeJob(job: JobListItem): string {
   const timedOut = Array.isArray(job.summary.timed_out_tools) ? job.summary.timed_out_tools.length : 0;
   const qpdfOk = typeof job.summary.qpdf_ok === "boolean" ? job.summary.qpdf_ok : undefined;
   const mimeType = typeof job.summary.mime_type === "string" ? job.summary.mime_type : null;
+  const manifestType = typeof job.summary.manifest_type === "string" ? job.summary.manifest_type : null;
+  const totalDependencies = typeof job.summary.total_dependencies === "number" ? job.summary.total_dependencies : null;
+  const findingsCount =
+    typeof job.summary.informational_findings_count === "number" ? job.summary.informational_findings_count : null;
   if (job.audit_type === "image_basic") {
     return `${mimeType ?? "image"}, ${warnings} warnings, ${timedOut} timeouts`;
+  }
+  if (job.audit_type === "manifest_basic") {
+    return `${manifestType ?? "manifest"}, ${totalDependencies ?? 0} deps, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;
