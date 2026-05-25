@@ -1,21 +1,22 @@
 # Inspectra
 
-Inspectra is a lightweight, open source MVP for defensive and educational local security audits. The first phase focuses on passive PDF analysis inside Docker containers so audit tools do not need to be installed on the host system.
+Inspectra is a lightweight, open source MVP for defensive and educational local security audits. The current phase focuses on passive PDF and image analysis inside Docker containers so audit tools do not need to be installed on the host system.
 
 This project is intentionally small: a FastAPI backend, a containerized tool runner, local job/result storage, and clear boundaries for authorized use.
 
 ## What This MVP Does
 
 - Uploads local PDF files through a REST API.
-- Lists registered PDF uploads without exposing host paths.
+- Uploads local JPEG, PNG, and WebP images through a REST API.
+- Lists registered local files without exposing host paths.
 - Stores uploaded files under `data/uploads`.
-- Starts a basic PDF audit job.
-- Runs `pdfinfo`, `exiftool`, `qpdf`, and `file` inside the `audit-tools` container.
+- Starts basic PDF and image audit jobs.
+- Runs passive tools inside the `audit-tools` container.
 - Calculates file hashes inside the tool container.
 - Stores job state and results under `data/results/jobs`.
 - Lists audit jobs with a compact summary.
 - Deletes uploaded source files while keeping historical job results.
-- Provides a minimal React UI for uploads, audits, jobs, readable PDF reports, and raw JSON results.
+- Provides a minimal React UI for uploads, audits, jobs, readable PDF/image reports, and raw JSON results.
 - Exposes OpenAPI docs at `http://localhost:8000/docs`.
 
 ## What This MVP Does Not Do
@@ -77,15 +78,18 @@ Open:
 http://localhost:5173
 ```
 
-From the UI you can check backend health, upload PDFs, list uploaded PDFs, launch PDF audits, delete uploaded PDFs, list recent jobs, and inspect job results.
+From the UI you can check backend health, upload PDFs or images, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
-Completed PDF jobs show a readable report with:
+From the upload panel, choose `PDF` or `Image`. Image uploads currently accept JPEG, PNG, and WebP. Inspectra does not render image previews in this phase.
+
+Completed PDF and image jobs show readable reports with:
 
 - General job summary.
 - Hashes.
 - File identification.
-- PDF metadata from `pdfinfo` and `exiftool`.
-- `qpdf --check` validation.
+- Metadata from passive tools.
+- PDF `qpdf --check` validation when relevant.
+- Image privacy indicators such as GPS, creator, serial number, device, and software metadata presence.
 - Tool errors and timeouts.
 - Optional raw JSON for debugging.
 
@@ -98,7 +102,16 @@ curl -sS -F "file=@/path/to/file.pdf;type=application/pdf" \
 
 The response includes an `id`. Use it to launch the audit.
 
-## List Uploaded PDFs
+## Upload an Image
+
+```bash
+curl -sS -F "file=@/path/to/image.png;type=image/png" \
+  http://localhost:8000/files/image
+```
+
+JPEG, PNG, and WebP are accepted. Inspectra validates image content using magic bytes, not only file extension or `Content-Type`.
+
+## List Uploaded Files
 
 ```bash
 curl -sS http://localhost:8000/files
@@ -113,6 +126,14 @@ curl -sS -X POST http://localhost:8000/audits/pdf/<file_id>
 ```
 
 The response includes a job `id`.
+
+## Launch an Image Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/image/<file_id>
+```
+
+The image audit runs passive identification, metadata extraction, hashing, and privacy indicator checks inside `audit-tools`.
 
 ## Read Job Results
 
@@ -130,13 +151,13 @@ curl -sS http://localhost:8000/jobs
 
 Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, and timed-out tools when present.
 
-## Delete an Uploaded PDF
+## Delete an Uploaded File
 
 ```bash
 curl -sS -X DELETE http://localhost:8000/files/<file_id>
 ```
 
-This deletes the uploaded PDF and its file metadata. Existing job results are kept. Associated jobs are marked with `source_file_deleted_at` so historical results remain readable while making it clear that the original source file is no longer available.
+This deletes the uploaded file and its metadata. Existing job results are kept. Associated jobs are marked with `source_file_deleted_at` so historical results remain readable while making it clear that the original source file is no longer available.
 
 ## Development
 

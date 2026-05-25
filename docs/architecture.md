@@ -13,14 +13,14 @@ Inspectra starts as a small defensive audit API for authorized local files. The 
 - Public port: `8000`
 - Responsibilities:
   - Healthcheck endpoint.
-  - PDF upload endpoint.
-  - PDF listing and deletion endpoints.
+  - PDF and image upload endpoints.
+  - File listing and deletion endpoints.
   - Basic file metadata registry.
   - Job creation, listing, and status management.
   - Calling the internal tool runner.
   - Persisting results under `data/results/jobs`.
 
-The backend does not install or execute PDF audit binaries directly.
+The backend does not install or execute audit binaries directly.
 
 ### Frontend
 
@@ -29,16 +29,16 @@ The backend does not install or execute PDF audit binaries directly.
 - Public port: `5173`
 - Responsibilities:
   - Display backend health.
-  - Upload PDFs.
-  - List and delete uploaded PDFs.
-  - Launch PDF audits.
+  - Upload PDFs and images.
+  - List and delete uploaded files.
+  - Launch PDF and image audits.
   - List recent jobs.
-  - Fetch jobs and render readable PDF reports.
+  - Fetch jobs and render readable PDF and image reports.
   - Keep raw job JSON available for debugging.
 
 The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
 
-PDF report presentation is normalized client-side in `frontend/src/pdfReport.ts`. This keeps the backend contract stable while making the existing PDF result JSON easier to read.
+Report presentation is normalized client-side in `frontend/src/pdfReport.ts` and `frontend/src/imageReport.ts`. This keeps the backend contract stable while making audit result JSON easier to read.
 
 ### Audit Tools Container
 
@@ -51,22 +51,22 @@ PDF report presentation is normalized client-side in `frontend/src/pdfReport.ts`
   - `qpdf`
   - `file`
 
-The tool runner is reachable only on the internal Compose network. It receives a relative path for an uploaded PDF, validates that the path stays inside `data/`, runs passive tools without a shell, and returns structured JSON to the backend.
+The tool runner is reachable only on the internal Compose network. It receives a relative path for an uploaded file, validates that the path stays inside `data/`, runs passive tools without a shell, and returns structured JSON to the backend.
 
 Each external command has an `INSPECTRA_TOOL_TIMEOUT_SECONDS` timeout, defaulting to 10 seconds. A timed-out tool is recorded in that tool's output and in the result summary instead of failing the entire job by itself.
 
 ### Local Data
 
-- Uploaded PDFs: `data/uploads`
+- Uploaded files: `data/uploads`
 - Job/result JSON: `data/results/jobs`
 
 The `data/` directory is bind-mounted into containers. Uploads and results are ignored by Git except for `.gitkeep` placeholders.
 
 ## Request Flow
 
-1. A user uploads a PDF to `POST /files/pdf`.
-2. The backend validates the PDF header, stores it in `data/uploads`, and records metadata.
-3. A user starts analysis with `POST /audits/pdf/{file_id}`.
+1. A user uploads a PDF to `POST /files/pdf` or an image to `POST /files/image`.
+2. The backend validates file magic bytes, stores it in `data/uploads`, and records metadata.
+3. A user starts analysis with `POST /audits/pdf/{file_id}` or `POST /audits/image/{file_id}`.
 4. The backend creates a queued job and schedules background execution.
 5. The backend calls `audit-tools` over the internal Compose network.
 6. The tool runner performs passive analysis inside its container.
@@ -77,10 +77,12 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 
 - `GET /health`: backend healthcheck.
 - `POST /files/pdf`: upload and register a PDF.
-- `GET /files`: list registered PDFs.
+- `POST /files/image`: upload and register a JPEG, PNG, or WebP image.
+- `GET /files`: list registered files.
 - `GET /files/{file_id}`: read one file record.
-- `DELETE /files/{file_id}`: delete an uploaded PDF and its metadata.
+- `DELETE /files/{file_id}`: delete an uploaded source file and its metadata.
 - `POST /audits/pdf/{file_id}`: start a basic passive PDF audit.
+- `POST /audits/image/{file_id}`: start a basic passive image audit.
 - `GET /jobs`: list jobs, newest first, with summaries when available.
 - `GET /jobs/{job_id}`: read one full job record.
 
@@ -97,6 +99,7 @@ The browser UI consumes these same endpoints. The backend enables CORS only for 
 - Containers drop Linux capabilities and set `no-new-privileges`.
 - Containers use read-only root filesystems with `/tmp` as tmpfs.
 - File and job identifiers are constrained to generated UUID hex values before filesystem paths are built.
+- File records include `kind` so audit endpoints can reject mismatched file types. Older records without `kind` are treated as PDFs by default.
 - Upload size is limited by `INSPECTRA_MAX_UPLOAD_BYTES`, defaulting to 20 MB.
 - Development CORS is explicit and defaults to `http://localhost:5173`, not a wildcard.
 

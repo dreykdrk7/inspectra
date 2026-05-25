@@ -2,6 +2,7 @@ import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, use
 import { Activity, Eye, FilePlus2, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 
 import { api } from "./api";
+import { ImageJobReport } from "./ImageJobReport";
 import { PdfJobReport } from "./PdfJobReport";
 import type { FileRecord, HealthResponse, JobListItem, JobRecord } from "./types";
 
@@ -18,6 +19,7 @@ export function App() {
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [selectedJob, setSelectedJob] = useState<JobRecord | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadKind, setUploadKind] = useState<FileRecord["kind"]>("pdf");
   const [healthState, setHealthState] = useState<LoadState>(initialLoadState);
   const [filesState, setFilesState] = useState<LoadState>(initialLoadState);
   const [jobsState, setJobsState] = useState<LoadState>(initialLoadState);
@@ -83,14 +85,18 @@ export function App() {
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedFile) {
-      setUploadState({ loading: false, error: "Selecciona un PDF." });
+      setUploadState({ loading: false, error: uploadKind === "pdf" ? "Selecciona un PDF." : "Selecciona una imagen." });
       return;
     }
 
     setUploadState({ loading: true, error: null });
     setActionError(null);
     try {
-      await api.uploadPdf(selectedFile);
+      if (uploadKind === "pdf") {
+        await api.uploadPdf(selectedFile);
+      } else {
+        await api.uploadImage(selectedFile);
+      }
       setSelectedFile(null);
       event.currentTarget.reset();
       await refreshFiles();
@@ -105,10 +111,10 @@ export function App() {
     setUploadState(initialLoadState);
   }
 
-  async function launchAudit(fileId: string) {
+  async function launchAudit(file: FileRecord) {
     setActionError(null);
     try {
-      const job = await api.launchPdfAudit(fileId);
+      const job = file.kind === "pdf" ? await api.launchPdfAudit(file.id) : await api.launchImageAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -163,9 +169,21 @@ export function App() {
           </div>
         </Panel>
 
-        <Panel title="Upload PDF" icon={<FilePlus2 size={18} aria-hidden="true" />}>
+        <Panel title="Upload File" icon={<FilePlus2 size={18} aria-hidden="true" />}>
           <form className="upload-form" onSubmit={(event) => void handleUpload(event)}>
-            <input type="file" accept="application/pdf,.pdf" onChange={handleFileChange} />
+            <div className="segmented-control" aria-label="Upload type">
+              <button type="button" className={uploadKind === "pdf" ? "active" : ""} onClick={() => setUploadKind("pdf")}>
+                PDF
+              </button>
+              <button type="button" className={uploadKind === "image" ? "active" : ""} onClick={() => setUploadKind("image")}>
+                Image
+              </button>
+            </div>
+            <input
+              type="file"
+              accept={uploadKind === "pdf" ? "application/pdf,.pdf" : "image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"}
+              onChange={handleFileChange}
+            />
             <button type="submit" disabled={uploadState.loading}>
               <UploadCloud size={16} aria-hidden="true" />
               {uploadState.loading ? "Uploading" : "Upload"}
@@ -176,16 +194,17 @@ export function App() {
       </section>
 
       <section className="content-grid">
-        <Panel title="PDFs" action={filesState.loading ? <span className="muted">Loading</span> : null}>
+        <Panel title="Files" action={filesState.loading ? <span className="muted">Loading</span> : null}>
           {filesState.error ? <p className="error-text">{filesState.error}</p> : null}
           {files.length === 0 ? (
-            <EmptyState text="No PDFs registered." />
+            <EmptyState text="No files registered." />
           ) : (
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th>Name</th>
+                    <th>Kind</th>
                     <th>Size</th>
                     <th>SHA-256</th>
                     <th>Created</th>
@@ -199,12 +218,15 @@ export function App() {
                         <strong>{file.original_filename}</strong>
                         <span className="subtle-id">{file.id}</span>
                       </td>
+                      <td>
+                        <span className={`status-pill ${file.kind === "image" ? "image-kind" : "pdf-kind"}`}>{file.kind}</span>
+                      </td>
                       <td>{formatBytes(file.size_bytes)}</td>
                       <td className="mono">{shortHash(file.sha256)}</td>
                       <td>{formatDate(file.created_at)}</td>
                       <td>
                         <div className="row-actions">
-                          <button onClick={() => void launchAudit(file.id)}>
+                          <button onClick={() => void launchAudit(file)}>
                             <Play size={15} aria-hidden="true" />
                             Analyze
                           </button>
@@ -264,8 +286,10 @@ export function App() {
       </section>
 
       <Panel title="Job Result">
-        {selectedJob ? (
+        {selectedJob?.audit_type === "pdf_basic" ? (
           <PdfJobReport job={selectedJob} file={selectedJobFile} />
+        ) : selectedJob?.audit_type === "image_basic" ? (
+          <ImageJobReport job={selectedJob} file={selectedJobFile} />
         ) : (
           <EmptyState text="Select a job to view its result." />
         )}
@@ -343,6 +367,10 @@ function summarizeJob(job: JobListItem): string {
   const warnings = Array.isArray(job.summary.warnings) ? job.summary.warnings.length : 0;
   const timedOut = Array.isArray(job.summary.timed_out_tools) ? job.summary.timed_out_tools.length : 0;
   const qpdfOk = typeof job.summary.qpdf_ok === "boolean" ? job.summary.qpdf_ok : undefined;
+  const mimeType = typeof job.summary.mime_type === "string" ? job.summary.mime_type : null;
+  if (job.audit_type === "image_basic") {
+    return `${mimeType ?? "image"}, ${warnings} warnings, ${timedOut} timeouts`;
+  }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;
 }

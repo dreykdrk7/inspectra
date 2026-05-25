@@ -232,6 +232,35 @@ pre {
   color: #4d3c8f;
 }
 
+.status-pill.image-kind {
+  background: #dceeff;
+  color: #15507c;
+}
+
+.status-pill.pdf-kind {
+  background: #ece7ff;
+  color: #4d3c8f;
+}
+
+.segmented-control {
+  display: inline-flex;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.segmented-control button {
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  color: #425267;
+}
+
+.segmented-control button.active {
+  background: #1f6feb;
+  color: #fff;
+}
+
 .muted,
 .empty-state {
   color: #66768a;
@@ -347,6 +376,12 @@ pre {
   gap: 0.75rem;
 }
 
+.privacy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
 .tool-card {
   display: grid;
   gap: 0.65rem;
@@ -410,7 +445,8 @@ pre {
   .dashboard-grid,
   .content-grid,
   .report-grid,
-  .tool-list {
+  .tool-list,
+  .privacy-grid {
     grid-template-columns: 1fr;
   }
 }

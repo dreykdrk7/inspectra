@@ -2,7 +2,7 @@
 
 ## Intended Use
 
-Inspectra is for defensive, educational, and authorized local security audits. The MVP is limited to files that the user intentionally uploads, starting with PDF metadata and validation checks.
+Inspectra is for defensive, educational, and authorized local security audits. The MVP is limited to files that the user intentionally uploads, starting with PDF and image metadata and validation checks.
 
 Use Inspectra only on files, domains, systems, or services that you own or are explicitly authorized to assess.
 
@@ -11,10 +11,12 @@ Use Inspectra only on files, domains, systems, or services that you own or are e
 Allowed in this phase:
 
 - Uploading local PDF files.
+- Uploading local JPEG, PNG, and WebP images.
 - Extracting PDF metadata.
+- Extracting image metadata.
 - Calculating cryptographic hashes.
 - Running passive PDF validation.
-- Listing and deleting locally uploaded PDFs.
+- Listing and deleting locally uploaded PDFs and images.
 - Storing local JSON audit results.
 - Using the local web UI to perform the same API actions.
 
@@ -24,6 +26,8 @@ Tools used in this phase:
 - `exiftool`
 - `qpdf --check`
 - `file`
+
+For images, Inspectra uses `file` and `exiftool` passively. It records informational privacy indicators when metadata suggests GPS data, author/creator values, serial numbers, device information, or software/toolchain information.
 
 ## Out of Scope
 
@@ -38,6 +42,7 @@ The MVP does not include:
 - Malware detonation.
 - Fuzzing.
 - Aggressive automation against external services.
+- Image rendering, conversion, detonation, or embedded-content execution.
 
 These exclusions are intentional. Inspectra should evolve carefully and keep each new capability scoped, documented, and defensive.
 
@@ -47,17 +52,19 @@ Uploaded files are stored locally under `data/uploads`. Results are stored under
 
 Audit results may include document metadata such as author names, producer strings, timestamps, paths, or other embedded values. Treat results as potentially sensitive.
 
-Deleting a file through `DELETE /files/{file_id}` removes the uploaded source PDF and its file metadata. It does not delete historical job results; associated jobs are marked so it is clear that the source file is no longer present.
+Deleting a file through `DELETE /files/{file_id}` removes the uploaded source file and its metadata. It does not delete historical job results; associated jobs are marked so it is clear that the source file is no longer present.
 
 The backend limits uploads with `INSPECTRA_MAX_UPLOAD_BYTES`, defaulting to 20 MB. This is a usability and resource guardrail, not content sanitization.
 
 The frontend does not add authentication or authorization. Run Inspectra only on trusted local development machines or behind controls you manage.
 
+Image analysis does not render previews in this phase. Uploaded images are treated as local files for passive metadata and identification only.
+
 ## Container Boundary
 
 External audit tools run in the `audit-tools` container, not on the host and not in the backend container. The MVP also avoids mounting the Docker socket into the backend.
 
-The container boundary reduces host exposure, but it is not a perfect sandbox. Parser bugs in PDF tooling are still possible, so the tool container is constrained with:
+The container boundary reduces host exposure, but it is not a perfect sandbox. Parser bugs in file tooling are still possible, so the tool container is constrained with:
 
 - Internal-only Compose networking.
 - Read-only root filesystem.

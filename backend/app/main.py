@@ -1,11 +1,11 @@
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, File, Request, UploadFile, status
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import load_settings
 from app.models import DeletedFileResponse, JobListItem, JobRecord, StoredFile
-from app.services import PdfAuditService
+from app.services import ImageAuditService, PdfAuditService
 from app.storage import FileStore, JobStore
 
 
@@ -20,6 +20,7 @@ async def lifespan(app: FastAPI):
     app.state.files = file_store
     app.state.jobs = job_store
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)
+    app.state.image_audits = ImageAuditService(settings, file_store, job_store)
     yield
 
 
@@ -49,6 +50,11 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)) -> StoredFi
     return await request.app.state.files.save_pdf(file)
 
 
+@app.post("/files/image", response_model=StoredFile, status_code=status.HTTP_201_CREATED)
+async def upload_image(request: Request, file: UploadFile = File(...)) -> StoredFile:
+    return await request.app.state.files.save_image(file)
+
+
 @app.get("/files", response_model=list[StoredFile])
 async def list_files(request: Request) -> list[StoredFile]:
     return request.app.state.files.list()
@@ -68,9 +74,21 @@ async def delete_file(request: Request, file_id: str) -> DeletedFileResponse:
 
 @app.post("/audits/pdf/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_pdf_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    request.app.state.files.get(file_id)
+    stored_file = request.app.state.files.get(file_id)
+    if stored_file.kind != "pdf":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not a PDF.")
     job = request.app.state.jobs.create_pdf_job(file_id)
     background_tasks.add_task(request.app.state.pdf_audits.run_pdf_analysis, job.id)
+    return job
+
+
+@app.post("/audits/image/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_image_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
+    stored_file = request.app.state.files.get(file_id)
+    if stored_file.kind != "image":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an image.")
+    job = request.app.state.jobs.create_image_job(file_id)
+    background_tasks.add_task(request.app.state.image_audits.run_image_analysis, job.id)
     return job
 
 

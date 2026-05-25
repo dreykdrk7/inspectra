@@ -4,11 +4,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+FileKind = Literal["pdf", "image"]
+AuditType = Literal["pdf_basic", "image_basic"]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 
 
 class StoredFile(BaseModel):
     id: str
+    kind: FileKind = "pdf"
     original_filename: str
     stored_filename: str
     content_type: str
@@ -19,7 +22,7 @@ class StoredFile(BaseModel):
 
 class JobRecord(BaseModel):
     id: str
-    audit_type: Literal["pdf_basic"]
+    audit_type: AuditType
     file_id: str
     status: JobStatus
     created_at: datetime
@@ -35,7 +38,7 @@ class JobCreated(BaseModel):
 
 class JobListItem(BaseModel):
     id: str
-    audit_type: Literal["pdf_basic"]
+    audit_type: AuditType
     file_id: str
     status: JobStatus
     created_at: datetime

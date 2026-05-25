@@ -16,6 +16,11 @@ from app.models import JobListItem, JobRecord, JobStatus, StoredFile
 
 IDENTIFIER_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+IMAGE_SIGNATURES = (
+    ("jpeg", ".jpg", "image/jpeg", lambda data: data.startswith(b"\xff\xd8\xff")),
+    ("png", ".png", "image/png", lambda data: data.startswith(b"\x89PNG\r\n\x1a\n")),
+    ("webp", ".webp", "image/webp", lambda data: len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"),
+)
 
 
 def utc_now() -> datetime:
@@ -64,9 +69,54 @@ class FileStore:
 
         record = StoredFile(
             id=file_id,
+            kind="pdf",
             original_filename=original_filename,
             stored_filename=stored_filename,
             content_type=upload.content_type or "application/pdf",
+            size_bytes=size_bytes,
+            sha256=sha256.hexdigest(),
+            created_at=utc_now(),
+        )
+        _atomic_write_json(self._metadata_path(file_id), record.model_dump(mode="json"))
+        return record
+
+    async def save_image(self, upload: UploadFile) -> StoredFile:
+        first_chunk = await upload.read(UPLOAD_CHUNK_SIZE)
+        if not first_chunk:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file.")
+        detected = _detect_image_type(first_chunk)
+        if detected is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only JPEG, PNG, and WebP images are accepted.")
+
+        _, extension, content_type = detected
+        file_id = uuid4().hex
+        stored_filename = f"{file_id}{extension}"
+        original_filename = Path(upload.filename or f"uploaded{extension}").name
+        target_path = self._safe_upload_path(stored_filename)
+        sha256 = hashlib.sha256()
+        size_bytes = 0
+
+        try:
+            with target_path.open("wb") as target:
+                async for chunk in _iter_initial_and_remaining_chunks(first_chunk, upload):
+                    size_bytes += len(chunk)
+                    if size_bytes > self.settings.max_upload_bytes:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail=f"File too large. Maximum allowed size is {self.settings.max_upload_bytes} bytes.",
+                        )
+                    sha256.update(chunk)
+                    target.write(chunk)
+        except Exception:
+            target_path.unlink(missing_ok=True)
+            raise
+
+        record = StoredFile(
+            id=file_id,
+            kind="image",
+            original_filename=original_filename,
+            stored_filename=stored_filename,
+            content_type=content_type,
             size_bytes=size_bytes,
             sha256=sha256.hexdigest(),
             created_at=utc_now(),
@@ -121,10 +171,16 @@ class JobStore:
         self.settings = settings
 
     def create_pdf_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "pdf_basic")
+
+    def create_image_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "image_basic")
+
+    def _create_job(self, file_id: str, audit_type: str) -> JobRecord:
         now = utc_now()
         record = JobRecord(
             id=uuid4().hex,
-            audit_type="pdf_basic",
+            audit_type=audit_type,
             file_id=file_id,
             status="queued",
             created_at=now,
@@ -203,18 +259,30 @@ def _validate_identifier(value: str, label: str) -> None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid {label}.")
 
 
+def _detect_image_type(data: bytes) -> tuple[str, str, str] | None:
+    for name, extension, content_type, matcher in IMAGE_SIGNATURES:
+        if matcher(data):
+            return name, extension, content_type
+    return None
+
+
 def _job_summary(record: JobRecord) -> dict | None:
     if record.result:
         validation = record.result.get("validation", {})
         hashes = record.result.get("hashes", {})
-        return {
+        summary = {
             "analyzer": record.result.get("analyzer"),
             "completed_at": record.result.get("completed_at"),
             "sha256": hashes.get("sha256"),
-            "qpdf_ok": validation.get("qpdf_ok"),
             "warnings": validation.get("warnings", []),
             "timed_out_tools": validation.get("timed_out_tools", []),
         }
+        if record.audit_type == "pdf_basic":
+            summary["qpdf_ok"] = validation.get("qpdf_ok")
+        if record.audit_type == "image_basic":
+            summary["mime_type"] = validation.get("mime_type")
+            summary["privacy_indicators"] = record.result.get("privacy_indicators", {})
+        return summary
     if record.error:
         return {"error": record.error}
     return None

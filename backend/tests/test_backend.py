@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -6,8 +7,19 @@ from httpx import ASGITransport, AsyncClient
 from app.config import load_settings
 from app.main import app
 from app.models import JobRecord
-from app.services import PdfAuditService
+from app.services import ImageAuditService, PdfAuditService
 from app.storage import FileStore, JobStore
+
+
+SAMPLE_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+
+
+class NoopAuditService:
+    async def run_pdf_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_image_analysis(self, job_id: str) -> None:
+        return None
 
 
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
@@ -22,6 +34,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.files = file_store
     app.state.jobs = job_store
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)
+    app.state.image_audits = ImageAuditService(settings, file_store, job_store)
 
 
 @pytest.mark.anyio
@@ -51,8 +64,43 @@ async def test_pdf_upload_creates_record(monkeypatch, tmp_path):
     assert response.status_code == 201
     payload = response.json()
     assert payload["original_filename"] == "sample.pdf"
+    assert payload["kind"] == "pdf"
     assert payload["stored_filename"].endswith(".pdf")
     assert (tmp_path / "uploads" / payload["stored_filename"]).exists()
+
+
+@pytest.mark.anyio
+async def test_image_upload_creates_record(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/image",
+            files={"file": ("pixel.png", SAMPLE_PNG, "image/png")},
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["kind"] == "image"
+    assert payload["content_type"] == "image/png"
+    assert payload["stored_filename"].endswith(".png")
+    assert (tmp_path / "uploads" / payload["stored_filename"]).exists()
+
+
+@pytest.mark.anyio
+async def test_image_upload_rejects_unsupported_format(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/image",
+            files={"file": ("note.txt", b"not an image", "text/plain")},
+        )
+
+    assert response.status_code == 400
+    assert "JPEG, PNG, and WebP" in response.json()["detail"]
 
 
 @pytest.mark.anyio
@@ -73,6 +121,29 @@ async def test_list_files_does_not_expose_absolute_paths(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_legacy_file_metadata_without_kind_defaults_to_pdf(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    file_id = "c" * 32
+    legacy_payload = {
+        "id": file_id,
+        "original_filename": "legacy.pdf",
+        "stored_filename": f"{file_id}.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 10,
+        "sha256": "abc",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    (tmp_path / "uploads" / f"{file_id}.json").write_text(json.dumps(legacy_payload), encoding="utf-8")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(f"/files/{file_id}")
+
+    assert response.status_code == 200
+    assert response.json()["kind"] == "pdf"
+
+
+@pytest.mark.anyio
 async def test_upload_size_limit_returns_clear_error(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path, max_upload_bytes=10)
     transport = ASGITransport(app=app)
@@ -86,6 +157,47 @@ async def test_upload_size_limit_returns_clear_error(monkeypatch, tmp_path):
 
     assert response.status_code == 413
     assert "Maximum allowed size is 10 bytes" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_image_upload_size_limit_returns_clear_error(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path, max_upload_bytes=10)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/image",
+            files={"file": ("large.png", SAMPLE_PNG + b"x" * 20, "image/png")},
+        )
+
+    assert response.status_code == 413
+    assert "Maximum allowed size is 10 bytes" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_image_audit_job_creation_and_cross_type_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.pdf_audits = noop
+    app.state.image_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        image_response = await client.post("/files/image", files={"file": ("pixel.png", SAMPLE_PNG, "image/png")})
+        pdf_file = pdf_response.json()
+        image_file = image_response.json()
+
+        image_job_response = await client.post(f"/audits/image/{image_file['id']}")
+        image_as_pdf_response = await client.post(f"/audits/pdf/{image_file['id']}")
+        pdf_as_image_response = await client.post(f"/audits/image/{pdf_file['id']}")
+
+    assert image_job_response.status_code == 202
+    assert image_job_response.json()["audit_type"] == "image_basic"
+    assert image_as_pdf_response.status_code == 400
+    assert image_as_pdf_response.json()["detail"] == "File is not a PDF."
+    assert pdf_as_image_response.status_code == 400
+    assert pdf_as_image_response.json()["detail"] == "File is not an image."
 
 
 @pytest.mark.anyio
