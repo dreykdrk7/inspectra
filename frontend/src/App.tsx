@@ -1,0 +1,352 @@
+import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, Eye, FilePlus2, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
+
+import { api } from "./api";
+import type { FileRecord, HealthResponse, JobListItem, JobRecord } from "./types";
+
+type LoadState = {
+  loading: boolean;
+  error: string | null;
+};
+
+const initialLoadState: LoadState = { loading: false, error: null };
+
+export function App() {
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [files, setFiles] = useState<FileRecord[]>([]);
+  const [jobs, setJobs] = useState<JobListItem[]>([]);
+  const [selectedJob, setSelectedJob] = useState<JobRecord | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [healthState, setHealthState] = useState<LoadState>(initialLoadState);
+  const [filesState, setFilesState] = useState<LoadState>(initialLoadState);
+  const [jobsState, setJobsState] = useState<LoadState>(initialLoadState);
+  const [uploadState, setUploadState] = useState<LoadState>(initialLoadState);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const refreshHealth = useCallback(async () => {
+    setHealthState({ loading: true, error: null });
+    try {
+      setHealth(await api.health());
+      setHealthState({ loading: false, error: null });
+    } catch (error) {
+      setHealth(null);
+      setHealthState({ loading: false, error: toErrorMessage(error) });
+    }
+  }, []);
+
+  const refreshFiles = useCallback(async () => {
+    setFilesState({ loading: true, error: null });
+    try {
+      setFiles(await api.listFiles());
+      setFilesState({ loading: false, error: null });
+    } catch (error) {
+      setFilesState({ loading: false, error: toErrorMessage(error) });
+    }
+  }, []);
+
+  const refreshJobs = useCallback(async () => {
+    setJobsState({ loading: true, error: null });
+    try {
+      setJobs(await api.listJobs());
+      setJobsState({ loading: false, error: null });
+    } catch (error) {
+      setJobsState({ loading: false, error: toErrorMessage(error) });
+    }
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    setActionError(null);
+    await Promise.all([refreshHealth(), refreshFiles(), refreshJobs()]);
+  }, [refreshFiles, refreshHealth, refreshJobs]);
+
+  useEffect(() => {
+    void refreshAll();
+  }, [refreshAll]);
+
+  const hasActiveJobs = useMemo(() => jobs.some((job) => job.status === "queued" || job.status === "running"), [jobs]);
+
+  useEffect(() => {
+    if (!hasActiveJobs) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      void refreshJobs();
+    }, 3000);
+    return () => window.clearInterval(interval);
+  }, [hasActiveJobs, refreshJobs]);
+
+  async function handleUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedFile) {
+      setUploadState({ loading: false, error: "Selecciona un PDF." });
+      return;
+    }
+
+    setUploadState({ loading: true, error: null });
+    setActionError(null);
+    try {
+      await api.uploadPdf(selectedFile);
+      setSelectedFile(null);
+      event.currentTarget.reset();
+      await refreshFiles();
+      setUploadState({ loading: false, error: null });
+    } catch (error) {
+      setUploadState({ loading: false, error: toErrorMessage(error) });
+    }
+  }
+
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    setSelectedFile(event.target.files?.[0] ?? null);
+    setUploadState(initialLoadState);
+  }
+
+  async function launchAudit(fileId: string) {
+    setActionError(null);
+    try {
+      const job = await api.launchPdfAudit(fileId);
+      setSelectedJob(job);
+      await refreshJobs();
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  async function deleteFile(fileId: string) {
+    setActionError(null);
+    try {
+      await api.deleteFile(fileId);
+      await Promise.all([refreshFiles(), refreshJobs()]);
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  async function viewJob(jobId: string) {
+    setActionError(null);
+    try {
+      setSelectedJob(await api.getJob(jobId));
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">Defensive local audits</p>
+          <h1>Inspectra</h1>
+        </div>
+        <button className="secondary-button" onClick={() => void refreshAll()}>
+          <RefreshCw size={16} aria-hidden="true" />
+          Refresh
+        </button>
+      </header>
+
+      {actionError ? <div className="alert">{actionError}</div> : null}
+
+      <section className="dashboard-grid">
+        <Panel
+          title="Backend"
+          icon={<Activity size={18} aria-hidden="true" />}
+          action={healthState.loading ? <span className="muted">Checking</span> : null}
+        >
+          <div className="health-row">
+            <span className={health?.status === "ok" ? "status-pill ok" : "status-pill"}>{health?.status ?? "offline"}</span>
+            <span className="muted">{health?.service ?? healthState.error ?? "No response yet"}</span>
+            <span className="mono">{api.baseUrl()}</span>
+          </div>
+        </Panel>
+
+        <Panel title="Upload PDF" icon={<FilePlus2 size={18} aria-hidden="true" />}>
+          <form className="upload-form" onSubmit={(event) => void handleUpload(event)}>
+            <input type="file" accept="application/pdf,.pdf" onChange={handleFileChange} />
+            <button type="submit" disabled={uploadState.loading}>
+              <UploadCloud size={16} aria-hidden="true" />
+              {uploadState.loading ? "Uploading" : "Upload"}
+            </button>
+          </form>
+          {uploadState.error ? <p className="error-text">{uploadState.error}</p> : null}
+        </Panel>
+      </section>
+
+      <section className="content-grid">
+        <Panel title="PDFs" action={filesState.loading ? <span className="muted">Loading</span> : null}>
+          {filesState.error ? <p className="error-text">{filesState.error}</p> : null}
+          {files.length === 0 ? (
+            <EmptyState text="No PDFs registered." />
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Size</th>
+                    <th>SHA-256</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {files.map((file) => (
+                    <tr key={file.id}>
+                      <td>
+                        <strong>{file.original_filename}</strong>
+                        <span className="subtle-id">{file.id}</span>
+                      </td>
+                      <td>{formatBytes(file.size_bytes)}</td>
+                      <td className="mono">{shortHash(file.sha256)}</td>
+                      <td>{formatDate(file.created_at)}</td>
+                      <td>
+                        <div className="row-actions">
+                          <button onClick={() => void launchAudit(file.id)}>
+                            <Play size={15} aria-hidden="true" />
+                            Analyze
+                          </button>
+                          <button className="danger-button" onClick={() => void deleteFile(file.id)}>
+                            <Trash2 size={15} aria-hidden="true" />
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Jobs" action={jobsState.loading ? <span className="muted">Loading</span> : null}>
+          {jobsState.error ? <p className="error-text">{jobsState.error}</p> : null}
+          {jobs.length === 0 ? (
+            <EmptyState text="No jobs yet." />
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Type</th>
+                    <th>File</th>
+                    <th>Updated</th>
+                    <th>Summary</th>
+                    <th>Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobs.map((job) => (
+                    <tr key={job.id}>
+                      <td>
+                        <span className={`status-pill ${job.status}`}>{job.status}</span>
+                      </td>
+                      <td>{job.audit_type}</td>
+                      <td className="mono">{shortId(job.file_id)}</td>
+                      <td>{formatDate(job.updated_at)}</td>
+                      <td>{summarizeJob(job)}</td>
+                      <td>
+                        <button className="icon-button" title="View job" onClick={() => void viewJob(job.id)}>
+                          <Eye size={16} aria-hidden="true" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+      </section>
+
+      <Panel title="Job Result">
+        {selectedJob ? (
+          <div className="result-layout">
+            <div className="result-meta">
+              <span className={`status-pill ${selectedJob.status}`}>{selectedJob.status}</span>
+              <span className="mono">{selectedJob.id}</span>
+              {selectedJob.source_file_deleted_at ? <span className="status-pill deleted">source deleted</span> : null}
+            </div>
+            <pre>{JSON.stringify(selectedJob, null, 2)}</pre>
+          </div>
+        ) : (
+          <EmptyState text="Select a job to view its result." />
+        )}
+      </Panel>
+    </main>
+  );
+}
+
+function Panel({
+  title,
+  icon,
+  action,
+  children
+}: {
+  title: string;
+  icon?: ReactNode;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <h2>
+          {icon}
+          {title}
+        </h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return <p className="empty-state">{text}</p>;
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unexpected error";
+}
+
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function shortHash(value: string): string {
+  return `${value.slice(0, 12)}...${value.slice(-8)}`;
+}
+
+function shortId(value: string): string {
+  return value.slice(0, 10);
+}
+
+function summarizeJob(job: JobListItem): string {
+  if (!job.summary) {
+    return job.source_file_deleted_at ? "Source deleted" : "Pending";
+  }
+  const error = typeof job.summary.error === "string" ? job.summary.error : null;
+  if (error) {
+    return error;
+  }
+  const warnings = Array.isArray(job.summary.warnings) ? job.summary.warnings.length : 0;
+  const timedOut = Array.isArray(job.summary.timed_out_tools) ? job.summary.timed_out_tools.length : 0;
+  const qpdfOk = typeof job.summary.qpdf_ok === "boolean" ? job.summary.qpdf_ok : undefined;
+  const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
+  return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;
+}
+
+export default App;

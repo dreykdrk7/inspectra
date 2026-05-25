@@ -6,6 +6,7 @@ services:
       context: ./backend
     container_name: inspectra-backend
     environment:
+      INSPECTRA_CORS_ORIGINS: http://localhost:5173
       INSPECTRA_DATA_DIR: /app/data
       INSPECTRA_MAX_UPLOAD_BYTES: "20971520"
       INSPECTRA_TOOL_RUNNER_URL: http://audit-tools:8081
@@ -58,6 +59,27 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: inspectra-frontend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - inspectra_internal
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 networks:
   inspectra_internal:

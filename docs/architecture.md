@@ -22,6 +22,21 @@ Inspectra starts as a small defensive audit API for authorized local files. The 
 
 The backend does not install or execute PDF audit binaries directly.
 
+### Frontend
+
+- Location: `frontend`
+- Runtime: Vite dev server with React and TypeScript
+- Public port: `5173`
+- Responsibilities:
+  - Display backend health.
+  - Upload PDFs.
+  - List and delete uploaded PDFs.
+  - Launch PDF audits.
+  - List recent jobs.
+  - Fetch and render full job JSON.
+
+The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
+
 ### Audit Tools Container
 
 - Location: `tools/runner`
@@ -53,7 +68,7 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 5. The backend calls `audit-tools` over the internal Compose network.
 6. The tool runner performs passive analysis inside its container.
 7. The backend stores the final job state and result JSON.
-8. A user reads the job with `GET /jobs/{job_id}`.
+8. A user reads the job with `GET /jobs/{job_id}` from the API or the UI.
 
 ## API Surface
 
@@ -68,6 +83,8 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 
 Deleting a file does not remove historical job results. Associated jobs are marked with `source_file_deleted_at`.
 
+The browser UI consumes these same endpoints. The backend enables CORS only for configured origins through `INSPECTRA_CORS_ORIGINS`, defaulting to the local Vite origin.
+
 ## Isolation Choices
 
 - Audit binaries are installed only in the `audit-tools` image.
@@ -78,6 +95,7 @@ Deleting a file does not remove historical job results. Associated jobs are mark
 - Containers use read-only root filesystems with `/tmp` as tmpfs.
 - File and job identifiers are constrained to generated UUID hex values before filesystem paths are built.
 - Upload size is limited by `INSPECTRA_MAX_UPLOAD_BYTES`, defaulting to 20 MB.
+- Development CORS is explicit and defaults to `http://localhost:5173`, not a wildcard.
 
 These are sensible MVP guardrails, not a substitute for a hardened sandbox.
 
@@ -96,4 +114,4 @@ Possible next modules:
 - Passive image metadata checks.
 - Local archive inspection.
 - SBOM or dependency manifest review.
-- Optional frontend for job history and result viewing.
+- Job history filters and result-specific views in the frontend.

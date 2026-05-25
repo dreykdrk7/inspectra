@@ -16,6 +16,7 @@ Allowed in this phase:
 - Running passive PDF validation.
 - Listing and deleting locally uploaded PDFs.
 - Storing local JSON audit results.
+- Using the local web UI to perform the same API actions.
 
 Tools used in this phase:
 
@@ -50,6 +51,8 @@ Deleting a file through `DELETE /files/{file_id}` removes the uploaded source PD
 
 The backend limits uploads with `INSPECTRA_MAX_UPLOAD_BYTES`, defaulting to 20 MB. This is a usability and resource guardrail, not content sanitization.
 
+The frontend does not add authentication or authorization. Run Inspectra only on trusted local development machines or behind controls you manage.
+
 ## Container Boundary
 
 External audit tools run in the `audit-tools` container, not on the host and not in the backend container. The MVP also avoids mounting the Docker socket into the backend.
@@ -63,6 +66,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - `no-new-privileges`.
 - Temporary storage limited to `/tmp`.
 - Per-tool command timeouts through `INSPECTRA_TOOL_TIMEOUT_SECONDS`, defaulting to 10 seconds.
+- Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.
 
 ## Operational Guidance
 

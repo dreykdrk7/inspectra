@@ -15,6 +15,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Stores job state and results under `data/results/jobs`.
 - Lists audit jobs with a compact summary.
 - Deletes uploaded source files while keeping historical job results.
+- Provides a minimal React UI for uploads, audits, jobs, and results.
 - Exposes OpenAPI docs at `http://localhost:8000/docs`.
 
 ## What This MVP Does Not Do
@@ -43,6 +44,12 @@ The backend will be available at:
 http://localhost:8000
 ```
 
+The frontend will be available at:
+
+```text
+http://localhost:5173
+```
+
 Healthcheck:
 
 ```bash
@@ -55,10 +62,22 @@ The Docker Compose defaults are intentionally conservative:
 
 | Variable | Service | Default | Purpose |
 | --- | --- | --- | --- |
+| `INSPECTRA_CORS_ORIGINS` | backend | `http://localhost:5173` | Comma-separated browser origins allowed in development. |
 | `INSPECTRA_DATA_DIR` | backend, audit-tools | `/app/data` | Local data mount used for uploads and results. |
 | `INSPECTRA_MAX_UPLOAD_BYTES` | backend | `20971520` | Maximum accepted upload size. Default is 20 MB. |
 | `INSPECTRA_TOOL_RUNNER_URL` | backend | `http://audit-tools:8081` | Internal URL for the tool runner. |
 | `INSPECTRA_TOOL_TIMEOUT_SECONDS` | audit-tools | `10` | Timeout applied to each external tool command. |
+| `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Browser-facing backend URL used by the React app. |
+
+## Use the Web UI
+
+Open:
+
+```text
+http://localhost:5173
+```
+
+From the UI you can check backend health, upload PDFs, list uploaded PDFs, launch PDF audits, delete uploaded PDFs, list recent jobs, and inspect full job JSON.
 
 ## Upload a PDF
 
@@ -111,13 +130,21 @@ This deletes the uploaded PDF and its file metadata. Existing job results are ke
 
 ## Development
 
-To run the backend tests without installing dependencies globally:
+To run backend and tool-runner tests without installing dependencies globally:
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 pytest
+```
+
+To build the frontend locally without installing anything globally:
+
+```bash
+cd frontend
+npm install
+npm run build
 ```
 
 Validate Compose configuration:

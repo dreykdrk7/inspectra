@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 DEFAULT_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+DEFAULT_CORS_ORIGINS = ("http://localhost:5173",)
 
 
 @dataclass(frozen=True)
@@ -11,6 +12,7 @@ class Settings:
     data_dir: Path
     tool_runner_url: str
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
+    cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
 
     @property
     def upload_dir(self) -> Path:
@@ -33,7 +35,13 @@ def load_settings() -> Settings:
     data_dir = Path(os.getenv("INSPECTRA_DATA_DIR", "data")).resolve()
     tool_runner_url = os.getenv("INSPECTRA_TOOL_RUNNER_URL", "http://audit-tools:8081").rstrip("/")
     max_upload_bytes = _positive_int_from_env("INSPECTRA_MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)
-    return Settings(data_dir=data_dir, tool_runner_url=tool_runner_url, max_upload_bytes=max_upload_bytes)
+    cors_origins = _csv_from_env("INSPECTRA_CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
+    return Settings(
+        data_dir=data_dir,
+        tool_runner_url=tool_runner_url,
+        max_upload_bytes=max_upload_bytes,
+        cors_origins=cors_origins,
+    )
 
 
 def _positive_int_from_env(name: str, default: int) -> int:
@@ -47,3 +55,13 @@ def _positive_int_from_env(name: str, default: int) -> int:
     if value <= 0:
         raise ValueError(f"{name} must be greater than zero.")
     return value
+
+
+def _csv_from_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    values = tuple(value.strip() for value in raw_value.split(",") if value.strip())
+    if not values:
+        raise ValueError(f"{name} must include at least one origin.")
+    return values

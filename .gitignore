@@ -5,6 +5,12 @@ __pycache__/
 .mypy_cache/
 .venv/
 venv/
+node_modules/
+dist/
+*.tsbuildinfo
+*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
 
 data/uploads/*
 data/results/*

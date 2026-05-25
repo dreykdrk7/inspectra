@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, File, Request, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import load_settings
 from app.models import DeletedFileResponse, JobListItem, JobRecord, StoredFile
@@ -27,6 +28,14 @@ app = FastAPI(
     summary="Lightweight defensive security audit API.",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(load_settings().cors_origins),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["*"],
 )
 
 
