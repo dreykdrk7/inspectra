@@ -15,7 +15,7 @@ from app.reporting import (
 from app.sbom import build_sbom_filename, generate_cyclonedx_json, generate_spdx_json
 from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService, WebAuditService
 from app.storage import FileStore, JobStore
-from app.web_security import validate_web_target_url
+from app.web_security import redact_url_query, validate_web_target_url
 
 
 @asynccontextmanager
@@ -154,8 +154,8 @@ async def launch_web_basic_audit(request: Request, payload: WebAuditRequest, bac
         allow_private_targets=request.app.state.settings.web_allow_private_targets,
         allowed_ports=request.app.state.settings.web_allowed_ports,
     )
-    job = request.app.state.jobs.create_web_job(normalized_url)
-    background_tasks.add_task(request.app.state.web_audits.run_web_analysis, job.id)
+    job = request.app.state.jobs.create_web_job(redact_url_query(normalized_url))
+    background_tasks.add_task(request.app.state.web_audits.run_web_analysis, job.id, normalized_url)
     return job
 
 

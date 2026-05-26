@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from xml.etree import ElementTree
 
 from app.models import JobRecord
+from app.web_security import redact_text_urls, redact_url_query
 
 SENSITIVE_RESPONSE_HEADERS = {"set-cookie", "authorization", "proxy-authorization", "x-api-key", "x-auth-token"}
 
@@ -91,20 +92,22 @@ def render_xml_report(job: JobRecord) -> str:
     add_text(job_node, "auditType", job.audit_type)
     add_text(job_node, "status", job.status)
     add_text(job_node, "fileId", job.file_id or "")
-    add_text(job_node, "targetUrl", job.target_url or "")
+    add_text(job_node, "targetUrl", redact_url_query(job.target_url) if job.target_url else "")
     add_text(job_node, "createdAt", job.created_at.isoformat())
     add_text(job_node, "updatedAt", job.updated_at.isoformat())
-    add_text(job_node, "error", job.error or "")
+    job_error = redact_text_urls(job.error) if job.audit_type == "web_basic" and job.error else job.error or ""
+    add_text(job_node, "error", job_error)
 
     file_node = ElementTree.SubElement(root, "file")
     add_text(file_node, "id", job.file_id or "")
     add_text(file_node, "sourceFileDeletedAt", job.source_file_deleted_at.isoformat() if job.source_file_deleted_at else "")
 
     result = as_dict(job.result)
-    append_value(root, "summary", result.get("summary", build_summary(job)))
-    append_value(root, "hashes", result.get("hashes", {}))
-    append_value(root, "findings", result.get("findings", []))
-    append_value(root, "toolResults", result.get("tool_outputs", {}))
+    public_result = as_dict(redact_web_value(result)) if job.audit_type == "web_basic" else result
+    append_value(root, "summary", public_result.get("summary", build_summary(job)))
+    append_value(root, "hashes", public_result.get("hashes", {}))
+    append_value(root, "findings", public_result.get("findings", []))
+    append_value(root, "toolResults", public_result.get("tool_outputs", {}))
     append_value(root, "errors", collect_errors(job))
     append_value(root, "sections", {section.title: dict(section.items) for section in build_report_sections(job)})
 
@@ -133,11 +136,11 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
                 ("Audit type", job.audit_type),
                 ("Status", job.status),
                 ("File ID", job.file_id or "N/A"),
-                ("Target URL", job.target_url or "N/A"),
+                ("Target URL", redact_url_query(job.target_url) if job.target_url else "N/A"),
                 ("Created at", job.created_at.isoformat()),
                 ("Updated at", job.updated_at.isoformat()),
                 ("Source file deleted", job.source_file_deleted_at.isoformat() if job.source_file_deleted_at else "No"),
-                ("Job error", job.error or "N/A"),
+                ("Job error", redact_text_urls(job.error) if job.audit_type == "web_basic" and job.error else job.error or "N/A"),
             ],
         ),
         ReportSection("Summary", flatten_mapping(build_summary(job))),
@@ -241,19 +244,20 @@ def build_project_archive_sections(result: dict[str, Any]) -> list[ReportSection
 
 
 def build_web_sections(result: dict[str, Any]) -> list[ReportSection]:
-    http = as_dict(result.get("http"))
+    public_result = as_dict(redact_web_value(result))
+    http = as_dict(public_result.get("http"))
     http["response_headers"] = redact_sensitive_headers(as_dict(http.get("response_headers")))
     if "set_cookie_headers" in http:
         http["set_cookie_headers"] = "[redacted]"
     return [
-        ReportSection("Web Target", flatten_mapping(as_dict(result.get("target")))),
+        ReportSection("Web Target", flatten_mapping(as_dict(public_result.get("target")))),
         ReportSection("HTTP", flatten_mapping(http)),
-        ReportSection("Security Headers", flatten_mapping(as_dict(result.get("security_headers")))),
-        ReportSection("Cookies", flatten_list(result.get("cookies"))),
-        ReportSection("TLS", flatten_mapping(as_dict(result.get("tls")))),
-        ReportSection("robots.txt", flatten_mapping(as_dict(result.get("robots_txt")))),
-        ReportSection("security.txt", flatten_mapping(as_dict(result.get("security_txt")))),
-        ReportSection("Findings", flatten_list(result.get("findings"))),
+        ReportSection("Security Headers", flatten_mapping(as_dict(public_result.get("security_headers")))),
+        ReportSection("Cookies", flatten_list(public_result.get("cookies"))),
+        ReportSection("TLS", flatten_mapping(as_dict(public_result.get("tls")))),
+        ReportSection("robots.txt", flatten_mapping(as_dict(public_result.get("robots_txt")))),
+        ReportSection("security.txt", flatten_mapping(as_dict(public_result.get("security_txt")))),
+        ReportSection("Findings", flatten_list(public_result.get("findings"))),
     ]
 
 
@@ -289,12 +293,14 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["findings_count"] = summary.get("findings_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
     elif job.audit_type == "web_basic":
-        http = as_dict(result.get("http"))
+        public_result = as_dict(redact_web_value(result))
+        http = as_dict(public_result.get("http"))
         http["response_headers"] = redact_sensitive_headers(as_dict(http.get("response_headers")))
         if "set_cookie_headers" in http:
             http["set_cookie_headers"] = "[redacted]"
-        target = as_dict(result.get("target"))
-        data["target_url"] = target.get("final_url", job.target_url or "N/A")
+        target = as_dict(public_result.get("target"))
+        fallback_url = redact_url_query(job.target_url) if job.target_url else "N/A"
+        data["target_url"] = target.get("final_url", fallback_url)
         data["status_code"] = http.get("status_code", "N/A")
         data["findings_count"] = summary.get("findings_count", "N/A")
         data["redirects_count"] = summary.get("redirects_count", "N/A")
@@ -315,13 +321,23 @@ def redact_sensitive_headers(headers: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
+def redact_web_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_text_urls(value)
+    if isinstance(value, list):
+        return [redact_web_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_web_value(item) for key, item in value.items()}
+    return value
+
+
 def collect_errors(job: JobRecord) -> dict[str, Any]:
     result = as_dict(job.result)
     validation = as_dict(result.get("validation"))
     tool_outputs = as_dict(result.get("tool_outputs"))
     errors: dict[str, Any] = {
-        "job_error": job.error or "",
-        "result_errors": result.get("errors", []),
+        "job_error": redact_text_urls(job.error) if job.audit_type == "web_basic" and job.error else job.error or "",
+        "result_errors": redact_web_value(result.get("errors", [])) if job.audit_type == "web_basic" else result.get("errors", []),
         "warnings": validation.get("warnings", []),
         "timed_out_tools": validation.get("timed_out_tools", []),
     }

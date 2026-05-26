@@ -18,7 +18,7 @@ import subprocess
 import tarfile
 import time
 from typing import Any
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 import zipfile
 
 from fastapi import FastAPI, HTTPException, status
@@ -172,6 +172,38 @@ METADATA_IPS = {ipaddress.ip_address("169.254.169.254")}
 METADATA_HOSTS = {"metadata.google.internal"}
 LOCALHOST_HOSTS = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
 SENSITIVE_RESPONSE_HEADERS = {"set-cookie", "authorization", "proxy-authorization", "x-api-key", "x-auth-token"}
+REDACTED_QUERY_VALUE = "REDACTED"
+SENSITIVE_QUERY_PARAM_NAMES = {
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "api_key",
+    "apikey",
+    "key",
+    "secret",
+    "client_secret",
+    "password",
+    "passwd",
+    "pwd",
+    "session",
+    "sessionid",
+    "sid",
+    "auth",
+    "authorization",
+    "jwt",
+    "bearer",
+    "sig",
+    "signature",
+    "code",
+    "state",
+    "x-amz-signature",
+    "x-amz-credential",
+    "x-amz-security-token",
+    "awsaccesskeyid",
+}
+SENSITIVE_QUERY_PARAM_FRAGMENTS = ("token", "secret", "password", "passwd", "session", "auth", "signature", "api_key", "apikey")
+URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+")
 SECURITY_TXT_FIELDS = {
     "contact",
     "expires",
@@ -445,7 +477,7 @@ async def analyze_web_basic(request: WebBasicAnalysisRequest) -> dict[str, Any]:
         raise
     except (OSError, ssl.SSLError, http.client.HTTPException, UnicodeError) as exc:
         normalized_url = normalize_web_url(request.url)
-        error_message = f"Web analysis failed safely: {exc.__class__.__name__}: {exc}"
+        error_message = redact_text_urls(f"Web analysis failed safely: {exc.__class__.__name__}: {exc}")
         tls = {
             "present": urlsplit(normalized_url).scheme == "https",
             "errors": [error_message] if urlsplit(normalized_url).scheme == "https" else [],
@@ -527,7 +559,7 @@ def analyze_web_basic_target(
                     "Redirect loop detected",
                     "low",
                     "Inspectra stopped following redirects after observing a repeated target URL.",
-                    f"{current_url} -> {next_url}",
+                    f"{redact_url_query(current_url)} -> {redact_url_query(next_url)}",
                     "Review the redirect chain manually if this target is expected.",
                 )
             )
@@ -539,11 +571,11 @@ def analyze_web_basic_target(
                     "Redirect points to a different host",
                     "info",
                     "The response redirects to a different host. This can be expected, but should be understood for authorized assessments.",
-                    f"{current_url} -> {next_url}",
+                    f"{redact_url_query(current_url)} -> {redact_url_query(next_url)}",
                     "Confirm the redirect destination is in scope before deeper testing.",
                 )
             )
-        redirects.append({"from_url": current_url, "to_url": next_url, "status_code": status_code})
+        redirects.append({"from_url": redact_url_query(current_url), "to_url": redact_url_query(next_url), "status_code": status_code})
         current_url = next_url
         seen_urls.add(current_url)
 
@@ -555,7 +587,7 @@ def analyze_web_basic_target(
     cookies = parse_response_cookies(http_result.get("set_cookie_headers", []))
     findings.extend(
         build_web_findings(
-            final_url,
+            redact_url_query(final_url),
             http_result,
             security_headers,
             cookies,
@@ -615,7 +647,7 @@ def fetch_http_once(
     finally:
         connection.close()
 
-    public_headers = public_header_mapping(headers)
+    public_headers = public_header_mapping(headers, base_url=url)
     return {
         "method": "GET",
         "url": url,
@@ -648,6 +680,59 @@ def normalize_web_url(raw_url: str) -> str:
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid URL port.") from exc
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", parsed.query, ""))
+
+
+def has_query_string(url: str) -> bool:
+    try:
+        return bool(urlsplit(url).query)
+    except ValueError:
+        return False
+
+
+def query_redaction_summary(url: str) -> dict[str, object]:
+    try:
+        query = urlsplit(url).query
+    except ValueError:
+        query = ""
+    _, redacted_params = redact_query_params(query)
+    return {
+        "query_string_present": bool(query),
+        "query_params_redacted": bool(redacted_params),
+        "redacted_query_params": redacted_params,
+    }
+
+
+def redact_url_query(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return url
+    redacted_query, _ = redact_query_params(parsed.query)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, redacted_query, parsed.fragment))
+
+
+def redact_query_params(query: str) -> tuple[str, list[str]]:
+    if not query:
+        return "", []
+    pairs = parse_qsl(query, keep_blank_values=True)
+    redacted: list[tuple[str, str]] = []
+    redacted_names: list[str] = []
+    for name, value in pairs:
+        if is_sensitive_query_param(name):
+            redacted.append((name, REDACTED_QUERY_VALUE))
+            redacted_names.append(name)
+        else:
+            redacted.append((name, value))
+    return urlencode(redacted, doseq=True), sorted(set(redacted_names), key=str.lower)
+
+
+def is_sensitive_query_param(name: str) -> bool:
+    normalized = name.strip().lower()
+    return normalized in SENSITIVE_QUERY_PARAM_NAMES or any(fragment in normalized for fragment in SENSITIVE_QUERY_PARAM_FRAGMENTS)
+
+
+def redact_text_urls(value: str) -> str:
+    return URL_PATTERN.sub(lambda match: redact_url_query(match.group(0)), value)
 
 
 def validate_web_url_allowed(raw_url: str, *, allow_private_targets: bool, allowed_ports: tuple[int, ...]) -> None:
@@ -714,11 +799,17 @@ def read_limited_response(response: http.client.HTTPResponse, max_bytes: int) ->
     return b"".join(chunks), False
 
 
-def public_header_mapping(headers: list[tuple[str, str]]) -> dict[str, Any]:
+def public_header_mapping(headers: list[tuple[str, str]], base_url: str | None = None) -> dict[str, Any]:
     mapped: dict[str, Any] = {}
     for name, value in headers:
         canonical = canonical_header_name(name)
-        public_value = "[redacted]" if name.lower() in SENSITIVE_RESPONSE_HEADERS else value
+        lowered = name.lower()
+        if lowered in SENSITIVE_RESPONSE_HEADERS:
+            public_value = "[redacted]"
+        elif lowered == "location" and base_url:
+            public_value = redact_url_query(urljoin(base_url, value))
+        else:
+            public_value = redact_text_urls(value)
         existing = mapped.get(canonical)
         if existing is None:
             mapped[canonical] = public_value
@@ -803,7 +894,7 @@ def inspect_tls(raw_url: str, *, allow_private_targets: bool, timeout_seconds: f
                     "errors": [],
                 }
     except (OSError, ssl.SSLError, ValueError) as exc:
-        return {"present": True, "errors": [f"TLS inspection failed: {exc.__class__.__name__}: {exc}"]}
+        return {"present": True, "errors": [redact_text_urls(f"TLS inspection failed: {exc.__class__.__name__}: {exc}")]}
 
 
 def summarize_certificate(cert: dict[str, Any]) -> dict[str, Any]:
@@ -899,14 +990,14 @@ def fetch_text_resource(
             allowed_ports=allowed_ports,
         )
     except (HTTPException, OSError, ssl.SSLError, http.client.HTTPException) as exc:
-        return {"checked": True, "url": url, "present": False, "errors": [str(exc)]}
+        return {"checked": True, "url": redact_url_query(url), "present": False, "errors": [redact_text_urls(str(exc))]}
     status_code = int(response.get("status_code") or 0)
     present = status_code == 200
     # fetch_http_once intentionally does not retain body in the public HTTP result; fetch again with a small helper here.
     text = fetch_body_text(url, allow_private_targets, timeout_seconds, max_response_bytes, allowed_ports) if present else ""
     summary: dict[str, Any] = {
         "checked": True,
-        "url": url,
+        "url": redact_url_query(url),
         "present": present,
         "status_code": status_code,
         "content_type": response.get("content_type"),
@@ -1045,17 +1136,19 @@ def build_web_result(
     headers = as_dict(http_result.get("response_headers"))
     security_headers = security_headers or evaluate_security_headers(headers)
     cookies = cookies or []
+    query_redaction = combined_query_redaction_summary([original_url, normalized_url, final_url])
     return {
         "analyzer": "web_basic",
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "target": {
-            "original_url": original_url,
-            "normalized_url": normalized_url,
-            "final_url": final_url,
+            "original_url": redact_url_query(original_url),
+            "normalized_url": redact_url_query(normalized_url),
+            "final_url": redact_url_query(final_url),
             "scheme": parsed.scheme,
             "host": parsed.hostname,
             "port": parsed.port or (443 if parsed.scheme == "https" else 80),
             "allowed_ports": list(allowed_ports or ()),
+            **query_redaction,
         },
         "http": {
             "status_code": http_result.get("status_code"),
@@ -1083,6 +1176,21 @@ def build_web_result(
             "security_txt_present": bool(security_txt.get("present")),
             "robots_txt_present": bool(robots_txt.get("present")),
         },
+    }
+
+
+def combined_query_redaction_summary(urls: list[str]) -> dict[str, object]:
+    query_present = False
+    redacted_names: list[str] = []
+    for url in urls:
+        summary = query_redaction_summary(url)
+        query_present = query_present or bool(summary["query_string_present"])
+        redacted_names.extend(str(name) for name in summary["redacted_query_params"])
+    names = sorted(set(redacted_names), key=str.lower)
+    return {
+        "query_string_present": query_present,
+        "query_params_redacted": bool(names),
+        "redacted_query_params": names,
     }
 
 

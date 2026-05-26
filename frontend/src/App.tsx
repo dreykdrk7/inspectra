@@ -20,6 +20,7 @@ import { PdfJobReport } from "./PdfJobReport";
 import { ProjectArchiveJobReport } from "./ProjectArchiveJobReport";
 import { WebJobReport } from "./WebJobReport";
 import type { FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat, SbomFormat } from "./types";
+import { inspectWebUrlQuery } from "./webUrl";
 
 type LoadState = {
   loading: boolean;
@@ -106,6 +107,7 @@ export function App() {
     () => (selectedJob?.file_id ? files.find((file) => file.id === selectedJob.file_id) : undefined),
     [files, selectedJob]
   );
+  const webQueryInspection = useMemo(() => inspectWebUrlQuery(webUrl), [webUrl]);
 
   useEffect(() => {
     if (!hasActiveJobs) {
@@ -293,6 +295,18 @@ export function App() {
               onChange={(event) => setWebUrl(event.target.value)}
               required
             />
+            {webQueryInspection.hasQueryString ? (
+              <div className="query-warning" role="status">
+                {webQueryInspection.sensitiveParams.length > 0 ? (
+                  <>
+                    Se detectan posibles parametros sensibles que seran redactados en resultados y exports:{" "}
+                    <span className="mono">{webQueryInspection.sensitiveParams.join(", ")}</span>
+                  </>
+                ) : (
+                  "La URL contiene query string. Inspectra usara la URL para la request autorizada, pero redactara parametros sensibles en resultados y exports. Evita introducir secretos reales."
+                )}
+              </div>
+            ) : null}
             <label className="checkbox-row">
               <input
                 type="checkbox"
@@ -301,7 +315,7 @@ export function App() {
               />
               Confirmo que tengo autorización para auditar este objetivo
             </label>
-            <button type="submit" disabled={webAuditState.loading}>
+            <button type="submit" disabled={webAuditState.loading || !webAuthorizationConfirmed}>
               <Play size={16} aria-hidden="true" />
               {webAuditState.loading ? "Starting" : "Analyze URL"}
             </button>

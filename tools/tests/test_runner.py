@@ -591,6 +591,47 @@ async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_fil
     assert "web_csp_missing" in finding_ids
 
 
+def test_web_query_redaction_helpers_preserve_safe_params_and_redact_sensitive_values():
+    redacted = runner.redact_url_query("https://example.test/path?utm_source=news&api_key=secret%201&flag")
+
+    assert "utm_source=news" in redacted
+    assert "api_key=REDACTED" in redacted
+    assert "secret" not in redacted
+
+
+@pytest.mark.anyio
+async def test_analyze_web_basic_redacts_sensitive_query_params_in_result():
+    server = start_test_http_server()
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/web-basic",
+            json={
+                "url": f"http://127.0.0.1:{server.server_port}/?token=supersecret&page=1&Token=second",
+                "allow_private_targets": True,
+                "timeout_seconds": 2,
+                "max_response_bytes": 4096,
+                "max_redirects": 3,
+                "allowed_ports": [80, 443, server.server_port],
+            },
+        )
+
+    server.shutdown()
+    payload = response.json()
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "supersecret" not in serialized
+    assert "second" not in serialized
+    assert payload["target"]["original_url"].endswith("/?token=REDACTED&page=1&Token=REDACTED")
+    assert payload["target"]["final_url"].endswith("/?token=REDACTED&page=1&Token=REDACTED")
+    assert payload["target"]["query_string_present"] is True
+    assert payload["target"]["query_params_redacted"] is True
+    assert set(payload["target"]["redacted_query_params"]) == {"Token", "token"}
+    assert payload["robots_txt"]["url"].endswith("/robots.txt")
+    assert payload["security_txt"]["url"].endswith("/.well-known/security.txt")
+
+
 @pytest.mark.anyio
 async def test_analyze_web_basic_follows_redirects_and_stops_at_limit():
     server = start_test_http_server()
@@ -630,6 +671,34 @@ async def test_analyze_web_basic_follows_redirects_and_stops_at_limit():
     assert limited_payload["summary"]["redirects_count"] == 1
     assert "web_redirect_limit_reached" in {finding["id"] for finding in limited_payload["findings"]}
     assert limited_payload["errors"]
+
+
+@pytest.mark.anyio
+async def test_analyze_web_basic_redacts_sensitive_query_params_in_redirects():
+    server = start_test_http_server()
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/web-basic",
+            json={
+                "url": f"http://127.0.0.1:{server.server_port}/redirect-query",
+                "allow_private_targets": True,
+                "timeout_seconds": 2,
+                "max_response_bytes": 4096,
+                "max_redirects": 3,
+                "allowed_ports": [80, 443, server.server_port],
+            },
+        )
+
+    server.shutdown()
+    payload = response.json()
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "supersecret" not in serialized
+    assert payload["http"]["redirects"][0]["to_url"].endswith("/final?token=REDACTED&page=1")
+    assert payload["target"]["final_url"].endswith("/final?token=REDACTED&page=1")
+    assert payload["target"]["query_params_redacted"] is True
 
 
 @pytest.mark.anyio
@@ -826,6 +895,11 @@ class LocalWebHandler(BaseHTTPRequestHandler):
         if self.path == "/redirect":
             self.send_response(302)
             self.send_header("Location", "/final")
+            self.end_headers()
+            return
+        if self.path == "/redirect-query":
+            self.send_response(302)
+            self.send_header("Location", "/final?token=supersecret&page=1")
             self.end_headers()
             return
         if self.path == "/loop":

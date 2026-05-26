@@ -236,7 +236,7 @@ This creates a `web_basic` job. The audit accepts only absolute `http` and `http
 
 Web audits connect only to the port in the URL. The default allowed ports are `80` and `443`; set `INSPECTRA_WEB_ALLOWED_PORTS=80,443,8000,8080,8443` for authorized lab services. Inspectra does not probe alternate ports.
 
-Cookie values and sensitive response headers such as `Set-Cookie`, `Authorization`, `Proxy-Authorization`, `X-Api-Key`, and `X-Auth-Token` are redacted in web results and exports. The target URL itself is stored in local job JSON and may include query strings, so avoid placing secrets in audited URLs.
+Cookie values and sensitive response headers such as `Set-Cookie`, `Authorization`, `Proxy-Authorization`, `X-Api-Key`, and `X-Auth-Token` are redacted in web results and exports. Inspectra uses the submitted URL for the authorized request, but stores and exports a display URL where common sensitive query parameters such as `token`, `api_key`, `session`, `password`, `code`, and `state` are replaced with `REDACTED`. Non-sensitive query parameters are preserved for context. Avoid placing real secrets in audited URLs; uncommon parameter names may not be recognized.
 
 The web audit performs a small set of passive HTTP/HTTPS requests for the provided URL plus `robots.txt` and common `security.txt` locations on the same origin. It does not execute JavaScript, render HTML, crawl links, fuzz, brute-force, exploit, scan ports, use Nmap, query CVEs, or call external reputation APIs.
 

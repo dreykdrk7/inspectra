@@ -23,6 +23,7 @@ export function WebJobReport({ job }: { job: JobRecord }) {
           <h3>General Summary</h3>
           <div className="badge-row">
             <StatusBadge status={job.status} />
+            {report.queryParamsRedacted ? <span className="tool-badge not_run">query redacted</span> : null}
           </div>
         </div>
         <dl className="summary-list">
@@ -38,6 +39,14 @@ export function WebJobReport({ job }: { job: JobRecord }) {
 
       <div className="report-grid">
         <ReportSection title="Target">
+          {report.queryParamsRedacted ? (
+            <p className="muted">
+              Sensitive query parameters redacted
+              {report.redactedQueryParams.length > 0 ? `: ${report.redactedQueryParams.join(", ")}` : "."}
+            </p>
+          ) : report.queryStringPresent ? (
+            <p className="muted">Query string present. No known sensitive parameter names were reported.</p>
+          ) : null}
           <MetadataList entries={report.target} empty="No target metadata returned yet." monoValues />
         </ReportSection>
         <ReportSection title="HTTP">

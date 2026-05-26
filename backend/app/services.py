@@ -140,13 +140,14 @@ class WebAuditService:
         self.files = files
         self.jobs = jobs
 
-    async def run_web_analysis(self, job_id: str) -> None:
+    async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
         job = self.jobs.update(job_id, status="running")
-        if not job.target_url:
+        target_url = request_url or job.target_url
+        if not target_url:
             self.jobs.update(job_id, status="failed", error="Web audit job is missing a target URL.")
             return
         payload = {
-            "url": job.target_url,
+            "url": target_url,
             "allow_private_targets": self.settings.web_allow_private_targets,
             "timeout_seconds": self.settings.web_timeout_seconds,
             "max_response_bytes": self.settings.web_max_response_bytes,

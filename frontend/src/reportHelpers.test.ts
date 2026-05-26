@@ -151,7 +151,12 @@ describe("report helpers", () => {
       target_url: "http://example.test/",
       result: {
         analyzer: "web_basic",
-        target: { final_url: "http://example.test/" },
+        target: {
+          final_url: "http://example.test/?token=REDACTED&page=1",
+          query_string_present: true,
+          query_params_redacted: true,
+          redacted_query_params: ["token"]
+        },
         http: { status_code: 200 },
         security_headers: {
           "Content-Security-Policy": { present: false, value: null },
@@ -166,5 +171,8 @@ describe("report helpers", () => {
     expect(report.securityHeaders).toContainEqual({ name: "Content-Security-Policy", present: false, value: null });
     expect(report.cookies[0]).toMatchObject({ name: "sid", httponly: true, valueRedacted: true, valueLength: 11 });
     expect(report.findings[0]).toMatchObject({ id: "web_csp_missing" });
+    expect(report.queryStringPresent).toBe(true);
+    expect(report.queryParamsRedacted).toBe(true);
+    expect(report.redactedQueryParams).toEqual(["token"]);
   });
 });

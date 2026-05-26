@@ -41,8 +41,16 @@ class NoopAuditService:
     async def run_project_archive_analysis(self, job_id: str) -> None:
         return None
 
-    async def run_web_analysis(self, job_id: str) -> None:
+    async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
         return None
+
+
+class CapturingWebAuditService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+
+    async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
+        self.calls.append((job_id, request_url))
 
 
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
@@ -526,6 +534,63 @@ async def test_web_basic_audit_rejects_invalid_url_and_scheme(monkeypatch, tmp_p
     assert userinfo_response.json()["detail"] == "URL credentials are not accepted."
 
 
+def test_web_query_redaction_helpers_preserve_safe_params_and_redact_sensitive_values():
+    redacted = web_security.redact_url_query(
+        "https://example.com/callback?code=abc123&state=xyz&page=1&Token=second&flag"
+    )
+
+    assert "code=REDACTED" in redacted
+    assert "state=REDACTED" in redacted
+    assert "Token=REDACTED" in redacted
+    assert "page=1" in redacted
+    assert "abc123" not in redacted
+    assert "second" not in redacted
+    assert web_security.query_redaction_summary(redacted)["redacted_query_params"] == ["code", "state", "Token"]
+
+
+@pytest.mark.anyio
+async def test_web_basic_audit_redacts_sensitive_query_params_in_stored_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    web_service = CapturingWebAuditService()
+    app.state.web_audits = web_service
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/web/basic",
+            json={
+                "url": "https://example.test/callback?token=supersecret&page=1&token=second",
+                "authorization_confirmed": True,
+            },
+        )
+        list_response = await client.get("/jobs")
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert "supersecret" not in json.dumps(payload)
+    assert "second" not in json.dumps(payload)
+    assert payload["target_url"] == "https://example.test/callback?token=REDACTED&page=1&token=REDACTED"
+    assert list_response.json()[0]["target_url"] == payload["target_url"]
+    assert web_service.calls
+    assert web_service.calls[0][1] == "https://example.test/callback?token=supersecret&page=1&token=second"
+
+
+@pytest.mark.anyio
+async def test_web_basic_audit_leaves_url_without_query_unchanged(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.web_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/web/basic",
+            json={"url": "https://example.test/status", "authorization_confirmed": True},
+        )
+
+    assert response.status_code == 202
+    assert response.json()["target_url"] == "https://example.test/status"
+
+
 @pytest.mark.anyio
 async def test_web_basic_audit_blocks_private_targets_by_default(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
@@ -973,12 +1038,14 @@ async def test_export_web_job_all_formats(monkeypatch, tmp_path):
         assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
     assert "web_basic" in responses["markdown"].text
     assert "Security Headers" in responses["html"].text
-    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/targetUrl") == "https://example.com/"
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/targetUrl") == "https://example.com/callback?token=REDACTED&page=1"
     assert responses["pdf"].content.startswith(b"%PDF")
     for response in responses.values():
         content = response.text if response.headers["content-type"].startswith(("text/", "application/xml")) else response.content.decode("latin1")
         assert "supersecret" not in content
         assert "[redacted]" in content
+        if response.headers["content-type"].startswith(("text/", "application/xml")):
+            assert "token=REDACTED" in content
 
 
 @pytest.mark.anyio
@@ -1648,7 +1715,7 @@ def save_web_export_fixture_job() -> JobRecord:
         id="8" * 32,
         audit_type="web_basic",
         file_id=None,
-        target_url="https://example.com/",
+        target_url="https://example.com/callback?token=supersecret&page=1",
         status="completed",
         created_at=now,
         updated_at=now,
@@ -1656,16 +1723,27 @@ def save_web_export_fixture_job() -> JobRecord:
             "analyzer": "web_basic",
             "completed_at": now.isoformat(),
             "target": {
-                "original_url": "https://example.com",
-                "normalized_url": "https://example.com/",
-                "final_url": "https://example.com/",
+                "original_url": "https://example.com/callback?token=supersecret&page=1",
+                "normalized_url": "https://example.com/callback?token=supersecret&page=1",
+                "final_url": "https://example.com/callback?token=supersecret&page=1",
                 "scheme": "https",
                 "host": "example.com",
             },
             "http": {
                 "status_code": 200,
-                "redirects": [],
-                "response_headers": {"Content-Type": "text/html", "Server": "unit-test", "Set-Cookie": "sid=supersecret; HttpOnly"},
+                "redirects": [
+                    {
+                        "from_url": "https://example.com/start?token=supersecret",
+                        "to_url": "https://example.com/callback?token=supersecret&page=1",
+                        "status_code": 302,
+                    }
+                ],
+                "response_headers": {
+                    "Content-Type": "text/html",
+                    "Server": "unit-test",
+                    "Set-Cookie": "sid=supersecret; HttpOnly",
+                    "Location": "https://example.com/callback?token=supersecret&page=1",
+                },
                 "content_type": "text/html",
                 "bytes_read": 128,
             },
@@ -1683,7 +1761,7 @@ def save_web_export_fixture_job() -> JobRecord:
                     "title": "Content-Security-Policy header is absent",
                     "level": "info",
                     "description": "Review hardening options.",
-                    "evidence": "https://example.com/",
+                    "evidence": "https://example.com/callback?token=supersecret&page=1",
                     "recommendation": "Consider adding CSP where appropriate.",
                 }
             ],

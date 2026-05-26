@@ -108,7 +108,7 @@ SBOM exports are generated locally from existing completed dependency-analysis j
 
 Web audit results are generated from bounded HTTP/HTTPS responses. Anti-SSRF validation blocks localhost, private ranges, link-local addresses, multicast/reserved addresses, and cloud metadata targets by default. `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true` can be used for authorized lab targets, but metadata/link-local/multicast/reserved addresses remain blocked. `INSPECTRA_WEB_ALLOWED_PORTS` defaults to `80,443`; adding other ports should be limited to authorized labs and does not make Inspectra scan ports. These checks reduce risk but do not replace network-level egress controls, especially against DNS rebinding or resolver time-of-check/time-of-use races.
 
-Web results redact cookie values and sensitive response headers before storage and export. The audited URL and query string can still be stored in job JSON, so users should avoid submitting URLs containing secrets. Inspectra is a local MVP and should not be exposed publicly without authentication, authorization, TLS, and deployment hardening.
+Web results redact cookie values, sensitive response headers, and common sensitive query parameters before storage and export. Inspectra uses the full submitted URL for the authorized request, but stores a safer display URL where parameters such as `token`, `api_key`, `session`, `password`, `code`, and `state` are replaced with `REDACTED`. This is a best-effort guardrail; users should still avoid submitting real secrets because unusual parameter names may not be recognized. Inspectra is a local MVP and should not be exposed publicly without authentication, authorization, TLS, and deployment hardening.
 
 ## Container Boundary
 

@@ -219,6 +219,17 @@ pre {
   height: 1rem;
 }
 
+.query-warning {
+  border: 1px solid #f0c36d;
+  border-radius: 6px;
+  background: #fff8e8;
+  color: #5f4617;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  padding: 0.65rem 0.75rem;
+  width: 100%;
+}
+
 .filter-bar {
   justify-content: space-between;
   margin-bottom: 0.85rem;

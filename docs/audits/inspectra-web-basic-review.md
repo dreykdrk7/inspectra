@@ -133,3 +133,7 @@ Priority order:
 4. Add subdomain inventory only from explicit user-provided sources or passive local inputs; avoid brute force.
 5. Add `django_config_basic` for uploaded local config files before internet-facing framework probes.
 6. Add `infra_basic` with Nmap only in a later phase, with explicit authorization, target allowlists, strict rate/port controls, and separate documentation.
+
+## Follow-up status
+
+- `INSPECTRA-WEB-REVIEW-001`: addressed in the query-string hardening microphase. `web_basic` now stores a redacted display URL for common sensitive query parameters, applies the same policy in the runner result JSON and report exports, and warns in the UI when query strings or likely sensitive query parameter names are present. The request still uses the full submitted URL in memory for the authorized HTTP/HTTPS audit.

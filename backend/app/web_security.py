@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import HTTPException, status
 
@@ -10,6 +11,38 @@ from fastapi import HTTPException, status
 METADATA_IPS = {ipaddress.ip_address("169.254.169.254")}
 METADATA_HOSTS = {"metadata.google.internal"}
 LOCALHOST_HOSTS = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
+REDACTED_QUERY_VALUE = "REDACTED"
+SENSITIVE_QUERY_PARAM_NAMES = {
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "api_key",
+    "apikey",
+    "key",
+    "secret",
+    "client_secret",
+    "password",
+    "passwd",
+    "pwd",
+    "session",
+    "sessionid",
+    "sid",
+    "auth",
+    "authorization",
+    "jwt",
+    "bearer",
+    "sig",
+    "signature",
+    "code",
+    "state",
+    "x-amz-signature",
+    "x-amz-credential",
+    "x-amz-security-token",
+    "awsaccesskeyid",
+}
+SENSITIVE_QUERY_PARAM_FRAGMENTS = ("token", "secret", "password", "passwd", "session", "auth", "signature", "api_key", "apikey")
+URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+")
 
 
 def normalize_web_url(raw_url: str) -> str:
@@ -69,6 +102,59 @@ def validate_web_target_url(raw_url: str, *, allow_private_targets: bool, allowe
                 detail=f"Target resolves to a blocked address range: {blocked_reason}.",
             )
     return normalized
+
+
+def has_query_string(url: str) -> bool:
+    try:
+        return bool(urlsplit(url).query)
+    except ValueError:
+        return False
+
+
+def query_redaction_summary(url: str) -> dict[str, object]:
+    try:
+        query = urlsplit(url).query
+    except ValueError:
+        query = ""
+    _, redacted_params = redact_query_params(query)
+    return {
+        "query_string_present": bool(query),
+        "query_params_redacted": bool(redacted_params),
+        "redacted_query_params": redacted_params,
+    }
+
+
+def redact_url_query(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return url
+    redacted_query, _ = redact_query_params(parsed.query)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, redacted_query, parsed.fragment))
+
+
+def redact_query_params(query: str) -> tuple[str, list[str]]:
+    if not query:
+        return "", []
+    pairs = parse_qsl(query, keep_blank_values=True)
+    redacted: list[tuple[str, str]] = []
+    redacted_names: list[str] = []
+    for name, value in pairs:
+        if is_sensitive_query_param(name):
+            redacted.append((name, REDACTED_QUERY_VALUE))
+            redacted_names.append(name)
+        else:
+            redacted.append((name, value))
+    return urlencode(redacted, doseq=True), sorted(set(redacted_names), key=str.lower)
+
+
+def is_sensitive_query_param(name: str) -> bool:
+    normalized = name.strip().lower()
+    return normalized in SENSITIVE_QUERY_PARAM_NAMES or any(fragment in normalized for fragment in SENSITIVE_QUERY_PARAM_FRAGMENTS)
+
+
+def redact_text_urls(value: str) -> str:
+    return URL_PATTERN.sub(lambda match: redact_url_query(match.group(0)), value)
 
 
 def web_target_port(scheme: str, explicit_port: int | None) -> int:

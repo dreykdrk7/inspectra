@@ -203,4 +203,34 @@ describe("App", () => {
       );
     });
   });
+
+  it("warns when the web audit URL contains sensitive query parameters", async () => {
+    render(<App />);
+
+    const inputs = await screen.findAllByPlaceholderText("https://example.com");
+    const input = inputs[inputs.length - 1];
+    fireEvent.change(input, { target: { value: "https://example.test/callback?token=supersecret&page=1" } });
+
+    expect(screen.getByText(/Se detectan posibles parametros sensibles/i)).toBeInTheDocument();
+    expect(screen.getByText("token")).toBeInTheDocument();
+  });
+
+  it("does not start a web audit without authorization confirmation", async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalled();
+    });
+    vi.mocked(globalThis.fetch).mockClear();
+
+    const inputs = screen.getAllByPlaceholderText("https://example.com");
+    const input = inputs[inputs.length - 1];
+    fireEvent.change(input, { target: { value: "https://example.test/" } });
+    const buttons = screen.getAllByRole("button", { name: /Analyze URL/i });
+    const button = buttons[buttons.length - 1];
+
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });

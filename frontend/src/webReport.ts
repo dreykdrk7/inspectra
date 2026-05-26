@@ -34,16 +34,20 @@ export type WebAuditReport = {
   securityTxt: MetadataEntry[];
   findings: WebFinding[];
   errors: string[];
+  queryStringPresent: boolean;
+  queryParamsRedacted: boolean;
+  redactedQueryParams: string[];
 };
 
 export function buildWebAuditReport(job: JobRecord): WebAuditReport {
   const result = asRecord(job.result);
+  const target = asRecord(result?.target);
 
   return {
     isWebAudit: job.audit_type === "web_basic",
     analyzer: asString(result?.analyzer),
     completedAt: asString(result?.completed_at),
-    target: entriesFromRecord(asRecord(result?.target)),
+    target: entriesFromRecord(target),
     http: entriesFromRecord(asRecord(result?.http)),
     securityHeaders: securityHeadersFromRecord(asRecord(result?.security_headers)),
     cookies: cookiesFromValue(result?.cookies),
@@ -51,7 +55,10 @@ export function buildWebAuditReport(job: JobRecord): WebAuditReport {
     robotsTxt: entriesFromRecord(asRecord(result?.robots_txt)),
     securityTxt: entriesFromRecord(asRecord(result?.security_txt)),
     findings: findingsFromValue(result?.findings),
-    errors: asStringArray(result?.errors)
+    errors: asStringArray(result?.errors),
+    queryStringPresent: asBoolean(target?.query_string_present),
+    queryParamsRedacted: asBoolean(target?.query_params_redacted),
+    redactedQueryParams: asStringArray(target?.redacted_query_params)
   };
 }
 
