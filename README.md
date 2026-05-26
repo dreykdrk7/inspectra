@@ -221,6 +221,8 @@ curl -sS http://localhost:8000/jobs/<job_id>
 
 Jobs start as `queued`, move to `running`, and then become `completed` or `failed`. Results are also stored locally in `data/results/jobs/<job_id>.json`.
 
+Inspectra stores MVP state as local JSON. Writes use atomic temp-file replacement plus a storage lock file under `data/.locks/storage.lock` for write and read-modify-write operations. The lock is held only during quick local persistence steps, not while external analysis runs. This reduces local races but is still not a substitute for SQLite or another database in multi-user/high-volume deployments.
+
 ## Export Job Reports
 
 Every existing job can be exported, including jobs that are still queued, running, or failed. The report clearly includes the job state.

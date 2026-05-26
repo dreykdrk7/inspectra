@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import io
 import json
 import tarfile
+import threading
 from xml.etree import ElementTree
 import zipfile
 
@@ -546,6 +547,86 @@ async def test_delete_file_removes_source_and_marks_jobs(monkeypatch, tmp_path):
     assert job_response.status_code == 200
     assert job_response.json()["source_file_deleted_at"] is not None
     assert job_response.json()["result"]["hashes"]["sha256"] == file_payload["sha256"]
+
+
+def test_storage_lockfile_is_created_inside_data(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+
+    app.state.jobs.create_pdf_job("1" * 32)
+
+    lock_path = tmp_path / ".locks" / "storage.lock"
+    assert lock_path.exists()
+    assert lock_path.resolve().is_relative_to(tmp_path.resolve())
+
+
+def test_job_save_preserves_existing_source_deleted_marker(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = app.state.jobs.create_pdf_job("2" * 32)
+    stale_record = app.state.jobs.get(job.id)
+
+    assert app.state.jobs.mark_file_deleted(job.file_id) == 1
+    stale_completed = stale_record.model_copy(
+        update={
+            "status": "completed",
+            "updated_at": datetime(2026, 5, 26, tzinfo=timezone.utc),
+            "result": {"analyzer": "race-fixture"},
+        }
+    )
+    app.state.jobs.save(stale_completed)
+
+    final = app.state.jobs.get(job.id)
+    assert final.status == "completed"
+    assert final.result == {"analyzer": "race-fixture"}
+    assert final.source_file_deleted_at is not None
+
+
+def test_concurrent_job_completion_and_delete_marker_preserve_fields(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = app.state.jobs.create_pdf_job("3" * 32)
+    barrier = threading.Barrier(2)
+
+    def mark_deleted() -> None:
+        barrier.wait(timeout=2)
+        app.state.jobs.mark_file_deleted(job.file_id)
+
+    def complete_job() -> None:
+        barrier.wait(timeout=2)
+        app.state.jobs.update(job.id, status="completed", result={"analyzer": "concurrent"})
+
+    threads = [threading.Thread(target=mark_deleted), threading.Thread(target=complete_job)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    final = app.state.jobs.get(job.id)
+    assert final.status == "completed"
+    assert final.result == {"analyzer": "concurrent"}
+    assert final.source_file_deleted_at is not None
+
+
+def test_concurrent_updates_for_different_jobs_do_not_corrupt_json(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    jobs = [app.state.jobs.create_pdf_job(f"{index:032x}") for index in range(10, 16)]
+    barrier = threading.Barrier(len(jobs))
+
+    def complete_job(job: JobRecord, index: int) -> None:
+        barrier.wait(timeout=2)
+        app.state.jobs.update(job.id, status="completed", result={"index": index})
+
+    threads = [threading.Thread(target=complete_job, args=(job, index)) for index, job in enumerate(jobs)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    for index, job in enumerate(jobs):
+        payload = json.loads((tmp_path / "results" / "jobs" / f"{job.id}.json").read_text(encoding="utf-8"))
+        final = app.state.jobs.get(job.id)
+        assert payload["status"] == "completed"
+        assert final.result == {"index": index}
 
 
 @pytest.mark.anyio

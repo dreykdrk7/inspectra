@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 import re
+import threading
+from typing import Iterator
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
@@ -12,6 +15,11 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.models import JobListItem, JobRecord, JobStatus, StoredFile
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Linux/Docker path uses fcntl.
+    fcntl = None
 
 
 IDENTIFIER_PATTERN = re.compile(r"^[a-f0-9]{32}$")
@@ -21,6 +29,8 @@ IMAGE_SIGNATURES = (
     ("png", ".png", "image/png", lambda data: data.startswith(b"\x89PNG\r\n\x1a\n")),
     ("webp", ".webp", "image/webp", lambda data: len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"),
 )
+_FALLBACK_LOCKS: dict[Path, threading.RLock] = {}
+_FALLBACK_LOCKS_GUARD = threading.Lock()
 MANIFEST_DEFINITIONS = {
     "package.json": ("package_json", "application/json"),
     "requirements.txt": ("requirements_txt", "text/plain"),
@@ -43,6 +53,31 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     tmp_path = path.with_suffix(f"{path.suffix}.tmp")
     tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     tmp_path.replace(path)
+
+
+@contextmanager
+def storage_lock(settings: Settings) -> Iterator[None]:
+    lock_path = settings.data_dir / ".locks" / "storage.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with _fallback_lock(lock_path):
+        if fcntl is None:
+            yield
+            return
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _fallback_lock(lock_path: Path) -> Iterator[None]:
+    resolved = lock_path.resolve()
+    with _FALLBACK_LOCKS_GUARD:
+        lock = _FALLBACK_LOCKS.setdefault(resolved, threading.RLock())
+    with lock:
+        yield
 
 
 class FileStore:
@@ -88,7 +123,7 @@ class FileStore:
             sha256=sha256.hexdigest(),
             created_at=utc_now(),
         )
-        _atomic_write_json(self._metadata_path(file_id), record.model_dump(mode="json"))
+        self._save_record(record)
         return record
 
     async def save_image(self, upload: UploadFile) -> StoredFile:
@@ -132,7 +167,7 @@ class FileStore:
             sha256=sha256.hexdigest(),
             created_at=utc_now(),
         )
-        _atomic_write_json(self._metadata_path(file_id), record.model_dump(mode="json"))
+        self._save_record(record)
         return record
 
     async def save_manifest(self, upload: UploadFile) -> StoredFile:
@@ -155,7 +190,7 @@ class FileStore:
             sha256=hashlib.sha256(payload).hexdigest(),
             created_at=utc_now(),
         )
-        _atomic_write_json(self._metadata_path(file_id), record.model_dump(mode="json"))
+        self._save_record(record)
         return record
 
     async def save_archive(self, upload: UploadFile) -> StoredFile:
@@ -178,7 +213,7 @@ class FileStore:
             sha256=hashlib.sha256(payload).hexdigest(),
             created_at=utc_now(),
         )
-        _atomic_write_json(self._metadata_path(file_id), record.model_dump(mode="json"))
+        self._save_record(record)
         return record
 
     def list(self) -> list[StoredFile]:
@@ -186,21 +221,16 @@ class FileStore:
         return sorted(records, key=lambda item: item.created_at, reverse=True)
 
     def get(self, file_id: str) -> StoredFile:
-        path = self._metadata_path(file_id)
-        if not path.exists():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
-        try:
-            return StoredFile.model_validate_json(path.read_text(encoding="utf-8"))
-        except (ValidationError, json.JSONDecodeError) as exc:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored file metadata is invalid.") from exc
+        return self._get_unlocked(file_id)
 
     def delete(self, file_id: str) -> StoredFile:
-        record = self.get(file_id)
-        upload_path = self._safe_upload_path(record.stored_filename)
-        metadata_path = self._metadata_path(file_id)
-        upload_path.unlink(missing_ok=True)
-        metadata_path.unlink(missing_ok=True)
-        return record
+        with storage_lock(self.settings):
+            record = self._get_unlocked(file_id)
+            upload_path = self._safe_upload_path(record.stored_filename)
+            metadata_path = self._metadata_path(file_id)
+            upload_path.unlink(missing_ok=True)
+            metadata_path.unlink(missing_ok=True)
+            return record
 
     def relative_upload_path(self, record: StoredFile) -> str:
         return f"uploads/{record.stored_filename}"
@@ -208,6 +238,19 @@ class FileStore:
     def _metadata_path(self, file_id: str) -> Path:
         _validate_identifier(file_id, "file_id")
         return self.settings.upload_dir / f"{file_id}.json"
+
+    def _save_record(self, record: StoredFile) -> None:
+        with storage_lock(self.settings):
+            _atomic_write_json(self._metadata_path(record.id), record.model_dump(mode="json"))
+
+    def _get_unlocked(self, file_id: str) -> StoredFile:
+        path = self._metadata_path(file_id)
+        if not path.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
+        try:
+            return StoredFile.model_validate_json(path.read_text(encoding="utf-8"))
+        except (ValidationError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored file metadata is invalid.") from exc
 
     def _safe_upload_path(self, stored_filename: str) -> Path:
         candidate = (self.settings.upload_dir / stored_filename).resolve()
@@ -252,23 +295,19 @@ class JobStore:
             created_at=now,
             updated_at=now,
         )
-        self.save(record)
+        with storage_lock(self.settings):
+            self._save_unlocked(record)
         return record
 
     def get(self, job_id: str) -> JobRecord:
-        path = self._job_path(job_id)
-        if not path.exists():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
-        try:
-            return JobRecord.model_validate_json(path.read_text(encoding="utf-8"))
-        except (ValidationError, json.JSONDecodeError) as exc:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored job metadata is invalid.") from exc
+        return self._get_unlocked(job_id)
 
     def update(self, job_id: str, *, status: JobStatus, result: dict | None = None, error: str | None = None) -> JobRecord:
-        record = self.get(job_id)
-        updated = record.model_copy(update={"status": status, "updated_at": utc_now(), "result": result, "error": error})
-        self.save(updated)
-        return updated
+        with storage_lock(self.settings):
+            record = self._get_unlocked(job_id)
+            updated = record.model_copy(update={"status": status, "updated_at": utc_now(), "result": result, "error": error})
+            self._save_unlocked(updated)
+            return updated
 
     def list(self) -> list[JobListItem]:
         records = [self._load_job_file(path) for path in self.settings.jobs_dir.glob("*.json")]
@@ -279,21 +318,48 @@ class JobStore:
         _validate_identifier(file_id, "file_id")
         deleted_at = utc_now()
         marked = 0
-        for path in self.settings.jobs_dir.glob("*.json"):
-            record = self._load_job_file(path)
-            if record.file_id != file_id or record.source_file_deleted_at is not None:
-                continue
-            updated = record.model_copy(update={"source_file_deleted_at": deleted_at, "updated_at": deleted_at})
-            self.save(updated)
-            marked += 1
+        with storage_lock(self.settings):
+            for path in self.settings.jobs_dir.glob("*.json"):
+                record = self._load_job_file(path)
+                if record.file_id != file_id or record.source_file_deleted_at is not None:
+                    continue
+                updated = record.model_copy(update={"source_file_deleted_at": deleted_at, "updated_at": deleted_at})
+                self._save_unlocked(updated)
+                marked += 1
         return marked
 
     def save(self, record: JobRecord) -> None:
-        _atomic_write_json(self._job_path(record.id), record.model_dump(mode="json"))
+        with storage_lock(self.settings):
+            self._save_unlocked(record)
 
     def _job_path(self, job_id: str) -> Path:
         _validate_identifier(job_id, "job_id")
         return self.settings.jobs_dir / f"{job_id}.json"
+
+    def _get_unlocked(self, job_id: str) -> JobRecord:
+        path = self._job_path(job_id)
+        if not path.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+        try:
+            return JobRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        except (ValidationError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored job metadata is invalid.") from exc
+
+    def _save_unlocked(self, record: JobRecord) -> None:
+        path = self._job_path(record.id)
+        payload = self._merge_existing_record(path, record).model_dump(mode="json")
+        _atomic_write_json(path, payload)
+
+    def _merge_existing_record(self, path: Path, record: JobRecord) -> JobRecord:
+        if not path.exists():
+            return record
+        existing = self._load_job_file(path)
+        update: dict = {}
+        if record.source_file_deleted_at is None and existing.source_file_deleted_at is not None:
+            update["source_file_deleted_at"] = existing.source_file_deleted_at
+        if update:
+            return record.model_copy(update=update)
+        return record
 
     def _load_job_file(self, path: Path) -> JobRecord:
         try:

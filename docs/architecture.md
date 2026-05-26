@@ -95,8 +95,9 @@ Project archive analysis also uses Python standard library archive readers, but 
 
 - Uploaded files: `data/uploads`
 - Job/result JSON: `data/results/jobs`
+- Storage lock file: `data/.locks/storage.lock`
 
-The `data/` directory is bind-mounted into containers. Uploads and results are ignored by Git except for `.gitkeep` placeholders.
+The `data/` directory is bind-mounted into containers. Uploads and results are ignored by Git except for `.gitkeep` placeholders. JSON persistence uses atomic temp-file replacement and an exclusive file lock for write and read-modify-write operations such as job updates and source-file deletion marking. The backend keeps the lock scoped to local disk operations only; background audit services do not hold it while calling the `audit-tools` runner. This is sufficient for the local MVP, while SQLite remains the preferred future step before multi-user or high-volume use.
 
 ## Request Flow
 

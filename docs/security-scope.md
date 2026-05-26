@@ -81,6 +81,8 @@ Uploaded files are stored locally under `data/uploads`. Results are stored under
 
 Audit results may include document metadata such as author names, producer strings, timestamps, paths, or other embedded values. Treat results as potentially sensitive.
 
+JSON metadata writes use atomic replacement and a local file lock to reduce concurrent update races. This improves consistency for local MVP workflows, but it does not add authentication, authorization, encryption, or database-grade multi-user transaction semantics.
+
 Deleting a file through `DELETE /files/{file_id}` removes the uploaded source file and its metadata. It does not delete historical job results; associated jobs are marked so it is clear that the source file is no longer present.
 
 The backend limits uploads with `INSPECTRA_MAX_UPLOAD_BYTES`, defaulting to 20 MB. This is a usability and resource guardrail, not content sanitization.
