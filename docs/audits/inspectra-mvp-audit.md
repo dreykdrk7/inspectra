@@ -158,3 +158,4 @@ Existing coverage is healthy for the MVP: uploads, cross-kind audit rejection, i
 ## Follow-up Status
 
 - `INSPECTRA-AUDIT-001`: addressed in the follow-up microfase `fix(sbom): avoid purl for ambiguous dependency sources`. SBOM export now generates package URLs only for clear npm/PyPI registry dependencies, preserves ambiguous declarations, and records an omitted-`purl` reason for URL, VCS, local, editable, workspace, and alias sources.
+- `INSPECTRA-AUDIT-002`: addressed in the follow-up microfase `fix(reports): harden markdown export escaping`. Markdown report export now renders dynamic job values as code spans or fenced code blocks, including malicious Markdown links/images, inline HTML, headings, pipes, blockquotes, and multiline tool output.

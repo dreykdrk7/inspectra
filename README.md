@@ -233,7 +233,7 @@ Supported formats:
 
 | Format | Content-Type | Notes |
 | --- | --- | --- |
-| Markdown | `text/markdown; charset=utf-8` | Plain readable report. |
+| Markdown | `text/markdown; charset=utf-8` | Plain readable report. Dynamic values are rendered as code spans or code blocks to avoid misleading Markdown links, images, HTML, headings, or table structure. |
 | HTML | `text/html; charset=utf-8` | Static, self-contained HTML with inline CSS and no JavaScript. |
 | XML | `application/xml; charset=utf-8` | Inspectra-specific XML rooted at `inspectraAuditReport`. |
 | PDF | `application/pdf` | Generated locally by Inspectra without external services or browser automation. |

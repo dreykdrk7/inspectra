@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from app.config import load_settings
 from app.main import app
 from app.models import JobRecord
+from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
 from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService
 from app.storage import FileStore, JobStore
@@ -561,7 +562,43 @@ async def test_export_markdown_for_existing_job(monkeypatch, tmp_path):
     assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.md"'
     assert "# Inspectra Audit Report" in response.text
     assert "manifest_basic" in response.text
-    assert "&lt;script&gt;alert('x')&lt;/script&gt;" in response.text
+    assert "`<script>alert('x')</script>`" in response.text
+
+
+@pytest.mark.anyio
+async def test_export_markdown_neutralizes_dynamic_markdown_content(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_malicious_markdown_fixture_job()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(f"/jobs/{job.id}/export/markdown")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.md"'
+    markdown = response.text
+    assert "`[click me](https://evil.example)`" in markdown
+    assert "`![x](https://evil.example/pixel.png)`" in markdown
+    assert '`<img src="https://evil.example/pixel.png">`' in markdown
+    assert "`# Fake Heading`" in markdown
+    assert "`- fake item`" in markdown
+    assert "`> fake quote`" in markdown
+    assert "`value | injected | column`" in markdown
+    assert "`demo @ git+https://evil.example/demo.git`" in markdown
+    assert "`<script>alert(1)</script>`" in markdown
+    assert "````text\nfirst line\n> fake quote\n```inside fenced content\nhttps://evil.example/log\n````" in markdown
+
+
+def test_markdown_helpers_use_safe_code_delimiters():
+    assert markdown_inline_value("[click](https://evil.example)") == "`[click](https://evil.example)`"
+    assert markdown_inline_value("`inline`") == "`` `inline` ``"
+
+    block = markdown_block_value("before\n```text\ninside\n```\nafter")
+
+    assert block.startswith("````text\n")
+    assert block.endswith("\n````")
+    assert "```text\ninside\n```" in block
 
 
 @pytest.mark.anyio
@@ -1148,6 +1185,65 @@ def save_export_fixture_job() -> JobRecord:
                 }
             ],
             "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_malicious_markdown_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="5" * 32,
+        audit_type="manifest_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="![x](https://evil.example/pixel.png)",
+        result={
+            "analyzer": "manifest_basic",
+            "completed_at": now.isoformat(),
+            "manifest_type": "requirements_txt",
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {
+                "size_bytes": 256,
+                "original_filename": "[click me](https://evil.example)",
+                "path_hint": "value | injected | column",
+            },
+            "parsed": {
+                "project": {"name": '<img src="https://evil.example/pixel.png">'},
+                "dependencies": {
+                    "dependencies": [
+                        {
+                            "name": "# Fake Heading",
+                            "specifier": "- fake item",
+                            "declared_requirement": "demo @ git+https://evil.example/demo.git",
+                        },
+                        {"name": "> fake quote", "specifier": "value | injected | column"},
+                    ]
+                },
+                "scripts": {"postinstall": "`inline`"},
+            },
+            "summary": {"total_dependencies": 2, "dependency_groups": ["dependencies"], "informational_findings_count": 1},
+            "findings": [
+                {
+                    "id": "markdown_fixture",
+                    "title": "[click me](https://evil.example)",
+                    "level": "medium",
+                    "description": "- fake item",
+                    "evidence": "> fake quote",
+                    "recommendation": "# Fake Heading",
+                }
+            ],
+            "tool_outputs": {
+                "fake_tool": {
+                    "exit_code": 1,
+                    "timed_out": False,
+                    "stderr": "first line\n> fake quote\n```inside fenced content\nhttps://evil.example/log",
+                }
+            },
+            "errors": ["<script>alert(1)</script>"],
         },
     )
     app.state.jobs.save(job)

@@ -29,7 +29,7 @@ def render_markdown_report(job: JobRecord) -> str:
         lines.append("")
         if section.items:
             for key, value in section.items:
-                lines.append(f"- **{escape_markdown(key)}:** {escape_markdown(value)}")
+                lines.extend(render_markdown_item(key, value))
         else:
             lines.append("N/A")
         lines.append("")
@@ -429,7 +429,59 @@ def escape_html(value: str) -> str:
 
 
 def escape_markdown(value: str) -> str:
-    return value.replace("<", "&lt;").replace(">", "&gt;")
+    return markdown_inline_value(value)
+
+
+def render_markdown_item(key: str, value: str) -> list[str]:
+    key_text = markdown_inline_value(key)
+    if should_render_markdown_block(value):
+        return [f"- {key_text}:", markdown_block_value(value)]
+    return [f"- {key_text}: {markdown_inline_value(value)}"]
+
+
+def markdown_inline_value(value: Any) -> str:
+    text = normalize_markdown_text(stringify(value), multiline=False)
+    delimiter = markdown_code_span_delimiter(text)
+    if text.startswith("`") or text.endswith("`"):
+        text = f" {text} "
+    return f"{delimiter}{text}{delimiter}"
+
+
+def markdown_block_value(value: Any) -> str:
+    text = normalize_markdown_text(stringify(value), multiline=True)
+    fence = markdown_fence_delimiter(text)
+    return f"{fence}text\n{text}\n{fence}"
+
+
+def markdown_table_cell(value: Any) -> str:
+    text = normalize_markdown_text(stringify(value), multiline=False)
+    return markdown_inline_value(text.replace("|", "\\|"))
+
+
+def markdown_section_text(value: Any) -> str:
+    return markdown_block_value(value)
+
+
+def should_render_markdown_block(value: str) -> bool:
+    return "\n" in value or "\r" in value or len(value) > 160
+
+
+def normalize_markdown_text(value: str, *, multiline: bool) -> str:
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "\uFFFD", text)
+    if not multiline:
+        return re.sub(r"\s*\n\s*", " / ", text)
+    return text
+
+
+def markdown_code_span_delimiter(value: str) -> str:
+    max_run = max((len(match.group(0)) for match in re.finditer(r"`+", value)), default=0)
+    return "`" * (max_run + 1)
+
+
+def markdown_fence_delimiter(value: str) -> str:
+    max_run = max((len(match.group(0)) for match in re.finditer(r"`+", value)), default=0)
+    return "`" * max(3, max_run + 1)
 
 
 def html_class(value: str) -> str:

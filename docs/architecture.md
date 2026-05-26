@@ -50,10 +50,11 @@ Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `f
 - Responsibilities:
   - Normalize stored `JobRecord` JSON into report sections.
   - Render Markdown, static HTML, Inspectra-specific XML, and a simple PDF.
+  - Render untrusted dynamic Markdown values as code spans or fenced code blocks.
   - Escape dynamic content for HTML and XML.
   - Include job state, hashes, summaries, type-specific sections, errors, and timeouts when present.
 
-PDF output is generated with a small local Python writer to avoid adding browser automation, LaTeX, external services, or heavyweight dependencies in this MVP.
+Markdown output keeps report structure static and treats filenames, metadata, dependency declarations, archive paths, tool output, findings, and errors as text/code so external Markdown renderers do not turn them into links, images, inline HTML, headings, or table structure. PDF output is generated with a small local Python writer to avoid adding browser automation, LaTeX, external services, or heavyweight dependencies in this MVP.
 
 ### SBOM
 
