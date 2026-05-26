@@ -121,6 +121,13 @@ pre {
   gap: 1rem;
 }
 
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
 .dashboard-grid {
   grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
   margin-bottom: 1rem;
@@ -155,23 +162,65 @@ pre {
   font-size: 1rem;
 }
 
+.metric-card {
+  display: grid;
+  gap: 0.25rem;
+  border: 1px solid #d9e0ea;
+  border-radius: 8px;
+  padding: 0.85rem;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
+}
+
+.metric-card span {
+  color: #66768a;
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.metric-card strong {
+  color: #172033;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
 .health-row,
 .upload-form,
 .row-actions,
-.result-meta {
+.result-meta,
+.filter-bar {
   display: flex;
   align-items: center;
   gap: 0.6rem;
   flex-wrap: wrap;
 }
 
-.upload-form input {
+.filter-stack {
+  display: grid;
+  gap: 0.6rem;
+  margin-bottom: 0.85rem;
+}
+
+.filter-bar {
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+
+.upload-form input,
+.search-input {
   min-height: 2.25rem;
   max-width: 100%;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
   padding: 0.35rem;
   background: #fff;
+}
+
+.search-input {
+  flex: 1 1 12rem;
+  min-width: min(18rem, 100%);
+  padding: 0.45rem 0.65rem;
 }
 
 .table-wrap {
@@ -268,6 +317,22 @@ pre {
 .segmented-control button.active {
   background: #1f6feb;
   color: #fff;
+}
+
+.wide-control {
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  border: 0;
+  overflow: visible;
+}
+
+.wide-control button {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+}
+
+.wide-control button.active {
+  border-color: #1f6feb;
 }
 
 .muted,
@@ -544,6 +609,16 @@ pre {
 @media (max-width: 980px) {
   .dashboard-grid,
   .content-grid,
+  .metrics-grid,
+  .report-grid,
+  .tool-list,
+  .privacy-grid,
+  .dependency-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-grid,
+  .content-grid,
   .report-grid,
   .tool-list,
   .privacy-grid,
@@ -564,5 +639,18 @@ pre {
 
   .app-header h1 {
     font-size: 1.6rem;
+  }
+
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .segmented-control {
+    overflow-x: auto;
   }
 }

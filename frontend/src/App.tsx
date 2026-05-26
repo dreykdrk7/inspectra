@@ -5,12 +5,16 @@ import { api } from "./api";
 import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
-import type { FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat } from "./types";
+import type { AuditType, FileRecord, HealthResponse, JobListItem, JobRecord, JobStatus, ReportFormat } from "./types";
 
 type LoadState = {
   loading: boolean;
   error: string | null;
 };
+
+type FileKindFilter = "all" | FileRecord["kind"];
+type JobStatusFilter = "all" | JobStatus;
+type JobTypeFilter = "all" | AuditType;
 
 const initialLoadState: LoadState = { loading: false, error: null };
 
@@ -26,6 +30,11 @@ export function App() {
   const [jobsState, setJobsState] = useState<LoadState>(initialLoadState);
   const [uploadState, setUploadState] = useState<LoadState>(initialLoadState);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [fileKindFilter, setFileKindFilter] = useState<FileKindFilter>("all");
+  const [fileSearch, setFileSearch] = useState("");
+  const [jobStatusFilter, setJobStatusFilter] = useState<JobStatusFilter>("all");
+  const [jobTypeFilter, setJobTypeFilter] = useState<JobTypeFilter>("all");
+  const [jobSearch, setJobSearch] = useState("");
 
   const refreshHealth = useCallback(async () => {
     setHealthState({ loading: true, error: null });
@@ -48,8 +57,10 @@ export function App() {
     }
   }, []);
 
-  const refreshJobs = useCallback(async () => {
-    setJobsState({ loading: true, error: null });
+  const refreshJobs = useCallback(async (options: { quiet?: boolean } = {}) => {
+    if (!options.quiet) {
+      setJobsState({ loading: true, error: null });
+    }
     try {
       setJobs(await api.listJobs());
       setJobsState({ loading: false, error: null });
@@ -68,6 +79,16 @@ export function App() {
   }, [refreshAll]);
 
   const hasActiveJobs = useMemo(() => jobs.some((job) => job.status === "queued" || job.status === "running"), [jobs]);
+  const isRefreshing = healthState.loading || filesState.loading || jobsState.loading;
+  const metrics = useMemo(() => buildDashboardMetrics(files, jobs), [files, jobs]);
+  const filteredFiles = useMemo(
+    () => filterFiles(files, fileKindFilter, fileSearch),
+    [fileKindFilter, fileSearch, files]
+  );
+  const filteredJobs = useMemo(
+    () => filterJobs(jobs, jobStatusFilter, jobTypeFilter, jobSearch),
+    [jobSearch, jobStatusFilter, jobTypeFilter, jobs]
+  );
   const selectedJobFile = useMemo(
     () => (selectedJob ? files.find((file) => file.id === selectedJob.file_id) : undefined),
     [files, selectedJob]
@@ -78,7 +99,7 @@ export function App() {
       return;
     }
     const interval = window.setInterval(() => {
-      void refreshJobs();
+      void refreshJobs({ quiet: true });
     }, 3000);
     return () => window.clearInterval(interval);
   }, [hasActiveJobs, refreshJobs]);
@@ -156,13 +177,24 @@ export function App() {
           <p className="eyebrow">Defensive local audits</p>
           <h1>Inspectra</h1>
         </div>
-        <button className="secondary-button" onClick={() => void refreshAll()}>
+        <button className="secondary-button" onClick={() => void refreshAll()} disabled={isRefreshing}>
           <RefreshCw size={16} aria-hidden="true" />
-          Refresh
+          {isRefreshing ? "Refreshing" : "Refresh data"}
         </button>
       </header>
 
       {actionError ? <div className="alert">{actionError}</div> : null}
+
+      <section className="metrics-grid" aria-label="Dashboard summary">
+        <MetricCard label="Total files" value={metrics.totalFiles} />
+        <MetricCard label="PDFs" value={metrics.pdfs} />
+        <MetricCard label="Images" value={metrics.images} />
+        <MetricCard label="Manifests" value={metrics.manifests} />
+        <MetricCard label="Total jobs" value={metrics.totalJobs} />
+        <MetricCard label="Completed" value={metrics.completedJobs} />
+        <MetricCard label="Failed" value={metrics.failedJobs} />
+        <MetricCard label="Active" value={metrics.activeJobs} />
+      </section>
 
       <section className="dashboard-grid">
         <Panel
@@ -206,9 +238,32 @@ export function App() {
 
       <section className="content-grid">
         <Panel title="Files" action={filesState.loading ? <span className="muted">Loading</span> : null}>
+          <div className="filter-bar">
+            <div className="segmented-control" aria-label="File kind filter">
+              {(["all", "pdf", "image", "manifest"] as FileKindFilter[]).map((kind) => (
+                <button
+                  type="button"
+                  key={kind}
+                  className={fileKindFilter === kind ? "active" : ""}
+                  onClick={() => setFileKindFilter(kind)}
+                >
+                  {fileKindLabel(kind)}
+                </button>
+              ))}
+            </div>
+            <input
+              className="search-input"
+              type="search"
+              placeholder="Search files"
+              value={fileSearch}
+              onChange={(event) => setFileSearch(event.target.value)}
+            />
+          </div>
           {filesState.error ? <p className="error-text">{filesState.error}</p> : null}
           {files.length === 0 ? (
             <EmptyState text="No files registered." />
+          ) : filteredFiles.length === 0 ? (
+            <EmptyState text="No files match the current filters." />
           ) : (
             <div className="table-wrap">
               <table>
@@ -223,7 +278,7 @@ export function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {files.map((file) => (
+                  {filteredFiles.map((file) => (
                     <tr key={file.id}>
                       <td>
                         <strong>{file.original_filename}</strong>
@@ -255,10 +310,50 @@ export function App() {
           )}
         </Panel>
 
-        <Panel title="Jobs" action={jobsState.loading ? <span className="muted">Loading</span> : null}>
+        <Panel
+          title="Jobs"
+          action={jobsState.loading ? <span className="muted">Loading</span> : hasActiveJobs ? <span className="muted">Auto-refresh on</span> : null}
+        >
+          <div className="filter-stack">
+            <div className="filter-bar">
+              <div className="segmented-control" aria-label="Job status filter">
+                {(["all", "queued", "running", "completed", "failed"] as JobStatusFilter[]).map((status) => (
+                  <button
+                    type="button"
+                    key={status}
+                    className={jobStatusFilter === status ? "active" : ""}
+                    onClick={() => setJobStatusFilter(status)}
+                  >
+                    {statusLabel(status)}
+                  </button>
+                ))}
+              </div>
+              <input
+                className="search-input"
+                type="search"
+                placeholder="Search jobs"
+                value={jobSearch}
+                onChange={(event) => setJobSearch(event.target.value)}
+              />
+            </div>
+            <div className="segmented-control wide-control" aria-label="Job audit type filter">
+              {(["all", "pdf_basic", "image_basic", "manifest_basic"] as JobTypeFilter[]).map((auditType) => (
+                <button
+                  type="button"
+                  key={auditType}
+                  className={jobTypeFilter === auditType ? "active" : ""}
+                  onClick={() => setJobTypeFilter(auditType)}
+                >
+                  {auditTypeLabel(auditType)}
+                </button>
+              ))}
+            </div>
+          </div>
           {jobsState.error ? <p className="error-text">{jobsState.error}</p> : null}
           {jobs.length === 0 ? (
             <EmptyState text="No jobs yet." />
+          ) : filteredJobs.length === 0 ? (
+            <EmptyState text="No jobs match the current filters." />
           ) : (
             <div className="table-wrap">
               <table>
@@ -273,7 +368,7 @@ export function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {jobs.map((job) => (
+                  {filteredJobs.map((job) => (
                     <tr key={job.id}>
                       <td>
                         <span className={`status-pill ${job.status}`}>{job.status}</span>
@@ -345,6 +440,15 @@ function EmptyState({ text }: { text: string }) {
   return <p className="empty-state">{text}</p>;
 }
 
+function MetricCard({ label, value }: { label: string; value: number }) {
+  return (
+    <article className="metric-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </article>
+  );
+}
+
 function ExportActions({ job }: { job: JobRecord }) {
   const formats: Array<{ format: ReportFormat; label: string }> = [
     { format: "markdown", label: "Export Markdown" },
@@ -392,6 +496,76 @@ function shortHash(value: string): string {
 
 function shortId(value: string): string {
   return value.slice(0, 10);
+}
+
+function buildDashboardMetrics(files: FileRecord[], jobs: JobListItem[]) {
+  return {
+    totalFiles: files.length,
+    pdfs: files.filter((file) => file.kind === "pdf").length,
+    images: files.filter((file) => file.kind === "image").length,
+    manifests: files.filter((file) => file.kind === "manifest").length,
+    totalJobs: jobs.length,
+    completedJobs: jobs.filter((job) => job.status === "completed").length,
+    failedJobs: jobs.filter((job) => job.status === "failed").length,
+    activeJobs: jobs.filter((job) => job.status === "queued" || job.status === "running").length
+  };
+}
+
+function filterFiles(files: FileRecord[], kindFilter: FileKindFilter, search: string): FileRecord[] {
+  const query = search.trim().toLowerCase();
+  return files.filter((file) => {
+    const matchesKind = kindFilter === "all" || file.kind === kindFilter;
+    const matchesSearch =
+      !query ||
+      file.original_filename.toLowerCase().includes(query) ||
+      file.id.toLowerCase().includes(query) ||
+      file.kind.toLowerCase().includes(query);
+    return matchesKind && matchesSearch;
+  });
+}
+
+function filterJobs(
+  jobs: JobListItem[],
+  statusFilter: JobStatusFilter,
+  typeFilter: JobTypeFilter,
+  search: string
+): JobListItem[] {
+  const query = search.trim().toLowerCase();
+  return jobs.filter((job) => {
+    const matchesStatus = statusFilter === "all" || job.status === statusFilter;
+    const matchesType = typeFilter === "all" || job.audit_type === typeFilter;
+    const matchesSearch =
+      !query ||
+      job.id.toLowerCase().includes(query) ||
+      job.file_id.toLowerCase().includes(query) ||
+      job.audit_type.toLowerCase().includes(query) ||
+      job.status.toLowerCase().includes(query);
+    return matchesStatus && matchesType && matchesSearch;
+  });
+}
+
+function fileKindLabel(kind: FileKindFilter): string {
+  if (kind === "all") {
+    return "All";
+  }
+  if (kind === "image") {
+    return "Images";
+  }
+  if (kind === "manifest") {
+    return "Manifest";
+  }
+  return "PDF";
+}
+
+function statusLabel(status: JobStatusFilter): string {
+  return status === "all" ? "All" : status;
+}
+
+function auditTypeLabel(auditType: JobTypeFilter): string {
+  if (auditType === "all") {
+    return "All";
+  }
+  return auditType;
 }
 
 function acceptForKind(kind: FileRecord["kind"]): string {

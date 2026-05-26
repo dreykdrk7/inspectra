@@ -18,7 +18,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Lists audit jobs with a compact summary.
 - Exports job reports as Markdown, HTML, XML, and PDF.
 - Deletes uploaded source files while keeping historical job results.
-- Provides a minimal React UI for uploads, audits, jobs, readable PDF/image/manifest reports, and raw JSON results.
+- Provides a minimal React UI for uploads, audits, filters, jobs, readable PDF/image/manifest reports, exports, and raw JSON results.
 - Exposes OpenAPI docs at `http://localhost:8000/docs`.
 
 ## What This MVP Does Not Do
@@ -85,6 +85,8 @@ http://localhost:5173
 ```
 
 From the UI you can check backend health, upload PDFs, images, or manifests, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
+
+The dashboard includes client-side counters, file filters by kind, job filters by status and audit type, quick search fields, manual refresh, and gentle auto-refresh while jobs are queued or running.
 
 From the upload panel, choose `PDF`, `Image`, or `Manifest`. Image uploads currently accept JPEG, PNG, and WebP. Manifest uploads currently accept `package.json`, `requirements.txt`, and `pyproject.toml`. Inspectra does not render image previews in this phase.
 
