@@ -261,6 +261,50 @@ async def test_analyze_archive_zip_detects_path_traversal(monkeypatch, tmp_path)
 
 
 @pytest.mark.anyio
+async def test_analyze_archive_zip_preflight_truncates_entry_heavy_archive(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "ARCHIVE_MAX_ENTRIES", 3)
+    monkeypatch.setattr(runner, "ARCHIVE_MAX_LISTED_ENTRIES", 2)
+    archive_path = write_zip_archive(tmp_path, {f"files/{index}.txt": b"x" for index in range(5)})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["truncated"] is True
+    assert payload["summary"]["zip_entries_declared"] == 5
+    assert payload["entries_sample"] == []
+    assert len(payload["entries_sample"]) <= 2
+    assert "archive_zip_entry_limit_preflight" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_archive_zip_preflight_blocks_large_central_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES", 1)
+    archive_path = write_zip_archive(tmp_path, {"README.md": b"hello\n"})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["truncated"] is True
+    assert payload["summary"]["zip_central_directory_bytes"] > 1
+    assert payload["entries_sample"] == []
+    assert "archive_zip_central_directory_too_large" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
 async def test_analyze_archive_tar_reports_symlink(monkeypatch, tmp_path):
     archive_path = write_tar_archive(tmp_path)
     monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
@@ -278,6 +322,29 @@ async def test_analyze_archive_tar_reports_symlink(monkeypatch, tmp_path):
     assert payload["summary"]["files"] == 1
     assert payload["summary"]["symlinks"] == 1
     assert "archive_symlink_entry" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_archive_tar_respects_entry_limit(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "ARCHIVE_MAX_ENTRIES", 2)
+    monkeypatch.setattr(runner, "ARCHIVE_MAX_LISTED_ENTRIES", 1)
+    archive_path = write_tar_many_entries(tmp_path, 4)
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["archive_type"] == "tar"
+    assert payload["summary"]["truncated"] is True
+    assert payload["summary"]["total_entries"] == 2
+    assert len(payload["entries_sample"]) == 1
+    assert "archive_too_many_entries" in {finding["id"] for finding in payload["findings"]}
 
 
 @pytest.mark.anyio
@@ -333,6 +400,35 @@ async def test_analyze_project_archive_zip_parses_package_json(monkeypatch, tmp_
     assert payload["parsed_manifests"][0]["parsed"]["project"]["name"] == "demo-app"
     assert "package_sensitive_lifecycle_script" in finding_ids
     assert "dependency_external_or_local_source" in finding_ids
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_zip_preflight_respects_archive_entry_limit(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES", 2)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "README.md": b"# ignored\n",
+            "src/app.py": b"print('ignored')\n",
+            "package.json": PACKAGE_JSON.encode("utf-8"),
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["truncated"] is True
+    assert payload["summary"]["total_entries_seen"] == 0
+    assert payload["summary"]["zip_entries_declared"] == 3
+    assert payload["summary"]["supported_manifests_parsed"] == 0
+    assert "project_archive_zip_entry_limit_preflight" in {finding["id"] for finding in payload["findings"]}
 
 
 @pytest.mark.anyio
@@ -488,6 +584,20 @@ def write_tar_archive(tmp_path):
         link_info.linkname = "README.md"
         link_info.mode = 0o777
         archive.addfile(link_info)
+    return archive_path
+
+
+def write_tar_many_entries(tmp_path, count: int):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        for index in range(count):
+            content = b"x\n"
+            file_info = tarfile.TarInfo(f"files/{index}.txt")
+            file_info.size = len(content)
+            file_info.mode = 0o644
+            archive.addfile(file_info, io.BytesIO(content))
     return archive_path
 
 

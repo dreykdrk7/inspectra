@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -7,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import struct
 import subprocess
 import tarfile
 import time
@@ -79,11 +81,25 @@ ARCHIVE_MAX_ENTRIES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_ENTRIES", 500
 ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES", 209_715_200)
 ARCHIVE_MAX_ENTRY_NAME_LENGTH = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_ENTRY_NAME_LENGTH", 512)
 ARCHIVE_MAX_LISTED_ENTRIES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_LISTED_ENTRIES", 200)
+ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES", 8_388_608)
 ARCHIVE_SUSPICIOUS_COMPRESSION_RATIO = 100.0
 PROJECT_ARCHIVE_MAX_MANIFESTS = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS", 25)
 PROJECT_ARCHIVE_MAX_MANIFEST_BYTES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES", 1_048_576)
 PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES", 5_242_880)
 PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES", ARCHIVE_MAX_ENTRIES)
+ZIP_EOCD_SIGNATURE = b"PK\x05\x06"
+ZIP_EOCD_MIN_SIZE = 22
+ZIP_EOCD_MAX_COMMENT_SIZE = 65_535
+ZIP_EOCD_SCAN_SIZE = ZIP_EOCD_MIN_SIZE + ZIP_EOCD_MAX_COMMENT_SIZE
+ZIP16_MAX_FIELD = 0xFFFF
+ZIP32_MAX_FIELD = 0xFFFFFFFF
+
+
+@dataclass(frozen=True)
+class ZipMetadataPreflight:
+    total_entries: int | None
+    central_directory_bytes: int | None
+    reason: str | None = None
 
 
 app = FastAPI(
@@ -798,15 +814,149 @@ def detect_archive_type(path: Path, original_filename: str) -> str:
     return "unknown"
 
 
+def inspect_zip_metadata_preflight(path: Path) -> ZipMetadataPreflight:
+    file_size = path.stat().st_size
+    with path.open("rb") as handle:
+        handle.seek(max(0, file_size - ZIP_EOCD_SCAN_SIZE))
+        tail = handle.read(ZIP_EOCD_SCAN_SIZE)
+
+    eocd_offset = tail.rfind(ZIP_EOCD_SIGNATURE)
+    if eocd_offset < 0 or len(tail) - eocd_offset < ZIP_EOCD_MIN_SIZE:
+        return ZipMetadataPreflight(None, None, "metadata_preflight_unavailable")
+
+    try:
+        (
+            _signature,
+            disk_number,
+            central_directory_disk,
+            entries_this_disk,
+            total_entries,
+            central_directory_bytes,
+            central_directory_offset,
+            comment_length,
+        ) = struct.unpack_from("<4s4H2LH", tail, eocd_offset)
+    except struct.error:
+        return ZipMetadataPreflight(None, None, "metadata_preflight_unavailable")
+
+    if eocd_offset + ZIP_EOCD_MIN_SIZE + comment_length > len(tail):
+        return ZipMetadataPreflight(None, None, "metadata_preflight_unavailable")
+    if disk_number or central_directory_disk or entries_this_disk != total_entries:
+        return ZipMetadataPreflight(total_entries, central_directory_bytes, "multi_disk_zip")
+    if (
+        total_entries == ZIP16_MAX_FIELD
+        or entries_this_disk == ZIP16_MAX_FIELD
+        or central_directory_bytes == ZIP32_MAX_FIELD
+        or central_directory_offset == ZIP32_MAX_FIELD
+    ):
+        return ZipMetadataPreflight(total_entries, central_directory_bytes, "zip64_metadata")
+    return ZipMetadataPreflight(total_entries, central_directory_bytes)
+
+
+def zip_preflight_block_reason(preflight: ZipMetadataPreflight, max_entries: int) -> str | None:
+    if preflight.reason:
+        return preflight.reason
+    if preflight.total_entries is not None and preflight.total_entries > max_entries:
+        return "too_many_entries"
+    if (
+        preflight.central_directory_bytes is not None
+        and preflight.central_directory_bytes > ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES
+    ):
+        return "central_directory_too_large"
+    return None
+
+
+def add_zip_preflight_summary(summary: dict[str, Any], preflight: ZipMetadataPreflight) -> None:
+    if preflight.total_entries is not None:
+        summary["zip_entries_declared"] = preflight.total_entries
+    if preflight.central_directory_bytes is not None:
+        summary["zip_central_directory_bytes"] = preflight.central_directory_bytes
+
+
+def zip_preflight_finding(reason: str, preflight: ZipMetadataPreflight, max_entries: int) -> dict[str, str]:
+    evidence_parts = [f"configured entry limit: {max_entries}"]
+    if preflight.total_entries is not None:
+        evidence_parts.append(f"declared ZIP entries: {preflight.total_entries}")
+    if preflight.central_directory_bytes is not None:
+        evidence_parts.append(f"central directory bytes: {preflight.central_directory_bytes}")
+    evidence_parts.append(f"central directory byte limit: {ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES}")
+    evidence = "; ".join(evidence_parts)
+
+    if reason == "too_many_entries":
+        return make_finding(
+            "archive_zip_entry_limit_preflight",
+            "ZIP entry limit reached during metadata preflight",
+            "medium",
+            "The ZIP central directory declares more entries than Inspectra will inspect in this phase, so detailed metadata parsing was skipped before opening the ZIP with Python's zipfile parser.",
+            evidence,
+            "Review the archive in a constrained environment or raise limits only for trusted inputs.",
+        )
+    if reason == "central_directory_too_large":
+        return make_finding(
+            "archive_zip_central_directory_too_large",
+            "ZIP central directory exceeds configured metadata limit",
+            "medium",
+            "The ZIP central directory is large enough to be a possible resource-consumption indicator, so detailed metadata parsing was skipped.",
+            evidence,
+            "Keep upload size limits conservative and inspect this archive manually in a constrained environment if needed.",
+        )
+    if reason == "zip64_metadata":
+        return make_finding(
+            "archive_zip64_metadata_requires_review",
+            "ZIP64 metadata requires manual review",
+            "low",
+            "The standard ZIP end-of-central-directory record uses ZIP64 sentinel values. Inspectra does not parse ZIP64 metadata in this MVP and skips detailed ZIP metadata to avoid over-trusting incomplete limits.",
+            evidence,
+            "Inspect ZIP64 archives in a constrained workflow before extraction or increase support in a dedicated hardening phase.",
+        )
+    if reason == "multi_disk_zip":
+        return make_finding(
+            "archive_multidisk_zip_unsupported",
+            "Multi-disk ZIP metadata is not supported",
+            "low",
+            "The ZIP metadata indicates a multi-disk archive. Inspectra skips detailed analysis for this format in the MVP.",
+            evidence,
+            "Review the archive with tooling that explicitly supports multi-disk ZIP files.",
+        )
+    return make_finding(
+        "archive_zip_metadata_preflight_unavailable",
+        "ZIP metadata preflight was inconclusive",
+        "low",
+        "Inspectra could not confidently parse the standard ZIP end-of-central-directory metadata before opening the archive.",
+        evidence,
+        "Treat this result as incomplete and review the archive in a constrained environment if it is expected.",
+    )
+
+
+def blocked_zip_archive_analysis(path: Path, preflight: ZipMetadataPreflight, reason: str) -> dict[str, Any]:
+    summary = empty_archive_summary(total_compressed_bytes=path.stat().st_size)
+    summary["truncated"] = True
+    add_zip_preflight_summary(summary, preflight)
+    finding = zip_preflight_finding(reason, preflight, ARCHIVE_MAX_ENTRIES)
+    findings = [finding]
+    summary["findings_count"] = len(findings)
+    return {
+        "entries_sample": [],
+        "detected_manifests": [],
+        "findings": findings,
+        "summary": summary,
+        "errors": [],
+    }
+
+
 def analyze_zip_archive(path: Path) -> dict[str, Any]:
     entries_sample: list[dict[str, Any]] = []
     detected_manifests: list[dict[str, str]] = []
     findings: list[dict[str, str]] = []
     seen_findings: set[str] = set()
     summary = empty_archive_summary()
+    preflight = inspect_zip_metadata_preflight(path)
+    blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+    if blocked_reason:
+        return blocked_zip_archive_analysis(path, preflight, blocked_reason)
+    add_zip_preflight_summary(summary, preflight)
 
     with zipfile.ZipFile(path) as archive:
-        for index, info in enumerate(archive.infolist(), start=1):
+        for index, info in enumerate(archive.filelist, start=1):
             if index > ARCHIVE_MAX_ENTRIES:
                 summary["truncated"] = True
                 add_archive_finding(
@@ -928,6 +1078,7 @@ def build_archive_result(
             "max_total_uncompressed_bytes": ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES,
             "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
             "max_listed_entries": ARCHIVE_MAX_LISTED_ENTRIES,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
         },
         "summary": summary,
         "entries_sample": entries_sample,
@@ -945,8 +1096,15 @@ def analyze_project_archive_manifests(path: Path, archive_type: str) -> dict[str
     }
 
     if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            add_project_zip_preflight_finding(analysis, preflight, blocked_reason)
+            finalize_project_archive_analysis(analysis)
+            return analysis
         with zipfile.ZipFile(path) as archive:
-            for index, info in enumerate(archive.infolist(), start=1):
+            for index, info in enumerate(archive.filelist, start=1):
                 if should_stop_project_archive_scan(index, analysis):
                     break
                 mode = (info.external_attr >> 16) or None
@@ -1034,6 +1192,7 @@ def build_project_archive_result(
             "max_manifest_bytes": PROJECT_ARCHIVE_MAX_MANIFEST_BYTES,
             "max_total_manifest_bytes": PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES,
             "max_archive_entries": PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
         },
         "summary": summary,
         "supported_manifests": analysis.get("supported_manifests", []),
@@ -1060,6 +1219,19 @@ def should_stop_project_archive_scan(index: int, analysis: dict[str, Any]) -> bo
         return True
     summary["total_entries_seen"] = index
     return False
+
+
+def add_project_zip_preflight_finding(
+    analysis: dict[str, Any],
+    preflight: ZipMetadataPreflight,
+    reason: str,
+) -> None:
+    summary = as_dict(analysis["summary"])
+    summary["truncated"] = True
+    finding = zip_preflight_finding(reason, preflight, PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES)
+    scoped = dict(finding)
+    scoped["id"] = f"project_{scoped['id']}"
+    analysis["findings"].append(scoped)
 
 
 def process_project_archive_entry(

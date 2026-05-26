@@ -91,7 +91,7 @@ Image analysis does not render previews in this phase. Uploaded images are treat
 
 Manifest analysis does not execute project code or package scripts. Uploaded manifests are treated as local text inputs for extraction and reporting only.
 
-Archive analysis reads container metadata and bounded entry listings. Project archive analysis may additionally read supported manifest text from the archive in bounded memory. Uploaded archives are not generally extracted, and internal files are not executed, installed, rendered, or resolved.
+Archive analysis reads container metadata and bounded entry listings. Project archive analysis may additionally read supported manifest text from the archive in bounded memory. Uploaded archives are not generally extracted, and internal files are not executed, installed, rendered, or resolved. ZIP analysis includes a standard metadata preflight for entry count and central directory size before detailed parsing, but archive limits reduce resource risk rather than proving parser safety against every specially crafted file.
 
 Report exports are generated locally from existing job results. The generated HTML is static, self-contained, and does not include JavaScript or external CSS. Inspectra escapes dynamic content before writing HTML and XML reports, and Markdown reports render dynamic values as code spans or fenced code blocks to reduce misleading links, images, inline HTML, headings, tables, and blockquotes in external renderers. Exporting a report does not execute uploaded files, manifest scripts, or result content.
 
@@ -111,6 +111,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Temporary storage limited to `/tmp`.
 - Per-tool command timeouts through `INSPECTRA_TOOL_TIMEOUT_SECONDS`, defaulting to 10 seconds.
 - Archive-specific analysis limits for entries, estimated uncompressed size, entry-name length, and listed entries.
+- ZIP central directory metadata limits before detailed ZIP parsing.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.
 
 ## Operational Guidance

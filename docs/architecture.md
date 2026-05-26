@@ -87,6 +87,8 @@ Manifest analysis uses Python parsing inside the tool runner instead of package 
 
 Archive analysis uses Python standard library parsers (`zipfile` and `tarfile`) inside the tool runner. It reads archive metadata, estimates sizes, records entries up to configured limits, detects manifest filenames and extraction-risk indicators, and does not extract archives broadly to the filesystem, follow symlinks, execute content, install dependencies, resolve internal manifests, or call the internet.
 
+For ZIP files, the runner performs a small standard EOCD preflight before opening the archive with `zipfile`. The preflight checks declared entry count and central directory size so entry-heavy ZIPs can be truncated before Python materializes detailed ZIP metadata. ZIP64 sentinel values, multi-disk metadata, or inconclusive EOCD parsing are treated conservatively and produce truncated findings instead of detailed parsing in this MVP. TAR analysis continues to iterate members from `tarfile` and stops at the configured entry limit.
+
 Project archive analysis also uses Python standard library archive readers, but it only reads bounded content for supported dependency manifests inside an archive. It currently parses internal `package.json`, `requirements.txt`, and `pyproject.toml` files by reusing the local manifest parsers. It detects other manifest filenames for reporting, but does not parse unsupported ecosystems, extract the whole project, follow symlinks, execute files, invoke package managers, resolve dependencies, or call the internet.
 
 ### Local Data
@@ -148,7 +150,7 @@ The browser UI consumes these same endpoints. The backend enables CORS only for 
 - File and job identifiers are constrained to generated UUID hex values before filesystem paths are built.
 - File records include `kind` so audit endpoints can reject mismatched file types. Older records without `kind` are treated as PDFs by default.
 - Upload size is limited by `INSPECTRA_MAX_UPLOAD_BYTES`, defaulting to 20 MB.
-- Archive inspection is bounded by `INSPECTRA_ARCHIVE_MAX_ENTRIES`, `INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES`, `INSPECTRA_ARCHIVE_MAX_ENTRY_NAME_LENGTH`, and `INSPECTRA_ARCHIVE_MAX_LISTED_ENTRIES`.
+- Archive inspection is bounded by `INSPECTRA_ARCHIVE_MAX_ENTRIES`, `INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES`, `INSPECTRA_ARCHIVE_MAX_ENTRY_NAME_LENGTH`, `INSPECTRA_ARCHIVE_MAX_LISTED_ENTRIES`, and `INSPECTRA_ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES`.
 - Project archive manifest parsing is bounded by `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS`, `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES`, `INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES`, and `INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES`.
 - Development CORS is explicit and defaults to `http://localhost:5173`, not a wildcard.
 
