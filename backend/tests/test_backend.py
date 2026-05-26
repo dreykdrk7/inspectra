@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from app.config import load_settings
 from app.main import app
 from app.models import JobRecord
+from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
 from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService
 from app.storage import FileStore, JobStore
 
@@ -694,6 +695,228 @@ async def test_export_rejects_invalid_job_id(monkeypatch, tmp_path):
 
     assert response.status_code in {400, 404}
     assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_export_cyclonedx_sbom_for_manifest_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_export_fixture_job()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(f"/jobs/{job.id}/sbom/cyclonedx-json")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/vnd.cyclonedx+json")
+    assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}-cyclonedx.json"'
+    payload = response.json()
+    assert payload["bomFormat"] == "CycloneDX"
+    assert payload["metadata"]["component"]["name"] == "<script>alert('x')</script>"
+    assert payload["components"][0]["name"] == "react"
+    assert payload["components"][0]["purl"] == "pkg:npm/react"
+    assert "vulnerabilities" not in json.dumps(payload).lower()
+
+
+@pytest.mark.anyio
+async def test_export_spdx_sbom_for_manifest_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_export_fixture_job()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(f"/jobs/{job.id}/sbom/spdx-json")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/spdx+json")
+    assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}-spdx.json"'
+    payload = response.json()
+    assert payload["spdxVersion"] == "SPDX-2.3"
+    assert payload["packages"][0]["name"] == "react"
+    assert payload["packages"][0]["downloadLocation"] == "NOASSERTION"
+    assert payload["packages"][0]["externalRefs"][0]["referenceLocator"] == "pkg:npm/react"
+    assert "vulnerabilities" not in json.dumps(payload).lower()
+
+
+@pytest.mark.anyio
+async def test_export_sbom_for_project_archive_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_project_archive_export_fixture_job()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        cyclonedx_response = await client.get(f"/jobs/{job.id}/sbom/cyclonedx-json")
+        spdx_response = await client.get(f"/jobs/{job.id}/sbom/spdx-json")
+
+    assert cyclonedx_response.status_code == 200
+    cyclonedx = cyclonedx_response.json()
+    assert cyclonedx["components"][0]["name"] == "react"
+    assert find_cyclonedx_property(cyclonedx["components"][0], "inspectra:source_manifest") == "package.json"
+
+    assert spdx_response.status_code == 200
+    spdx = spdx_response.json()
+    assert spdx["packages"][0]["name"] == "react"
+    assert "source manifest: package.json" in spdx["packages"][0]["comment"]
+
+
+@pytest.mark.anyio
+async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    for index, audit_type in enumerate(("pdf_basic", "image_basic", "archive_basic"), start=1):
+        app.state.jobs.save(
+            JobRecord(
+                id=f"{index}" * 32,
+                audit_type=audit_type,
+                file_id=f"{index + 3}" * 32,
+                status="completed",
+                created_at=now,
+                updated_at=now,
+                result={"analyzer": audit_type, "hashes": {"sha256": "abc123"}},
+            )
+        )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [await client.get(f"/jobs/{str(index) * 32}/sbom/cyclonedx-json") for index in range(1, 4)]
+
+    for response in responses:
+        assert response.status_code == 400
+        assert response.json()["detail"] == "SBOM export is only available for dependency manifest jobs"
+
+
+@pytest.mark.anyio
+async def test_sbom_export_requires_completed_manifest_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="9" * 32,
+        audit_type="manifest_basic",
+        file_id="8" * 32,
+        status="running",
+        created_at=now,
+        updated_at=now,
+        result={"analyzer": "manifest_basic"},
+    )
+    app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(f"/jobs/{job.id}/sbom/spdx-json")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "SBOM export requires a completed manifest analysis job"
+
+
+@pytest.mark.anyio
+async def test_sbom_export_rejects_missing_and_invalid_job_ids(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        missing_response = await client.get(f"/jobs/{'f' * 32}/sbom/cyclonedx-json")
+        traversal_response = await client.get("/jobs/../../etc/passwd/sbom/cyclonedx-json")
+        invalid_response = await client.get("/jobs/not-a-job/sbom/cyclonedx-json")
+
+    assert missing_response.status_code == 404
+    assert traversal_response.status_code in {400, 404}
+    assert invalid_response.status_code == 400
+
+
+def test_sbom_helpers_normalize_npm_dependencies():
+    job = save_standalone_job(
+        manifest_type="package_json",
+        dependencies={"dependencies": [{"name": "react", "specifier": "^18.3.1"}]},
+        original_filename="package.json",
+    )
+
+    components = extract_components_from_job(job)
+    cyclonedx = json.loads(generate_cyclonedx_json(job))
+
+    assert components[0].ecosystem == "npm"
+    assert components[0].declared_requirement == "react: ^18.3.1"
+    assert components[0].package_url == "pkg:npm/react"
+    assert cyclonedx["components"][0]["name"] == "react"
+    assert "version" not in cyclonedx["components"][0]
+
+
+def test_sbom_helpers_normalize_python_requirements():
+    job = save_standalone_job(
+        manifest_type="requirements_txt",
+        dependencies={
+            "dependencies": [
+                {"name": "fastapi", "specifier": "==0.115.0", "source": "line 1"},
+                {"name": "httpx", "specifier": ">=0.27", "source": "line 2"},
+            ]
+        },
+        original_filename="requirements.txt",
+    )
+
+    components = extract_components_from_job(job)
+
+    assert components[0].ecosystem == "pypi"
+    assert components[0].declared_requirement == "fastapi==0.115.0"
+    assert components[0].package_url == "pkg:pypi/fastapi@0.115.0"
+    assert components[1].declared_requirement == "httpx>=0.27"
+    assert components[1].package_url == "pkg:pypi/httpx"
+
+
+def test_sbom_helpers_normalize_pyproject_from_project_archive():
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="b" * 32,
+        audit_type="project_archive_basic",
+        file_id="7" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "project_archive_basic",
+            "parsed_manifests": [
+                {
+                    "path": "services/api/pyproject.toml",
+                    "manifest_type": "pyproject_toml",
+                    "parsed": {
+                        "project": {"name": "api"},
+                        "dependencies": {"dependencies": [{"name": "requests", "specifier": ">=2.31"}]},
+                    },
+                }
+            ],
+        },
+    )
+
+    components = extract_components_from_job(job)
+
+    assert components[0].ecosystem == "pypi"
+    assert components[0].source_manifest_path == "services/api/pyproject.toml"
+    assert components[0].declared_requirement == "requests>=2.31"
+
+
+def find_cyclonedx_property(component: dict, name: str) -> str | None:
+    for prop in component.get("properties", []):
+        if prop.get("name") == name:
+            return prop.get("value")
+    return None
+
+
+def save_standalone_job(manifest_type: str, dependencies: dict, original_filename: str) -> JobRecord:
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    return JobRecord(
+        id="a" * 32,
+        audit_type="manifest_basic",
+        file_id="6" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "manifest_basic",
+            "manifest_type": manifest_type,
+            "file_identification": {"original_filename": original_filename},
+            "parsed": {"project": {"name": "demo"}, "dependencies": dependencies, "scripts": {}, "engines": {}},
+            "summary": {"total_dependencies": sum(len(items) for items in dependencies.values())},
+            "findings": [],
+            "errors": [],
+        },
+    )
 
 
 def save_export_fixture_job() -> JobRecord:

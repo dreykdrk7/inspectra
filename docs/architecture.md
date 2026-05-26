@@ -18,6 +18,7 @@ Inspectra starts as a small defensive audit API for authorized local files. The 
   - Basic file metadata registry.
   - Job creation, listing, and status management.
   - Job report export in Markdown, HTML, XML, and PDF.
+  - Offline SBOM export in CycloneDX JSON and SPDX JSON for completed manifest jobs.
   - Calling the internal tool runner.
   - Persisting results under `data/results/jobs`.
 
@@ -36,6 +37,7 @@ The backend does not install or execute audit binaries directly.
   - List recent jobs.
   - Fetch jobs and render readable PDF, image, manifest, archive, and project-archive reports.
   - Provide export links for Markdown, HTML, XML, and PDF job reports.
+  - Provide SBOM export links for completed manifest and project-archive manifest jobs.
   - Keep raw job JSON available for debugging.
 
 The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
@@ -52,6 +54,17 @@ Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `f
   - Include job state, hashes, summaries, type-specific sections, errors, and timeouts when present.
 
 PDF output is generated with a small local Python writer to avoid adding browser automation, LaTeX, external services, or heavyweight dependencies in this MVP.
+
+### SBOM
+
+- Location: `backend/app/sbom.py`
+- Responsibilities:
+  - Validate that SBOM export is only used with completed `manifest_basic` and `project_archive_basic` jobs.
+  - Normalize declared dependencies from stored job JSON into a small component model.
+  - Preserve declared requirement ranges and source manifest paths.
+  - Generate CycloneDX JSON and SPDX JSON without package-manager execution, dependency resolution, registry access, CVE lookup, or license inference.
+
+SBOM output intentionally reflects only dependencies declared in analyzed manifests. It does not claim installed versions unless the manifest declares an exact pin Inspectra can identify locally.
 
 ### Audit Tools Container
 
@@ -92,6 +105,7 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 7. The backend stores the final job state and result JSON.
 8. A user reads the job with `GET /jobs/{job_id}` from the API or the UI.
 9. A user exports a report with `GET /jobs/{job_id}/export/{format}`. The backend renders the report from the stored job JSON.
+10. For completed manifest jobs, a user exports an SBOM with `GET /jobs/{job_id}/sbom/{format}`. The backend generates the SBOM from stored declared dependencies only.
 
 ## API Surface
 
@@ -114,6 +128,8 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `GET /jobs/{job_id}/export/html`: export a static HTML report.
 - `GET /jobs/{job_id}/export/xml`: export an Inspectra XML report.
 - `GET /jobs/{job_id}/export/pdf`: export a simple PDF report.
+- `GET /jobs/{job_id}/sbom/cyclonedx-json`: export a CycloneDX JSON SBOM for a completed manifest dependency job.
+- `GET /jobs/{job_id}/sbom/spdx-json`: export an SPDX JSON SBOM for a completed manifest dependency job.
 
 Deleting a file does not remove historical job results. Associated jobs are marked with `source_file_deleted_at`.
 
@@ -149,5 +165,6 @@ Future audit types should follow the same pattern:
 Possible next modules:
 
 - Optional deeper project-in-archive workflows that explicitly extract into a constrained temporary workspace.
-- Optional offline SBOM export from parsed manifests.
+- SPDX tag-value SBOM export if a text format becomes useful.
+- Optional richer manifest ecosystem support while keeping parsing offline.
 - Job history filters and result-specific views in the frontend.

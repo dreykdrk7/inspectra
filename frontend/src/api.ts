@@ -1,4 +1,4 @@
-import type { DeletedFileResponse, FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat } from './types';
+import type { DeletedFileResponse, FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat, SbomFormat } from './types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
 
@@ -124,6 +124,10 @@ export function jobExportUrl(jobId: string, format: ReportFormat): string {
   return `${API_BASE_URL}/jobs/${jobId}/export/${format}`;
 }
 
+export function jobSbomUrl(jobId: string, format: SbomFormat): string {
+  return `${API_BASE_URL}/jobs/${jobId}/sbom/${format}`;
+}
+
 export const api = {
   baseUrl: apiBaseUrl,
   health: getHealth,
@@ -141,4 +145,5 @@ export const api = {
   listJobs,
   getJob,
   jobExportUrl,
+  jobSbomUrl,
 };

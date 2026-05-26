@@ -18,7 +18,7 @@ import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
 import { ProjectArchiveJobReport } from "./ProjectArchiveJobReport";
-import type { FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat } from "./types";
+import type { FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat, SbomFormat } from "./types";
 
 type LoadState = {
   loading: boolean;
@@ -494,6 +494,10 @@ function ExportActions({ job }: { job: JobRecord }) {
     { format: "xml", label: "Export XML" },
     { format: "pdf", label: "Export PDF" }
   ];
+  const sbomFormats: Array<{ format: SbomFormat; label: string }> = [
+    { format: "cyclonedx-json", label: "Export CycloneDX JSON" },
+    { format: "spdx-json", label: "Export SPDX JSON" }
+  ];
 
   return (
     <div className="export-actions" aria-label="Job export actions">
@@ -503,8 +507,20 @@ function ExportActions({ job }: { job: JobRecord }) {
           {item.label}
         </a>
       ))}
+      {supportsSbomExport(job)
+        ? sbomFormats.map((item) => (
+            <a key={item.format} className="export-link" href={api.jobSbomUrl(job.id, item.format)}>
+              <Download size={15} aria-hidden="true" />
+              {item.label}
+            </a>
+          ))
+        : null}
     </div>
   );
+}
+
+function supportsSbomExport(job: JobRecord): boolean {
+  return job.status === "completed" && (job.audit_type === "manifest_basic" || job.audit_type === "project_archive_basic");
 }
 
 function toErrorMessage(error: unknown): string {

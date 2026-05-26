@@ -27,6 +27,7 @@ Allowed in this phase:
 - Listing and deleting locally uploaded PDFs, images, manifests, and archives.
 - Storing local JSON audit results.
 - Exporting local reports from stored job JSON as Markdown, HTML, XML, and PDF.
+- Exporting offline SBOMs from completed manifest and project-archive manifest jobs as CycloneDX JSON and SPDX JSON.
 - Using the local web UI to perform the same API actions.
 
 Tools used in this phase:
@@ -43,6 +44,8 @@ For manifests, Inspectra uses local Python parsing. It does not install dependen
 For archives, Inspectra uses local Python metadata parsing. It does not extract archives broadly to the filesystem, follow symlinks, execute files, install dependencies, or call external services. Findings are extraction-risk and review indicators, not proof that a package is malicious.
 
 For project archives, Inspectra may read supported internal manifests (`package.json`, `requirements.txt`, and `pyproject.toml`) into bounded memory buffers and parse them with the same local manifest parser used for standalone manifests. It detects other manifest filenames but does not parse them in this phase.
+
+For SBOM export, Inspectra uses only declared dependencies already present in completed `manifest_basic` or `project_archive_basic` job results. It does not execute package managers, install packages, resolve transitive dependencies, infer licenses, query CVEs, or call package registries. Version ranges remain ranges unless the manifest declares an exact local pin that can be represented as such.
 
 ## Out of Scope
 
@@ -65,6 +68,8 @@ The MVP does not include:
 - Installing or resolving dependencies discovered inside archives.
 - Parsing unsupported internal archive manifests beyond filename detection.
 - Running package managers or dependency resolvers against content found inside archives.
+- Resolving transitive dependencies for SBOM generation.
+- Inferring package licenses, suppliers, or download locations beyond local package URLs where reasonable.
 - External CVE, advisory, package registry, or vulnerability database lookups.
 - Claiming a heuristic dependency signal is a confirmed vulnerability.
 
@@ -89,6 +94,8 @@ Manifest analysis does not execute project code or package scripts. Uploaded man
 Archive analysis reads container metadata and bounded entry listings. Project archive analysis may additionally read supported manifest text from the archive in bounded memory. Uploaded archives are not generally extracted, and internal files are not executed, installed, rendered, or resolved.
 
 Report exports are generated locally from existing job results. The generated HTML is static, self-contained, and does not include JavaScript or external CSS. Inspectra escapes dynamic content before writing HTML and XML reports. Exporting a report does not execute uploaded files, manifest scripts, or result content.
+
+SBOM exports are generated locally from existing completed dependency-analysis jobs. They may include package names, declared version ranges, manifest paths inside uploaded archives, and generated package URLs. They do not include vulnerability assertions.
 
 ## Container Boundary
 

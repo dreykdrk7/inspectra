@@ -12,6 +12,7 @@ from app.reporting import (
     render_pdf_report,
     render_xml_report,
 )
+from app.sbom import build_sbom_filename, generate_cyclonedx_json, generate_spdx_json
 from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService
 from app.storage import FileStore, JobStore
 
@@ -174,6 +175,26 @@ async def export_job_xml(request: Request, job_id: str) -> Response:
 async def export_job_pdf(request: Request, job_id: str) -> Response:
     job = request.app.state.jobs.get(job_id)
     return export_response(render_pdf_report(job), "application/pdf", build_report_filename(job, "pdf"))
+
+
+@app.get("/jobs/{job_id}/sbom/cyclonedx-json")
+async def export_job_cyclonedx_sbom(request: Request, job_id: str) -> Response:
+    job = request.app.state.jobs.get(job_id)
+    return export_response(
+        generate_cyclonedx_json(job),
+        "application/vnd.cyclonedx+json; charset=utf-8",
+        build_sbom_filename(job, "cyclonedx"),
+    )
+
+
+@app.get("/jobs/{job_id}/sbom/spdx-json")
+async def export_job_spdx_sbom(request: Request, job_id: str) -> Response:
+    job = request.app.state.jobs.get(job_id)
+    return export_response(
+        generate_spdx_json(job),
+        "application/spdx+json; charset=utf-8",
+        build_sbom_filename(job, "spdx"),
+    )
 
 
 def export_response(content: str | bytes, media_type: str, filename: str) -> Response:
