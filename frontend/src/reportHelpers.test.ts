@@ -1,0 +1,75 @@
+import { describe, expect, it } from "vitest";
+
+import { buildImageAuditReport } from "./imageReport";
+import { buildManifestAuditReport } from "./manifestReport";
+import { buildPdfAuditReport } from "./pdfReport";
+import type { JobRecord } from "./types";
+
+const baseJob = {
+  id: "job-1",
+  file_id: "file-1",
+  status: "completed",
+  created_at: "2026-05-26T10:00:00Z",
+  updated_at: "2026-05-26T10:01:00Z",
+  source_file_deleted_at: null,
+  error: null
+} satisfies Omit<JobRecord, "audit_type" | "result">;
+
+describe("report helpers", () => {
+  it("builds a PDF report with missing optional fields", () => {
+    const report = buildPdfAuditReport({ ...baseJob, audit_type: "pdf_basic", result: null });
+
+    expect(report.isPdfAudit).toBe(true);
+    expect(report.hashes).toEqual([]);
+    expect(report.validation.qpdfOk).toBeNull();
+    expect(report.tools).toEqual([]);
+  });
+
+  it("extracts image privacy indicators when present", () => {
+    const report = buildImageAuditReport({
+      ...baseJob,
+      audit_type: "image_basic",
+      result: {
+        analyzer: "inspectra-image-basic",
+        privacy_indicators: {
+          gps_present: true,
+          fields: { gps: ["GPSLatitude"] }
+        }
+      }
+    });
+
+    expect(report.isImageAudit).toBe(true);
+    expect(report.privacyIndicators.find((indicator) => indicator.key === "gps")).toMatchObject({
+      present: true,
+      fields: ["GPSLatitude"]
+    });
+  });
+
+  it("normalizes manifest dependencies and findings", () => {
+    const report = buildManifestAuditReport({
+      ...baseJob,
+      audit_type: "manifest_basic",
+      result: {
+        manifest_type: "package_json",
+        parsed: {
+          project: { name: "demo" },
+          dependencies: {
+            dependencies: [{ name: "react", specifier: "^18.3.1" }]
+          }
+        },
+        summary: {
+          total_dependencies: 1,
+          dependency_groups: ["dependencies"],
+          informational_findings_count: 1
+        },
+        findings: [{ id: "dependency_not_exactly_pinned", title: "Review range", level: "info" }]
+      }
+    });
+
+    expect(report.isManifestAudit).toBe(true);
+    expect(report.manifestType).toBe("package_json");
+    expect(report.project).toContainEqual({ label: "name", value: "demo" });
+    expect(report.dependencies[0].dependencies[0]).toMatchObject({ name: "react", specifier: "^18.3.1" });
+    expect(report.findings[0]).toMatchObject({ id: "dependency_not_exactly_pinned", title: "Review range" });
+  });
+});

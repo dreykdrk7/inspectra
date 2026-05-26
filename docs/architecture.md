@@ -40,7 +40,7 @@ The backend does not install or execute audit binaries directly.
 
 The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
 
-Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, and `frontend/src/manifestReport.ts`. This keeps the backend contract stable while making audit result JSON easier to read.
+Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, and `frontend/src/manifestReport.ts`. Dashboard filters and counters live in `frontend/src/dashboardFilters.ts`. This keeps the backend contract stable while making audit result JSON and UI state easier to test.
 
 ### Reporting
 

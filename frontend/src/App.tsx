@@ -2,19 +2,26 @@ import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, use
 import { Activity, Download, Eye, FilePlus2, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 
 import { api } from "./api";
+import {
+  auditTypeLabel,
+  buildDashboardMetrics,
+  fileKindLabel,
+  filterFiles,
+  filterJobs,
+  statusLabel,
+  type FileKindFilter,
+  type JobStatusFilter,
+  type JobTypeFilter
+} from "./dashboardFilters";
 import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
-import type { AuditType, FileRecord, HealthResponse, JobListItem, JobRecord, JobStatus, ReportFormat } from "./types";
+import type { FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat } from "./types";
 
 type LoadState = {
   loading: boolean;
   error: string | null;
 };
-
-type FileKindFilter = "all" | FileRecord["kind"];
-type JobStatusFilter = "all" | JobStatus;
-type JobTypeFilter = "all" | AuditType;
 
 const initialLoadState: LoadState = { loading: false, error: null };
 
@@ -496,76 +503,6 @@ function shortHash(value: string): string {
 
 function shortId(value: string): string {
   return value.slice(0, 10);
-}
-
-function buildDashboardMetrics(files: FileRecord[], jobs: JobListItem[]) {
-  return {
-    totalFiles: files.length,
-    pdfs: files.filter((file) => file.kind === "pdf").length,
-    images: files.filter((file) => file.kind === "image").length,
-    manifests: files.filter((file) => file.kind === "manifest").length,
-    totalJobs: jobs.length,
-    completedJobs: jobs.filter((job) => job.status === "completed").length,
-    failedJobs: jobs.filter((job) => job.status === "failed").length,
-    activeJobs: jobs.filter((job) => job.status === "queued" || job.status === "running").length
-  };
-}
-
-function filterFiles(files: FileRecord[], kindFilter: FileKindFilter, search: string): FileRecord[] {
-  const query = search.trim().toLowerCase();
-  return files.filter((file) => {
-    const matchesKind = kindFilter === "all" || file.kind === kindFilter;
-    const matchesSearch =
-      !query ||
-      file.original_filename.toLowerCase().includes(query) ||
-      file.id.toLowerCase().includes(query) ||
-      file.kind.toLowerCase().includes(query);
-    return matchesKind && matchesSearch;
-  });
-}
-
-function filterJobs(
-  jobs: JobListItem[],
-  statusFilter: JobStatusFilter,
-  typeFilter: JobTypeFilter,
-  search: string
-): JobListItem[] {
-  const query = search.trim().toLowerCase();
-  return jobs.filter((job) => {
-    const matchesStatus = statusFilter === "all" || job.status === statusFilter;
-    const matchesType = typeFilter === "all" || job.audit_type === typeFilter;
-    const matchesSearch =
-      !query ||
-      job.id.toLowerCase().includes(query) ||
-      job.file_id.toLowerCase().includes(query) ||
-      job.audit_type.toLowerCase().includes(query) ||
-      job.status.toLowerCase().includes(query);
-    return matchesStatus && matchesType && matchesSearch;
-  });
-}
-
-function fileKindLabel(kind: FileKindFilter): string {
-  if (kind === "all") {
-    return "All";
-  }
-  if (kind === "image") {
-    return "Images";
-  }
-  if (kind === "manifest") {
-    return "Manifest";
-  }
-  return "PDF";
-}
-
-function statusLabel(status: JobStatusFilter): string {
-  return status === "all" ? "All" : status;
-}
-
-function auditTypeLabel(auditType: JobTypeFilter): string {
-  if (auditType === "all") {
-    return "All";
-  }
-  return auditType;
 }
 
 function acceptForKind(kind: FileRecord["kind"]): string {

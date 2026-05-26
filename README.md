@@ -226,6 +226,13 @@ npm install
 npm run build
 ```
 
+To run frontend unit tests:
+
+```bash
+cd frontend
+npm run test -- --run
+```
+
 Validate Compose configuration:
 
 ```bash
