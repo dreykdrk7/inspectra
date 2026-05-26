@@ -51,6 +51,7 @@ const jobs: JobListItem[] = [
     id: "job-pdf-completed",
     audit_type: "pdf_basic",
     file_id: "pdf-file-1",
+    target_url: null,
     status: "completed",
     created_at: "2026-05-26T10:03:00Z",
     updated_at: "2026-05-26T10:04:00Z",
@@ -61,6 +62,7 @@ const jobs: JobListItem[] = [
     id: "job-image-running",
     audit_type: "image_basic",
     file_id: "image-file-2",
+    target_url: null,
     status: "running",
     created_at: "2026-05-26T10:05:00Z",
     updated_at: "2026-05-26T10:06:00Z",
@@ -71,6 +73,7 @@ const jobs: JobListItem[] = [
     id: "job-manifest-failed",
     audit_type: "manifest_basic",
     file_id: "manifest-file-3",
+    target_url: null,
     status: "failed",
     created_at: "2026-05-26T10:07:00Z",
     updated_at: "2026-05-26T10:08:00Z",
@@ -81,6 +84,7 @@ const jobs: JobListItem[] = [
     id: "job-archive-queued",
     audit_type: "archive_basic",
     file_id: "archive-file-4",
+    target_url: null,
     status: "queued",
     created_at: "2026-05-26T10:09:00Z",
     updated_at: "2026-05-26T10:10:00Z",
@@ -91,9 +95,21 @@ const jobs: JobListItem[] = [
     id: "job-project-archive-completed",
     audit_type: "project_archive_basic",
     file_id: "archive-file-4",
+    target_url: null,
     status: "completed",
     created_at: "2026-05-26T10:11:00Z",
     updated_at: "2026-05-26T10:12:00Z",
+    source_file_deleted_at: null,
+    summary: null
+  },
+  {
+    id: "job-web-completed",
+    audit_type: "web_basic",
+    file_id: null,
+    target_url: "https://example.test/",
+    status: "completed",
+    created_at: "2026-05-26T10:13:00Z",
+    updated_at: "2026-05-26T10:14:00Z",
     source_file_deleted_at: null,
     summary: null
   }
@@ -118,6 +134,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "manifest_basic", "")).toEqual([jobs[2]]);
     expect(filterJobs(jobs, "all", "archive_basic", "")).toEqual([jobs[3]]);
     expect(filterJobs(jobs, "all", "project_archive_basic", "")).toEqual([jobs[4]]);
+    expect(filterJobs(jobs, "all", "web_basic", "")).toEqual([jobs[5]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
@@ -127,6 +144,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "ARCHIVE_BASIC")).toEqual([jobs[3], jobs[4]]);
     expect(filterJobs(jobs, "all", "all", "PROJECT_ARCHIVE")).toEqual([jobs[4]]);
     expect(filterJobs(jobs, "all", "all", "FAILED")).toEqual([jobs[2]]);
+    expect(filterJobs(jobs, "all", "all", "EXAMPLE.TEST")).toEqual([jobs[5]]);
   });
 
   it("builds dashboard metrics from current files and jobs", () => {
@@ -136,8 +154,8 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 5,
-      completedJobs: 2,
+      totalJobs: 6,
+      completedJobs: 3,
       failedJobs: 1,
       activeJobs: 2
     });

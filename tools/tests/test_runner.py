@@ -1,5 +1,7 @@
 import io
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tarfile
+import threading
 import zipfile
 
 import runner.main as runner
@@ -550,12 +552,208 @@ async def test_analyze_project_archive_handles_corrupt_file(monkeypatch, tmp_pat
     assert payload["summary"]["supported_manifests_parsed"] == 0
 
 
+@pytest.mark.anyio
+async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
+    server = start_test_http_server()
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/web-basic",
+            json={
+                "url": f"http://127.0.0.1:{server.server_port}/",
+                "allow_private_targets": True,
+                "timeout_seconds": 2,
+                "max_response_bytes": 4096,
+                "max_redirects": 3,
+            },
+        )
+
+    server.shutdown()
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    assert response.status_code == 200
+    assert payload["analyzer"] == "web_basic"
+    assert payload["http"]["status_code"] == 200
+    assert payload["http"]["server"]
+    assert payload["cookies"][0]["name"] == "sid"
+    assert payload["cookies"][0]["httponly"] is True
+    assert payload["security_headers"]["Content-Security-Policy"]["present"] is False
+    assert payload["robots_txt"]["present"] is True
+    assert payload["security_txt"]["present"] is True
+    assert payload["summary"]["cookies_count"] == 1
+    assert "web_http_without_https" in finding_ids
+    assert "web_csp_missing" in finding_ids
+
+
+@pytest.mark.anyio
+async def test_analyze_web_basic_follows_redirects_and_stops_at_limit():
+    server = start_test_http_server()
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        followed = await client.post(
+            "/analyze/web-basic",
+            json={
+                "url": f"http://127.0.0.1:{server.server_port}/redirect",
+                "allow_private_targets": True,
+                "timeout_seconds": 2,
+                "max_response_bytes": 4096,
+                "max_redirects": 3,
+            },
+        )
+        limited = await client.post(
+            "/analyze/web-basic",
+            json={
+                "url": f"http://127.0.0.1:{server.server_port}/loop",
+                "allow_private_targets": True,
+                "timeout_seconds": 2,
+                "max_response_bytes": 4096,
+                "max_redirects": 1,
+            },
+        )
+
+    server.shutdown()
+    followed_payload = followed.json()
+    limited_payload = limited.json()
+    assert followed.status_code == 200
+    assert followed_payload["target"]["final_url"].endswith("/final")
+    assert followed_payload["summary"]["redirects_count"] == 1
+    assert limited.status_code == 200
+    assert limited_payload["summary"]["redirects_count"] == 1
+    assert "web_redirect_limit_reached" in {finding["id"] for finding in limited_payload["findings"]}
+    assert limited_payload["errors"]
+
+
+@pytest.mark.anyio
+async def test_analyze_web_basic_blocks_private_targets_by_default():
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/web-basic",
+            json={"url": "http://127.0.0.1:8080/", "allow_private_targets": False},
+        )
+
+    assert response.status_code == 400
+    assert "blocked address range" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_analyze_web_basic_blocks_private_redirect_target():
+    server = start_test_http_server()
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/web-basic",
+            json={
+                "url": f"http://127.0.0.1:{server.server_port}/redirect-private",
+                "allow_private_targets": True,
+                "timeout_seconds": 2,
+                "max_response_bytes": 4096,
+                "max_redirects": 3,
+            },
+        )
+
+    server.shutdown()
+    assert response.status_code == 400
+    assert "cloud metadata" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_analyze_web_basic_limits_response_bytes():
+    server = start_test_http_server()
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/web-basic",
+            json={
+                "url": f"http://127.0.0.1:{server.server_port}/large",
+                "allow_private_targets": True,
+                "timeout_seconds": 2,
+                "max_response_bytes": 32,
+                "max_redirects": 1,
+            },
+        )
+
+    server.shutdown()
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["http"]["bytes_read"] == 32
+    assert payload["http"]["response_truncated"] is True
+
+
 def write_manifest(tmp_path, filename: str, content: str):
     uploads_dir = tmp_path / "uploads"
     uploads_dir.mkdir(exist_ok=True)
     manifest_path = uploads_dir / filename
     manifest_path.write_text(content, encoding="utf-8")
     return manifest_path
+
+
+class LocalWebHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/redirect":
+            self.send_response(302)
+            self.send_header("Location", "/final")
+            self.end_headers()
+            return
+        if self.path == "/loop":
+            self.send_response(302)
+            self.send_header("Location", "/loop2")
+            self.end_headers()
+            return
+        if self.path == "/loop2":
+            self.send_response(302)
+            self.send_header("Location", "/loop")
+            self.end_headers()
+            return
+        if self.path == "/redirect-private":
+            self.send_response(302)
+            self.send_header("Location", "http://169.254.169.254/latest/meta-data/")
+            self.end_headers()
+            return
+        if self.path == "/robots.txt":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"User-agent: *\nDisallow: /admin\nSitemap: /sitemap.xml\n")
+            return
+        if self.path == "/.well-known/security.txt":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"Contact: mailto:security@example.test\nExpires: 2027-01-01T00:00:00Z\n")
+            return
+        if self.path == "/security.txt":
+            self.send_response(404)
+            self.end_headers()
+            return
+        if self.path == "/large":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"x" * 128)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Server", "InspectraTest")
+        self.send_header("Set-Cookie", "sid=abc; HttpOnly; SameSite=Lax; Path=/")
+        self.end_headers()
+        self.wfile.write(b"<html><title>Inspectra</title></html>")
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_test_http_server():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), LocalWebHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
 
 
 def write_zip_archive(tmp_path, entries: dict[str, bytes]):

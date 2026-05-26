@@ -285,12 +285,16 @@ class JobStore:
     def create_project_archive_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "project_archive_basic")
 
-    def _create_job(self, file_id: str, audit_type: str) -> JobRecord:
+    def create_web_job(self, target_url: str) -> JobRecord:
+        return self._create_job(None, "web_basic", target_url=target_url)
+
+    def _create_job(self, file_id: str | None, audit_type: str, *, target_url: str | None = None) -> JobRecord:
         now = utc_now()
         record = JobRecord(
             id=uuid4().hex,
             audit_type=audit_type,
             file_id=file_id,
+            target_url=target_url,
             status="queued",
             created_at=now,
             updated_at=now,
@@ -372,6 +376,7 @@ class JobStore:
             id=record.id,
             audit_type=record.audit_type,
             file_id=record.file_id,
+            target_url=record.target_url,
             status=record.status,
             created_at=record.created_at,
             updated_at=record.updated_at,
@@ -504,6 +509,12 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["total_dependencies"] = manifest_summary.get("total_dependencies")
             summary["findings_count"] = manifest_summary.get("findings_count")
             summary["truncated"] = manifest_summary.get("truncated")
+        if record.audit_type == "web_basic":
+            summary["status_code"] = (record.result.get("http") or {}).get("status_code")
+            summary["final_url"] = (record.result.get("target") or {}).get("final_url")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["redirects_count"] = manifest_summary.get("redirects_count")
+            summary["tls_present"] = manifest_summary.get("tls_present")
         return summary
     if record.error:
         return {"error": record.error}

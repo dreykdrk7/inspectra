@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Download, Eye, FilePlus2, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
+import { Activity, Download, Eye, FilePlus2, Globe2, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 
 import { api } from "./api";
 import {
@@ -18,6 +18,7 @@ import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
 import { ProjectArchiveJobReport } from "./ProjectArchiveJobReport";
+import { WebJobReport } from "./WebJobReport";
 import type { FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat, SbomFormat } from "./types";
 
 type LoadState = {
@@ -44,6 +45,9 @@ export function App() {
   const [jobStatusFilter, setJobStatusFilter] = useState<JobStatusFilter>("all");
   const [jobTypeFilter, setJobTypeFilter] = useState<JobTypeFilter>("all");
   const [jobSearch, setJobSearch] = useState("");
+  const [webUrl, setWebUrl] = useState("");
+  const [webAuthorizationConfirmed, setWebAuthorizationConfirmed] = useState(false);
+  const [webAuditState, setWebAuditState] = useState<LoadState>(initialLoadState);
 
   const refreshHealth = useCallback(async () => {
     setHealthState({ loading: true, error: null });
@@ -99,7 +103,7 @@ export function App() {
     [jobSearch, jobStatusFilter, jobTypeFilter, jobs]
   );
   const selectedJobFile = useMemo(
-    () => (selectedJob ? files.find((file) => file.id === selectedJob.file_id) : undefined),
+    () => (selectedJob?.file_id ? files.find((file) => file.id === selectedJob.file_id) : undefined),
     [files, selectedJob]
   );
 
@@ -175,6 +179,22 @@ export function App() {
     }
   }
 
+  async function launchWebAudit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setActionError(null);
+    setWebAuditState({ loading: true, error: null });
+    try {
+      const job = await api.launchWebBasicAudit(webUrl, webAuthorizationConfirmed);
+      setSelectedJob(job);
+      setWebUrl("");
+      setWebAuthorizationConfirmed(false);
+      await refreshJobs();
+      setWebAuditState({ loading: false, error: null });
+    } catch (error) {
+      setWebAuditState({ loading: false, error: toErrorMessage(error) });
+    }
+  }
+
   async function deleteFile(fileId: string) {
     setActionError(null);
     try {
@@ -198,7 +218,7 @@ export function App() {
     <main className="app-shell">
       <header className="app-header">
         <div>
-          <p className="eyebrow">Defensive local audits</p>
+          <p className="eyebrow">Defensive audits</p>
           <h1>Inspectra</h1>
         </div>
         <button className="secondary-button" onClick={() => void refreshAll()} disabled={isRefreshing}>
@@ -261,6 +281,32 @@ export function App() {
             </button>
           </form>
           {uploadState.error ? <p className="error-text">{uploadState.error}</p> : null}
+        </Panel>
+
+        <Panel title="Web Audit" icon={<Globe2 size={18} aria-hidden="true" />}>
+          <form className="web-audit-form" onSubmit={(event) => void launchWebAudit(event)}>
+            <input
+              className="search-input"
+              type="url"
+              placeholder="https://example.com"
+              value={webUrl}
+              onChange={(event) => setWebUrl(event.target.value)}
+              required
+            />
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={webAuthorizationConfirmed}
+                onChange={(event) => setWebAuthorizationConfirmed(event.target.checked)}
+              />
+              Confirmo que tengo autorización para auditar este objetivo
+            </label>
+            <button type="submit" disabled={webAuditState.loading}>
+              <Play size={16} aria-hidden="true" />
+              {webAuditState.loading ? "Starting" : "Analyze URL"}
+            </button>
+          </form>
+          {webAuditState.error ? <p className="error-text">{webAuditState.error}</p> : null}
         </Panel>
       </section>
 
@@ -371,7 +417,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -395,7 +441,7 @@ export function App() {
                   <tr>
                     <th>Status</th>
                     <th>Type</th>
-                    <th>File</th>
+                    <th>Target</th>
                     <th>Updated</th>
                     <th>Summary</th>
                     <th>Detail</th>
@@ -408,7 +454,7 @@ export function App() {
                         <span className={`status-pill ${job.status}`}>{job.status}</span>
                       </td>
                       <td>{job.audit_type}</td>
-                      <td className="mono">{shortId(job.file_id)}</td>
+                      <td className="mono">{job.file_id ? shortId(job.file_id) : job.target_url ?? "N/A"}</td>
                       <td>{formatDate(job.updated_at)}</td>
                       <td>{summarizeJob(job)}</td>
                       <td>
@@ -437,8 +483,10 @@ export function App() {
               <ManifestJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "archive_basic" ? (
               <ArchiveJobReport job={selectedJob} file={selectedJobFile} />
-            ) : (
+            ) : selectedJob.audit_type === "project_archive_basic" ? (
               <ProjectArchiveJobReport job={selectedJob} file={selectedJobFile} />
+            ) : (
+              <WebJobReport job={selectedJob} />
             )}
           </>
         ) : (
@@ -618,6 +666,7 @@ function summarizeJob(job: JobListItem): string {
   const mimeType = typeof job.summary.mime_type === "string" ? job.summary.mime_type : null;
   const manifestType = typeof job.summary.manifest_type === "string" ? job.summary.manifest_type : null;
   const archiveType = typeof job.summary.archive_type === "string" ? job.summary.archive_type : null;
+  const statusCode = typeof job.summary.status_code === "number" ? job.summary.status_code : null;
   const totalEntries = typeof job.summary.total_entries === "number" ? job.summary.total_entries : null;
   const totalDependencies = typeof job.summary.total_dependencies === "number" ? job.summary.total_dependencies : null;
   const findingsCount =
@@ -637,6 +686,9 @@ function summarizeJob(job: JobListItem): string {
   }
   if (job.audit_type === "project_archive_basic") {
     return `${archiveType ?? "archive"}, ${totalDependencies ?? 0} deps, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "web_basic") {
+    return `HTTP ${statusCode ?? "pending"}, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

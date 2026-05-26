@@ -88,13 +88,14 @@ def render_xml_report(job: JobRecord) -> str:
     add_text(job_node, "id", job.id)
     add_text(job_node, "auditType", job.audit_type)
     add_text(job_node, "status", job.status)
-    add_text(job_node, "fileId", job.file_id)
+    add_text(job_node, "fileId", job.file_id or "")
+    add_text(job_node, "targetUrl", job.target_url or "")
     add_text(job_node, "createdAt", job.created_at.isoformat())
     add_text(job_node, "updatedAt", job.updated_at.isoformat())
     add_text(job_node, "error", job.error or "")
 
     file_node = ElementTree.SubElement(root, "file")
-    add_text(file_node, "id", job.file_id)
+    add_text(file_node, "id", job.file_id or "")
     add_text(file_node, "sourceFileDeletedAt", job.source_file_deleted_at.isoformat() if job.source_file_deleted_at else "")
 
     result = as_dict(job.result)
@@ -129,7 +130,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
                 ("Job ID", job.id),
                 ("Audit type", job.audit_type),
                 ("Status", job.status),
-                ("File ID", job.file_id),
+                ("File ID", job.file_id or "N/A"),
+                ("Target URL", job.target_url or "N/A"),
                 ("Created at", job.created_at.isoformat()),
                 ("Updated at", job.updated_at.isoformat()),
                 ("Source file deleted", job.source_file_deleted_at.isoformat() if job.source_file_deleted_at else "No"),
@@ -150,6 +152,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_archive_sections(result))
     elif job.audit_type == "project_archive_basic":
         sections.extend(build_project_archive_sections(result))
+    elif job.audit_type == "web_basic":
+        sections.extend(build_web_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -234,6 +238,19 @@ def build_project_archive_sections(result: dict[str, Any]) -> list[ReportSection
     ]
 
 
+def build_web_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection("Web Target", flatten_mapping(as_dict(result.get("target")))),
+        ReportSection("HTTP", flatten_mapping(as_dict(result.get("http")))),
+        ReportSection("Security Headers", flatten_mapping(as_dict(result.get("security_headers")))),
+        ReportSection("Cookies", flatten_list(result.get("cookies"))),
+        ReportSection("TLS", flatten_mapping(as_dict(result.get("tls")))),
+        ReportSection("robots.txt", flatten_mapping(as_dict(result.get("robots_txt")))),
+        ReportSection("security.txt", flatten_mapping(as_dict(result.get("security_txt")))),
+        ReportSection("Findings", flatten_list(result.get("findings"))),
+    ]
+
+
 def build_summary(job: JobRecord) -> dict[str, Any]:
     result = as_dict(job.result)
     validation = as_dict(result.get("validation"))
@@ -265,6 +282,14 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["total_dependencies"] = summary.get("total_dependencies", "N/A")
         data["findings_count"] = summary.get("findings_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
+    elif job.audit_type == "web_basic":
+        http = as_dict(result.get("http"))
+        target = as_dict(result.get("target"))
+        data["target_url"] = target.get("final_url", job.target_url or "N/A")
+        data["status_code"] = http.get("status_code", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["redirects_count"] = summary.get("redirects_count", "N/A")
+        data["tls_present"] = summary.get("tls_present", "N/A")
     return data
 
 

@@ -14,7 +14,7 @@ from app.main import app
 from app.models import JobRecord
 from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
-from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService
+from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService, WebAuditService
 from app.storage import FileStore, JobStore
 
 
@@ -40,6 +40,9 @@ class NoopAuditService:
     async def run_project_archive_analysis(self, job_id: str) -> None:
         return None
 
+    async def run_web_analysis(self, job_id: str) -> None:
+        return None
+
 
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
@@ -57,6 +60,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.manifest_audits = ManifestAuditService(settings, file_store, job_store)
     app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
     app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
+    app.state.web_audits = WebAuditService(settings, file_store, job_store)
 
 
 @pytest.mark.anyio
@@ -479,6 +483,98 @@ async def test_project_archive_audit_job_creation_and_rejections(monkeypatch, tm
 
 
 @pytest.mark.anyio
+async def test_web_basic_audit_requires_authorization(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.web_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/web/basic",
+            json={"url": "https://example.com", "authorization_confirmed": False},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Authorization confirmation is required."
+
+
+@pytest.mark.anyio
+async def test_web_basic_audit_rejects_invalid_url_and_scheme(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.web_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        invalid_response = await client.post(
+            "/audits/web/basic",
+            json={"url": "not-a-url", "authorization_confirmed": True},
+        )
+        scheme_response = await client.post(
+            "/audits/web/basic",
+            json={"url": "ftp://example.com", "authorization_confirmed": True},
+        )
+
+    assert invalid_response.status_code == 400
+    assert scheme_response.status_code == 400
+    assert scheme_response.json()["detail"] == "Only http and https URLs are accepted."
+
+
+@pytest.mark.anyio
+async def test_web_basic_audit_blocks_private_targets_by_default(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.web_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/web/basic",
+            json={"url": "http://127.0.0.1:8080", "authorization_confirmed": True},
+        )
+
+    assert response.status_code == 400
+    assert "blocked address range" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_web_basic_audit_allows_private_targets_when_configured(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.web_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/web/basic",
+            json={"url": "http://127.0.0.1:8080/status", "authorization_confirmed": True},
+        )
+        list_response = await client.get("/jobs")
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["audit_type"] == "web_basic"
+    assert payload["file_id"] is None
+    assert payload["target_url"] == "http://127.0.0.1:8080/status"
+    assert list_response.json()[0]["target_url"] == payload["target_url"]
+
+
+@pytest.mark.anyio
+async def test_web_basic_audit_still_blocks_metadata_target_when_private_allowed(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.web_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/web/basic",
+            json={"url": "http://169.254.169.254/latest/meta-data/", "authorization_confirmed": True},
+        )
+
+    assert response.status_code == 400
+    assert "cloud metadata" in response.json()["detail"]
+
+
+@pytest.mark.anyio
 async def test_list_jobs_returns_recent_first_with_summary(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     older = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -792,6 +888,35 @@ async def test_export_project_archive_job_all_formats(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_export_web_job_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_web_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "web_basic" in responses["markdown"].text
+    assert "Security Headers" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/targetUrl") == "https://example.com/"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
 async def test_export_returns_404_for_missing_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
@@ -880,12 +1005,13 @@ async def test_export_sbom_for_project_archive_job(monkeypatch, tmp_path):
 async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 26, tzinfo=timezone.utc)
-    for index, audit_type in enumerate(("pdf_basic", "image_basic", "archive_basic"), start=1):
+    for index, audit_type in enumerate(("pdf_basic", "image_basic", "archive_basic", "web_basic"), start=1):
         app.state.jobs.save(
             JobRecord(
                 id=f"{index}" * 32,
                 audit_type=audit_type,
-                file_id=f"{index + 3}" * 32,
+                file_id=None if audit_type == "web_basic" else f"{index + 3}" * 32,
+                target_url="https://example.com/" if audit_type == "web_basic" else None,
                 status="completed",
                 created_at=now,
                 updated_at=now,
@@ -895,7 +1021,7 @@ async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        responses = [await client.get(f"/jobs/{str(index) * 32}/sbom/cyclonedx-json") for index in range(1, 4)]
+        responses = [await client.get(f"/jobs/{str(index) * 32}/sbom/cyclonedx-json") for index in range(1, 5)]
 
     for response in responses:
         assert response.status_code == 400
@@ -1444,6 +1570,67 @@ def save_project_archive_export_fixture_job() -> JobRecord:
                     "recommendation": "Confirm the script is expected.",
                 }
             ],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_web_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="8" * 32,
+        audit_type="web_basic",
+        file_id=None,
+        target_url="https://example.com/",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "web_basic",
+            "completed_at": now.isoformat(),
+            "target": {
+                "original_url": "https://example.com",
+                "normalized_url": "https://example.com/",
+                "final_url": "https://example.com/",
+                "scheme": "https",
+                "host": "example.com",
+            },
+            "http": {
+                "status_code": 200,
+                "redirects": [],
+                "response_headers": {"Content-Type": "text/html", "Server": "unit-test"},
+                "content_type": "text/html",
+                "bytes_read": 128,
+            },
+            "security_headers": {
+                "Content-Security-Policy": {"present": False, "value": None},
+                "X-Content-Type-Options": {"present": True, "value": "nosniff"},
+            },
+            "cookies": [{"name": "sid", "secure": True, "httponly": True, "samesite": "Lax"}],
+            "tls": {"present": True, "certificate": {"days_until_expiration": 90}, "errors": []},
+            "robots_txt": {"checked": True, "present": True, "status_code": 200, "has_disallow": False},
+            "security_txt": {"checked": True, "present": False, "status_code": 404, "fields": {}},
+            "findings": [
+                {
+                    "id": "web_csp_missing",
+                    "title": "Content-Security-Policy header is absent",
+                    "level": "info",
+                    "description": "Review hardening options.",
+                    "evidence": "https://example.com/",
+                    "recommendation": "Consider adding CSP where appropriate.",
+                }
+            ],
+            "summary": {
+                "findings_count": 1,
+                "missing_security_headers_count": 1,
+                "cookies_count": 1,
+                "redirects_count": 0,
+                "tls_present": True,
+                "security_txt_present": False,
+                "robots_txt_present": True,
+            },
             "errors": [],
         },
     )

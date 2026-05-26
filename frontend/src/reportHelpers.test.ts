@@ -5,11 +5,13 @@ import { buildImageAuditReport } from "./imageReport";
 import { buildManifestAuditReport } from "./manifestReport";
 import { buildPdfAuditReport } from "./pdfReport";
 import { buildProjectArchiveAuditReport } from "./projectArchiveReport";
+import { buildWebAuditReport } from "./webReport";
 import type { JobRecord } from "./types";
 
 const baseJob = {
   id: "job-1",
   file_id: "file-1",
+  target_url: null,
   status: "completed",
   created_at: "2026-05-26T10:00:00Z",
   updated_at: "2026-05-26T10:01:00Z",
@@ -139,5 +141,30 @@ describe("report helpers", () => {
     expect(report.parsedManifests[0].project).toContainEqual({ label: "name", value: "demo" });
     expect(report.parsedManifests[0].dependencies[0].dependencies[0]).toMatchObject({ name: "react" });
     expect(report.findings[0]).toMatchObject({ id: "package_sensitive_lifecycle_script" });
+  });
+
+  it("normalizes web audit headers, cookies, and findings", () => {
+    const report = buildWebAuditReport({
+      ...baseJob,
+      audit_type: "web_basic",
+      file_id: null,
+      target_url: "http://example.test/",
+      result: {
+        analyzer: "web_basic",
+        target: { final_url: "http://example.test/" },
+        http: { status_code: 200 },
+        security_headers: {
+          "Content-Security-Policy": { present: false, value: null },
+          "X-Content-Type-Options": { present: true, value: "nosniff" }
+        },
+        cookies: [{ name: "sid", secure: false, httponly: true, samesite: "Lax" }],
+        findings: [{ id: "web_csp_missing", title: "CSP missing", level: "info" }]
+      }
+    });
+
+    expect(report.isWebAudit).toBe(true);
+    expect(report.securityHeaders).toContainEqual({ name: "Content-Security-Policy", present: false, value: null });
+    expect(report.cookies[0]).toMatchObject({ name: "sid", httponly: true });
+    expect(report.findings[0]).toMatchObject({ id: "web_csp_missing" });
   });
 });

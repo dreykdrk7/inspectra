@@ -51,6 +51,7 @@ describe("App", () => {
               id: "job-pdf-1",
               audit_type: "pdf_basic",
               file_id: "file-pdf-1",
+              target_url: null,
               status: "completed",
               created_at: "2026-05-26T10:01:00Z",
               updated_at: "2026-05-26T10:02:00Z",
@@ -66,6 +67,7 @@ describe("App", () => {
               id: "job-manifest-1",
               audit_type: "manifest_basic",
               file_id: "file-manifest-1",
+              target_url: null,
               status: "completed",
               created_at: "2026-05-26T10:04:00Z",
               updated_at: "2026-05-26T10:05:00Z",
@@ -88,6 +90,25 @@ describe("App", () => {
             })
           );
         }
+        if (url.endsWith("/audits/web/basic")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-web-1",
+                audit_type: "web_basic",
+                file_id: null,
+                target_url: "https://example.test/",
+                status: "queued",
+                created_at: "2026-05-26T10:06:00Z",
+                updated_at: "2026-05-26T10:06:00Z",
+                source_file_deleted_at: null,
+                result: null,
+                error: null
+              },
+              202
+            )
+          );
+        }
         if (url.endsWith("/jobs")) {
           return Promise.resolve(
             jsonResponse([
@@ -95,6 +116,7 @@ describe("App", () => {
                 id: "job-pdf-1",
                 audit_type: "pdf_basic",
                 file_id: "file-pdf-1",
+                target_url: null,
                 status: "completed",
                 created_at: "2026-05-26T10:01:00Z",
                 updated_at: "2026-05-26T10:02:00Z",
@@ -105,6 +127,7 @@ describe("App", () => {
                 id: "job-manifest-1",
                 audit_type: "manifest_basic",
                 file_id: "file-manifest-1",
+                target_url: null,
                 status: "completed",
                 created_at: "2026-05-26T10:04:00Z",
                 updated_at: "2026-05-26T10:05:00Z",
@@ -129,6 +152,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Inspectra" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Backend" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Upload File" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Web Audit" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Jobs" })).toBeInTheDocument();
 
@@ -156,5 +180,27 @@ describe("App", () => {
     const spdxLink = screen.getByRole("link", { name: /Export SPDX JSON/i });
     expect(cyclonedxLink).toHaveAttribute("href", "http://localhost:8000/jobs/job-manifest-1/sbom/cyclonedx-json");
     expect(spdxLink).toHaveAttribute("href", "http://localhost:8000/jobs/job-manifest-1/sbom/spdx-json");
+  });
+
+  it("starts a web audit from the URL form", async () => {
+    render(<App />);
+
+    const inputs = await screen.findAllByPlaceholderText("https://example.com");
+    const input = inputs[inputs.length - 1];
+    fireEvent.change(input, { target: { value: "https://example.test/" } });
+    const checkboxes = screen.getAllByLabelText("Confirmo que tengo autorización para auditar este objetivo");
+    fireEvent.click(checkboxes[checkboxes.length - 1]);
+    const buttons = screen.getAllByRole("button", { name: /Analyze URL/i });
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/audits/web/basic",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ url: "https://example.test/", authorization_confirmed: true })
+        })
+      );
+    });
   });
 });

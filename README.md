@@ -1,6 +1,6 @@
 # Inspectra
 
-Inspectra is a lightweight, open source MVP for defensive and educational local security audits. The current phase focuses on passive PDF, image, dependency manifest, and archive inspection inside Docker containers so audit tools do not need to be installed on the host system.
+Inspectra is a lightweight, open source MVP for defensive and educational security audits. The current phase focuses on passive local file inspection plus a controlled baseline HTTP/HTTPS web audit inside Docker containers so audit tools do not need to be installed on the host system.
 
 This project is intentionally small: a FastAPI backend, a containerized tool runner, local job/result storage, and clear boundaries for authorized use.
 
@@ -14,6 +14,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Stores uploaded files under `data/uploads`.
 - Starts basic PDF, image, manifest, and archive audit jobs.
 - Starts project-archive manifest analysis jobs for archives that contain supported dependency manifests.
+- Starts authorized baseline web configuration audit jobs for a single URL.
 - Runs passive tools inside the `audit-tools` container.
 - Calculates file hashes inside the tool container.
 - Stores job state and results under `data/results/jobs`.
@@ -21,13 +22,14 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Exports job reports as Markdown, HTML, XML, and PDF.
 - Exports offline SBOMs as CycloneDX JSON and SPDX JSON from completed manifest and project-archive manifest jobs.
 - Deletes uploaded source files while keeping historical job results.
-- Provides a minimal React UI for uploads, audits, filters, jobs, readable PDF/image/manifest/archive/project-archive reports, exports, and raw JSON results.
+- Provides a minimal React UI for uploads, web audits, filters, jobs, readable PDF/image/manifest/archive/project-archive/web reports, exports, and raw JSON results.
 - Exposes OpenAPI docs at `http://localhost:8000/docs`.
 
 ## What This MVP Does Not Do
 
 - It does not run exploits.
-- It does not scan external networks.
+- It does not scan ports or networks.
+- It does not crawl websites or follow links from HTML.
 - It does not brute-force, fuzz, or automate aggressive checks.
 - It does not install audit tools on the host.
 - It does not install dependencies from uploaded manifests.
@@ -40,6 +42,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not query external CVE or vulnerability databases yet.
 - It does not resolve transitive dependencies or infer installed package versions.
 - It does not process targets unless you upload them intentionally.
+- It does not audit web targets unless you provide a single URL and confirm authorization.
 
 ## Requirements
 
@@ -91,7 +94,13 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES` | audit-tools | `1048576` | Maximum bytes read per supported manifest inside an archive. |
 | `INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES` | audit-tools | `5242880` | Maximum total supported-manifest bytes read per project archive analysis. |
 | `INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES` | audit-tools | `5000` | Maximum archive entries scanned while looking for internal manifests. |
+| `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
+| `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
+| `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
+| `INSPECTRA_WEB_MAX_REDIRECTS` | backend, audit-tools | `5` | Maximum redirects followed by the web audit. Each redirect target is validated before use. |
 | `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Browser-facing backend URL used by the React app. |
+
+The `audit-tools` container is attached to the internal Inspectra network and to a separate egress-capable network so `web_basic` can make the single authorized HTTP/HTTPS request. The runner still does not publish a public port.
 
 ## Use the Web UI
 
@@ -101,7 +110,7 @@ Open:
 http://localhost:5173
 ```
 
-From the UI you can check backend health, upload PDFs, images, manifests, or archives, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
+From the UI you can check backend health, upload PDFs, images, manifests, or archives, submit an authorized URL for baseline web audit, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
 For archive files, the file list shows two actions: `Analyze archive` for container structure and extraction-risk indicators, and `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive.
 
@@ -120,6 +129,7 @@ Completed PDF, image, manifest, archive, and project-archive jobs show readable 
 - Manifest project metadata, dependencies by group, scripts, and informational supply-chain indicators.
 - Archive structure metrics, detected manifest filenames, entries sample, path traversal indicators, sensitive-name indicators, nested archives, and size/compression indicators.
 - Project-archive supported manifests, unsupported manifest filenames, parsed dependencies, scripts, parser findings, limits, truncation, and controlled errors.
+- Web target URL, redirects, HTTP status, response headers, security headers, cookies, TLS certificate summary, `robots.txt`, `security.txt`, and informational configuration findings.
 - Tool errors and timeouts.
 - Optional raw JSON for debugging.
 
@@ -212,6 +222,18 @@ curl -sS -X POST http://localhost:8000/audits/project-archive/<file_id>
 The source file must be `kind: "archive"`. This audit opens the archive with Python standard library parsers, locates supported internal manifests, and reads only bounded manifest bytes in memory. It currently parses `package.json`, `requirements.txt`, and `pyproject.toml`; it detects but does not parse lockfiles and other ecosystem files such as `go.mod`, `Cargo.toml`, `pom.xml`, `composer.json`, and Docker Compose files.
 
 It does not extract the project, execute files or scripts, follow symlinks, install dependencies, invoke package managers, resolve transitive dependencies, query CVEs, or call the internet.
+
+## Launch a Web Baseline Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/web/basic \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","authorization_confirmed":true}'
+```
+
+This creates a `web_basic` job. The audit accepts only absolute `http` and `https` URLs, requires explicit authorization confirmation, limits redirects, validates every redirect target, limits response bytes, and applies anti-SSRF checks. By default it blocks localhost, private RFC1918 ranges, link-local addresses, and cloud metadata targets. Set `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true` only for authorized lab environments; cloud metadata/link-local targets remain blocked.
+
+The web audit performs a small set of passive HTTP/HTTPS requests for the provided URL plus `robots.txt` and common `security.txt` locations on the same origin. It does not execute JavaScript, render HTML, crawl links, fuzz, brute-force, exploit, scan ports, use Nmap, query CVEs, or call external reputation APIs.
 
 ## Read Job Results
 

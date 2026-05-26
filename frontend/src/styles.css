@@ -187,6 +187,8 @@ pre {
 
 .health-row,
 .upload-form,
+.web-audit-form,
+.checkbox-row,
 .row-actions,
 .result-meta,
 .filter-bar {
@@ -200,6 +202,21 @@ pre {
   display: grid;
   gap: 0.6rem;
   margin-bottom: 0.85rem;
+}
+
+.web-audit-form {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.checkbox-row {
+  color: #425267;
+  font-size: 0.9rem;
+}
+
+.checkbox-row input {
+  width: 1rem;
+  height: 1rem;
 }
 
 .filter-bar {

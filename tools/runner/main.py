@@ -3,16 +3,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import http.client
+from http.cookies import SimpleCookie
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
+import socket
+import ssl
 import stat
 import struct
 import subprocess
 import tarfile
 import time
 from typing import Any
+from urllib.parse import urljoin, urlsplit, urlunsplit
 import zipfile
 
 from fastapi import FastAPI, HTTPException, status
@@ -50,6 +56,14 @@ class ArchiveAnalysisRequest(BaseModel):
     original_filename: str | None = None
 
 
+class WebBasicAnalysisRequest(BaseModel):
+    url: str
+    allow_private_targets: bool | None = None
+    timeout_seconds: float | None = None
+    max_response_bytes: int | None = None
+    max_redirects: int | None = None
+
+
 def positive_float_from_env(name: str, default: float) -> float:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -76,6 +90,18 @@ def positive_int_from_env(name: str, default: int) -> int:
     return value
 
 
+def bool_from_env(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value.")
+
+
 COMMAND_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_TOOL_TIMEOUT_SECONDS", 10.0)
 ARCHIVE_MAX_ENTRIES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_ENTRIES", 5000)
 ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES", 209_715_200)
@@ -87,12 +113,39 @@ PROJECT_ARCHIVE_MAX_MANIFESTS = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE
 PROJECT_ARCHIVE_MAX_MANIFEST_BYTES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES", 1_048_576)
 PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES", 5_242_880)
 PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES", ARCHIVE_MAX_ENTRIES)
+WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
+WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
+WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
+WEB_MAX_REDIRECTS = positive_int_from_env("INSPECTRA_WEB_MAX_REDIRECTS", 5)
 ZIP_EOCD_SIGNATURE = b"PK\x05\x06"
 ZIP_EOCD_MIN_SIZE = 22
 ZIP_EOCD_MAX_COMMENT_SIZE = 65_535
 ZIP_EOCD_SCAN_SIZE = ZIP_EOCD_MIN_SIZE + ZIP_EOCD_MAX_COMMENT_SIZE
 ZIP16_MAX_FIELD = 0xFFFF
 ZIP32_MAX_FIELD = 0xFFFFFFFF
+WEB_SECURITY_HEADERS = (
+    "Strict-Transport-Security",
+    "Content-Security-Policy",
+    "X-Frame-Options",
+    "X-Content-Type-Options",
+    "Referrer-Policy",
+    "Permissions-Policy",
+    "Cross-Origin-Opener-Policy",
+    "Cross-Origin-Resource-Policy",
+    "Cross-Origin-Embedder-Policy",
+)
+METADATA_IPS = {ipaddress.ip_address("169.254.169.254")}
+METADATA_HOSTS = {"metadata.google.internal"}
+SECURITY_TXT_FIELDS = {
+    "contact",
+    "expires",
+    "encryption",
+    "acknowledgments",
+    "preferred-languages",
+    "canonical",
+    "policy",
+    "hiring",
+}
 
 
 @dataclass(frozen=True)
@@ -330,6 +383,610 @@ async def analyze_project_archive(request: ArchiveAnalysisRequest) -> dict[str, 
         analysis = empty_project_archive_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
 
     return build_project_archive_result(request.file_id, archive_path, original_filename, archive_type, analysis)
+
+
+@app.post("/analyze/web-basic")
+async def analyze_web_basic(request: WebBasicAnalysisRequest) -> dict[str, Any]:
+    allow_private = WEB_ALLOW_PRIVATE_TARGETS if request.allow_private_targets is None else request.allow_private_targets
+    timeout_seconds = request.timeout_seconds or WEB_TIMEOUT_SECONDS
+    max_response_bytes = request.max_response_bytes or WEB_MAX_RESPONSE_BYTES
+    max_redirects = request.max_redirects if request.max_redirects is not None else WEB_MAX_REDIRECTS
+
+    if timeout_seconds <= 0 or max_response_bytes <= 0 or max_redirects < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Web analysis limits must be positive.")
+
+    try:
+        return analyze_web_basic_target(
+            request.url,
+            allow_private_targets=allow_private,
+            timeout_seconds=timeout_seconds,
+            max_response_bytes=max_response_bytes,
+            max_redirects=max_redirects,
+        )
+    except HTTPException:
+        raise
+    except (OSError, ssl.SSLError, http.client.HTTPException, UnicodeError) as exc:
+        normalized_url = normalize_web_url(request.url)
+        error_message = f"Web analysis failed safely: {exc.__class__.__name__}: {exc}"
+        tls = {
+            "present": urlsplit(normalized_url).scheme == "https",
+            "errors": [error_message] if urlsplit(normalized_url).scheme == "https" else [],
+        }
+        return build_web_result(
+            original_url=request.url,
+            normalized_url=normalized_url,
+            final_url=normalized_url,
+            http_result={},
+            redirects=[],
+            tls=tls,
+            robots_txt={"checked": False, "errors": []},
+            security_txt={"checked": False, "errors": []},
+            findings=[
+                make_finding(
+                    "web_request_failed",
+                    "Web request could not be completed",
+                    "low",
+                    "Inspectra could not complete the bounded HTTP/HTTPS request.",
+                    error_message,
+                    "Review target reachability, TLS configuration, and authorization scope manually.",
+                )
+            ],
+            errors=[error_message],
+        )
+
+
+def analyze_web_basic_target(
+    raw_url: str,
+    *,
+    allow_private_targets: bool,
+    timeout_seconds: float,
+    max_response_bytes: int,
+    max_redirects: int,
+) -> dict[str, Any]:
+    original_url = raw_url
+    normalized_url = normalize_web_url(raw_url)
+    current_url = normalized_url
+    redirects: list[dict[str, Any]] = []
+    findings: list[dict[str, str]] = []
+    errors: list[str] = []
+    http_result: dict[str, Any] = {}
+
+    for _ in range(max_redirects + 1):
+        http_result = fetch_http_once(
+            current_url,
+            allow_private_targets=allow_private_targets,
+            timeout_seconds=timeout_seconds,
+            max_response_bytes=max_response_bytes,
+        )
+        status_code = int(http_result.get("status_code") or 0)
+        location = header_value(as_dict(http_result.get("response_headers")), "Location")
+        if status_code not in {301, 302, 303, 307, 308} or not location:
+            break
+        if len(redirects) >= max_redirects:
+            errors.append("Redirect limit reached before a final response was reached.")
+            findings.append(
+                make_finding(
+                    "web_redirect_limit_reached",
+                    "Redirect limit reached",
+                    "low",
+                    "Inspectra stopped following redirects after the configured limit.",
+                    f"{max_redirects} redirects followed",
+                    "Review the redirect chain manually if this target is expected.",
+                )
+            )
+            break
+        next_url = normalize_web_url(urljoin(current_url, location))
+        validate_web_url_allowed(next_url, allow_private_targets=allow_private_targets)
+        if urlsplit(next_url).hostname != urlsplit(current_url).hostname:
+            findings.append(
+                make_finding(
+                    "web_cross_host_redirect",
+                    "Redirect points to a different host",
+                    "info",
+                    "The response redirects to a different host. This can be expected, but should be understood for authorized assessments.",
+                    f"{current_url} -> {next_url}",
+                    "Confirm the redirect destination is in scope before deeper testing.",
+                )
+            )
+        redirects.append({"from_url": current_url, "to_url": next_url, "status_code": status_code})
+        current_url = next_url
+
+    final_url = current_url
+    tls = inspect_tls(final_url, allow_private_targets=allow_private_targets, timeout_seconds=timeout_seconds)
+    robots_txt = fetch_robots_txt(final_url, allow_private_targets, timeout_seconds, max_response_bytes)
+    security_txt = fetch_security_txt(final_url, allow_private_targets, timeout_seconds, max_response_bytes)
+    security_headers = evaluate_security_headers(as_dict(http_result.get("response_headers")))
+    cookies = parse_response_cookies(http_result.get("set_cookie_headers", []))
+    findings.extend(
+        build_web_findings(
+            final_url,
+            http_result,
+            security_headers,
+            cookies,
+            tls,
+            robots_txt,
+            security_txt,
+            redirects,
+        )
+    )
+
+    return build_web_result(
+        original_url=original_url,
+        normalized_url=normalized_url,
+        final_url=final_url,
+        http_result=http_result,
+        redirects=redirects,
+        tls=tls,
+        robots_txt=robots_txt,
+        security_txt=security_txt,
+        findings=dedupe_findings(findings),
+        errors=errors,
+        security_headers=security_headers,
+        cookies=cookies,
+    )
+
+
+def fetch_http_once(
+    raw_url: str,
+    *,
+    allow_private_targets: bool,
+    timeout_seconds: float,
+    max_response_bytes: int,
+) -> dict[str, Any]:
+    url = normalize_web_url(raw_url)
+    validate_web_url_allowed(url, allow_private_targets=allow_private_targets)
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_class(host, port=port, timeout=timeout_seconds)
+    try:
+        connection.request(
+            "GET",
+            target,
+            headers={
+                "User-Agent": "Inspectra/0.1 passive-web-audit",
+                "Accept": "*/*",
+                "Connection": "close",
+            },
+        )
+        response = connection.getresponse()
+        headers = response.getheaders()
+        body, truncated = read_limited_response(response, max_response_bytes)
+    finally:
+        connection.close()
+
+    public_headers = public_header_mapping(headers)
+    return {
+        "method": "GET",
+        "url": url,
+        "status_code": response.status,
+        "reason": response.reason,
+        "response_headers": public_headers,
+        "set_cookie_headers": [value for name, value in headers if name.lower() == "set-cookie"],
+        "content_type": header_value(public_headers, "Content-Type"),
+        "bytes_read": len(body),
+        "response_truncated": truncated,
+    }
+
+
+def normalize_web_url(raw_url: str) -> str:
+    value = raw_url.strip()
+    if not value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="URL is required.")
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid URL.") from exc
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only http and https URLs are accepted.")
+    if not parsed.netloc or not parsed.hostname:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="URL must be absolute and include a host.")
+    if parsed.username or parsed.password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="URL credentials are not accepted.")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid URL port.") from exc
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", parsed.query, ""))
+
+
+def validate_web_url_allowed(raw_url: str, *, allow_private_targets: bool) -> None:
+    parsed = urlsplit(normalize_web_url(raw_url))
+    host = parsed.hostname or ""
+    if host.lower().rstrip(".") in METADATA_HOSTS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cloud metadata targets are not allowed.")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    for address in resolve_web_host(host, port):
+        reason = blocked_web_ip_reason(address, allow_private_targets=allow_private_targets)
+        if reason:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Target resolves to a blocked address range: {reason}.")
+
+
+def resolve_web_host(host: str, port: int) -> set[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target host could not be resolved.") from exc
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for info in infos:
+        try:
+            addresses.add(ipaddress.ip_address(info[4][0]))
+        except (IndexError, ValueError):
+            continue
+    if not addresses:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target host did not resolve to an IP address.")
+    return addresses
+
+
+def blocked_web_ip_reason(address: ipaddress.IPv4Address | ipaddress.IPv6Address, *, allow_private_targets: bool) -> str | None:
+    if address in METADATA_IPS:
+        return "cloud metadata address"
+    if address.is_unspecified:
+        return "unspecified address"
+    if address.is_link_local:
+        return "link-local address"
+    if not allow_private_targets and address.is_loopback:
+        return "loopback address"
+    if not allow_private_targets and address.is_private:
+        return "private address"
+    if not allow_private_targets and address.is_reserved:
+        return "reserved address"
+    return None
+
+
+def read_limited_response(response: http.client.HTTPResponse, max_bytes: int) -> tuple[bytes, bool]:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(min(64 * 1024, max_bytes + 1 - total))
+        if not chunk:
+            break
+        total += len(chunk)
+        chunks.append(chunk)
+        if total > max_bytes:
+            return b"".join(chunks)[:max_bytes], True
+    return b"".join(chunks), False
+
+
+def public_header_mapping(headers: list[tuple[str, str]]) -> dict[str, Any]:
+    mapped: dict[str, Any] = {}
+    for name, value in headers:
+        canonical = canonical_header_name(name)
+        existing = mapped.get(canonical)
+        if existing is None:
+            mapped[canonical] = value
+        elif isinstance(existing, list):
+            existing.append(value)
+        else:
+            mapped[canonical] = [existing, value]
+    return mapped
+
+
+def canonical_header_name(name: str) -> str:
+    return "-".join(part[:1].upper() + part[1:].lower() for part in name.split("-"))
+
+
+def header_value(headers: dict[str, Any], name: str) -> str | None:
+    lowered = name.lower()
+    for key, value in headers.items():
+        if key.lower() != lowered:
+            continue
+        if isinstance(value, list):
+            return ", ".join(str(item) for item in value)
+        return str(value)
+    return None
+
+
+def evaluate_security_headers(headers: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        name: {
+            "present": header_value(headers, name) is not None,
+            "value": header_value(headers, name),
+        }
+        for name in WEB_SECURITY_HEADERS
+    }
+
+
+def parse_response_cookies(raw_cookies: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_cookies, list):
+        return []
+    parsed: list[dict[str, Any]] = []
+    for raw_cookie in raw_cookies:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(str(raw_cookie))
+        except Exception:
+            parsed.append({"name": "unparsed", "raw": str(raw_cookie), "parse_error": True})
+            continue
+        for morsel in cookie.values():
+            parsed.append(
+                {
+                    "name": morsel.key,
+                    "secure": bool(morsel["secure"]),
+                    "httponly": bool(morsel["httponly"]),
+                    "samesite": morsel["samesite"] or None,
+                    "domain": morsel["domain"] or None,
+                    "path": morsel["path"] or None,
+                    "max_age": morsel["max-age"] or None,
+                    "expires": morsel["expires"] or None,
+                }
+            )
+    return parsed
+
+
+def inspect_tls(raw_url: str, *, allow_private_targets: bool, timeout_seconds: float) -> dict[str, Any]:
+    parsed = urlsplit(normalize_web_url(raw_url))
+    if parsed.scheme != "https":
+        return {"present": False, "errors": []}
+    validate_web_url_allowed(raw_url, allow_private_targets=allow_private_targets)
+    host = parsed.hostname or ""
+    port = parsed.port or 443
+    context = ssl.create_default_context()
+    try:
+        with socket.create_connection((host, port), timeout=timeout_seconds) as raw_socket:
+            with context.wrap_socket(raw_socket, server_hostname=host) as tls_socket:
+                cert = tls_socket.getpeercert()
+                return {
+                    "present": True,
+                    "version": tls_socket.version(),
+                    "cipher": tls_socket.cipher()[0] if tls_socket.cipher() else None,
+                    "certificate": summarize_certificate(cert),
+                    "errors": [],
+                }
+    except (OSError, ssl.SSLError, ValueError) as exc:
+        return {"present": True, "errors": [f"TLS inspection failed: {exc.__class__.__name__}: {exc}"]}
+
+
+def summarize_certificate(cert: dict[str, Any]) -> dict[str, Any]:
+    not_before = parse_cert_time(cert.get("notBefore"))
+    not_after = parse_cert_time(cert.get("notAfter"))
+    days_until_expiration = None
+    if not_after:
+        days_until_expiration = int((not_after - datetime.now(timezone.utc)).total_seconds() // 86400)
+    return {
+        "subject": cert_name_dict(cert.get("subject")),
+        "issuer": cert_name_dict(cert.get("issuer")),
+        "not_before": not_before.isoformat() if not_before else None,
+        "not_after": not_after.isoformat() if not_after else None,
+        "days_until_expiration": days_until_expiration,
+        "subject_alt_names": [value for kind, value in cert.get("subjectAltName", []) if kind == "DNS"],
+    }
+
+
+def cert_name_dict(value: Any) -> dict[str, str]:
+    result: dict[str, str] = {}
+    if not isinstance(value, tuple):
+        return result
+    for group in value:
+        for key, item in group:
+            result[str(key)] = str(item)
+    return result
+
+
+def parse_cert_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromtimestamp(ssl.cert_time_to_seconds(value), tz=timezone.utc)
+    except (ValueError, OSError):
+        return None
+
+
+def fetch_robots_txt(base_url: str, allow_private_targets: bool, timeout_seconds: float, max_response_bytes: int) -> dict[str, Any]:
+    url = base_path_url(base_url, "/robots.txt")
+    return fetch_text_resource(url, allow_private_targets, timeout_seconds, min(max_response_bytes, 64 * 1024), resource_type="robots")
+
+
+def fetch_security_txt(base_url: str, allow_private_targets: bool, timeout_seconds: float, max_response_bytes: int) -> dict[str, Any]:
+    candidates = ["/.well-known/security.txt", "/security.txt"]
+    results = [
+        fetch_text_resource(base_path_url(base_url, path), allow_private_targets, timeout_seconds, min(max_response_bytes, 64 * 1024), resource_type="security")
+        for path in candidates
+    ]
+    selected = next((item for item in results if item.get("present")), results[0])
+    selected["candidates"] = [{"url": item.get("url"), "status_code": item.get("status_code"), "present": item.get("present")} for item in results]
+    return selected
+
+
+def base_path_url(base_url: str, path: str) -> str:
+    parsed = urlsplit(normalize_web_url(base_url))
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def fetch_text_resource(
+    url: str,
+    allow_private_targets: bool,
+    timeout_seconds: float,
+    max_response_bytes: int,
+    *,
+    resource_type: str,
+) -> dict[str, Any]:
+    try:
+        response = fetch_http_once(
+            url,
+            allow_private_targets=allow_private_targets,
+            timeout_seconds=timeout_seconds,
+            max_response_bytes=max_response_bytes,
+        )
+    except (HTTPException, OSError, ssl.SSLError, http.client.HTTPException) as exc:
+        return {"checked": True, "url": url, "present": False, "errors": [str(exc)]}
+    status_code = int(response.get("status_code") or 0)
+    present = status_code == 200
+    # fetch_http_once intentionally does not retain body in the public HTTP result; fetch again with a small helper here.
+    text = fetch_body_text(url, allow_private_targets, timeout_seconds, max_response_bytes) if present else ""
+    summary: dict[str, Any] = {
+        "checked": True,
+        "url": url,
+        "present": present,
+        "status_code": status_code,
+        "content_type": response.get("content_type"),
+        "bytes_read": response.get("bytes_read", 0),
+        "errors": [],
+    }
+    if resource_type == "robots":
+        lines = [line.strip() for line in text.splitlines() if line.strip()][:20]
+        summary["sample_lines"] = lines
+        summary["has_disallow"] = any(line.lower().startswith("disallow:") for line in lines)
+        summary["has_sitemap"] = any(line.lower().startswith("sitemap:") for line in lines)
+    else:
+        summary["fields"] = parse_security_txt_fields(text)
+    return summary
+
+
+def fetch_body_text(url: str, allow_private_targets: bool, timeout_seconds: float, max_response_bytes: int) -> str:
+    validate_web_url_allowed(url, allow_private_targets=allow_private_targets)
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_class(host, port=port, timeout=timeout_seconds)
+    try:
+        connection.request("GET", target, headers={"User-Agent": "Inspectra/0.1 passive-web-audit", "Connection": "close"})
+        response = connection.getresponse()
+        body, _ = read_limited_response(response, max_response_bytes)
+        return body.decode("utf-8", errors="replace")
+    finally:
+        connection.close()
+
+
+def parse_security_txt_fields(text: str) -> dict[str, list[str]]:
+    fields: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, value = [part.strip() for part in line.split(":", 1)]
+        normalized = key.lower()
+        if normalized in SECURITY_TXT_FIELDS:
+            fields.setdefault(key, []).append(value)
+    return fields
+
+
+def build_web_findings(
+    final_url: str,
+    http_result: dict[str, Any],
+    security_headers: dict[str, dict[str, Any]],
+    cookies: list[dict[str, Any]],
+    tls: dict[str, Any],
+    robots_txt: dict[str, Any],
+    security_txt: dict[str, Any],
+    redirects: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    scheme = urlsplit(final_url).scheme
+    headers = as_dict(http_result.get("response_headers"))
+    if scheme == "http":
+        findings.append(make_finding("web_http_without_https", "Target uses HTTP", "low", "The final URL uses HTTP rather than HTTPS.", final_url, "Prefer HTTPS for production services."))
+    if scheme == "https" and not security_headers["Strict-Transport-Security"]["present"]:
+        findings.append(make_finding("web_hsts_missing", "HSTS header is absent", "low", "HSTS is not present on the HTTPS response.", final_url, "Consider HSTS after confirming HTTPS is consistently available."))
+    if not security_headers["Content-Security-Policy"]["present"]:
+        findings.append(make_finding("web_csp_missing", "Content-Security-Policy header is absent", "info", "A CSP header was not observed. This is a hardening indicator, not a vulnerability by itself.", final_url, "Review whether a Content-Security-Policy is appropriate for this application."))
+    if not security_headers["X-Content-Type-Options"]["present"]:
+        findings.append(make_finding("web_x_content_type_options_missing", "X-Content-Type-Options header is absent", "info", "The response does not include X-Content-Type-Options.", final_url, "Consider setting X-Content-Type-Options: nosniff."))
+    csp_value = str(security_headers["Content-Security-Policy"].get("value") or "")
+    if not security_headers["X-Frame-Options"]["present"] and "frame-ancestors" not in csp_value.lower():
+        findings.append(make_finding("web_frame_protection_missing", "Frame embedding policy was not observed", "info", "Neither X-Frame-Options nor a CSP frame-ancestors directive was observed.", final_url, "Review clickjacking protections for pages that need them."))
+    if header_value(headers, "Server"):
+        findings.append(make_finding("web_server_header_present", "Server header is present", "info", "The response includes a Server header.", header_value(headers, "Server") or "", "Confirm exposed server details are intentional."))
+    if header_value(headers, "X-Powered-By"):
+        findings.append(make_finding("web_x_powered_by_present", "X-Powered-By header is present", "info", "The response includes an X-Powered-By header.", header_value(headers, "X-Powered-By") or "", "Confirm exposed framework details are intentional."))
+    for cookie in cookies:
+        cookie_name = str(cookie.get("name") or "cookie")
+        if scheme == "https" and not cookie.get("secure"):
+            findings.append(make_finding("web_cookie_missing_secure", "Cookie without Secure flag", "low", "A Set-Cookie value was observed without the Secure attribute on an HTTPS response.", cookie_name, "Set Secure for cookies that should only be sent over HTTPS."))
+        if not cookie.get("httponly"):
+            findings.append(make_finding("web_cookie_missing_httponly", "Cookie without HttpOnly flag", "info", "A Set-Cookie value was observed without HttpOnly.", cookie_name, "Use HttpOnly for cookies that do not need JavaScript access."))
+        if not cookie.get("samesite"):
+            findings.append(make_finding("web_cookie_missing_samesite", "Cookie without SameSite attribute", "info", "A Set-Cookie value was observed without SameSite.", cookie_name, "Set a SameSite policy appropriate for the application."))
+        if str(cookie.get("samesite") or "").lower() == "none" and not cookie.get("secure"):
+            findings.append(make_finding("web_cookie_samesite_none_without_secure", "SameSite=None cookie without Secure", "low", "SameSite=None should be paired with Secure in modern browsers.", cookie_name, "Add Secure or review whether SameSite=None is necessary."))
+    cert = as_dict(tls.get("certificate"))
+    days = cert.get("days_until_expiration")
+    if isinstance(days, int) and days < 0:
+        findings.append(make_finding("web_tls_certificate_expired", "TLS certificate appears expired", "medium", "The certificate notAfter date is in the past.", str(days), "Renew and validate the certificate chain."))
+    elif isinstance(days, int) and days < 30:
+        findings.append(make_finding("web_tls_certificate_expiring", "TLS certificate expires soon", "low", "The certificate expires in less than 30 days.", f"{days} days", "Plan certificate renewal before expiry."))
+    if tls.get("errors"):
+        findings.append(make_finding("web_tls_inspection_error", "TLS inspection reported an error", "low", "Inspectra could not complete TLS certificate inspection.", "; ".join(tls.get("errors", [])), "Review certificate and network behavior manually."))
+    if not security_txt.get("present"):
+        findings.append(make_finding("web_security_txt_absent", "security.txt was not observed", "info", "Inspectra did not observe security.txt at the common locations checked.", final_url, "Consider publishing security.txt if appropriate for the service."))
+    if robots_txt.get("present") and robots_txt.get("has_disallow"):
+        findings.append(make_finding("web_robots_disallow_present", "robots.txt contains Disallow entries", "info", "robots.txt includes Disallow directives. This is informational and not a security control.", str(robots_txt.get("sample_lines", [])), "Review disclosed paths manually and avoid treating robots.txt as access control."))
+    if redirects:
+        findings.append(make_finding("web_redirects_present", "Redirects were observed", "info", "The target returned one or more redirects.", f"{len(redirects)} redirects", "Confirm redirect destinations remain in authorized scope."))
+    return findings
+
+
+def dedupe_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict[str, str]] = []
+    for finding in findings:
+        key = (finding.get("id", ""), finding.get("evidence", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(finding)
+    return unique
+
+
+def build_web_result(
+    *,
+    original_url: str,
+    normalized_url: str,
+    final_url: str,
+    http_result: dict[str, Any],
+    redirects: list[dict[str, Any]],
+    tls: dict[str, Any],
+    robots_txt: dict[str, Any],
+    security_txt: dict[str, Any],
+    findings: list[dict[str, str]],
+    errors: list[str],
+    security_headers: dict[str, dict[str, Any]] | None = None,
+    cookies: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    parsed = urlsplit(final_url)
+    headers = as_dict(http_result.get("response_headers"))
+    security_headers = security_headers or evaluate_security_headers(headers)
+    cookies = cookies or []
+    return {
+        "analyzer": "web_basic",
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "target": {
+            "original_url": original_url,
+            "normalized_url": normalized_url,
+            "final_url": final_url,
+            "scheme": parsed.scheme,
+            "host": parsed.hostname,
+        },
+        "http": {
+            "status_code": http_result.get("status_code"),
+            "redirects": redirects,
+            "response_headers": headers,
+            "content_type": http_result.get("content_type"),
+            "bytes_read": http_result.get("bytes_read", 0),
+            "response_truncated": http_result.get("response_truncated", False),
+            "server": header_value(headers, "Server"),
+            "x_powered_by": header_value(headers, "X-Powered-By"),
+        },
+        "security_headers": security_headers,
+        "cookies": cookies,
+        "tls": tls or {"present": False, "errors": []},
+        "robots_txt": robots_txt,
+        "security_txt": security_txt,
+        "findings": findings,
+        "errors": errors,
+        "summary": {
+            "findings_count": len(findings),
+            "missing_security_headers_count": sum(1 for item in security_headers.values() if not item.get("present")),
+            "cookies_count": len(cookies),
+            "redirects_count": len(redirects),
+            "tls_present": bool((tls or {}).get("present")),
+            "security_txt_present": bool(security_txt.get("present")),
+            "robots_txt_present": bool(robots_txt.get("present")),
+        },
+    }
 
 
 def resolve_data_path(relative_path: str) -> Path:

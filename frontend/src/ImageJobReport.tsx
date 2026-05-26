@@ -30,7 +30,7 @@ export function ImageJobReport({ job, file }: { job: JobRecord; file?: FileRecor
           <MetadataRow label="Audit type" value={job.audit_type} />
           <MetadataRow label="Analyzer" value={report.analyzer ?? "Not available"} />
           <MetadataRow label="Job ID" value={job.id} mono />
-          <MetadataRow label="File ID" value={job.file_id} mono />
+          <MetadataRow label="File ID" value={job.file_id ?? "N/A"} mono />
           <MetadataRow label="Created" value={formatDate(job.created_at)} />
           <MetadataRow label="Updated" value={formatDate(job.updated_at)} />
           <MetadataRow label="Completed" value={report.completedAt ? formatDate(report.completedAt) : "Not completed"} />

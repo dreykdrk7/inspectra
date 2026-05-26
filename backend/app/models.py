@@ -5,7 +5,14 @@ from pydantic import BaseModel, Field
 
 
 FileKind = Literal["pdf", "image", "manifest", "archive"]
-AuditType = Literal["pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic"]
+AuditType = Literal[
+    "pdf_basic",
+    "image_basic",
+    "manifest_basic",
+    "archive_basic",
+    "project_archive_basic",
+    "web_basic",
+]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 
 
@@ -23,7 +30,8 @@ class StoredFile(BaseModel):
 class JobRecord(BaseModel):
     id: str
     audit_type: AuditType
-    file_id: str
+    file_id: str | None = None
+    target_url: str | None = None
     status: JobStatus
     created_at: datetime
     updated_at: datetime
@@ -39,7 +47,8 @@ class JobCreated(BaseModel):
 class JobListItem(BaseModel):
     id: str
     audit_type: AuditType
-    file_id: str
+    file_id: str | None = None
+    target_url: str | None = None
     status: JobStatus
     created_at: datetime
     updated_at: datetime
@@ -50,3 +59,8 @@ class JobListItem(BaseModel):
 class DeletedFileResponse(BaseModel):
     deleted_file: StoredFile
     associated_jobs_marked: int
+
+
+class WebAuditRequest(BaseModel):
+    url: str
+    authorization_confirmed: bool = False

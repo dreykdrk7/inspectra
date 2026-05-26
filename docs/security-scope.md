@@ -2,7 +2,7 @@
 
 ## Intended Use
 
-Inspectra is for defensive, educational, and authorized local security audits. The MVP is limited to files that the user intentionally uploads, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, and bounded manifest analysis inside archives.
+Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-URL web baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, and passive HTTP/HTTPS configuration review.
 
 Use Inspectra only on files, domains, systems, or services that you own or are explicitly authorized to assess.
 
@@ -28,6 +28,8 @@ Allowed in this phase:
 - Storing local JSON audit results.
 - Exporting local reports from stored job JSON as Markdown, HTML, XML, and PDF.
 - Exporting offline SBOMs from completed manifest and project-archive manifest jobs as CycloneDX JSON and SPDX JSON.
+- Running a controlled `web_basic` audit against one explicitly authorized HTTP/HTTPS URL.
+- Recording web configuration indicators such as status, redirects, response headers, security headers, cookies, TLS certificate summary, `robots.txt`, and `security.txt`.
 - Using the local web UI to perform the same API actions.
 
 Tools used in this phase:
@@ -47,19 +49,23 @@ For project archives, Inspectra may read supported internal manifests (`package.
 
 For SBOM export, Inspectra uses only declared dependencies already present in completed `manifest_basic` or `project_archive_basic` job results. It does not execute package managers, install packages, resolve transitive dependencies, infer licenses, query CVEs, verify URL/VCS identities, or call package registries. Version ranges remain ranges unless the manifest declares an exact local pin that can be represented as such. Package URLs are generated only for dependencies that look like clear npm or PyPI registry packages; URL, VCS, local, editable, workspace, and alias declarations are preserved without inferred package URLs.
 
+For web baseline audits, Inspectra makes bounded HTTP/HTTPS requests only to the authorized URL, validated redirects, and common same-origin `robots.txt`/`security.txt` paths. It does not execute JavaScript, render HTML, crawl links, fuzz, brute-force, exploit, scan ports, use Nmap, query CVEs, or call third-party reputation APIs. Missing headers and exposed metadata are reported as indicators for manual review, not confirmed vulnerabilities.
+
 ## Out of Scope
 
 The MVP does not include:
 
 - Exploit execution.
 - Vulnerability exploitation.
-- Network scanning.
+- Network or port scanning.
+- Web crawling.
 - Internet-wide enumeration.
 - Brute force checks.
 - Credential attacks.
 - Malware detonation.
 - Fuzzing.
 - Aggressive automation against external services.
+- Running Nmap or network scanners.
 - Image rendering, conversion, detonation, or embedded-content execution.
 - Installing dependencies from uploaded manifests.
 - Running npm, pip, Poetry, pnpm, yarn, or package lifecycle scripts against uploaded manifests.
@@ -72,6 +78,7 @@ The MVP does not include:
 - Inferring package licenses, suppliers, download locations, or registry identity for URL/VCS/local dependency declarations.
 - External CVE, advisory, package registry, or vulnerability database lookups.
 - Claiming a heuristic dependency signal is a confirmed vulnerability.
+- Treating missing web headers as confirmed vulnerabilities without manual validation.
 
 These exclusions are intentional. Inspectra should evolve carefully and keep each new capability scoped, documented, and defensive.
 
@@ -99,19 +106,22 @@ Report exports are generated locally from existing job results. The generated HT
 
 SBOM exports are generated locally from existing completed dependency-analysis jobs. They may include package names, declared version ranges, manifest paths inside uploaded archives, and conservative package URLs for clear npm/PyPI registry dependencies. Ambiguous URL, VCS, local, editable, workspace, or alias dependencies keep the original declaration and an omitted-`purl` reason. They do not include vulnerability assertions.
 
+Web audit results are generated from bounded HTTP/HTTPS responses. Anti-SSRF validation blocks localhost, private ranges, link-local addresses, and cloud metadata targets by default. `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true` can be used for authorized lab targets, but metadata/link-local addresses remain blocked. These checks reduce risk but do not replace network-level egress controls.
+
 ## Container Boundary
 
 External audit tools run in the `audit-tools` container, not on the host and not in the backend container. The MVP also avoids mounting the Docker socket into the backend.
 
 The container boundary reduces host exposure, but it is not a perfect sandbox. Parser bugs in file tooling are still possible, so the tool container is constrained with:
 
-- Internal-only Compose networking.
+- Internal Compose networking for backend-to-runner traffic; the runner also has a separate egress-capable network for the explicit `web_basic` target requests.
 - Read-only root filesystem.
 - Read-only access to `data/`.
 - Dropped Linux capabilities.
 - `no-new-privileges`.
 - Temporary storage limited to `/tmp`.
 - Per-tool command timeouts through `INSPECTRA_TOOL_TIMEOUT_SECONDS`, defaulting to 10 seconds.
+- Web audit timeouts, response byte limits, redirect limits, and anti-SSRF checks through `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, and `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS`.
 - Archive-specific analysis limits for entries, estimated uncompressed size, entry-name length, and listed entries.
 - ZIP central directory metadata limits before detailed ZIP parsing.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.

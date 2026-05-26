@@ -10,6 +10,10 @@ services:
       INSPECTRA_DATA_DIR: /app/data
       INSPECTRA_MAX_UPLOAD_BYTES: "20971520"
       INSPECTRA_TOOL_RUNNER_URL: http://audit-tools:8081
+      INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS: "false"
+      INSPECTRA_WEB_TIMEOUT_SECONDS: "10"
+      INSPECTRA_WEB_MAX_RESPONSE_BYTES: "1048576"
+      INSPECTRA_WEB_MAX_REDIRECTS: "5"
     volumes:
       - ./data:/app/data
     ports:
@@ -49,12 +53,17 @@ services:
       INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES: "1048576"
       INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES: "5242880"
       INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES: "5000"
+      INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS: "false"
+      INSPECTRA_WEB_TIMEOUT_SECONDS: "10"
+      INSPECTRA_WEB_MAX_RESPONSE_BYTES: "1048576"
+      INSPECTRA_WEB_MAX_REDIRECTS: "5"
     volumes:
       - ./data:/app/data:ro
     expose:
       - "8081"
     networks:
       - inspectra_internal
+      - inspectra_web_egress
     read_only: true
     tmpfs:
       - /tmp
@@ -93,3 +102,4 @@ services:
 networks:
   inspectra_internal:
     internal: true
+  inspectra_web_egress:

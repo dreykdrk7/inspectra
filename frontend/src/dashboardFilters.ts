@@ -44,7 +44,8 @@ export function filterJobs(
     const matchesSearch =
       !query ||
       job.id.toLowerCase().includes(query) ||
-      job.file_id.toLowerCase().includes(query) ||
+      (job.file_id ?? "").toLowerCase().includes(query) ||
+      (job.target_url ?? "").toLowerCase().includes(query) ||
       job.audit_type.toLowerCase().includes(query) ||
       job.status.toLowerCase().includes(query);
     return matchesStatus && matchesType && matchesSearch;
@@ -74,6 +75,9 @@ export function statusLabel(status: JobStatusFilter): string {
 export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "all") {
     return "All";
+  }
+  if (auditType === "web_basic") {
+    return "web_basic";
   }
   return auditType;
 }

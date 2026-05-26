@@ -2,7 +2,7 @@
 
 ## Goal
 
-Inspectra starts as a small defensive audit API for authorized local files. The MVP keeps the backend simple and delegates passive analysis to a dedicated Docker container where external tools or local parsers run away from the host.
+Inspectra starts as a small defensive audit API for authorized local files and controlled baseline web checks. The MVP keeps the backend simple and delegates passive analysis to a dedicated Docker container where external tools, local parsers, or bounded HTTP clients run away from the host.
 
 ## Components
 
@@ -14,6 +14,7 @@ Inspectra starts as a small defensive audit API for authorized local files. The 
 - Responsibilities:
   - Healthcheck endpoint.
   - PDF, image, dependency manifest, and archive upload endpoints.
+  - Authorized single-URL web audit endpoint.
   - File listing and deletion endpoints.
   - Basic file metadata registry.
   - Job creation, listing, and status management.
@@ -33,16 +34,16 @@ The backend does not install or execute audit binaries directly.
   - Display backend health.
   - Upload PDFs, images, dependency manifests, and archives.
   - List and delete uploaded files.
-  - Launch PDF, image, manifest, archive, and project-archive manifest audits.
+  - Launch PDF, image, manifest, archive, project-archive manifest, and web baseline audits.
   - List recent jobs.
-  - Fetch jobs and render readable PDF, image, manifest, archive, and project-archive reports.
+  - Fetch jobs and render readable PDF, image, manifest, archive, project-archive, and web reports.
   - Provide export links for Markdown, HTML, XML, and PDF job reports.
   - Provide SBOM export links for completed manifest and project-archive manifest jobs.
   - Keep raw job JSON available for debugging.
 
 The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
 
-Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, `frontend/src/manifestReport.ts`, `frontend/src/archiveReport.ts`, and `frontend/src/projectArchiveReport.ts`. Dashboard filters and counters live in `frontend/src/dashboardFilters.ts`. This keeps the backend contract stable while making audit result JSON and UI state easier to test.
+Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, `frontend/src/manifestReport.ts`, `frontend/src/archiveReport.ts`, `frontend/src/projectArchiveReport.ts`, and `frontend/src/webReport.ts`. Dashboard filters and counters live in `frontend/src/dashboardFilters.ts`. This keeps the backend contract stable while making audit result JSON and UI state easier to test.
 
 ### Reporting
 
@@ -79,7 +80,7 @@ SBOM output intentionally reflects only dependencies declared in analyzed manife
   - `qpdf`
   - `file`
 
-The tool runner is reachable only on the internal Compose network. It receives a relative path for an uploaded file, validates that the path stays inside `data/`, runs passive tools without a shell when tools are needed, and returns structured JSON to the backend.
+The tool runner is reachable by the backend on the internal Compose network. For `web_basic`, the runner is also attached to a separate egress-capable network so it can make the explicitly authorized HTTP/HTTPS requests. It does not publish a public port. For uploaded-file audits it receives a relative path, validates that the path stays inside `data/`, runs passive tools without a shell when tools are needed, and returns structured JSON to the backend.
 
 Each external command has an `INSPECTRA_TOOL_TIMEOUT_SECONDS` timeout, defaulting to 10 seconds. A timed-out tool is recorded in that tool's output and in the result summary instead of failing the entire job by itself.
 
@@ -91,6 +92,8 @@ For ZIP files, the runner performs a small standard EOCD preflight before openin
 
 Project archive analysis also uses Python standard library archive readers, but it only reads bounded content for supported dependency manifests inside an archive. It currently parses internal `package.json`, `requirements.txt`, and `pyproject.toml` files by reusing the local manifest parsers. It detects other manifest filenames for reporting, but does not parse unsupported ecosystems, extract the whole project, follow symlinks, execute files, invoke package managers, resolve dependencies, or call the internet.
 
+Web baseline analysis uses Python standard library HTTP/TLS primitives. It accepts only absolute `http` and `https` URLs, requires authorization confirmation at the backend, follows a bounded number of redirects, validates every redirect target, limits bytes read per response, and checks the final origin's `robots.txt` and common `security.txt` locations. Anti-SSRF validation blocks localhost, private ranges, link-local addresses, and cloud metadata targets by default. `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true` permits private/loopback targets for labs, while metadata/link-local targets remain blocked. The runner does not execute JavaScript, render HTML, crawl links, fuzz, brute-force, scan ports, query CVEs, or call third-party APIs.
+
 ### Local Data
 
 - Uploaded files: `data/uploads`
@@ -101,12 +104,12 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 
 ## Request Flow
 
-1. A user uploads a PDF to `POST /files/pdf`, an image to `POST /files/image`, a manifest to `POST /files/manifest`, or an archive to `POST /files/archive`.
+1. A user uploads a PDF to `POST /files/pdf`, an image to `POST /files/image`, a manifest to `POST /files/manifest`, or an archive to `POST /files/archive`. For web checks, the user submits a URL to `POST /audits/web/basic` with authorization confirmation.
 2. The backend validates file magic bytes, manifest name/content, or archive name/signature, stores it in `data/uploads`, and records metadata.
-3. A user starts analysis with `POST /audits/pdf/{file_id}`, `POST /audits/image/{file_id}`, `POST /audits/manifest/{file_id}`, `POST /audits/archive/{file_id}`, or `POST /audits/project-archive/{file_id}`.
+3. A user starts file analysis with `POST /audits/pdf/{file_id}`, `POST /audits/image/{file_id}`, `POST /audits/manifest/{file_id}`, `POST /audits/archive/{file_id}`, or `POST /audits/project-archive/{file_id}`. Web jobs are already created by `POST /audits/web/basic` and store `target_url` instead of `file_id`.
 4. The backend creates a queued job and schedules background execution.
 5. The backend calls `audit-tools` over the internal Compose network.
-6. The tool runner performs passive analysis inside its container. For `manifest_basic`, it parses local text and returns normalized dependencies and informational findings. For `archive_basic`, it inspects archive metadata and returns structure, size, manifest-presence, extraction-risk, and informational findings without broad extraction. For `project_archive_basic`, it scans archive metadata, reads only bounded supported manifest files in memory, and returns internal dependency summaries plus informational findings.
+6. The tool runner performs passive analysis inside its container. For `manifest_basic`, it parses local text and returns normalized dependencies and informational findings. For `archive_basic`, it inspects archive metadata and returns structure, size, manifest-presence, extraction-risk, and informational findings without broad extraction. For `project_archive_basic`, it scans archive metadata, reads only bounded supported manifest files in memory, and returns internal dependency summaries plus informational findings. For `web_basic`, it makes bounded HTTP/HTTPS requests to the authorized URL and same-origin `robots.txt`/`security.txt` paths, returning headers, cookies, TLS summary, redirects, and configuration findings.
 7. The backend stores the final job state and result JSON.
 8. A user reads the job with `GET /jobs/{job_id}` from the API or the UI.
 9. A user exports a report with `GET /jobs/{job_id}/export/{format}`. The backend renders the report from the stored job JSON.
@@ -127,6 +130,7 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `POST /audits/manifest/{file_id}`: start a basic passive dependency manifest audit.
 - `POST /audits/archive/{file_id}`: start a basic passive archive inspection.
 - `POST /audits/project-archive/{file_id}`: start passive manifest analysis inside an archive.
+- `POST /audits/web/basic`: start a controlled baseline web configuration audit for one authorized URL.
 - `GET /jobs`: list jobs, newest first, with summaries when available.
 - `GET /jobs/{job_id}`: read one full job record.
 - `GET /jobs/{job_id}/export/markdown`: export a Markdown report.
@@ -144,7 +148,7 @@ The browser UI consumes these same endpoints. The backend enables CORS only for 
 
 - Audit binaries are installed only in the `audit-tools` image.
 - The Docker socket is not mounted into the backend.
-- The tool runner uses an internal Compose network.
+- The backend reaches the tool runner on an internal Compose network; the tool runner also has outbound network access for the bounded `web_basic` audit.
 - The tool runner mount of `data/` is read-only.
 - Containers drop Linux capabilities and set `no-new-privileges`.
 - Containers use read-only root filesystems with `/tmp` as tmpfs.
@@ -153,6 +157,7 @@ The browser UI consumes these same endpoints. The backend enables CORS only for 
 - Upload size is limited by `INSPECTRA_MAX_UPLOAD_BYTES`, defaulting to 20 MB.
 - Archive inspection is bounded by `INSPECTRA_ARCHIVE_MAX_ENTRIES`, `INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES`, `INSPECTRA_ARCHIVE_MAX_ENTRY_NAME_LENGTH`, `INSPECTRA_ARCHIVE_MAX_LISTED_ENTRIES`, and `INSPECTRA_ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES`.
 - Project archive manifest parsing is bounded by `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS`, `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES`, `INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES`, and `INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES`.
+- Web auditing is bounded by `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, and `INSPECTRA_WEB_MAX_REDIRECTS`. Private targets require `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true`; metadata/link-local targets remain blocked.
 - Development CORS is explicit and defaults to `http://localhost:5173`, not a wildcard.
 
 These are sensible MVP guardrails, not a substitute for a hardened sandbox.

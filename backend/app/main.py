@@ -4,7 +4,7 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, Resp
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import load_settings
-from app.models import DeletedFileResponse, JobListItem, JobRecord, StoredFile
+from app.models import DeletedFileResponse, JobListItem, JobRecord, StoredFile, WebAuditRequest
 from app.reporting import (
     build_report_filename,
     render_html_report,
@@ -13,8 +13,9 @@ from app.reporting import (
     render_xml_report,
 )
 from app.sbom import build_sbom_filename, generate_cyclonedx_json, generate_spdx_json
-from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService
+from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService, WebAuditService
 from app.storage import FileStore, JobStore
+from app.web_security import validate_web_target_url
 
 
 @asynccontextmanager
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
     app.state.manifest_audits = ManifestAuditService(settings, file_store, job_store)
     app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
     app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
+    app.state.web_audits = WebAuditService(settings, file_store, job_store)
     yield
 
 
@@ -140,6 +142,19 @@ async def launch_project_archive_audit(request: Request, file_id: str, backgroun
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_project_archive_job(file_id)
     background_tasks.add_task(request.app.state.project_archive_audits.run_project_archive_analysis, job.id)
+    return job
+
+
+@app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_web_basic_audit(request: Request, payload: WebAuditRequest, background_tasks: BackgroundTasks) -> JobRecord:
+    if not payload.authorization_confirmed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Authorization confirmation is required.")
+    normalized_url = validate_web_target_url(
+        payload.url,
+        allow_private_targets=request.app.state.settings.web_allow_private_targets,
+    )
+    job = request.app.state.jobs.create_web_job(normalized_url)
+    background_tasks.add_task(request.app.state.web_audits.run_web_analysis, job.id)
     return job
 
 
