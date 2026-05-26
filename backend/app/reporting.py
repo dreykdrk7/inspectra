@@ -148,6 +148,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_manifest_sections(result))
     elif job.audit_type == "archive_basic":
         sections.extend(build_archive_sections(result))
+    elif job.audit_type == "project_archive_basic":
+        sections.extend(build_project_archive_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -217,6 +219,21 @@ def build_archive_sections(result: dict[str, Any]) -> list[ReportSection]:
     ]
 
 
+def build_project_archive_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "Project Archive Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("Project Archive Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Supported Manifests", flatten_list(result.get("supported_manifests"))),
+        ReportSection("Unsupported Manifests", flatten_list(result.get("unsupported_manifests"))),
+        ReportSection("Parsed Manifests", flatten_list(result.get("parsed_manifests"))),
+        ReportSection("Findings", flatten_list(result.get("findings"))),
+    ]
+
+
 def build_summary(job: JobRecord) -> dict[str, Any]:
     result = as_dict(job.result)
     validation = as_dict(result.get("validation"))
@@ -240,6 +257,12 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
     elif job.audit_type == "archive_basic":
         data["archive_type"] = result.get("archive_type", "N/A")
         data["total_entries"] = summary.get("total_entries", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
+    elif job.audit_type == "project_archive_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["supported_manifests_parsed"] = summary.get("supported_manifests_parsed", "N/A")
+        data["total_dependencies"] = summary.get("total_dependencies", "N/A")
         data["findings_count"] = summary.get("findings_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
     return data

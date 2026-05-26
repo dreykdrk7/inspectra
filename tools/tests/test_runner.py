@@ -290,6 +290,158 @@ async def test_analyze_archive_handles_corrupt_file(monkeypatch, tmp_path):
     assert payload["summary"]["total_entries"] == 0
 
 
+@pytest.mark.anyio
+async def test_analyze_project_archive_zip_parses_package_json(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "README.md": b"# ignored\n",
+            "package.json": PACKAGE_JSON.encode("utf-8"),
+            "package-lock.json": b"{}",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    assert payload["analyzer"] == "project_archive_basic"
+    assert payload["summary"]["supported_manifests_found"] == 1
+    assert payload["summary"]["supported_manifests_parsed"] == 1
+    assert payload["summary"]["unsupported_manifests_detected"] == 1
+    assert payload["summary"]["total_dependencies"] == 4
+    assert payload["parsed_manifests"][0]["manifest_type"] == "package_json"
+    assert payload["parsed_manifests"][0]["parsed"]["project"]["name"] == "demo-app"
+    assert "package_sensitive_lifecycle_script" in finding_ids
+    assert "dependency_external_or_local_source" in finding_ids
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_zip_parses_requirements(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {"services/api/requirements.txt": REQUIREMENTS_TXT.encode("utf-8")})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["parsed_manifests"][0]["manifest_type"] == "requirements_txt"
+    assert payload["summary"]["total_dependencies"] == 3
+    assert "requirements_custom_index" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_zip_parses_pyproject(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {"pyproject.toml": PYPROJECT_TOML.encode("utf-8")})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["parsed_manifests"][0]["manifest_type"] == "pyproject_toml"
+    assert payload["parsed_manifests"][0]["parsed"]["project"]["name"] == "demo-service"
+    assert "poetry:docs" in payload["parsed_manifests"][0]["parsed"]["dependencies"]
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_tar_parses_manifest(monkeypatch, tmp_path):
+    archive_path = write_tar_manifest_archive(tmp_path, "package.json", PACKAGE_JSON.encode("utf-8"))
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["archive_type"] == "tar"
+    assert payload["summary"]["supported_manifests_parsed"] == 1
+    assert payload["parsed_manifests"][0]["path"] == "package.json"
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_skips_manifest_with_path_traversal(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {"../package.json": PACKAGE_JSON.encode("utf-8")})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["supported_manifests_found"] == 1
+    assert payload["summary"]["supported_manifests_parsed"] == 0
+    assert payload["supported_manifests"][0]["reason"] == "path_traversal"
+    assert "project_archive_path_traversal" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_skips_oversized_manifest(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "PROJECT_ARCHIVE_MAX_MANIFEST_BYTES", 20)
+    archive_path = write_zip_archive(tmp_path, {"package.json": PACKAGE_JSON.encode("utf-8")})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["supported_manifests_parsed"] == 0
+    assert payload["supported_manifests"][0]["reason"] == "manifest_too_large"
+    assert "project_archive_manifest_too_large" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_handles_corrupt_file(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    archive_path = uploads_dir / "broken.zip"
+    archive_path.write_bytes(b"PK not really a zip")
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "broken.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["archive_type"] == "unknown"
+    assert payload["errors"]
+    assert payload["summary"]["supported_manifests_parsed"] == 0
+
+
 def write_manifest(tmp_path, filename: str, content: str):
     uploads_dir = tmp_path / "uploads"
     uploads_dir.mkdir(exist_ok=True)
@@ -324,6 +476,18 @@ def write_tar_archive(tmp_path):
         link_info.linkname = "README.md"
         link_info.mode = 0o777
         archive.addfile(link_info)
+    return archive_path
+
+
+def write_tar_manifest_archive(tmp_path, filename: str, content: bytes):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        file_info = tarfile.TarInfo(filename)
+        file_info.size = len(content)
+        file_info.mode = 0o644
+        archive.addfile(file_info, io.BytesIO(content))
     return archive_path
 
 

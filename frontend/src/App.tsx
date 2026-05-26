@@ -17,6 +17,7 @@ import { ArchiveJobReport } from "./ArchiveJobReport";
 import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
+import { ProjectArchiveJobReport } from "./ProjectArchiveJobReport";
 import type { FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat } from "./types";
 
 type LoadState = {
@@ -156,6 +157,17 @@ export function App() {
             : file.kind === "manifest"
               ? await api.launchManifestAudit(file.id)
               : await api.launchArchiveAudit(file.id);
+      setSelectedJob(job);
+      await refreshJobs();
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  async function launchProjectArchiveAudit(file: FileRecord) {
+    setActionError(null);
+    try {
+      const job = await api.launchProjectArchiveAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -312,6 +324,12 @@ export function App() {
                             <Play size={15} aria-hidden="true" />
                             {auditLabel(file.kind)}
                           </button>
+                          {file.kind === "archive" ? (
+                            <button onClick={() => void launchProjectArchiveAudit(file)}>
+                              <Play size={15} aria-hidden="true" />
+                              Analyze project manifests
+                            </button>
+                          ) : null}
                           <button className="danger-button" onClick={() => void deleteFile(file.id)}>
                             <Trash2 size={15} aria-hidden="true" />
                             Delete
@@ -353,7 +371,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -417,8 +435,10 @@ export function App() {
               <ImageJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "manifest_basic" ? (
               <ManifestJobReport job={selectedJob} file={selectedJobFile} />
-            ) : (
+            ) : selectedJob.audit_type === "archive_basic" ? (
               <ArchiveJobReport job={selectedJob} file={selectedJobFile} />
+            ) : (
+              <ProjectArchiveJobReport job={selectedJob} file={selectedJobFile} />
             )}
           </>
         ) : (
@@ -598,6 +618,9 @@ function summarizeJob(job: JobListItem): string {
   }
   if (job.audit_type === "archive_basic") {
     return `${archiveType ?? "archive"}, ${totalEntries ?? 0} entries, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "project_archive_basic") {
+    return `${archiveType ?? "archive"}, ${totalDependencies ?? 0} deps, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

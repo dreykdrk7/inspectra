@@ -13,13 +13,14 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Lists registered local files without exposing host paths.
 - Stores uploaded files under `data/uploads`.
 - Starts basic PDF, image, manifest, and archive audit jobs.
+- Starts project-archive manifest analysis jobs for archives that contain supported dependency manifests.
 - Runs passive tools inside the `audit-tools` container.
 - Calculates file hashes inside the tool container.
 - Stores job state and results under `data/results/jobs`.
 - Lists audit jobs with a compact summary.
 - Exports job reports as Markdown, HTML, XML, and PDF.
 - Deletes uploaded source files while keeping historical job results.
-- Provides a minimal React UI for uploads, audits, filters, jobs, readable PDF/image/manifest/archive reports, exports, and raw JSON results.
+- Provides a minimal React UI for uploads, audits, filters, jobs, readable PDF/image/manifest/archive/project-archive reports, exports, and raw JSON results.
 - Exposes OpenAPI docs at `http://localhost:8000/docs`.
 
 ## What This MVP Does Not Do
@@ -32,6 +33,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not execute package scripts or project code.
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
+- It does not parse unsupported internal manifest formats beyond filename detection.
 - It does not call external services to generate reports.
 - It does not query external CVE or vulnerability databases yet.
 - It does not process targets unless you upload them intentionally.
@@ -81,6 +83,10 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES` | audit-tools | `209715200` | Informational archive-size threshold, defaulting to 200 MB. |
 | `INSPECTRA_ARCHIVE_MAX_ENTRY_NAME_LENGTH` | audit-tools | `512` | Entry-name length threshold for review findings. |
 | `INSPECTRA_ARCHIVE_MAX_LISTED_ENTRIES` | audit-tools | `200` | Maximum archive entries and detected manifests listed in the result. |
+| `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS` | audit-tools | `25` | Maximum supported manifests parsed from one archive. |
+| `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES` | audit-tools | `1048576` | Maximum bytes read per supported manifest inside an archive. |
+| `INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES` | audit-tools | `5242880` | Maximum total supported-manifest bytes read per project archive analysis. |
+| `INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES` | audit-tools | `5000` | Maximum archive entries scanned while looking for internal manifests. |
 | `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Browser-facing backend URL used by the React app. |
 
 ## Use the Web UI
@@ -93,11 +99,13 @@ http://localhost:5173
 
 From the UI you can check backend health, upload PDFs, images, manifests, or archives, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
+For archive files, the file list shows two actions: `Analyze archive` for container structure and extraction-risk indicators, and `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive.
+
 The dashboard includes client-side counters, file filters by kind, job filters by status and audit type, quick search fields, manual refresh, and gentle auto-refresh while jobs are queued or running.
 
 From the upload panel, choose `PDF`, `Image`, `Manifest`, or `Archive`. Image uploads currently accept JPEG, PNG, and WebP. Manifest uploads currently accept `package.json`, `requirements.txt`, and `pyproject.toml`. Archive uploads currently accept `.zip`, `.tar`, `.tar.gz`, and `.tgz`. Inspectra does not render image previews or extract archives broadly in this phase.
 
-Completed PDF, image, manifest, and archive jobs show readable reports with:
+Completed PDF, image, manifest, archive, and project-archive jobs show readable reports with:
 
 - General job summary.
 - Hashes.
@@ -107,6 +115,7 @@ Completed PDF, image, manifest, and archive jobs show readable reports with:
 - Image privacy indicators such as GPS, creator, serial number, device, and software metadata presence.
 - Manifest project metadata, dependencies by group, scripts, and informational supply-chain indicators.
 - Archive structure metrics, detected manifest filenames, entries sample, path traversal indicators, sensitive-name indicators, nested archives, and size/compression indicators.
+- Project-archive supported manifests, unsupported manifest filenames, parsed dependencies, scripts, parser findings, limits, truncation, and controlled errors.
 - Tool errors and timeouts.
 - Optional raw JSON for debugging.
 
@@ -188,6 +197,16 @@ curl -sS -X POST http://localhost:8000/audits/archive/<file_id>
 
 The archive audit inspects container metadata passively with Python standard library parsers. It does not extract the full archive to the filesystem, follow symlinks, execute files, install dependencies, resolve internal manifests, or call the internet.
 
+## Launch a Project Archive Manifest Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/project-archive/<file_id>
+```
+
+The source file must be `kind: "archive"`. This audit opens the archive with Python standard library parsers, locates supported internal manifests, and reads only bounded manifest bytes in memory. It currently parses `package.json`, `requirements.txt`, and `pyproject.toml`; it detects but does not parse lockfiles and other ecosystem files such as `go.mod`, `Cargo.toml`, `pom.xml`, `composer.json`, and Docker Compose files.
+
+It does not extract the project, execute files or scripts, follow symlinks, install dependencies, invoke package managers, resolve transitive dependencies, query CVEs, or call the internet.
+
 ## Read Job Results
 
 ```bash
@@ -222,7 +241,7 @@ Supported formats:
 curl -sS http://localhost:8000/jobs
 ```
 
-Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, or archive entry/finding counts when present.
+Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, archive entry/finding counts, or project-archive dependency/finding counts when present.
 
 ## Delete an Uploaded File
 

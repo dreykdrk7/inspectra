@@ -4,6 +4,7 @@ import { buildArchiveAuditReport } from "./archiveReport";
 import { buildImageAuditReport } from "./imageReport";
 import { buildManifestAuditReport } from "./manifestReport";
 import { buildPdfAuditReport } from "./pdfReport";
+import { buildProjectArchiveAuditReport } from "./projectArchiveReport";
 import type { JobRecord } from "./types";
 
 const baseJob = {
@@ -103,5 +104,40 @@ describe("report helpers", () => {
     expect(report.detectedManifests[0]).toMatchObject({ path: "package.json" });
     expect(report.findings[0]).toMatchObject({ id: "archive_sensitive_name_entry", level: "medium" });
     expect(report.entriesSample[0].flags).toContainEqual({ label: "sensitive_name", value: "true" });
+  });
+
+  it("normalizes project archive parsed manifests and findings", () => {
+    const report = buildProjectArchiveAuditReport({
+      ...baseJob,
+      audit_type: "project_archive_basic",
+      result: {
+        archive_type: "zip",
+        summary: { supported_manifests_parsed: 1, total_dependencies: 1, findings_count: 1 },
+        supported_manifests: [{ path: "package.json", manifest_type: "package_json", status: "parsed" }],
+        unsupported_manifests: [{ path: "package-lock.json", manifest_type: "package-lock.json" }],
+        parsed_manifests: [
+          {
+            path: "package.json",
+            manifest_type: "package_json",
+            size_bytes: 64,
+            parsed: {
+              project: { name: "demo" },
+              dependencies: { dependencies: [{ name: "react", specifier: "^18.3.1" }] },
+              scripts: { postinstall: "node setup.js" }
+            },
+            findings: [{ id: "package_sensitive_lifecycle_script", title: "Lifecycle script", level: "medium" }],
+            errors: []
+          }
+        ],
+        findings: [{ id: "package_sensitive_lifecycle_script", title: "Lifecycle script", level: "medium" }]
+      }
+    });
+
+    expect(report.isProjectArchiveAudit).toBe(true);
+    expect(report.supportedManifests[0]).toMatchObject({ path: "package.json", status: "parsed" });
+    expect(report.unsupportedManifests[0]).toMatchObject({ path: "package-lock.json" });
+    expect(report.parsedManifests[0].project).toContainEqual({ label: "name", value: "demo" });
+    expect(report.parsedManifests[0].dependencies[0].dependencies[0]).toMatchObject({ name: "react" });
+    expect(report.findings[0]).toMatchObject({ id: "package_sensitive_lifecycle_script" });
   });
 });

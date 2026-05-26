@@ -86,6 +86,16 @@ const jobs: JobListItem[] = [
     updated_at: "2026-05-26T10:10:00Z",
     source_file_deleted_at: null,
     summary: null
+  },
+  {
+    id: "job-project-archive-completed",
+    audit_type: "project_archive_basic",
+    file_id: "archive-file-4",
+    status: "completed",
+    created_at: "2026-05-26T10:11:00Z",
+    updated_at: "2026-05-26T10:12:00Z",
+    source_file_deleted_at: null,
+    summary: null
   }
 ];
 
@@ -107,13 +117,15 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "running", "all", "")).toEqual([jobs[1]]);
     expect(filterJobs(jobs, "all", "manifest_basic", "")).toEqual([jobs[2]]);
     expect(filterJobs(jobs, "all", "archive_basic", "")).toEqual([jobs[3]]);
+    expect(filterJobs(jobs, "all", "project_archive_basic", "")).toEqual([jobs[4]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
     expect(filterJobs(jobs, "all", "all", "JOB-PDF")).toEqual([jobs[0]]);
     expect(filterJobs(jobs, "all", "all", "image-file")).toEqual([jobs[1]]);
     expect(filterJobs(jobs, "all", "all", "MANIFEST_BASIC")).toEqual([jobs[2]]);
-    expect(filterJobs(jobs, "all", "all", "ARCHIVE_BASIC")).toEqual([jobs[3]]);
+    expect(filterJobs(jobs, "all", "all", "ARCHIVE_BASIC")).toEqual([jobs[3], jobs[4]]);
+    expect(filterJobs(jobs, "all", "all", "PROJECT_ARCHIVE")).toEqual([jobs[4]]);
     expect(filterJobs(jobs, "all", "all", "FAILED")).toEqual([jobs[2]]);
   });
 
@@ -124,8 +136,8 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 4,
-      completedJobs: 1,
+      totalJobs: 5,
+      completedJobs: 2,
       failedJobs: 1,
       activeJobs: 2
     });

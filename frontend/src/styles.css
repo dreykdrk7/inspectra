@@ -505,6 +505,18 @@ pre {
   gap: 0.5rem;
 }
 
+.dependency-group-inline {
+  display: grid;
+  gap: 0.55rem;
+  border-top: 1px solid #d9e0ea;
+  padding-top: 0.65rem;
+}
+
+.dependency-group-inline:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
 .dependency-row {
   display: grid;
   grid-template-columns: minmax(8rem, 0.28fr) minmax(0, 1fr) minmax(6rem, 0.25fr);

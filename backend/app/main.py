@@ -12,7 +12,7 @@ from app.reporting import (
     render_pdf_report,
     render_xml_report,
 )
-from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService
+from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService
 from app.storage import FileStore, JobStore
 
 
@@ -30,6 +30,7 @@ async def lifespan(app: FastAPI):
     app.state.image_audits = ImageAuditService(settings, file_store, job_store)
     app.state.manifest_audits = ManifestAuditService(settings, file_store, job_store)
     app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
+    app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
     yield
 
 
@@ -128,6 +129,16 @@ async def launch_archive_audit(request: Request, file_id: str, background_tasks:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_archive_job(file_id)
     background_tasks.add_task(request.app.state.archive_audits.run_archive_analysis, job.id)
+    return job
+
+
+@app.post("/audits/project-archive/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_project_archive_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
+    stored_file = request.app.state.files.get(file_id)
+    if stored_file.kind != "archive":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
+    job = request.app.state.jobs.create_project_archive_job(file_id)
+    background_tasks.add_task(request.app.state.project_archive_audits.run_project_archive_analysis, job.id)
     return job
 
 

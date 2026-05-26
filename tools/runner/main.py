@@ -80,6 +80,10 @@ ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES = positive_int_from_env("INSPECTRA_ARCHIVE_
 ARCHIVE_MAX_ENTRY_NAME_LENGTH = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_ENTRY_NAME_LENGTH", 512)
 ARCHIVE_MAX_LISTED_ENTRIES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_LISTED_ENTRIES", 200)
 ARCHIVE_SUSPICIOUS_COMPRESSION_RATIO = 100.0
+PROJECT_ARCHIVE_MAX_MANIFESTS = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS", 25)
+PROJECT_ARCHIVE_MAX_MANIFEST_BYTES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES", 1_048_576)
+PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES", 5_242_880)
+PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES", ARCHIVE_MAX_ENTRIES)
 
 
 app = FastAPI(
@@ -283,6 +287,33 @@ async def analyze_archive(request: ArchiveAnalysisRequest) -> dict[str, Any]:
         )
 
     return build_archive_result(request.file_id, archive_path, original_filename, archive_type, **analysis)
+
+
+@app.post("/analyze/project-archive")
+async def analyze_project_archive(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_project_archive_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_project_archive_analysis(
+                errors=["Unsupported or corrupt archive. Inspectra did not extract, install, or execute any content."]
+            ),
+        )
+
+    try:
+        analysis = analyze_project_archive_manifests(archive_path, archive_type)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        analysis = empty_project_archive_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+
+    return build_project_archive_result(request.file_id, archive_path, original_filename, archive_type, analysis)
 
 
 def resolve_data_path(relative_path: str) -> Path:
@@ -776,6 +807,418 @@ def build_archive_result(
         "findings": findings,
         "errors": errors,
     }
+
+
+def analyze_project_archive_manifests(path: Path, archive_type: str) -> dict[str, Any]:
+    analysis = empty_project_archive_analysis()
+    state = {
+        "total_manifest_bytes": 0,
+        "parseable_manifests_seen": 0,
+    }
+
+    if archive_type == "zip":
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.infolist(), start=1):
+                if should_stop_project_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_project_archive_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda entry_info=info: archive.open(entry_info),
+                )
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_project_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                    "member": member,
+                }
+                process_project_archive_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda tar_member=member: archive.extractfile(tar_member),
+                )
+
+    finalize_project_archive_analysis(analysis)
+    return analysis
+
+
+def empty_project_archive_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "total_entries_seen": 0,
+            "supported_manifests_found": 0,
+            "supported_manifests_parsed": 0,
+            "unsupported_manifests_detected": 0,
+            "total_dependencies": 0,
+            "dependency_groups": [],
+            "findings_count": 0,
+            "truncated": False,
+        },
+        "supported_manifests": [],
+        "unsupported_manifests": [],
+        "parsed_manifests": [],
+        "findings": [],
+        "errors": errors or [],
+    }
+
+
+def build_project_archive_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "project_archive_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_manifests": PROJECT_ARCHIVE_MAX_MANIFESTS,
+            "max_manifest_bytes": PROJECT_ARCHIVE_MAX_MANIFEST_BYTES,
+            "max_total_manifest_bytes": PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES,
+            "max_archive_entries": PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES,
+        },
+        "summary": summary,
+        "supported_manifests": analysis.get("supported_manifests", []),
+        "unsupported_manifests": analysis.get("unsupported_manifests", []),
+        "parsed_manifests": analysis.get("parsed_manifests", []),
+        "findings": findings,
+        "errors": analysis.get("errors", []),
+    }
+
+
+def should_stop_project_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    summary = as_dict(analysis["summary"])
+    if index > PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES:
+        summary["truncated"] = True
+        add_project_finding(
+            analysis,
+            "project_archive_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    summary["total_entries_seen"] = index
+    return False
+
+
+def process_project_archive_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    manifest_name = detect_archive_manifest(path)
+    if manifest_name is None:
+        return
+
+    manifest_type = supported_project_manifest_type(path)
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    manifest_record = {
+        "path": path,
+        "manifest_name": manifest_name,
+        "manifest_type": manifest_type or manifest_name,
+        "size_bytes": size_bytes,
+        "entry_type": entry_type,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+    }
+    if entry.get("link_target"):
+        manifest_record["link_target"] = entry["link_target"]
+
+    if manifest_type is None:
+        manifest_record["reason"] = "detected_but_not_parsed_in_this_phase"
+        analysis["unsupported_manifests"].append(manifest_record)
+        analysis["summary"]["unsupported_manifests_detected"] += 1
+        return
+
+    analysis["summary"]["supported_manifests_found"] += 1
+    state["parseable_manifests_seen"] += 1
+
+    skip_reason = project_manifest_skip_reason(manifest_record, state)
+    if skip_reason:
+        manifest_record["status"] = "skipped"
+        manifest_record["reason"] = skip_reason
+        analysis["supported_manifests"].append(manifest_record)
+        add_project_manifest_skip_finding(analysis, path, skip_reason, size_bytes)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, PROJECT_ARCHIVE_MAX_MANIFEST_BYTES)
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        manifest_record["status"] = "skipped"
+        manifest_record["reason"] = "manifest_read_error"
+        analysis["supported_manifests"].append(manifest_record)
+        add_project_finding(
+            analysis,
+            "project_archive_manifest_read_error",
+            "Manifest could not be read safely",
+            "low",
+            "A supported manifest entry could not be read from the archive within Inspectra limits.",
+            f"{path}: {exc}",
+            "Review this manifest manually in a constrained environment if it is expected.",
+        )
+        return
+
+    state["total_manifest_bytes"] += len(raw_bytes)
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        manifest_record["status"] = "skipped"
+        manifest_record["reason"] = "manifest_utf8_decode_error"
+        analysis["supported_manifests"].append(manifest_record)
+        add_project_finding(
+            analysis,
+            "project_archive_manifest_decode_error",
+            "Manifest is not valid UTF-8 text",
+            "low",
+            "A supported manifest entry could not be decoded as UTF-8 text.",
+            f"{path}: {exc}",
+            "Review this file manually before treating it as a dependency manifest.",
+        )
+        return
+
+    parsed, parser_findings, parser_errors = parse_manifest_text_by_type(manifest_type, raw_text)
+    dependency_groups = parsed.get("dependencies", {})
+    dependency_count = sum(len(items) for items in dependency_groups.values() if isinstance(items, list))
+    parsed_record = {
+        "path": path,
+        "manifest_type": manifest_type,
+        "size_bytes": size_bytes,
+        "parsed": parsed,
+        "summary": {
+            "total_dependencies": dependency_count,
+            "dependency_groups": list(dependency_groups),
+            "informational_findings_count": len(parser_findings),
+        },
+        "findings": parser_findings,
+        "errors": parser_errors,
+    }
+    manifest_record["status"] = "parsed"
+    analysis["supported_manifests"].append(manifest_record)
+    analysis["parsed_manifests"].append(parsed_record)
+    analysis["summary"]["supported_manifests_parsed"] += 1
+    analysis["summary"]["total_dependencies"] += dependency_count
+    add_dependency_groups(analysis["summary"], dependency_groups)
+
+    for finding in parser_findings:
+        analysis["findings"].append(scope_manifest_parser_finding(path, finding))
+    if parser_errors:
+        add_project_finding(
+            analysis,
+            "project_archive_manifest_parse_error",
+            "Manifest parser reported errors",
+            "low",
+            "A supported manifest was read but could not be fully parsed.",
+            f"{path}: {'; '.join(parser_errors)}",
+            "Review the manifest syntax manually before relying on the extracted dependency data.",
+        )
+
+
+def project_manifest_skip_reason(manifest_record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(manifest_record.get("flags"))
+    path = str(manifest_record["path"])
+    size_bytes = int(manifest_record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if manifest_record.get("entry_type") != "file":
+        return f"not_regular_file:{manifest_record.get('entry_type')}"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > PROJECT_ARCHIVE_MAX_MANIFEST_BYTES:
+        return "manifest_too_large"
+    if state["parseable_manifests_seen"] > PROJECT_ARCHIVE_MAX_MANIFESTS:
+        return "too_many_supported_manifests"
+    if state["total_manifest_bytes"] + size_bytes > PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES:
+        return "total_manifest_bytes_limit"
+    return None
+
+
+def add_project_manifest_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int) -> None:
+    finding_id = f"project_archive_{reason}"
+    if reason == "manifest_too_large":
+        title = "Manifest omitted because it exceeds the size limit"
+        level = "medium"
+        evidence = f"{path}: {size_bytes} bytes"
+    elif reason == "too_many_supported_manifests":
+        title = "Supported manifest limit reached"
+        level = "medium"
+        evidence = path
+        analysis["summary"]["truncated"] = True
+    elif reason == "total_manifest_bytes_limit":
+        title = "Total manifest byte limit reached"
+        level = "medium"
+        evidence = path
+        analysis["summary"]["truncated"] = True
+    elif reason == "path_traversal":
+        title = "Manifest path uses traversal"
+        level = "medium"
+        evidence = path
+    elif reason == "absolute_path":
+        title = "Manifest path is absolute"
+        level = "medium"
+        evidence = path
+    elif reason == "entry_name_too_long":
+        title = "Manifest entry name is unusually long"
+        level = "low"
+        evidence = path[:240]
+    else:
+        finding_id = "project_archive_manifest_not_regular_file"
+        title = "Manifest omitted because it is not a regular file"
+        level = "low"
+        evidence = f"{path}: {reason}"
+
+    add_project_finding(
+        analysis,
+        finding_id,
+        title,
+        level,
+        "Inspectra detected a supported manifest but did not parse it because of a defensive limit or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this manifest is expected.",
+    )
+
+
+def finalize_project_archive_analysis(analysis: dict[str, Any]) -> None:
+    ecosystems = {
+        ecosystem
+        for ecosystem in (
+            project_manifest_ecosystem(item.get("manifest_type", ""))
+            for item in analysis["supported_manifests"] + analysis["unsupported_manifests"]
+        )
+        if ecosystem
+    }
+    if len(ecosystems) > 1:
+        add_project_finding(
+            analysis,
+            "project_archive_multiple_ecosystems",
+            "Multiple dependency ecosystems detected",
+            "info",
+            "The archive contains manifests from multiple ecosystems. This is informational and may require separate review paths.",
+            ", ".join(sorted(ecosystems)),
+            "Review each ecosystem with the appropriate workflow before installing or running anything.",
+        )
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+
+
+def parse_manifest_text_by_type(manifest_type: str, raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
+    if "\x00" in raw_text:
+        return empty_manifest_parse(), [], ["Manifest contains NUL bytes and was not parsed as text."]
+    if manifest_type == "package_json":
+        return analyze_package_json_manifest(raw_text)
+    if manifest_type == "requirements_txt":
+        return analyze_requirements_manifest(raw_text)
+    return analyze_pyproject_manifest(raw_text)
+
+
+def supported_project_manifest_type(path: str) -> str | None:
+    basename = path.replace("\\", "/").lower().rsplit("/", 1)[-1]
+    return {
+        "package.json": "package_json",
+        "requirements.txt": "requirements_txt",
+        "pyproject.toml": "pyproject_toml",
+    }.get(basename)
+
+
+def project_manifest_ecosystem(manifest_type: str) -> str | None:
+    normalized = manifest_type.lower()
+    if normalized in {"package_json", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"}:
+        return "javascript"
+    if normalized in {"requirements_txt", "pyproject_toml", "requirements.txt", "pyproject.toml", "poetry.lock", "pipfile", "pipfile.lock"}:
+        return "python"
+    if normalized in {"go.mod", "go.sum"}:
+        return "go"
+    if normalized in {"cargo.toml", "cargo.lock"}:
+        return "rust"
+    if normalized in {"pom.xml", "build.gradle"}:
+        return "jvm"
+    if normalized in {"composer.json", "composer.lock"}:
+        return "php"
+    if normalized in {"dockerfile", "docker-compose.yml", "compose.yml"}:
+        return "container"
+    return None
+
+
+def add_dependency_groups(summary: dict[str, Any], dependency_groups: dict[str, Any]) -> None:
+    existing = set(summary.get("dependency_groups", []))
+    for group in dependency_groups:
+        existing.add(str(group))
+    summary["dependency_groups"] = sorted(existing)
+
+
+def scope_manifest_parser_finding(path: str, finding: dict[str, str]) -> dict[str, str]:
+    scoped = dict(finding)
+    evidence = scoped.get("evidence", "")
+    scoped["evidence"] = f"{path}: {evidence}" if evidence else path
+    return scoped
+
+
+def read_limited_stream(stream, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = stream.read(min(64 * 1024, max_bytes + 1 - total))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"manifest exceeded {max_bytes} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def add_project_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+) -> None:
+    analysis["findings"].append(make_finding(finding_id, title, level, description, evidence, recommendation))
 
 
 def empty_archive_summary(total_compressed_bytes: int = 0) -> dict[str, Any]:

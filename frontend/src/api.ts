@@ -103,6 +103,13 @@ export async function launchArchiveAudit(fileId: string): Promise<JobRecord> {
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function launchProjectArchiveAudit(fileId: string): Promise<JobRecord> {
+  const response = await fetch(`${API_BASE_URL}/audits/project-archive/${fileId}`, {
+    method: 'POST',
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function listJobs(): Promise<JobListItem[]> {
   const response = await fetch(`${API_BASE_URL}/jobs`);
   return parseJsonResponse<JobListItem[]>(response);
@@ -130,6 +137,7 @@ export const api = {
   launchImageAudit,
   launchManifestAudit,
   launchArchiveAudit,
+  launchProjectArchiveAudit,
   listJobs,
   getJob,
   jobExportUrl,

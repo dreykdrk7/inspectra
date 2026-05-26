@@ -239,6 +239,9 @@ class JobStore:
     def create_archive_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "archive_basic")
 
+    def create_project_archive_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "project_archive_basic")
+
     def _create_job(self, file_id: str, audit_type: str) -> JobRecord:
         now = utc_now()
         record = JobRecord(
@@ -426,6 +429,13 @@ def _job_summary(record: JobRecord) -> dict | None:
         if record.audit_type == "archive_basic":
             summary["archive_type"] = record.result.get("archive_type")
             summary["total_entries"] = manifest_summary.get("total_entries")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["truncated"] = manifest_summary.get("truncated")
+        if record.audit_type == "project_archive_basic":
+            summary["archive_type"] = record.result.get("archive_type")
+            summary["total_entries_seen"] = manifest_summary.get("total_entries_seen")
+            summary["supported_manifests_parsed"] = manifest_summary.get("supported_manifests_parsed")
+            summary["total_dependencies"] = manifest_summary.get("total_dependencies")
             summary["findings_count"] = manifest_summary.get("findings_count")
             summary["truncated"] = manifest_summary.get("truncated")
         return summary

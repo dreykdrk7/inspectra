@@ -11,7 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from app.config import load_settings
 from app.main import app
 from app.models import JobRecord
-from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService
+from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService
 from app.storage import FileStore, JobStore
 
 
@@ -34,6 +34,9 @@ class NoopAuditService:
     async def run_archive_analysis(self, job_id: str) -> None:
         return None
 
+    async def run_project_archive_analysis(self, job_id: str) -> None:
+        return None
+
 
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
@@ -50,6 +53,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.image_audits = ImageAuditService(settings, file_store, job_store)
     app.state.manifest_audits = ManifestAuditService(settings, file_store, job_store)
     app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
+    app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
 
 
 @pytest.mark.anyio
@@ -445,6 +449,33 @@ async def test_archive_audit_job_creation_and_cross_type_rejections(monkeypatch,
 
 
 @pytest.mark.anyio
+async def test_project_archive_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.project_archive_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("project.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        project_archive_response = await client.post(f"/audits/project-archive/{archive_file['id']}")
+        pdf_as_project_archive_response = await client.post(f"/audits/project-archive/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/project-archive/not-a-file-id")
+
+    assert project_archive_response.status_code == 202
+    assert project_archive_response.json()["audit_type"] == "project_archive_basic"
+    assert pdf_as_project_archive_response.status_code == 400
+    assert pdf_as_project_archive_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
 async def test_list_jobs_returns_recent_first_with_summary(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     older = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -613,6 +644,35 @@ async def test_export_archive_job_all_formats(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_export_project_archive_job_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_project_archive_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "project_archive_basic" in responses["markdown"].text
+    assert "Project Archive Metrics" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "project_archive_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
 async def test_export_returns_404_for_missing_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
@@ -726,6 +786,65 @@ def save_archive_export_fixture_job() -> JobRecord:
                     "description": "Review this indicator manually.",
                     "evidence": ".env",
                     "recommendation": "Confirm the file should be present.",
+                }
+            ],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_project_archive_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="c" * 32,
+        audit_type="project_archive_basic",
+        file_id="3" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "project_archive_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 1024, "original_filename": "project.zip"},
+            "summary": {
+                "total_entries_seen": 4,
+                "supported_manifests_found": 1,
+                "supported_manifests_parsed": 1,
+                "unsupported_manifests_detected": 1,
+                "total_dependencies": 1,
+                "dependency_groups": ["dependencies"],
+                "findings_count": 1,
+                "truncated": False,
+            },
+            "supported_manifests": [{"path": "package.json", "manifest_type": "package_json", "status": "parsed"}],
+            "unsupported_manifests": [{"path": "package-lock.json", "manifest_type": "package-lock.json"}],
+            "parsed_manifests": [
+                {
+                    "path": "package.json",
+                    "manifest_type": "package_json",
+                    "size_bytes": 128,
+                    "parsed": {
+                        "project": {"name": "demo"},
+                        "dependencies": {"dependencies": [{"name": "react", "specifier": "^18.3.1"}]},
+                        "scripts": {"postinstall": "node setup.js"},
+                    },
+                    "summary": {"total_dependencies": 1, "dependency_groups": ["dependencies"], "informational_findings_count": 1},
+                    "findings": [],
+                    "errors": [],
+                }
+            ],
+            "findings": [
+                {
+                    "id": "package_sensitive_lifecycle_script",
+                    "title": "Lifecycle script should be reviewed",
+                    "level": "medium",
+                    "description": "Review before running package manager commands.",
+                    "evidence": "package.json: postinstall: node setup.js",
+                    "recommendation": "Confirm the script is expected.",
                 }
             ],
             "errors": [],

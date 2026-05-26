@@ -15,7 +15,7 @@ export type FileRecord = {
 };
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
-export type AuditType = 'pdf_basic' | 'image_basic' | 'manifest_basic' | 'archive_basic';
+export type AuditType = 'pdf_basic' | 'image_basic' | 'manifest_basic' | 'archive_basic' | 'project_archive_basic';
 export type ReportFormat = 'markdown' | 'html' | 'xml' | 'pdf';
 
 export type JobRecord = {
