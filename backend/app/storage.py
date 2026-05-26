@@ -26,6 +26,12 @@ MANIFEST_DEFINITIONS = {
     "requirements.txt": ("requirements_txt", "text/plain"),
     "pyproject.toml": ("pyproject_toml", "application/toml"),
 }
+ARCHIVE_DEFINITIONS = (
+    (".tar.gz", "tar_gz", ".tar.gz", "application/gzip", lambda data: data.startswith(b"\x1f\x8b")),
+    (".tgz", "tar_gz", ".tgz", "application/gzip", lambda data: data.startswith(b"\x1f\x8b")),
+    (".zip", "zip", ".zip", "application/zip", lambda data: data.startswith(b"PK")),
+    (".tar", "tar", ".tar", "application/x-tar", lambda data: len(data) >= 262 and data[257:262] == b"ustar"),
+)
 
 
 def utc_now() -> datetime:
@@ -152,6 +158,29 @@ class FileStore:
         _atomic_write_json(self._metadata_path(file_id), record.model_dump(mode="json"))
         return record
 
+    async def save_archive(self, upload: UploadFile) -> StoredFile:
+        original_filename = Path(upload.filename or "").name
+        payload = await _read_limited_upload(upload, self.settings.max_upload_bytes)
+        _, extension, content_type = _validate_archive_upload(original_filename, payload)
+
+        file_id = uuid4().hex
+        stored_filename = f"{file_id}{extension}"
+        target_path = self._safe_upload_path(stored_filename)
+        target_path.write_bytes(payload)
+
+        record = StoredFile(
+            id=file_id,
+            kind="archive",
+            original_filename=original_filename,
+            stored_filename=stored_filename,
+            content_type=content_type,
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            created_at=utc_now(),
+        )
+        _atomic_write_json(self._metadata_path(file_id), record.model_dump(mode="json"))
+        return record
+
     def list(self) -> list[StoredFile]:
         records = [self._load_metadata_file(path) for path in self.settings.upload_dir.glob("*.json")]
         return sorted(records, key=lambda item: item.created_at, reverse=True)
@@ -206,6 +235,9 @@ class JobStore:
 
     def create_manifest_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "manifest_basic")
+
+    def create_archive_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "archive_basic")
 
     def _create_job(self, file_id: str, audit_type: str) -> JobRecord:
         now = utc_now()
@@ -353,6 +385,23 @@ def _validate_manifest_upload(filename: str, payload: bytes) -> tuple[str, str]:
     return manifest_type, content_type
 
 
+def _validate_archive_upload(filename: str, payload: bytes) -> tuple[str, str, str]:
+    normalized_name = filename.lower()
+    for suffix, archive_type, stored_extension, content_type, matcher in ARCHIVE_DEFINITIONS:
+        if not normalized_name.endswith(suffix):
+            continue
+        if matcher(payload):
+            return archive_type, stored_extension, content_type
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{suffix} archive content does not match the expected file signature.",
+        )
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Only .zip, .tar, .tar.gz, and .tgz archives are accepted.",
+    )
+
+
 def _job_summary(record: JobRecord) -> dict | None:
     if record.result:
         validation = record.result.get("validation", {})
@@ -374,6 +423,11 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["manifest_type"] = record.result.get("manifest_type")
             summary["total_dependencies"] = manifest_summary.get("total_dependencies")
             summary["informational_findings_count"] = manifest_summary.get("informational_findings_count")
+        if record.audit_type == "archive_basic":
+            summary["archive_type"] = record.result.get("archive_type")
+            summary["total_entries"] = manifest_summary.get("total_entries")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["truncated"] = manifest_summary.get("truncated")
         return summary
     if record.error:
         return {"error": record.error}

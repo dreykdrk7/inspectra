@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { buildArchiveAuditReport } from "./archiveReport";
 import { buildImageAuditReport } from "./imageReport";
 import { buildManifestAuditReport } from "./manifestReport";
 import { buildPdfAuditReport } from "./pdfReport";
@@ -71,5 +72,36 @@ describe("report helpers", () => {
     expect(report.project).toContainEqual({ label: "name", value: "demo" });
     expect(report.dependencies[0].dependencies[0]).toMatchObject({ name: "react", specifier: "^18.3.1" });
     expect(report.findings[0]).toMatchObject({ id: "dependency_not_exactly_pinned", title: "Review range" });
+  });
+
+  it("normalizes archive summaries, findings, and entry flags", () => {
+    const report = buildArchiveAuditReport({
+      ...baseJob,
+      audit_type: "archive_basic",
+      result: {
+        archive_type: "zip",
+        hashes: { sha256: "abc" },
+        summary: { total_entries: 2, findings_count: 1 },
+        detected_manifests: [{ path: "package.json", manifest_type: "package.json" }],
+        findings: [{ id: "archive_sensitive_name_entry", title: "Sensitive name", level: "medium" }],
+        entries_sample: [
+          {
+            path: ".env",
+            type: "file",
+            size: 10,
+            compressed_size: 8,
+            mode: "0o644",
+            depth: 1,
+            flags: { sensitive_name: true, manifest_file: false }
+          }
+        ]
+      }
+    });
+
+    expect(report.isArchiveAudit).toBe(true);
+    expect(report.archiveType).toBe("zip");
+    expect(report.detectedManifests[0]).toMatchObject({ path: "package.json" });
+    expect(report.findings[0]).toMatchObject({ id: "archive_sensitive_name_entry", level: "medium" });
+    expect(report.entriesSample[0].flags).toContainEqual({ label: "sensitive_name", value: "true" });
   });
 });

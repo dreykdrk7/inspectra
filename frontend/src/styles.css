@@ -123,7 +123,7 @@ pre {
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(9, minmax(0, 1fr));
   gap: 0.75rem;
   margin-bottom: 1rem;
 }
@@ -298,6 +298,11 @@ pre {
 .status-pill.manifest-kind {
   background: #e3f8ed;
   color: #176139;
+}
+
+.status-pill.archive-kind {
+  background: #fff3cf;
+  color: #76540a;
 }
 
 .segmented-control {
@@ -483,9 +488,16 @@ pre {
 }
 
 .dependency-groups,
-.finding-list {
+.finding-list,
+.archive-entry-list {
   display: grid;
   gap: 0.75rem;
+}
+
+.flag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
 }
 
 .dependency-list {

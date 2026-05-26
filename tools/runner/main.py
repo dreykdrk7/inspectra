@@ -6,9 +6,12 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
+import tarfile
 import time
 from typing import Any
+import zipfile
 
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel
@@ -39,6 +42,12 @@ class ManifestAnalysisRequest(BaseModel):
     original_filename: str | None = None
 
 
+class ArchiveAnalysisRequest(BaseModel):
+    file_id: str
+    relative_path: str
+    original_filename: str | None = None
+
+
 def positive_float_from_env(name: str, default: float) -> float:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -52,7 +61,25 @@ def positive_float_from_env(name: str, default: float) -> float:
     return value
 
 
+def positive_int_from_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer.") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be greater than zero.")
+    return value
+
+
 COMMAND_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_TOOL_TIMEOUT_SECONDS", 10.0)
+ARCHIVE_MAX_ENTRIES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_ENTRIES", 5000)
+ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES", 209_715_200)
+ARCHIVE_MAX_ENTRY_NAME_LENGTH = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_ENTRY_NAME_LENGTH", 512)
+ARCHIVE_MAX_LISTED_ENTRIES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_LISTED_ENTRIES", 200)
+ARCHIVE_SUSPICIOUS_COMPRESSION_RATIO = 100.0
 
 
 app = FastAPI(
@@ -214,6 +241,48 @@ async def analyze_manifest(request: ManifestAnalysisRequest) -> dict[str, Any]:
         "findings": findings,
         "errors": errors,
     }
+
+
+@app.post("/analyze/archive")
+async def analyze_archive(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_archive_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            entries_sample=[],
+            detected_manifests=[],
+            findings=[],
+            summary=empty_archive_summary(total_compressed_bytes=archive_path.stat().st_size),
+            errors=["Unsupported or corrupt archive. Inspectra did not extract or execute any content."],
+        )
+
+    try:
+        if archive_type == "zip":
+            analysis = analyze_zip_archive(archive_path)
+        else:
+            analysis = analyze_tar_archive(archive_path)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        return build_archive_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            entries_sample=[],
+            detected_manifests=[],
+            findings=[],
+            summary=empty_archive_summary(total_compressed_bytes=archive_path.stat().st_size),
+            errors=[f"Archive could not be parsed safely: {exc}"],
+        )
+
+    return build_archive_result(request.file_id, archive_path, original_filename, archive_type, **analysis)
 
 
 def resolve_data_path(relative_path: str) -> Path:
@@ -550,6 +619,479 @@ def starts_with_any(value: str, prefixes: tuple[str, ...]) -> bool:
 
 def strip_inline_comment(line: str) -> str:
     return line.split(" #", 1)[0].strip()
+
+
+def detect_archive_type(path: Path, original_filename: str) -> str:
+    normalized_name = original_filename.lower()
+    try:
+        if normalized_name.endswith(".zip") and zipfile.is_zipfile(path):
+            return "zip"
+        if normalized_name.endswith((".tar.gz", ".tgz")) and tarfile.is_tarfile(path):
+            return "tar_gz"
+        if normalized_name.endswith(".tar") and tarfile.is_tarfile(path):
+            return "tar"
+        if zipfile.is_zipfile(path):
+            return "zip"
+        if tarfile.is_tarfile(path):
+            return "tar_gz" if normalized_name.endswith((".tar.gz", ".tgz")) else "tar"
+    except OSError:
+        return "unknown"
+    return "unknown"
+
+
+def analyze_zip_archive(path: Path) -> dict[str, Any]:
+    entries_sample: list[dict[str, Any]] = []
+    detected_manifests: list[dict[str, str]] = []
+    findings: list[dict[str, str]] = []
+    seen_findings: set[str] = set()
+    summary = empty_archive_summary()
+
+    with zipfile.ZipFile(path) as archive:
+        for index, info in enumerate(archive.infolist(), start=1):
+            if index > ARCHIVE_MAX_ENTRIES:
+                summary["truncated"] = True
+                add_archive_finding(
+                    findings,
+                    seen_findings,
+                    "archive_too_many_entries",
+                    "Archive entry limit reached",
+                    "medium",
+                    "The archive contains more entries than Inspectra will inspect in this phase.",
+                    f"Processed {ARCHIVE_MAX_ENTRIES} entries; additional entries were not listed.",
+                    "Review the archive with stricter limits or split it into smaller packages before extraction.",
+                )
+                break
+
+            mode = (info.external_attr >> 16) or None
+            entry_type = "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file"
+            record_archive_entry(
+                summary,
+                entries_sample,
+                detected_manifests,
+                findings,
+                seen_findings,
+                {
+                    "path": info.filename,
+                    "type": entry_type,
+                    "size": info.file_size,
+                    "compressed_size": info.compress_size,
+                    "mode": format_file_mode(mode),
+                    "mode_int": mode,
+                    "link_target": None,
+                },
+            )
+
+    finalize_archive_summary(summary, findings, seen_findings)
+    return {
+        "entries_sample": entries_sample,
+        "detected_manifests": detected_manifests,
+        "findings": findings,
+        "summary": summary,
+        "errors": [],
+    }
+
+
+def analyze_tar_archive(path: Path) -> dict[str, Any]:
+    entries_sample: list[dict[str, Any]] = []
+    detected_manifests: list[dict[str, str]] = []
+    findings: list[dict[str, str]] = []
+    seen_findings: set[str] = set()
+    summary = empty_archive_summary(total_compressed_bytes=path.stat().st_size)
+
+    with tarfile.open(path, "r:*") as archive:
+        for index, member in enumerate(archive, start=1):
+            if index > ARCHIVE_MAX_ENTRIES:
+                summary["truncated"] = True
+                add_archive_finding(
+                    findings,
+                    seen_findings,
+                    "archive_too_many_entries",
+                    "Archive entry limit reached",
+                    "medium",
+                    "The archive contains more entries than Inspectra will inspect in this phase.",
+                    f"Processed {ARCHIVE_MAX_ENTRIES} entries; additional entries were not listed.",
+                    "Review the archive with stricter limits or split it into smaller packages before extraction.",
+                )
+                break
+
+            record_archive_entry(
+                summary,
+                entries_sample,
+                detected_manifests,
+                findings,
+                seen_findings,
+                {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "compressed_size": None,
+                    "mode": format_file_mode(member.mode),
+                    "mode_int": member.mode,
+                    "link_target": member.linkname or None,
+                },
+            )
+
+    finalize_archive_summary(summary, findings, seen_findings)
+    return {
+        "entries_sample": entries_sample,
+        "detected_manifests": detected_manifests,
+        "findings": findings,
+        "summary": summary,
+        "errors": [],
+    }
+
+
+def build_archive_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    *,
+    entries_sample: list[dict[str, Any]],
+    detected_manifests: list[dict[str, str]],
+    findings: list[dict[str, str]],
+    summary: dict[str, Any],
+    errors: list[str],
+) -> dict[str, Any]:
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "archive_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_entries": ARCHIVE_MAX_ENTRIES,
+            "max_total_uncompressed_bytes": ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_listed_entries": ARCHIVE_MAX_LISTED_ENTRIES,
+        },
+        "summary": summary,
+        "entries_sample": entries_sample,
+        "detected_manifests": detected_manifests,
+        "findings": findings,
+        "errors": errors,
+    }
+
+
+def empty_archive_summary(total_compressed_bytes: int = 0) -> dict[str, Any]:
+    return {
+        "total_entries": 0,
+        "total_uncompressed_bytes": 0,
+        "total_compressed_bytes": total_compressed_bytes,
+        "directories": 0,
+        "files": 0,
+        "symlinks": 0,
+        "hardlinks": 0,
+        "executables": 0,
+        "nested_archives": 0,
+        "sensitive_name_matches": 0,
+        "path_traversal_entries": 0,
+        "absolute_path_entries": 0,
+        "manifest_files_detected": 0,
+        "findings_count": 0,
+        "truncated": False,
+    }
+
+
+def record_archive_entry(
+    summary: dict[str, Any],
+    entries_sample: list[dict[str, Any]],
+    detected_manifests: list[dict[str, str]],
+    findings: list[dict[str, str]],
+    seen_findings: set[str],
+    entry: dict[str, Any],
+) -> None:
+    path = str(entry["path"])
+    entry_type = str(entry["type"])
+    mode_int = entry.get("mode_int")
+    flags, depth = archive_entry_flags(path, mode_int)
+    manifest_type = detect_archive_manifest(path)
+
+    summary["total_entries"] += 1
+    summary["total_uncompressed_bytes"] += int(entry.get("size") or 0)
+    compressed_size = entry.get("compressed_size")
+    if isinstance(compressed_size, int):
+        summary["total_compressed_bytes"] += compressed_size
+    if entry_type == "directory":
+        summary["directories"] += 1
+    elif entry_type == "symlink":
+        summary["symlinks"] += 1
+    elif entry_type == "hardlink":
+        summary["hardlinks"] += 1
+    elif entry_type == "file":
+        summary["files"] += 1
+
+    if flags["executable"]:
+        summary["executables"] += 1
+    if flags["nested_archive"]:
+        summary["nested_archives"] += 1
+    if flags["sensitive_name"]:
+        summary["sensitive_name_matches"] += 1
+    if flags["path_traversal"]:
+        summary["path_traversal_entries"] += 1
+    if flags["absolute_path"] or flags["windows_absolute_path"]:
+        summary["absolute_path_entries"] += 1
+    if manifest_type:
+        summary["manifest_files_detected"] += 1
+        if len(detected_manifests) < ARCHIVE_MAX_LISTED_ENTRIES:
+            detected_manifests.append({"path": path, "manifest_type": manifest_type})
+
+    public_entry = {
+        "path": path,
+        "type": entry_type,
+        "size": entry.get("size"),
+        "compressed_size": compressed_size,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+    }
+    if entry.get("link_target"):
+        public_entry["link_target"] = entry["link_target"]
+    if len(entries_sample) < ARCHIVE_MAX_LISTED_ENTRIES:
+        entries_sample.append(public_entry)
+
+    add_entry_findings(path, entry_type, flags, findings, seen_findings)
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_entry_name_too_long",
+            "Archive entry name is unusually long",
+            "low",
+            "At least one archive entry name exceeds the configured review limit.",
+            path[:240],
+            "Review long entry names before extraction, especially in automated tooling.",
+        )
+    if manifest_type:
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_manifest_files_detected",
+            "Project manifest files detected",
+            "info",
+            "The archive contains dependency or project manifest files. Inspectra only records their presence in this phase.",
+            path,
+            "Use manifest analysis on trusted, extracted files in a controlled workflow if deeper review is needed.",
+        )
+
+
+def add_entry_findings(
+    path: str,
+    entry_type: str,
+    flags: dict[str, bool],
+    findings: list[dict[str, str]],
+    seen_findings: set[str],
+) -> None:
+    if flags["path_traversal"]:
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_path_traversal_entry",
+            "Archive entry uses path traversal",
+            "medium",
+            "An entry contains .. path segments. This is a possible extraction risk if a tool does not normalize paths safely.",
+            path,
+            "Extract only with tooling that rejects traversal paths and review the archive manually.",
+        )
+    if flags["absolute_path"] or flags["windows_absolute_path"]:
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_absolute_path_entry",
+            "Archive entry uses an absolute path",
+            "medium",
+            "An entry appears to target an absolute path. This is a possible extraction risk in unsafe workflows.",
+            path,
+            "Extract only with tooling that strips or rejects absolute paths.",
+        )
+    if entry_type == "symlink":
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_symlink_entry",
+            "Archive contains symlinks",
+            "low",
+            "Symlinks can be legitimate, but they should be reviewed before extraction.",
+            path,
+            "Confirm symlink targets are expected before extracting the archive.",
+        )
+    if entry_type == "hardlink":
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_hardlink_entry",
+            "Archive contains hardlinks",
+            "low",
+            "Hardlinks can affect extraction behavior and should be reviewed.",
+            path,
+            "Confirm hardlink targets are expected before extracting the archive.",
+        )
+    if flags["executable"]:
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_executable_entry",
+            "Executable permissions detected",
+            "info",
+            "At least one entry has executable permission bits set. Inspectra does not execute it.",
+            path,
+            "Review executable files before running anything extracted from the archive.",
+        )
+    if flags["sensitive_name"]:
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_sensitive_name_entry",
+            "Potentially sensitive filename detected",
+            "medium",
+            "An entry name resembles a secret, credential, or local configuration file.",
+            path,
+            "Review whether this file should be present before sharing or extracting the archive.",
+        )
+    if flags["nested_archive"]:
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_nested_archive_entry",
+            "Nested archive detected",
+            "low",
+            "The archive contains another compressed file. Nested archives can hide additional content and increase extraction cost.",
+            path,
+            "Inspect nested archives separately before extraction or distribution.",
+        )
+
+
+def finalize_archive_summary(summary: dict[str, Any], findings: list[dict[str, str]], seen_findings: set[str]) -> None:
+    total_uncompressed = int(summary["total_uncompressed_bytes"])
+    total_compressed = int(summary["total_compressed_bytes"])
+    if total_uncompressed > ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES:
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_uncompressed_size_limit_exceeded",
+            "Archive uncompressed size exceeds configured limit",
+            "medium",
+            "The estimated total uncompressed size exceeds the configured passive analysis limit.",
+            f"{total_uncompressed} bytes",
+            "Treat this as an archive bomb indicator and inspect in a constrained environment before extraction.",
+        )
+    if total_compressed > 0 and total_uncompressed / total_compressed >= ARCHIVE_SUSPICIOUS_COMPRESSION_RATIO:
+        add_archive_finding(
+            findings,
+            seen_findings,
+            "archive_high_compression_ratio",
+            "Archive has a high compression ratio",
+            "medium",
+            "The estimated uncompressed size is much larger than the compressed size. This can be legitimate but should be reviewed.",
+            f"{total_uncompressed} bytes uncompressed / {total_compressed} bytes compressed",
+            "Validate manually before extraction, especially in automated systems.",
+        )
+    summary["findings_count"] = len(findings)
+
+
+def archive_entry_flags(path: str, mode: int | None) -> tuple[dict[str, bool], int]:
+    normalized = path.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part]
+    flags = {
+        "path_traversal": any(part == ".." for part in parts),
+        "absolute_path": normalized.startswith("/"),
+        "windows_absolute_path": bool(re.match(r"^[A-Za-z]:[\\/]", path)),
+        "executable": bool(mode and mode & 0o111),
+        "hidden_path": any(part.startswith(".") and part not in {".", ".."} for part in parts),
+        "nested_archive": is_nested_archive_path(normalized),
+        "sensitive_name": is_sensitive_archive_path(normalized),
+        "manifest_file": detect_archive_manifest(normalized) is not None,
+    }
+    return flags, len(parts)
+
+
+def tar_member_type(member: tarfile.TarInfo) -> str:
+    if member.isdir():
+        return "directory"
+    if member.issym():
+        return "symlink"
+    if member.islnk():
+        return "hardlink"
+    if member.isfile():
+        return "file"
+    return "unknown"
+
+
+def detect_archive_manifest(path: str) -> str | None:
+    normalized = path.replace("\\", "/").lower().lstrip("/")
+    basename = normalized.rsplit("/", 1)[-1]
+    manifest_names = {
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "requirements.txt",
+        "pyproject.toml",
+        "poetry.lock",
+        "pipfile",
+        "pipfile.lock",
+        "go.mod",
+        "go.sum",
+        "cargo.toml",
+        "cargo.lock",
+        "pom.xml",
+        "build.gradle",
+        "composer.json",
+        "composer.lock",
+        "dockerfile",
+        "docker-compose.yml",
+        "compose.yml",
+    }
+    if basename in manifest_names:
+        return basename
+    return None
+
+
+def is_nested_archive_path(path: str) -> bool:
+    lowered = path.lower()
+    return lowered.endswith((".zip", ".tar", ".tar.gz", ".tgz", ".7z", ".rar"))
+
+
+def is_sensitive_archive_path(path: str) -> bool:
+    normalized = path.replace("\\", "/").lower().lstrip("/")
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    if basename in {".env", "id_rsa", "id_dsa", ".npmrc", ".pypirc", "kubeconfig"}:
+        return True
+    if basename.startswith(".env."):
+        return True
+    if basename.endswith((".pem", ".key", ".p12", ".pfx")):
+        return True
+    if any(part in {"credentials", "secrets", "kubeconfig"} for part in parts):
+        return True
+    return normalized.endswith(".docker/config.json")
+
+
+def format_file_mode(mode: int | None) -> str | None:
+    if mode is None:
+        return None
+    return oct(mode & 0o7777)
+
+
+def add_archive_finding(
+    findings: list[dict[str, str]],
+    seen_findings: set[str],
+    finding_id: str,
+    title: str,
+    level: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+) -> None:
+    if finding_id in seen_findings:
+        return
+    findings.append(make_finding(finding_id, title, level, description, evidence, recommendation))
+    seen_findings.add(finding_id)
 
 
 def make_finding(

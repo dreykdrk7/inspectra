@@ -13,6 +13,7 @@ import {
   type JobStatusFilter,
   type JobTypeFilter
 } from "./dashboardFilters";
+import { ArchiveJobReport } from "./ArchiveJobReport";
 import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
@@ -125,8 +126,10 @@ export function App() {
         await api.uploadPdf(selectedFile);
       } else if (uploadKind === "image") {
         await api.uploadImage(selectedFile);
-      } else {
+      } else if (uploadKind === "manifest") {
         await api.uploadManifest(selectedFile);
+      } else {
+        await api.uploadArchive(selectedFile);
       }
       setSelectedFile(null);
       event.currentTarget.reset();
@@ -150,7 +153,9 @@ export function App() {
           ? await api.launchPdfAudit(file.id)
           : file.kind === "image"
             ? await api.launchImageAudit(file.id)
-            : await api.launchManifestAudit(file.id);
+            : file.kind === "manifest"
+              ? await api.launchManifestAudit(file.id)
+              : await api.launchArchiveAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -197,6 +202,7 @@ export function App() {
         <MetricCard label="PDFs" value={metrics.pdfs} />
         <MetricCard label="Images" value={metrics.images} />
         <MetricCard label="Manifests" value={metrics.manifests} />
+        <MetricCard label="Archives" value={metrics.archives} />
         <MetricCard label="Total jobs" value={metrics.totalJobs} />
         <MetricCard label="Completed" value={metrics.completedJobs} />
         <MetricCard label="Failed" value={metrics.failedJobs} />
@@ -228,6 +234,9 @@ export function App() {
               <button type="button" className={uploadKind === "manifest" ? "active" : ""} onClick={() => setUploadKind("manifest")}>
                 Manifest
               </button>
+              <button type="button" className={uploadKind === "archive" ? "active" : ""} onClick={() => setUploadKind("archive")}>
+                Archive
+              </button>
             </div>
             <input
               type="file"
@@ -247,7 +256,7 @@ export function App() {
         <Panel title="Files" action={filesState.loading ? <span className="muted">Loading</span> : null}>
           <div className="filter-bar">
             <div className="segmented-control" aria-label="File kind filter">
-              {(["all", "pdf", "image", "manifest"] as FileKindFilter[]).map((kind) => (
+              {(["all", "pdf", "image", "manifest", "archive"] as FileKindFilter[]).map((kind) => (
                 <button
                   type="button"
                   key={kind}
@@ -344,7 +353,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -406,8 +415,10 @@ export function App() {
               <PdfJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "image_basic" ? (
               <ImageJobReport job={selectedJob} file={selectedJobFile} />
-            ) : (
+            ) : selectedJob.audit_type === "manifest_basic" ? (
               <ManifestJobReport job={selectedJob} file={selectedJobFile} />
+            ) : (
+              <ArchiveJobReport job={selectedJob} file={selectedJobFile} />
             )}
           </>
         ) : (
@@ -512,7 +523,10 @@ function acceptForKind(kind: FileRecord["kind"]): string {
   if (kind === "image") {
     return "image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp";
   }
-  return "application/json,text/plain,application/toml,.json,.txt,.toml";
+  if (kind === "manifest") {
+    return "application/json,text/plain,application/toml,.json,.txt,.toml";
+  }
+  return "application/zip,application/x-tar,application/gzip,.zip,.tar,.tar.gz,.tgz";
 }
 
 function uploadErrorForKind(kind: FileRecord["kind"]): string {
@@ -522,7 +536,10 @@ function uploadErrorForKind(kind: FileRecord["kind"]): string {
   if (kind === "image") {
     return "Selecciona una imagen.";
   }
-  return "Selecciona un manifiesto.";
+  if (kind === "manifest") {
+    return "Selecciona un manifiesto.";
+  }
+  return "Selecciona un archivo comprimido.";
 }
 
 function kindClass(kind: FileRecord["kind"]): string {
@@ -532,10 +549,16 @@ function kindClass(kind: FileRecord["kind"]): string {
   if (kind === "image") {
     return "image-kind";
   }
-  return "manifest-kind";
+  if (kind === "manifest") {
+    return "manifest-kind";
+  }
+  return "archive-kind";
 }
 
 function auditLabel(kind: FileRecord["kind"]): string {
+  if (kind === "archive") {
+    return "Analyze archive";
+  }
   if (kind === "manifest") {
     return "Analyze manifest";
   }
@@ -558,14 +581,23 @@ function summarizeJob(job: JobListItem): string {
   const qpdfOk = typeof job.summary.qpdf_ok === "boolean" ? job.summary.qpdf_ok : undefined;
   const mimeType = typeof job.summary.mime_type === "string" ? job.summary.mime_type : null;
   const manifestType = typeof job.summary.manifest_type === "string" ? job.summary.manifest_type : null;
+  const archiveType = typeof job.summary.archive_type === "string" ? job.summary.archive_type : null;
+  const totalEntries = typeof job.summary.total_entries === "number" ? job.summary.total_entries : null;
   const totalDependencies = typeof job.summary.total_dependencies === "number" ? job.summary.total_dependencies : null;
   const findingsCount =
-    typeof job.summary.informational_findings_count === "number" ? job.summary.informational_findings_count : null;
+    typeof job.summary.informational_findings_count === "number"
+      ? job.summary.informational_findings_count
+      : typeof job.summary.findings_count === "number"
+        ? job.summary.findings_count
+        : null;
   if (job.audit_type === "image_basic") {
     return `${mimeType ?? "image"}, ${warnings} warnings, ${timedOut} timeouts`;
   }
   if (job.audit_type === "manifest_basic") {
     return `${manifestType ?? "manifest"}, ${totalDependencies ?? 0} deps, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "archive_basic") {
+    return `${archiveType ?? "archive"}, ${totalEntries ?? 0} entries, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

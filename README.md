@@ -1,6 +1,6 @@
 # Inspectra
 
-Inspectra is a lightweight, open source MVP for defensive and educational local security audits. The current phase focuses on passive PDF, image, and dependency manifest analysis inside Docker containers so audit tools do not need to be installed on the host system.
+Inspectra is a lightweight, open source MVP for defensive and educational local security audits. The current phase focuses on passive PDF, image, dependency manifest, and archive inspection inside Docker containers so audit tools do not need to be installed on the host system.
 
 This project is intentionally small: a FastAPI backend, a containerized tool runner, local job/result storage, and clear boundaries for authorized use.
 
@@ -9,16 +9,17 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Uploads local PDF files through a REST API.
 - Uploads local JPEG, PNG, and WebP images through a REST API.
 - Uploads local dependency manifests: `package.json`, `requirements.txt`, and `pyproject.toml`.
+- Uploads local ZIP, TAR, TAR.GZ, and TGZ archives through a REST API.
 - Lists registered local files without exposing host paths.
 - Stores uploaded files under `data/uploads`.
-- Starts basic PDF, image, and manifest audit jobs.
+- Starts basic PDF, image, manifest, and archive audit jobs.
 - Runs passive tools inside the `audit-tools` container.
 - Calculates file hashes inside the tool container.
 - Stores job state and results under `data/results/jobs`.
 - Lists audit jobs with a compact summary.
 - Exports job reports as Markdown, HTML, XML, and PDF.
 - Deletes uploaded source files while keeping historical job results.
-- Provides a minimal React UI for uploads, audits, filters, jobs, readable PDF/image/manifest reports, exports, and raw JSON results.
+- Provides a minimal React UI for uploads, audits, filters, jobs, readable PDF/image/manifest/archive reports, exports, and raw JSON results.
 - Exposes OpenAPI docs at `http://localhost:8000/docs`.
 
 ## What This MVP Does Not Do
@@ -29,6 +30,8 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not install audit tools on the host.
 - It does not install dependencies from uploaded manifests.
 - It does not execute package scripts or project code.
+- It does not extract archives broadly to the filesystem.
+- It does not execute, install, or resolve anything found inside archives.
 - It does not call external services to generate reports.
 - It does not query external CVE or vulnerability databases yet.
 - It does not process targets unless you upload them intentionally.
@@ -74,6 +77,10 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_MAX_UPLOAD_BYTES` | backend | `20971520` | Maximum accepted upload size. Default is 20 MB. |
 | `INSPECTRA_TOOL_RUNNER_URL` | backend | `http://audit-tools:8081` | Internal URL for the tool runner. |
 | `INSPECTRA_TOOL_TIMEOUT_SECONDS` | audit-tools | `10` | Timeout applied to each external tool command. |
+| `INSPECTRA_ARCHIVE_MAX_ENTRIES` | audit-tools | `5000` | Maximum archive entries inspected before truncating the result. |
+| `INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES` | audit-tools | `209715200` | Informational archive-size threshold, defaulting to 200 MB. |
+| `INSPECTRA_ARCHIVE_MAX_ENTRY_NAME_LENGTH` | audit-tools | `512` | Entry-name length threshold for review findings. |
+| `INSPECTRA_ARCHIVE_MAX_LISTED_ENTRIES` | audit-tools | `200` | Maximum archive entries and detected manifests listed in the result. |
 | `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Browser-facing backend URL used by the React app. |
 
 ## Use the Web UI
@@ -84,13 +91,13 @@ Open:
 http://localhost:5173
 ```
 
-From the UI you can check backend health, upload PDFs, images, or manifests, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
+From the UI you can check backend health, upload PDFs, images, manifests, or archives, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
 The dashboard includes client-side counters, file filters by kind, job filters by status and audit type, quick search fields, manual refresh, and gentle auto-refresh while jobs are queued or running.
 
-From the upload panel, choose `PDF`, `Image`, or `Manifest`. Image uploads currently accept JPEG, PNG, and WebP. Manifest uploads currently accept `package.json`, `requirements.txt`, and `pyproject.toml`. Inspectra does not render image previews in this phase.
+From the upload panel, choose `PDF`, `Image`, `Manifest`, or `Archive`. Image uploads currently accept JPEG, PNG, and WebP. Manifest uploads currently accept `package.json`, `requirements.txt`, and `pyproject.toml`. Archive uploads currently accept `.zip`, `.tar`, `.tar.gz`, and `.tgz`. Inspectra does not render image previews or extract archives broadly in this phase.
 
-Completed PDF, image, and manifest jobs show readable reports with:
+Completed PDF, image, manifest, and archive jobs show readable reports with:
 
 - General job summary.
 - Hashes.
@@ -99,6 +106,7 @@ Completed PDF, image, and manifest jobs show readable reports with:
 - PDF `qpdf --check` validation when relevant.
 - Image privacy indicators such as GPS, creator, serial number, device, and software metadata presence.
 - Manifest project metadata, dependencies by group, scripts, and informational supply-chain indicators.
+- Archive structure metrics, detected manifest filenames, entries sample, path traversal indicators, sensitive-name indicators, nested archives, and size/compression indicators.
 - Tool errors and timeouts.
 - Optional raw JSON for debugging.
 
@@ -131,6 +139,15 @@ curl -sS -F "file=@/path/to/package.json;type=application/json" \
 
 Accepted names are `package.json`, `requirements.txt`, and `pyproject.toml`. Inspectra validates the filename and basic text/JSON/TOML structure, applies the same upload size limit, and stores the file as `kind: "manifest"`.
 
+## Upload an Archive
+
+```bash
+curl -sS -F "file=@/path/to/project.zip;type=application/zip" \
+  http://localhost:8000/files/archive
+```
+
+Accepted archive names are `.zip`, `.tar`, `.tar.gz`, and `.tgz`. Inspectra validates filename and initial content signatures before storing the file as `kind: "archive"`. Stronger format validation happens inside the `audit-tools` runner using Python standard library parsers.
+
 ## List Uploaded Files
 
 ```bash
@@ -162,6 +179,14 @@ curl -sS -X POST http://localhost:8000/audits/manifest/<file_id>
 ```
 
 The manifest audit parses local text only. It does not run npm, pip, Poetry, pnpm, yarn, project scripts, or dependency installation. It does not query external CVE databases in this phase.
+
+## Launch an Archive Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/archive/<file_id>
+```
+
+The archive audit inspects container metadata passively with Python standard library parsers. It does not extract the full archive to the filesystem, follow symlinks, execute files, install dependencies, resolve internal manifests, or call the internet.
 
 ## Read Job Results
 
@@ -197,7 +222,7 @@ Supported formats:
 curl -sS http://localhost:8000/jobs
 ```
 
-Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, or manifest dependency/finding counts when present.
+Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, or archive entry/finding counts when present.
 
 ## Delete an Uploaded File
 

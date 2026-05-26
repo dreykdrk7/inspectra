@@ -1,3 +1,7 @@
+import io
+import tarfile
+import zipfile
+
 import runner.main as runner
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -190,12 +194,137 @@ async def test_analyze_manifest_rejects_path_traversal(monkeypatch, tmp_path):
     assert response.json()["detail"] == "Path escapes data directory."
 
 
+@pytest.mark.anyio
+async def test_analyze_archive_zip_reports_structure_and_indicators(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "src/app.py": b"print('hello')\n",
+            "package.json": PACKAGE_JSON.encode("utf-8"),
+            ".env": b"TOKEN=redacted\n",
+            "nested/project.tar.gz": b"placeholder",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    assert payload["analyzer"] == "archive_basic"
+    assert payload["archive_type"] == "zip"
+    assert payload["summary"]["total_entries"] == 4
+    assert payload["summary"]["manifest_files_detected"] == 1
+    assert payload["summary"]["sensitive_name_matches"] == 1
+    assert payload["summary"]["nested_archives"] == 1
+    assert payload["detected_manifests"][0]["path"] == "package.json"
+    assert "archive_sensitive_name_entry" in finding_ids
+    assert "archive_nested_archive_entry" in finding_ids
+    assert payload["hashes"]["sha256"]
+
+
+@pytest.mark.anyio
+async def test_analyze_archive_zip_detects_path_traversal(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {"../evil.txt": b"nope"})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["path_traversal_entries"] == 1
+    assert {finding["id"] for finding in payload["findings"]} >= {"archive_path_traversal_entry"}
+    assert payload["entries_sample"][0]["flags"]["path_traversal"] is True
+
+
+@pytest.mark.anyio
+async def test_analyze_archive_tar_reports_symlink(monkeypatch, tmp_path):
+    archive_path = write_tar_archive(tmp_path)
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["archive_type"] == "tar"
+    assert payload["summary"]["files"] == 1
+    assert payload["summary"]["symlinks"] == 1
+    assert "archive_symlink_entry" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_archive_handles_corrupt_file(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    archive_path = uploads_dir / "broken.zip"
+    archive_path.write_bytes(b"PK not really a zip")
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "broken.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["archive_type"] == "unknown"
+    assert payload["errors"]
+    assert payload["summary"]["total_entries"] == 0
+
+
 def write_manifest(tmp_path, filename: str, content: str):
     uploads_dir = tmp_path / "uploads"
     uploads_dir.mkdir(exist_ok=True)
     manifest_path = uploads_dir / filename
     manifest_path.write_text(content, encoding="utf-8")
     return manifest_path
+
+
+def write_zip_archive(tmp_path, entries: dict[str, bytes]):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+    return archive_path
+
+
+def write_tar_archive(tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        content = b"hello\n"
+        file_info = tarfile.TarInfo("README.md")
+        file_info.size = len(content)
+        file_info.mode = 0o644
+        archive.addfile(file_info, io.BytesIO(content))
+
+        link_info = tarfile.TarInfo("latest-readme")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "README.md"
+        link_info.mode = 0o777
+        archive.addfile(link_info)
+    return archive_path
 
 
 def fake_image_command(args: list[str]) -> dict:

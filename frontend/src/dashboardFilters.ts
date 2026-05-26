@@ -10,6 +10,7 @@ export function buildDashboardMetrics(files: FileRecord[], jobs: JobListItem[]) 
     pdfs: files.filter((file) => file.kind === "pdf").length,
     images: files.filter((file) => file.kind === "image").length,
     manifests: files.filter((file) => file.kind === "manifest").length,
+    archives: files.filter((file) => file.kind === "archive").length,
     totalJobs: jobs.length,
     completedJobs: jobs.filter((job) => job.status === "completed").length,
     failedJobs: jobs.filter((job) => job.status === "failed").length,
@@ -59,6 +60,9 @@ export function fileKindLabel(kind: FileKindFilter): string {
   }
   if (kind === "manifest") {
     return "Manifest";
+  }
+  if (kind === "archive") {
+    return "Archives";
   }
   return "PDF";
 }

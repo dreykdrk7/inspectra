@@ -1,6 +1,9 @@
 from datetime import datetime, timedelta, timezone
+import io
 import json
+import tarfile
 from xml.etree import ElementTree
+import zipfile
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -8,7 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from app.config import load_settings
 from app.main import app
 from app.models import JobRecord
-from app.services import ImageAuditService, ManifestAuditService, PdfAuditService
+from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService
 from app.storage import FileStore, JobStore
 
 
@@ -28,6 +31,9 @@ class NoopAuditService:
     async def run_manifest_analysis(self, job_id: str) -> None:
         return None
 
+    async def run_archive_analysis(self, job_id: str) -> None:
+        return None
+
 
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
@@ -43,6 +49,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)
     app.state.image_audits = ImageAuditService(settings, file_store, job_store)
     app.state.manifest_audits = ManifestAuditService(settings, file_store, job_store)
+    app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
 
 
 @pytest.mark.anyio
@@ -179,6 +186,62 @@ async def test_manifest_upload_rejects_unsupported_file(monkeypatch, tmp_path):
 
     assert response.status_code == 400
     assert "package.json, requirements.txt, and pyproject.toml" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_archive_upload_accepts_zip(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    sample_zip = make_zip_bytes({"src/app.py": b"print('hello')\n", "package.json": SAMPLE_PACKAGE_JSON})
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/archive",
+            files={"file": ("project.zip", sample_zip, "application/zip")},
+        )
+        list_response = await client.get("/files")
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["kind"] == "archive"
+    assert payload["content_type"] == "application/zip"
+    assert payload["stored_filename"].endswith(".zip")
+    assert (tmp_path / "uploads" / payload["stored_filename"]).exists()
+    assert list_response.json()[0]["kind"] == "archive"
+
+
+@pytest.mark.anyio
+async def test_archive_upload_accepts_tar_gz(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    sample_tar_gz = make_tar_bytes({"README.md": b"# demo\n"}, gzipped=True)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/archive",
+            files={"file": ("project.tar.gz", sample_tar_gz, "application/gzip")},
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["kind"] == "archive"
+    assert payload["content_type"] == "application/gzip"
+    assert payload["stored_filename"].endswith(".tar.gz")
+
+
+@pytest.mark.anyio
+async def test_archive_upload_rejects_unsupported_file(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/files/archive",
+            files={"file": ("project.rar", b"not supported", "application/octet-stream")},
+        )
+
+    assert response.status_code == 400
+    assert ".zip, .tar, .tar.gz, and .tgz" in response.json()["detail"]
 
 
 @pytest.mark.anyio
@@ -332,6 +395,56 @@ async def test_manifest_audit_job_creation_and_cross_type_rejections(monkeypatch
 
 
 @pytest.mark.anyio
+async def test_archive_audit_job_creation_and_cross_type_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.pdf_audits = noop
+    app.state.image_audits = noop
+    app.state.manifest_audits = noop
+    app.state.archive_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        image_response = await client.post("/files/image", files={"file": ("pixel.png", SAMPLE_PNG, "image/png")})
+        manifest_response = await client.post(
+            "/files/manifest",
+            files={"file": ("package.json", SAMPLE_PACKAGE_JSON, "application/json")},
+        )
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("project.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        image_file = image_response.json()
+        manifest_file = manifest_response.json()
+        archive_file = archive_response.json()
+
+        archive_job_response = await client.post(f"/audits/archive/{archive_file['id']}")
+        archive_as_pdf_response = await client.post(f"/audits/pdf/{archive_file['id']}")
+        archive_as_image_response = await client.post(f"/audits/image/{archive_file['id']}")
+        archive_as_manifest_response = await client.post(f"/audits/manifest/{archive_file['id']}")
+        pdf_as_archive_response = await client.post(f"/audits/archive/{pdf_file['id']}")
+        image_as_archive_response = await client.post(f"/audits/archive/{image_file['id']}")
+        manifest_as_archive_response = await client.post(f"/audits/archive/{manifest_file['id']}")
+
+    assert archive_job_response.status_code == 202
+    assert archive_job_response.json()["audit_type"] == "archive_basic"
+    assert archive_as_pdf_response.status_code == 400
+    assert archive_as_pdf_response.json()["detail"] == "File is not a PDF."
+    assert archive_as_image_response.status_code == 400
+    assert archive_as_image_response.json()["detail"] == "File is not an image."
+    assert archive_as_manifest_response.status_code == 400
+    assert archive_as_manifest_response.json()["detail"] == "File is not a manifest."
+    assert pdf_as_archive_response.status_code == 400
+    assert pdf_as_archive_response.json()["detail"] == "File is not an archive."
+    assert image_as_archive_response.status_code == 400
+    assert image_as_archive_response.json()["detail"] == "File is not an archive."
+    assert manifest_as_archive_response.status_code == 400
+    assert manifest_as_archive_response.json()["detail"] == "File is not an archive."
+
+
+@pytest.mark.anyio
 async def test_list_jobs_returns_recent_first_with_summary(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     older = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -471,6 +584,35 @@ async def test_export_pdf_for_existing_job(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_export_archive_job_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_archive_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "archive_basic" in responses["markdown"].text
+    assert "Archive Metrics" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "archive_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
 async def test_export_returns_404_for_missing_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
@@ -530,3 +672,83 @@ def save_export_fixture_job() -> JobRecord:
     )
     app.state.jobs.save(job)
     return job
+
+
+def save_archive_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="d" * 32,
+        audit_type="archive_basic",
+        file_id="2" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "archive_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 512, "original_filename": "project.zip"},
+            "summary": {
+                "total_entries": 3,
+                "total_uncompressed_bytes": 128,
+                "total_compressed_bytes": 96,
+                "directories": 1,
+                "files": 2,
+                "symlinks": 0,
+                "hardlinks": 0,
+                "executables": 0,
+                "nested_archives": 1,
+                "sensitive_name_matches": 1,
+                "path_traversal_entries": 0,
+                "absolute_path_entries": 0,
+                "manifest_files_detected": 1,
+                "findings_count": 2,
+                "truncated": False,
+            },
+            "detected_manifests": [{"path": "package.json", "manifest_type": "package.json"}],
+            "entries_sample": [
+                {
+                    "path": "package.json",
+                    "type": "file",
+                    "size": 64,
+                    "compressed_size": 48,
+                    "mode": "0o644",
+                    "depth": 1,
+                    "flags": {"manifest_file": True},
+                }
+            ],
+            "findings": [
+                {
+                    "id": "archive_sensitive_name_entry",
+                    "title": "Potentially sensitive filename detected",
+                    "level": "medium",
+                    "description": "Review this indicator manually.",
+                    "evidence": ".env",
+                    "recommendation": "Confirm the file should be present.",
+                }
+            ],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def make_zip_bytes(entries: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+def make_tar_bytes(entries: dict[str, bytes], *, gzipped: bool = False) -> bytes:
+    buffer = io.BytesIO()
+    mode = "w:gz" if gzipped else "w"
+    with tarfile.open(fileobj=buffer, mode=mode) as archive:
+        for name, content in entries.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    return buffer.getvalue()

@@ -146,6 +146,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_image_sections(result))
     elif job.audit_type == "manifest_basic":
         sections.extend(build_manifest_sections(result))
+    elif job.audit_type == "archive_basic":
+        sections.extend(build_archive_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -202,6 +204,19 @@ def build_manifest_sections(result: dict[str, Any]) -> list[ReportSection]:
     ]
 
 
+def build_archive_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "Archive Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("Archive Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Detected Manifests", flatten_list(result.get("detected_manifests"))),
+        ReportSection("Findings", flatten_list(result.get("findings"))),
+        ReportSection("Entries Sample", flatten_list(result.get("entries_sample"))),
+    ]
+
+
 def build_summary(job: JobRecord) -> dict[str, Any]:
     result = as_dict(job.result)
     validation = as_dict(result.get("validation"))
@@ -222,6 +237,11 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["manifest_type"] = result.get("manifest_type", "N/A")
         data["total_dependencies"] = summary.get("total_dependencies", "N/A")
         data["informational_findings_count"] = summary.get("informational_findings_count", "N/A")
+    elif job.audit_type == "archive_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["total_entries"] = summary.get("total_entries", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
     return data
 
 
