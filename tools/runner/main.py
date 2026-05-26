@@ -62,6 +62,7 @@ class WebBasicAnalysisRequest(BaseModel):
     timeout_seconds: float | None = None
     max_response_bytes: int | None = None
     max_redirects: int | None = None
+    allowed_ports: list[int] | None = None
 
 
 def positive_float_from_env(name: str, default: float) -> float:
@@ -102,6 +103,38 @@ def bool_from_env(name: str, default: bool) -> bool:
     raise ValueError(f"{name} must be a boolean value.")
 
 
+def ports_from_env(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    ports: list[int] = []
+    for item in raw_value.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        try:
+            port = int(value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a comma-separated list of TCP ports.") from exc
+        if port < 1 or port > 65535:
+            raise ValueError(f"{name} ports must be between 1 and 65535.")
+        ports.append(port)
+    if not ports:
+        raise ValueError(f"{name} must include at least one TCP port.")
+    return tuple(sorted(set(ports)))
+
+
+def parse_allowed_ports(values: list[int]) -> tuple[int, ...]:
+    ports: list[int] = []
+    for value in values:
+        if value < 1 or value > 65535:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Allowed web ports must be between 1 and 65535.")
+        ports.append(int(value))
+    if not ports:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one web port must be allowed.")
+    return tuple(sorted(set(ports)))
+
+
 COMMAND_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_TOOL_TIMEOUT_SECONDS", 10.0)
 ARCHIVE_MAX_ENTRIES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_ENTRIES", 5000)
 ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES = positive_int_from_env("INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES", 209_715_200)
@@ -117,6 +150,7 @@ WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS",
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
 WEB_MAX_REDIRECTS = positive_int_from_env("INSPECTRA_WEB_MAX_REDIRECTS", 5)
+WEB_ALLOWED_PORTS = ports_from_env("INSPECTRA_WEB_ALLOWED_PORTS", (80, 443))
 ZIP_EOCD_SIGNATURE = b"PK\x05\x06"
 ZIP_EOCD_MIN_SIZE = 22
 ZIP_EOCD_MAX_COMMENT_SIZE = 65_535
@@ -136,6 +170,8 @@ WEB_SECURITY_HEADERS = (
 )
 METADATA_IPS = {ipaddress.ip_address("169.254.169.254")}
 METADATA_HOSTS = {"metadata.google.internal"}
+LOCALHOST_HOSTS = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
+SENSITIVE_RESPONSE_HEADERS = {"set-cookie", "authorization", "proxy-authorization", "x-api-key", "x-auth-token"}
 SECURITY_TXT_FIELDS = {
     "contact",
     "expires",
@@ -391,6 +427,7 @@ async def analyze_web_basic(request: WebBasicAnalysisRequest) -> dict[str, Any]:
     timeout_seconds = request.timeout_seconds or WEB_TIMEOUT_SECONDS
     max_response_bytes = request.max_response_bytes or WEB_MAX_RESPONSE_BYTES
     max_redirects = request.max_redirects if request.max_redirects is not None else WEB_MAX_REDIRECTS
+    allowed_ports = parse_allowed_ports(request.allowed_ports) if request.allowed_ports is not None else WEB_ALLOWED_PORTS
 
     if timeout_seconds <= 0 or max_response_bytes <= 0 or max_redirects < 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Web analysis limits must be positive.")
@@ -402,6 +439,7 @@ async def analyze_web_basic(request: WebBasicAnalysisRequest) -> dict[str, Any]:
             timeout_seconds=timeout_seconds,
             max_response_bytes=max_response_bytes,
             max_redirects=max_redirects,
+            allowed_ports=allowed_ports,
         )
     except HTTPException:
         raise
@@ -432,6 +470,7 @@ async def analyze_web_basic(request: WebBasicAnalysisRequest) -> dict[str, Any]:
                 )
             ],
             errors=[error_message],
+            allowed_ports=allowed_ports,
         )
 
 
@@ -442,6 +481,7 @@ def analyze_web_basic_target(
     timeout_seconds: float,
     max_response_bytes: int,
     max_redirects: int,
+    allowed_ports: tuple[int, ...],
 ) -> dict[str, Any]:
     original_url = raw_url
     normalized_url = normalize_web_url(raw_url)
@@ -450,6 +490,7 @@ def analyze_web_basic_target(
     findings: list[dict[str, str]] = []
     errors: list[str] = []
     http_result: dict[str, Any] = {}
+    seen_urls = {current_url}
 
     for _ in range(max_redirects + 1):
         http_result = fetch_http_once(
@@ -457,6 +498,7 @@ def analyze_web_basic_target(
             allow_private_targets=allow_private_targets,
             timeout_seconds=timeout_seconds,
             max_response_bytes=max_response_bytes,
+            allowed_ports=allowed_ports,
         )
         status_code = int(http_result.get("status_code") or 0)
         location = header_value(as_dict(http_result.get("response_headers")), "Location")
@@ -476,7 +518,20 @@ def analyze_web_basic_target(
             )
             break
         next_url = normalize_web_url(urljoin(current_url, location))
-        validate_web_url_allowed(next_url, allow_private_targets=allow_private_targets)
+        validate_web_url_allowed(next_url, allow_private_targets=allow_private_targets, allowed_ports=allowed_ports)
+        if next_url in seen_urls:
+            errors.append("Redirect loop detected before a final response was reached.")
+            findings.append(
+                make_finding(
+                    "web_redirect_loop_detected",
+                    "Redirect loop detected",
+                    "low",
+                    "Inspectra stopped following redirects after observing a repeated target URL.",
+                    f"{current_url} -> {next_url}",
+                    "Review the redirect chain manually if this target is expected.",
+                )
+            )
+            break
         if urlsplit(next_url).hostname != urlsplit(current_url).hostname:
             findings.append(
                 make_finding(
@@ -490,11 +545,12 @@ def analyze_web_basic_target(
             )
         redirects.append({"from_url": current_url, "to_url": next_url, "status_code": status_code})
         current_url = next_url
+        seen_urls.add(current_url)
 
     final_url = current_url
-    tls = inspect_tls(final_url, allow_private_targets=allow_private_targets, timeout_seconds=timeout_seconds)
-    robots_txt = fetch_robots_txt(final_url, allow_private_targets, timeout_seconds, max_response_bytes)
-    security_txt = fetch_security_txt(final_url, allow_private_targets, timeout_seconds, max_response_bytes)
+    tls = inspect_tls(final_url, allow_private_targets=allow_private_targets, timeout_seconds=timeout_seconds, allowed_ports=allowed_ports)
+    robots_txt = fetch_robots_txt(final_url, allow_private_targets, timeout_seconds, max_response_bytes, allowed_ports)
+    security_txt = fetch_security_txt(final_url, allow_private_targets, timeout_seconds, max_response_bytes, allowed_ports)
     security_headers = evaluate_security_headers(as_dict(http_result.get("response_headers")))
     cookies = parse_response_cookies(http_result.get("set_cookie_headers", []))
     findings.extend(
@@ -523,6 +579,7 @@ def analyze_web_basic_target(
         errors=errors,
         security_headers=security_headers,
         cookies=cookies,
+        allowed_ports=allowed_ports,
     )
 
 
@@ -532,9 +589,10 @@ def fetch_http_once(
     allow_private_targets: bool,
     timeout_seconds: float,
     max_response_bytes: int,
+    allowed_ports: tuple[int, ...],
 ) -> dict[str, Any]:
     url = normalize_web_url(raw_url)
-    validate_web_url_allowed(url, allow_private_targets=allow_private_targets)
+    validate_web_url_allowed(url, allow_private_targets=allow_private_targets, allowed_ports=allowed_ports)
     parsed = urlsplit(url)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -592,12 +650,16 @@ def normalize_web_url(raw_url: str) -> str:
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", parsed.query, ""))
 
 
-def validate_web_url_allowed(raw_url: str, *, allow_private_targets: bool) -> None:
+def validate_web_url_allowed(raw_url: str, *, allow_private_targets: bool, allowed_ports: tuple[int, ...]) -> None:
     parsed = urlsplit(normalize_web_url(raw_url))
     host = parsed.hostname or ""
     if host.lower().rstrip(".") in METADATA_HOSTS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cloud metadata targets are not allowed.")
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if port not in allowed_ports:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Target port {port} is not allowed for web audits.")
+    if host.lower().rstrip(".") in LOCALHOST_HOSTS and not allow_private_targets:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target resolves to a blocked address range: loopback address.")
     for address in resolve_web_host(host, port):
         reason = blocked_web_ip_reason(address, allow_private_targets=allow_private_targets)
         if reason:
@@ -627,11 +689,13 @@ def blocked_web_ip_reason(address: ipaddress.IPv4Address | ipaddress.IPv6Address
         return "unspecified address"
     if address.is_link_local:
         return "link-local address"
+    if address.is_multicast:
+        return "multicast address"
     if not allow_private_targets and address.is_loopback:
         return "loopback address"
     if not allow_private_targets and address.is_private:
         return "private address"
-    if not allow_private_targets and address.is_reserved:
+    if address.is_reserved and not (allow_private_targets and (address.is_loopback or address.is_private)):
         return "reserved address"
     return None
 
@@ -654,13 +718,14 @@ def public_header_mapping(headers: list[tuple[str, str]]) -> dict[str, Any]:
     mapped: dict[str, Any] = {}
     for name, value in headers:
         canonical = canonical_header_name(name)
+        public_value = "[redacted]" if name.lower() in SENSITIVE_RESPONSE_HEADERS else value
         existing = mapped.get(canonical)
         if existing is None:
-            mapped[canonical] = value
+            mapped[canonical] = public_value
         elif isinstance(existing, list):
-            existing.append(value)
+            existing.append(public_value)
         else:
-            mapped[canonical] = [existing, value]
+            mapped[canonical] = [existing, public_value]
     return mapped
 
 
@@ -698,12 +763,14 @@ def parse_response_cookies(raw_cookies: Any) -> list[dict[str, Any]]:
         try:
             cookie.load(str(raw_cookie))
         except Exception:
-            parsed.append({"name": "unparsed", "raw": str(raw_cookie), "parse_error": True})
+            parsed.append({"name": "unparsed", "parse_error": True, "value_redacted": True})
             continue
         for morsel in cookie.values():
             parsed.append(
                 {
                     "name": morsel.key,
+                    "value_redacted": True,
+                    "value_length": len(morsel.value),
                     "secure": bool(morsel["secure"]),
                     "httponly": bool(morsel["httponly"]),
                     "samesite": morsel["samesite"] or None,
@@ -716,11 +783,11 @@ def parse_response_cookies(raw_cookies: Any) -> list[dict[str, Any]]:
     return parsed
 
 
-def inspect_tls(raw_url: str, *, allow_private_targets: bool, timeout_seconds: float) -> dict[str, Any]:
+def inspect_tls(raw_url: str, *, allow_private_targets: bool, timeout_seconds: float, allowed_ports: tuple[int, ...]) -> dict[str, Any]:
     parsed = urlsplit(normalize_web_url(raw_url))
     if parsed.scheme != "https":
         return {"present": False, "errors": []}
-    validate_web_url_allowed(raw_url, allow_private_targets=allow_private_targets)
+    validate_web_url_allowed(raw_url, allow_private_targets=allow_private_targets, allowed_ports=allowed_ports)
     host = parsed.hostname or ""
     port = parsed.port or 443
     context = ssl.create_default_context()
@@ -774,15 +841,34 @@ def parse_cert_time(value: Any) -> datetime | None:
         return None
 
 
-def fetch_robots_txt(base_url: str, allow_private_targets: bool, timeout_seconds: float, max_response_bytes: int) -> dict[str, Any]:
+def fetch_robots_txt(
+    base_url: str,
+    allow_private_targets: bool,
+    timeout_seconds: float,
+    max_response_bytes: int,
+    allowed_ports: tuple[int, ...],
+) -> dict[str, Any]:
     url = base_path_url(base_url, "/robots.txt")
-    return fetch_text_resource(url, allow_private_targets, timeout_seconds, min(max_response_bytes, 64 * 1024), resource_type="robots")
+    return fetch_text_resource(url, allow_private_targets, timeout_seconds, min(max_response_bytes, 64 * 1024), allowed_ports, resource_type="robots")
 
 
-def fetch_security_txt(base_url: str, allow_private_targets: bool, timeout_seconds: float, max_response_bytes: int) -> dict[str, Any]:
+def fetch_security_txt(
+    base_url: str,
+    allow_private_targets: bool,
+    timeout_seconds: float,
+    max_response_bytes: int,
+    allowed_ports: tuple[int, ...],
+) -> dict[str, Any]:
     candidates = ["/.well-known/security.txt", "/security.txt"]
     results = [
-        fetch_text_resource(base_path_url(base_url, path), allow_private_targets, timeout_seconds, min(max_response_bytes, 64 * 1024), resource_type="security")
+        fetch_text_resource(
+            base_path_url(base_url, path),
+            allow_private_targets,
+            timeout_seconds,
+            min(max_response_bytes, 64 * 1024),
+            allowed_ports,
+            resource_type="security",
+        )
         for path in candidates
     ]
     selected = next((item for item in results if item.get("present")), results[0])
@@ -800,6 +886,7 @@ def fetch_text_resource(
     allow_private_targets: bool,
     timeout_seconds: float,
     max_response_bytes: int,
+    allowed_ports: tuple[int, ...],
     *,
     resource_type: str,
 ) -> dict[str, Any]:
@@ -809,13 +896,14 @@ def fetch_text_resource(
             allow_private_targets=allow_private_targets,
             timeout_seconds=timeout_seconds,
             max_response_bytes=max_response_bytes,
+            allowed_ports=allowed_ports,
         )
     except (HTTPException, OSError, ssl.SSLError, http.client.HTTPException) as exc:
         return {"checked": True, "url": url, "present": False, "errors": [str(exc)]}
     status_code = int(response.get("status_code") or 0)
     present = status_code == 200
     # fetch_http_once intentionally does not retain body in the public HTTP result; fetch again with a small helper here.
-    text = fetch_body_text(url, allow_private_targets, timeout_seconds, max_response_bytes) if present else ""
+    text = fetch_body_text(url, allow_private_targets, timeout_seconds, max_response_bytes, allowed_ports) if present else ""
     summary: dict[str, Any] = {
         "checked": True,
         "url": url,
@@ -835,8 +923,14 @@ def fetch_text_resource(
     return summary
 
 
-def fetch_body_text(url: str, allow_private_targets: bool, timeout_seconds: float, max_response_bytes: int) -> str:
-    validate_web_url_allowed(url, allow_private_targets=allow_private_targets)
+def fetch_body_text(
+    url: str,
+    allow_private_targets: bool,
+    timeout_seconds: float,
+    max_response_bytes: int,
+    allowed_ports: tuple[int, ...],
+) -> str:
+    validate_web_url_allowed(url, allow_private_targets=allow_private_targets, allowed_ports=allowed_ports)
     parsed = urlsplit(url)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -945,6 +1039,7 @@ def build_web_result(
     errors: list[str],
     security_headers: dict[str, dict[str, Any]] | None = None,
     cookies: list[dict[str, Any]] | None = None,
+    allowed_ports: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     parsed = urlsplit(final_url)
     headers = as_dict(http_result.get("response_headers"))
@@ -959,6 +1054,8 @@ def build_web_result(
             "final_url": final_url,
             "scheme": parsed.scheme,
             "host": parsed.hostname,
+            "port": parsed.port or (443 if parsed.scheme == "https" else 80),
+            "allowed_ports": list(allowed_ports or ()),
         },
         "http": {
             "status_code": http_result.get("status_code"),

@@ -17,6 +17,8 @@ export type WebCookie = {
   samesite: string | null;
   domain: string | null;
   path: string | null;
+  valueRedacted: boolean;
+  valueLength: number | null;
 };
 
 export type WebAuditReport = {
@@ -79,7 +81,9 @@ function cookiesFromValue(value: unknown): WebCookie[] {
       httponly: asBoolean(record?.httponly),
       samesite: asString(record?.samesite),
       domain: asString(record?.domain),
-      path: asString(record?.path)
+      path: asString(record?.path),
+      valueRedacted: asBoolean(record?.value_redacted),
+      valueLength: asNumber(record?.value_length)
     };
   });
 }
@@ -120,6 +124,10 @@ function asString(value: unknown): string | null {
 
 function asBoolean(value: unknown): boolean {
   return typeof value === "boolean" ? value : false;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
 }
 
 function asStringArray(value: unknown): string[] {

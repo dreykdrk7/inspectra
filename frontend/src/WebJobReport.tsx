@@ -73,6 +73,7 @@ export function WebJobReport({ job }: { job: JobRecord }) {
                 <strong>{cookie.name}</strong>
                 <span>{cookie.samesite ? `SameSite=${cookie.samesite}` : "SameSite not set"}</span>
                 <span className="muted">{[cookie.secure ? "Secure" : "no Secure", cookie.httponly ? "HttpOnly" : "no HttpOnly"].join(", ")}</span>
+                {cookie.valueRedacted ? <span className="muted">value redacted{cookie.valueLength !== null ? ` (${cookie.valueLength} chars)` : ""}</span> : null}
               </div>
             ))}
           </div>

@@ -9,6 +9,7 @@ DEFAULT_WEB_ALLOW_PRIVATE_TARGETS = False
 DEFAULT_WEB_TIMEOUT_SECONDS = 10.0
 DEFAULT_WEB_MAX_RESPONSE_BYTES = 1_048_576
 DEFAULT_WEB_MAX_REDIRECTS = 5
+DEFAULT_WEB_ALLOWED_PORTS = (80, 443)
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class Settings:
     web_timeout_seconds: float = DEFAULT_WEB_TIMEOUT_SECONDS
     web_max_response_bytes: int = DEFAULT_WEB_MAX_RESPONSE_BYTES
     web_max_redirects: int = DEFAULT_WEB_MAX_REDIRECTS
+    web_allowed_ports: tuple[int, ...] = DEFAULT_WEB_ALLOWED_PORTS
 
     @property
     def upload_dir(self) -> Path:
@@ -48,6 +50,7 @@ def load_settings() -> Settings:
     web_timeout_seconds = _positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", DEFAULT_WEB_TIMEOUT_SECONDS)
     web_max_response_bytes = _positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", DEFAULT_WEB_MAX_RESPONSE_BYTES)
     web_max_redirects = _positive_int_from_env("INSPECTRA_WEB_MAX_REDIRECTS", DEFAULT_WEB_MAX_REDIRECTS)
+    web_allowed_ports = _ports_from_env("INSPECTRA_WEB_ALLOWED_PORTS", DEFAULT_WEB_ALLOWED_PORTS)
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -57,6 +60,7 @@ def load_settings() -> Settings:
         web_timeout_seconds=web_timeout_seconds,
         web_max_response_bytes=web_max_response_bytes,
         web_max_redirects=web_max_redirects,
+        web_allowed_ports=web_allowed_ports,
     )
 
 
@@ -106,3 +110,24 @@ def _csv_from_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     if not values:
         raise ValueError(f"{name} must include at least one origin.")
     return values
+
+
+def _ports_from_env(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    ports: list[int] = []
+    for item in raw_value.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        try:
+            port = int(value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a comma-separated list of TCP ports.") from exc
+        if port < 1 or port > 65535:
+            raise ValueError(f"{name} ports must be between 1 and 65535.")
+        ports.append(port)
+    if not ports:
+        raise ValueError(f"{name} must include at least one TCP port.")
+    return tuple(sorted(set(ports)))

@@ -152,6 +152,7 @@ async def launch_web_basic_audit(request: Request, payload: WebAuditRequest, bac
     normalized_url = validate_web_target_url(
         payload.url,
         allow_private_targets=request.app.state.settings.web_allow_private_targets,
+        allowed_ports=request.app.state.settings.web_allowed_ports,
     )
     job = request.app.state.jobs.create_web_job(normalized_url)
     background_tasks.add_task(request.app.state.web_audits.run_web_analysis, job.id)

@@ -151,6 +151,7 @@ class WebAuditService:
             "timeout_seconds": self.settings.web_timeout_seconds,
             "max_response_bytes": self.settings.web_max_response_bytes,
             "max_redirects": self.settings.web_max_redirects,
+            "allowed_ports": list(self.settings.web_allowed_ports),
         }
 
         try:

@@ -106,7 +106,9 @@ Report exports are generated locally from existing job results. The generated HT
 
 SBOM exports are generated locally from existing completed dependency-analysis jobs. They may include package names, declared version ranges, manifest paths inside uploaded archives, and conservative package URLs for clear npm/PyPI registry dependencies. Ambiguous URL, VCS, local, editable, workspace, or alias dependencies keep the original declaration and an omitted-`purl` reason. They do not include vulnerability assertions.
 
-Web audit results are generated from bounded HTTP/HTTPS responses. Anti-SSRF validation blocks localhost, private ranges, link-local addresses, and cloud metadata targets by default. `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true` can be used for authorized lab targets, but metadata/link-local addresses remain blocked. These checks reduce risk but do not replace network-level egress controls.
+Web audit results are generated from bounded HTTP/HTTPS responses. Anti-SSRF validation blocks localhost, private ranges, link-local addresses, multicast/reserved addresses, and cloud metadata targets by default. `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true` can be used for authorized lab targets, but metadata/link-local/multicast/reserved addresses remain blocked. `INSPECTRA_WEB_ALLOWED_PORTS` defaults to `80,443`; adding other ports should be limited to authorized labs and does not make Inspectra scan ports. These checks reduce risk but do not replace network-level egress controls, especially against DNS rebinding or resolver time-of-check/time-of-use races.
+
+Web results redact cookie values and sensitive response headers before storage and export. The audited URL and query string can still be stored in job JSON, so users should avoid submitting URLs containing secrets. Inspectra is a local MVP and should not be exposed publicly without authentication, authorization, TLS, and deployment hardening.
 
 ## Container Boundary
 
@@ -121,7 +123,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - `no-new-privileges`.
 - Temporary storage limited to `/tmp`.
 - Per-tool command timeouts through `INSPECTRA_TOOL_TIMEOUT_SECONDS`, defaulting to 10 seconds.
-- Web audit timeouts, response byte limits, redirect limits, and anti-SSRF checks through `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, and `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS`.
+- Web audit timeouts, response byte limits, redirect limits, allowed-port controls, and anti-SSRF checks through `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, `INSPECTRA_WEB_ALLOWED_PORTS`, and `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS`.
 - Archive-specific analysis limits for entries, estimated uncompressed size, entry-name length, and listed entries.
 - ZIP central directory metadata limits before detailed ZIP parsing.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.

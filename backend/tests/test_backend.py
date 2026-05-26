@@ -16,6 +16,7 @@ from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
 from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService, WebAuditService
 from app.storage import FileStore, JobStore
+from app import web_security
 
 
 SAMPLE_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
@@ -513,10 +514,16 @@ async def test_web_basic_audit_rejects_invalid_url_and_scheme(monkeypatch, tmp_p
             "/audits/web/basic",
             json={"url": "ftp://example.com", "authorization_confirmed": True},
         )
+        userinfo_response = await client.post(
+            "/audits/web/basic",
+            json={"url": "https://user:pass@example.com", "authorization_confirmed": True},
+        )
 
     assert invalid_response.status_code == 400
     assert scheme_response.status_code == 400
     assert scheme_response.json()["detail"] == "Only http and https URLs are accepted."
+    assert userinfo_response.status_code == 400
+    assert userinfo_response.json()["detail"] == "URL credentials are not accepted."
 
 
 @pytest.mark.anyio
@@ -528,7 +535,7 @@ async def test_web_basic_audit_blocks_private_targets_by_default(monkeypatch, tm
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
             "/audits/web/basic",
-            json={"url": "http://127.0.0.1:8080", "authorization_confirmed": True},
+            json={"url": "http://127.0.0.1", "authorization_confirmed": True},
         )
 
     assert response.status_code == 400
@@ -538,6 +545,7 @@ async def test_web_basic_audit_blocks_private_targets_by_default(monkeypatch, tm
 @pytest.mark.anyio
 async def test_web_basic_audit_allows_private_targets_when_configured(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", "true")
+    monkeypatch.setenv("INSPECTRA_WEB_ALLOWED_PORTS", "80,443,8080")
     configure_test_state(monkeypatch, tmp_path)
     app.state.web_audits = NoopAuditService()
     transport = ASGITransport(app=app)
@@ -558,6 +566,38 @@ async def test_web_basic_audit_allows_private_targets_when_configured(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_web_basic_audit_enforces_allowed_ports(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.web_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        rejected = await client.post(
+            "/audits/web/basic",
+            json={"url": "https://example.com:8443", "authorization_confirmed": True},
+        )
+
+    monkeypatch.setenv("INSPECTRA_WEB_ALLOWED_PORTS", "80,443,8443")
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.web_audits = NoopAuditService()
+    monkeypatch.setattr(
+        web_security,
+        "resolve_host_addresses",
+        lambda host, port: {web_security.ipaddress.ip_address("93.184.216.34")},
+    )
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        accepted = await client.post(
+            "/audits/web/basic",
+            json={"url": "https://example.com:8443/status", "authorization_confirmed": True},
+        )
+
+    assert rejected.status_code == 400
+    assert "port 8443 is not allowed" in rejected.json()["detail"]
+    assert accepted.status_code == 202
+    assert accepted.json()["target_url"] == "https://example.com:8443/status"
+
+
+@pytest.mark.anyio
 async def test_web_basic_audit_still_blocks_metadata_target_when_private_allowed(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", "true")
     configure_test_state(monkeypatch, tmp_path)
@@ -572,6 +612,27 @@ async def test_web_basic_audit_still_blocks_metadata_target_when_private_allowed
 
     assert response.status_code == 400
     assert "cloud metadata" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_web_basic_audit_blocks_hostname_resolving_to_private_ip(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.web_audits = NoopAuditService()
+    monkeypatch.setattr(
+        web_security,
+        "resolve_host_addresses",
+        lambda host, port: {web_security.ipaddress.ip_address("192.168.1.20")},
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/web/basic",
+            json={"url": "https://example.test", "authorization_confirmed": True},
+        )
+
+    assert response.status_code == 400
+    assert "private address" in response.json()["detail"]
 
 
 @pytest.mark.anyio
@@ -914,6 +975,10 @@ async def test_export_web_job_all_formats(monkeypatch, tmp_path):
     assert "Security Headers" in responses["html"].text
     assert ElementTree.fromstring(responses["xml"].text).findtext("./job/targetUrl") == "https://example.com/"
     assert responses["pdf"].content.startswith(b"%PDF")
+    for response in responses.values():
+        content = response.text if response.headers["content-type"].startswith(("text/", "application/xml")) else response.content.decode("latin1")
+        assert "supersecret" not in content
+        assert "[redacted]" in content
 
 
 @pytest.mark.anyio
@@ -1600,7 +1665,7 @@ def save_web_export_fixture_job() -> JobRecord:
             "http": {
                 "status_code": 200,
                 "redirects": [],
-                "response_headers": {"Content-Type": "text/html", "Server": "unit-test"},
+                "response_headers": {"Content-Type": "text/html", "Server": "unit-test", "Set-Cookie": "sid=supersecret; HttpOnly"},
                 "content_type": "text/html",
                 "bytes_read": 128,
             },
@@ -1608,7 +1673,7 @@ def save_web_export_fixture_job() -> JobRecord:
                 "Content-Security-Policy": {"present": False, "value": None},
                 "X-Content-Type-Options": {"present": True, "value": "nosniff"},
             },
-            "cookies": [{"name": "sid", "secure": True, "httponly": True, "samesite": "Lax"}],
+            "cookies": [{"name": "sid", "value_redacted": True, "value_length": 11, "secure": True, "httponly": True, "samesite": "Lax"}],
             "tls": {"present": True, "certificate": {"days_until_expiration": 90}, "errors": []},
             "robots_txt": {"checked": True, "present": True, "status_code": 200, "has_disallow": False},
             "security_txt": {"checked": True, "present": False, "status_code": 404, "fields": {}},

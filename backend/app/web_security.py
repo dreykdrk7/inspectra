@@ -9,6 +9,7 @@ from fastapi import HTTPException, status
 
 METADATA_IPS = {ipaddress.ip_address("169.254.169.254")}
 METADATA_HOSTS = {"metadata.google.internal"}
+LOCALHOST_HOSTS = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
 
 
 def normalize_web_url(raw_url: str) -> str:
@@ -37,14 +38,20 @@ def normalize_web_url(raw_url: str) -> str:
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, parsed.query, ""))
 
 
-def validate_web_target_url(raw_url: str, *, allow_private_targets: bool) -> str:
+def validate_web_target_url(raw_url: str, *, allow_private_targets: bool, allowed_ports: tuple[int, ...]) -> str:
     normalized = normalize_web_url(raw_url)
     parsed = urlsplit(normalized)
     host = parsed.hostname or ""
     if host.lower().rstrip(".") in METADATA_HOSTS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cloud metadata targets are not allowed.")
 
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = web_target_port(parsed.scheme, parsed.port)
+    validate_allowed_port(port, allowed_ports)
+    if host.lower().rstrip(".") in LOCALHOST_HOSTS and not allow_private_targets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Target resolves to a blocked address range: loopback address.",
+        )
     try:
         addresses = {ipaddress.ip_address(host)}
     except ValueError:
@@ -62,6 +69,18 @@ def validate_web_target_url(raw_url: str, *, allow_private_targets: bool) -> str
                 detail=f"Target resolves to a blocked address range: {blocked_reason}.",
             )
     return normalized
+
+
+def web_target_port(scheme: str, explicit_port: int | None) -> int:
+    return explicit_port or (443 if scheme == "https" else 80)
+
+
+def validate_allowed_port(port: int, allowed_ports: tuple[int, ...]) -> None:
+    if port not in allowed_ports:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Target port {port} is not allowed for web audits.",
+        )
 
 
 def resolve_host_addresses(host: str, port: int) -> set[ipaddress.IPv4Address | ipaddress.IPv6Address]:
@@ -91,10 +110,12 @@ def blocked_ip_reason(address: ipaddress.IPv4Address | ipaddress.IPv6Address, *,
         return "unspecified address"
     if address.is_link_local:
         return "link-local address"
+    if address.is_multicast:
+        return "multicast address"
     if not allow_private_targets and address.is_loopback:
         return "loopback address"
     if not allow_private_targets and address.is_private:
         return "private address"
-    if not allow_private_targets and address.is_reserved:
+    if address.is_reserved and not (allow_private_targets and (address.is_loopback or address.is_private)):
         return "reserved address"
     return None

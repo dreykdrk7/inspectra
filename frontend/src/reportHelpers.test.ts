@@ -157,14 +157,14 @@ describe("report helpers", () => {
           "Content-Security-Policy": { present: false, value: null },
           "X-Content-Type-Options": { present: true, value: "nosniff" }
         },
-        cookies: [{ name: "sid", secure: false, httponly: true, samesite: "Lax" }],
+        cookies: [{ name: "sid", value_redacted: true, value_length: 11, secure: false, httponly: true, samesite: "Lax" }],
         findings: [{ id: "web_csp_missing", title: "CSP missing", level: "info" }]
       }
     });
 
     expect(report.isWebAudit).toBe(true);
     expect(report.securityHeaders).toContainEqual({ name: "Content-Security-Policy", present: false, value: null });
-    expect(report.cookies[0]).toMatchObject({ name: "sid", httponly: true });
+    expect(report.cookies[0]).toMatchObject({ name: "sid", httponly: true, valueRedacted: true, valueLength: 11 });
     expect(report.findings[0]).toMatchObject({ id: "web_csp_missing" });
   });
 });

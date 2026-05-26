@@ -10,6 +10,8 @@ from xml.etree import ElementTree
 
 from app.models import JobRecord
 
+SENSITIVE_RESPONSE_HEADERS = {"set-cookie", "authorization", "proxy-authorization", "x-api-key", "x-auth-token"}
+
 
 @dataclass(frozen=True)
 class ReportSection:
@@ -239,9 +241,13 @@ def build_project_archive_sections(result: dict[str, Any]) -> list[ReportSection
 
 
 def build_web_sections(result: dict[str, Any]) -> list[ReportSection]:
+    http = as_dict(result.get("http"))
+    http["response_headers"] = redact_sensitive_headers(as_dict(http.get("response_headers")))
+    if "set_cookie_headers" in http:
+        http["set_cookie_headers"] = "[redacted]"
     return [
         ReportSection("Web Target", flatten_mapping(as_dict(result.get("target")))),
-        ReportSection("HTTP", flatten_mapping(as_dict(result.get("http")))),
+        ReportSection("HTTP", flatten_mapping(http)),
         ReportSection("Security Headers", flatten_mapping(as_dict(result.get("security_headers")))),
         ReportSection("Cookies", flatten_list(result.get("cookies"))),
         ReportSection("TLS", flatten_mapping(as_dict(result.get("tls")))),
@@ -284,6 +290,9 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["truncated"] = summary.get("truncated", "N/A")
     elif job.audit_type == "web_basic":
         http = as_dict(result.get("http"))
+        http["response_headers"] = redact_sensitive_headers(as_dict(http.get("response_headers")))
+        if "set_cookie_headers" in http:
+            http["set_cookie_headers"] = "[redacted]"
         target = as_dict(result.get("target"))
         data["target_url"] = target.get("final_url", job.target_url or "N/A")
         data["status_code"] = http.get("status_code", "N/A")
@@ -291,6 +300,19 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["redirects_count"] = summary.get("redirects_count", "N/A")
         data["tls_present"] = summary.get("tls_present", "N/A")
     return data
+
+
+def redact_sensitive_headers(headers: dict[str, Any]) -> dict[str, Any]:
+    redacted: dict[str, Any] = {}
+    for key, value in headers.items():
+        if str(key).lower() in SENSITIVE_RESPONSE_HEADERS:
+            if isinstance(value, list):
+                redacted[key] = ["[redacted]" for _ in value]
+            else:
+                redacted[key] = "[redacted]"
+        else:
+            redacted[key] = value
+    return redacted
 
 
 def collect_errors(job: JobRecord) -> dict[str, Any]:
