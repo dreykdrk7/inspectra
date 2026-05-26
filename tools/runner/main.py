@@ -65,6 +65,11 @@ class WebBasicAnalysisRequest(BaseModel):
     allowed_ports: list[int] | None = None
 
 
+class DomainBasicAnalysisRequest(BaseModel):
+    domain: str
+    timeout_seconds: float | None = None
+
+
 def positive_float_from_env(name: str, default: float) -> float:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -151,6 +156,7 @@ WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 1
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
 WEB_MAX_REDIRECTS = positive_int_from_env("INSPECTRA_WEB_MAX_REDIRECTS", 5)
 WEB_ALLOWED_PORTS = ports_from_env("INSPECTRA_WEB_ALLOWED_PORTS", (80, 443))
+DOMAIN_DNS_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS", 5.0)
 ZIP_EOCD_SIGNATURE = b"PK\x05\x06"
 ZIP_EOCD_MIN_SIZE = 22
 ZIP_EOCD_MAX_COMMENT_SIZE = 65_535
@@ -204,6 +210,14 @@ SENSITIVE_QUERY_PARAM_NAMES = {
 }
 SENSITIVE_QUERY_PARAM_FRAGMENTS = ("token", "secret", "password", "passwd", "session", "auth", "signature", "api_key", "apikey")
 URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+")
+DOMAIN_PATTERN = re.compile(r"^[a-z0-9.-]+$")
+BLOCKED_DOMAIN_SUFFIXES = (".local", ".localhost", ".internal", ".test", ".invalid")
+BLOCKED_DOMAIN_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
+DNS_RECORD_TYPES = {"A": 1, "NS": 2, "CNAME": 5, "SOA": 6, "MX": 15, "TXT": 16, "AAAA": 28, "CAA": 257}
+DNS_TYPE_NAMES = {value: key for key, value in DNS_RECORD_TYPES.items()}
+DNS_MAX_RECORDS_PER_TYPE = 30
+DNS_MAX_STRING_LENGTH = 512
+SENSITIVE_TEXT_FRAGMENTS = ("token", "secret", "password", "passwd", "api_key", "apikey")
 SECURITY_TXT_FIELDS = {
     "contact",
     "expires",
@@ -504,6 +518,15 @@ async def analyze_web_basic(request: WebBasicAnalysisRequest) -> dict[str, Any]:
             errors=[error_message],
             allowed_ports=allowed_ports,
         )
+
+
+@app.post("/analyze/domain-basic")
+async def analyze_domain_basic(request: DomainBasicAnalysisRequest) -> dict[str, Any]:
+    timeout_seconds = request.timeout_seconds or DOMAIN_DNS_TIMEOUT_SECONDS
+    if timeout_seconds <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain DNS timeout must be positive.")
+    normalized_domain = normalize_domain(request.domain)
+    return analyze_domain_basic_target(normalized_domain, timeout_seconds=timeout_seconds)
 
 
 def analyze_web_basic_target(
@@ -1192,6 +1215,441 @@ def combined_query_redaction_summary(urls: list[str]) -> dict[str, object]:
         "query_params_redacted": bool(names),
         "redacted_query_params": names,
     }
+
+
+def normalize_domain(raw_domain: str) -> str:
+    value = raw_domain.strip()
+    if not value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain is required.")
+    if any(character.isspace() for character in value):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain must not contain spaces.")
+    if "://" in value or "/" in value or "?" in value or "#" in value or "@" in value or ":" in value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter a domain name, not a URL.")
+
+    value = value.rstrip(".").lower()
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="IP literals are not accepted for domain audits.")
+
+    try:
+        ascii_domain = value.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain could not be normalized.") from exc
+
+    if ascii_domain in BLOCKED_DOMAIN_NAMES or ascii_domain.endswith(BLOCKED_DOMAIN_SUFFIXES):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Internal or reserved domain names are not accepted.")
+    if "." not in ascii_domain:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain must include at least one dot.")
+    if len(ascii_domain) > 253 or not DOMAIN_PATTERN.fullmatch(ascii_domain):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain contains unsupported characters.")
+
+    for label in ascii_domain.split("."):
+        if not label or len(label) > 63:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain label length is invalid.")
+        if label.startswith("-") or label.endswith("-"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain labels must not start or end with hyphen.")
+    return ascii_domain
+
+
+def analyze_domain_basic_target(domain: str, *, timeout_seconds: float) -> dict[str, Any]:
+    checked_at = datetime.now(timezone.utc).isoformat()
+    dns: dict[str, Any] = {}
+    errors: list[str] = []
+    for record_type in ("A", "AAAA", "CNAME", "MX", "NS", "TXT", "CAA", "SOA"):
+        records, record_errors = query_dns_record(domain, record_type, timeout_seconds)
+        dns[record_type] = records[:DNS_MAX_RECORDS_PER_TYPE]
+        errors.extend(record_errors)
+
+    dmarc_records, dmarc_errors = query_dns_record(f"_dmarc.{domain}", "TXT", timeout_seconds)
+    errors.extend(dmarc_errors)
+
+    www_dns: dict[str, Any] = {}
+    if domain.startswith("www."):
+        www_dns = {"checked": False, "reason": "Target domain already starts with www."}
+    else:
+        www_domain = f"www.{domain}"
+        www_errors: list[str] = []
+        www_dns = {"checked": True, "domain": www_domain}
+        for record_type in ("A", "AAAA", "CNAME"):
+            records, record_errors = query_dns_record(www_domain, record_type, timeout_seconds)
+            www_dns[record_type] = records[:DNS_MAX_RECORDS_PER_TYPE]
+            www_errors.extend(record_errors)
+        www_dns["errors"] = www_errors
+        errors.extend(www_errors)
+    dns["www"] = www_dns
+
+    spf = parse_spf_records(as_string_list(dns.get("TXT")))
+    dmarc = parse_dmarc_records(as_string_list(dmarc_records))
+    email_security = {
+        "spf": spf,
+        "dmarc": dmarc,
+        "dkim": {
+            "checked": False,
+            "status": "not_checked",
+            "reason": "DKIM selectors are not brute-forced in this passive baseline.",
+        },
+    }
+    findings = build_domain_findings(domain, dns, email_security)
+    summary = build_domain_summary(dns, email_security, findings)
+    return {
+        "analyzer": "domain_basic",
+        "target": {
+            "domain": domain,
+            "normalized_domain": domain,
+            "checked_at": checked_at,
+        },
+        "dns": dns,
+        "email_security": email_security,
+        "findings": findings,
+        "summary": summary,
+        "errors": dedupe_strings(errors),
+    }
+
+
+def query_dns_record(domain: str, record_type: str, timeout_seconds: float) -> tuple[list[Any], list[str]]:
+    qtype = DNS_RECORD_TYPES[record_type]
+    query_id = int.from_bytes(os.urandom(2), "big")
+    query = build_dns_query(domain, qtype, query_id)
+    errors: list[str] = []
+    nameservers = dns_nameservers()
+    if not nameservers:
+        return [], ["No DNS nameservers were configured for the runner."]
+    for nameserver in nameservers:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(timeout_seconds)
+                sock.sendto(query, (nameserver, 53))
+                response, _ = sock.recvfrom(4096)
+            records, truncated = parse_dns_response(response, query_id, qtype)
+            record_errors = [f"{record_type} response was truncated; TCP fallback is not used in this passive MVP."] if truncated else []
+            return records, record_errors
+        except (OSError, ValueError) as exc:
+            errors.append(f"{record_type} query via {nameserver} failed safely: {exc.__class__.__name__}.")
+    return [], errors[:3]
+
+
+def dns_nameservers() -> list[str]:
+    nameservers: list[str] = []
+    try:
+        with Path("/etc/resolv.conf").open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped.startswith("nameserver"):
+                    continue
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    try:
+                        address = ipaddress.ip_address(parts[1])
+                    except ValueError:
+                        continue
+                    if isinstance(address, ipaddress.IPv4Address):
+                        nameservers.append(str(address))
+    except OSError:
+        return []
+    return nameservers[:3]
+
+
+def build_dns_query(domain: str, qtype: int, query_id: int) -> bytes:
+    labels = domain.rstrip(".").split(".")
+    question = b"".join(bytes([len(label)]) + label.encode("ascii") for label in labels) + b"\x00"
+    return struct.pack("!HHHHHH", query_id, 0x0100, 1, 0, 0, 0) + question + struct.pack("!HH", qtype, 1)
+
+
+def parse_dns_response(data: bytes, query_id: int, expected_qtype: int) -> tuple[list[Any], bool]:
+    if len(data) < 12:
+        raise ValueError("DNS response too short.")
+    response_id, flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", data[:12])
+    if response_id != query_id:
+        raise ValueError("DNS response ID mismatch.")
+    rcode = flags & 0x000F
+    truncated = bool(flags & 0x0200)
+    if rcode == 3:
+        return [], truncated
+    if rcode != 0:
+        raise ValueError(f"DNS response code {rcode}.")
+
+    offset = 12
+    for _ in range(qdcount):
+        _, offset = parse_dns_name(data, offset)
+        offset += 4
+    records: list[Any] = []
+    for _ in range(ancount):
+        _, offset = parse_dns_name(data, offset)
+        if offset + 10 > len(data):
+            raise ValueError("DNS answer is truncated.")
+        rtype, rclass, _, rdlength = struct.unpack("!HHIH", data[offset : offset + 10])
+        offset += 10
+        rdata_offset = offset
+        offset += rdlength
+        if rclass != 1 or rtype != expected_qtype:
+            continue
+        decoded = decode_dns_rdata(data, rdata_offset, rdlength, rtype)
+        if decoded is not None:
+            records.append(decoded)
+    return records[:DNS_MAX_RECORDS_PER_TYPE], truncated
+
+
+def parse_dns_name(data: bytes, offset: int) -> tuple[str, int]:
+    labels: list[str] = []
+    jumped = False
+    next_offset = offset
+    seen_offsets: set[int] = set()
+    while True:
+        if offset >= len(data):
+            raise ValueError("DNS name exceeds response length.")
+        length = data[offset]
+        if length & 0xC0 == 0xC0:
+            if offset + 1 >= len(data):
+                raise ValueError("DNS compression pointer is truncated.")
+            pointer = ((length & 0x3F) << 8) | data[offset + 1]
+            if pointer in seen_offsets:
+                raise ValueError("DNS compression pointer loop detected.")
+            seen_offsets.add(pointer)
+            if not jumped:
+                next_offset = offset + 2
+            offset = pointer
+            jumped = True
+            continue
+        if length == 0:
+            if not jumped:
+                next_offset = offset + 1
+            break
+        offset += 1
+        if offset + length > len(data):
+            raise ValueError("DNS label exceeds response length.")
+        labels.append(data[offset : offset + length].decode("ascii", errors="replace"))
+        offset += length
+        if not jumped:
+            next_offset = offset
+    return ".".join(labels), next_offset
+
+
+def decode_dns_rdata(data: bytes, offset: int, rdlength: int, rtype: int) -> Any:
+    end = offset + rdlength
+    if end > len(data):
+        raise ValueError("DNS rdata exceeds response length.")
+    if rtype == DNS_RECORD_TYPES["A"] and rdlength == 4:
+        return str(ipaddress.IPv4Address(data[offset:end]))
+    if rtype == DNS_RECORD_TYPES["AAAA"] and rdlength == 16:
+        return str(ipaddress.IPv6Address(data[offset:end]))
+    if rtype in {DNS_RECORD_TYPES["NS"], DNS_RECORD_TYPES["CNAME"]}:
+        name, _ = parse_dns_name(data, offset)
+        return name.rstrip(".")
+    if rtype == DNS_RECORD_TYPES["MX"]:
+        if rdlength < 3:
+            return None
+        preference = struct.unpack("!H", data[offset : offset + 2])[0]
+        exchange, _ = parse_dns_name(data, offset + 2)
+        return {"preference": preference, "exchange": exchange.rstrip(".")}
+    if rtype == DNS_RECORD_TYPES["TXT"]:
+        chunks: list[str] = []
+        cursor = offset
+        while cursor < end:
+            length = data[cursor]
+            cursor += 1
+            chunks.append(data[cursor : cursor + length].decode("utf-8", errors="replace"))
+            cursor += length
+        return truncate_string(redact_sensitive_text("".join(chunks)))
+    if rtype == DNS_RECORD_TYPES["CAA"]:
+        if rdlength < 2:
+            return None
+        flags = data[offset]
+        tag_length = data[offset + 1]
+        tag_start = offset + 2
+        tag_end = tag_start + tag_length
+        if tag_end > end:
+            return None
+        tag = data[tag_start:tag_end].decode("ascii", errors="replace")
+        value = data[tag_end:end].decode("utf-8", errors="replace")
+        return {"flags": flags, "tag": tag, "value": truncate_string(value)}
+    if rtype == DNS_RECORD_TYPES["SOA"]:
+        mname, cursor = parse_dns_name(data, offset)
+        rname, cursor = parse_dns_name(data, cursor)
+        if cursor + 20 > end:
+            return None
+        serial, refresh, retry, expire, minimum = struct.unpack("!IIIII", data[cursor : cursor + 20])
+        return {
+            "mname": mname.rstrip("."),
+            "rname": rname.rstrip("."),
+            "serial": serial,
+            "refresh": refresh,
+            "retry": retry,
+            "expire": expire,
+            "minimum": minimum,
+        }
+    return None
+
+
+def parse_spf_records(txt_records: list[str]) -> dict[str, Any]:
+    records = [record for record in txt_records if record.lower().startswith("v=spf1")]
+    mechanisms: list[str] = []
+    includes: list[str] = []
+    redirect: str | None = None
+    all_mechanism: str | None = None
+    all_mechanisms: list[str] = []
+    uses = {"a": False, "mx": False, "ip4": False, "ip6": False}
+    for record in records:
+        for token in record.split()[1:]:
+            mechanisms.append(token)
+            normalized = token.lower()
+            bare = normalized[1:] if normalized[:1] in {"+", "-", "~", "?"} else normalized
+            if bare == "all":
+                value = normalized[:1] + "all" if normalized[:1] in {"+", "-", "~", "?"} else "+all"
+                all_mechanisms.append(value)
+                if all_mechanism is None:
+                    all_mechanism = value
+            if bare.startswith("include:"):
+                includes.append(token.split(":", 1)[1])
+            if bare.startswith("redirect="):
+                redirect = token.split("=", 1)[1]
+            for key in uses:
+                if bare == key or bare.startswith(f"{key}:"):
+                    uses[key] = True
+    return {
+        "present": bool(records),
+        "record_count": len(records),
+        "records": records,
+        "all_mechanism": all_mechanism,
+        "all_mechanisms": all_mechanisms,
+        "includes": includes,
+        "redirect": redirect,
+        "mechanisms": mechanisms,
+        **uses,
+    }
+
+
+def parse_dmarc_records(txt_records: list[str]) -> dict[str, Any]:
+    records = [record for record in txt_records if record.lower().startswith("v=dmarc1")]
+    tags: dict[str, str] = {}
+    if records:
+        for part in records[0].split(";"):
+            if "=" not in part:
+                continue
+            key, value = part.strip().split("=", 1)
+            tags[key.lower()] = value.strip()
+    pct: int | None = None
+    if tags.get("pct"):
+        try:
+            pct = int(tags["pct"])
+        except ValueError:
+            pct = None
+    return {
+        "present": bool(records),
+        "record_count": len(records),
+        "records": records,
+        "policy": tags.get("p"),
+        "rua": tags.get("rua"),
+        "ruf": tags.get("ruf"),
+        "pct": pct,
+        "adkim": tags.get("adkim"),
+        "aspf": tags.get("aspf"),
+    }
+
+
+def build_domain_findings(domain: str, dns: dict[str, Any], email_security: dict[str, Any]) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    spf = as_dict(email_security.get("spf"))
+    dmarc = as_dict(email_security.get("dmarc"))
+    ns_records = as_string_list(dns.get("NS"))
+    mx_records = dns.get("MX") if isinstance(dns.get("MX"), list) else []
+    caa_records = dns.get("CAA") if isinstance(dns.get("CAA"), list) else []
+    www = as_dict(dns.get("www"))
+
+    if not ns_records:
+        findings.append(make_finding("domain_ns_absent", "No NS records observed", "low", "No NS records were returned for the domain.", domain, "Confirm delegated DNS manually."))
+    elif len(ns_records) == 1:
+        findings.append(make_finding("domain_single_nameserver", "Only one NS record observed", "info", "A single nameserver was returned. This may be intentional, but reduces DNS redundancy.", ns_records[0], "Review DNS redundancy with the domain owner."))
+    elif ns_look_same_provider(ns_records):
+        findings.append(make_finding("domain_ns_same_provider_indicator", "Nameservers appear provider-concentrated", "info", "All observed nameservers appear to share a similar parent domain. This is an indicator for manual review only.", ", ".join(ns_records), "Confirm DNS provider concentration is intentional."))
+
+    if not mx_records:
+        findings.append(make_finding("domain_mx_absent", "No MX records observed", "info", "No MX records were returned. The domain may not receive email.", domain, "Confirm whether inbound email is expected for this domain."))
+    if not spf.get("present"):
+        findings.append(make_finding("domain_spf_absent", "SPF record was not observed", "low", "No TXT record beginning with v=spf1 was observed.", domain, "Publish SPF if the domain sends email."))
+    if int(spf.get("record_count") or 0) > 1:
+        findings.append(make_finding("domain_multiple_spf_records", "Multiple SPF records observed", "low", "Multiple SPF records can cause SPF evaluation failures.", str(spf.get("records")), "Keep a single SPF record per domain."))
+    all_mechanisms = as_string_list(spf.get("all_mechanisms"))
+    if spf.get("all_mechanism") == "+all" or "+all" in all_mechanisms:
+        findings.append(make_finding("domain_spf_plus_all", "SPF uses +all", "medium", "The SPF policy appears to allow all senders.", str(spf.get("records")), "Replace +all with a stricter all mechanism after validating mail flows."))
+    if spf.get("all_mechanism") == "?all" or "?all" in all_mechanisms:
+        findings.append(make_finding("domain_spf_neutral_all", "SPF uses ?all", "low", "The SPF policy ends with a neutral all mechanism.", str(spf.get("records")), "Review whether a stricter SPF policy is appropriate."))
+
+    if not dmarc.get("present"):
+        findings.append(make_finding("domain_dmarc_absent", "DMARC record was not observed", "low", "No DMARC TXT record was observed at _dmarc.", f"_dmarc.{domain}", "Publish DMARC after validating email authentication alignment."))
+    elif str(dmarc.get("policy") or "").lower() == "none":
+        findings.append(make_finding("domain_dmarc_policy_none", "DMARC policy is p=none", "low", "DMARC is present in monitoring mode.", str(dmarc.get("records")), "Move toward quarantine or reject after reviewing reports."))
+    if isinstance(dmarc.get("pct"), int) and int(dmarc["pct"]) < 100:
+        findings.append(make_finding("domain_dmarc_pct_partial", "DMARC pct is below 100", "info", "DMARC policy is applied to less than 100 percent of matching mail.", str(dmarc.get("pct")), "Confirm staged rollout is intentional."))
+
+    if not caa_records:
+        findings.append(make_finding("domain_caa_absent", "CAA records were not observed", "info", "No CAA records were returned. This is not a vulnerability by itself.", domain, "Consider CAA records if certificate issuance should be constrained."))
+
+    if www.get("checked") and not any(www.get(record_type) for record_type in ("A", "AAAA", "CNAME")):
+        findings.append(make_finding("domain_www_not_resolving", "www host did not resolve", "info", "The www host did not return A, AAAA, or CNAME records.", str(www.get("domain")), "Confirm whether www should resolve."))
+
+    sensitive_txt = [record for record in as_string_list(dns.get("TXT")) if contains_sensitive_text(record)]
+    if sensitive_txt:
+        findings.append(make_finding("domain_txt_sensitive_indicator", "TXT record contains sensitive-looking text", "low", "A TXT record contains words commonly associated with secrets. Inspectra redacts obvious values, but manual review is needed.", str(sensitive_txt[:3]), "Review whether TXT records expose sensitive material."))
+    return dedupe_findings(findings)
+
+
+def build_domain_summary(dns: dict[str, Any], email_security: dict[str, Any], findings: list[dict[str, str]]) -> dict[str, Any]:
+    spf = as_dict(email_security.get("spf"))
+    dmarc = as_dict(email_security.get("dmarc"))
+    www = as_dict(dns.get("www"))
+    records_found_count = 0
+    for key, value in dns.items():
+        if key == "www":
+            continue
+        if isinstance(value, list):
+            records_found_count += len(value)
+    return {
+        "records_found_count": records_found_count,
+        "findings_count": len(findings),
+        "spf_present": bool(spf.get("present")),
+        "dmarc_present": bool(dmarc.get("present")),
+        "dmarc_policy": dmarc.get("policy"),
+        "caa_present": bool(dns.get("CAA")),
+        "mx_present": bool(dns.get("MX")),
+        "www_resolves": bool(www.get("checked") and any(www.get(record_type) for record_type in ("A", "AAAA", "CNAME"))),
+    }
+
+
+def ns_look_same_provider(ns_records: list[str]) -> bool:
+    suffixes = {".".join(record.lower().rstrip(".").split(".")[-2:]) for record in ns_records if "." in record}
+    return len(ns_records) > 1 and len(suffixes) == 1
+
+
+def redact_sensitive_text(value: str) -> str:
+    pattern = re.compile(r"(?i)\b(token|secret|password|passwd|api_key|apikey|key)(\s*[=:]\s*)([^\s;]+)")
+    return pattern.sub(lambda match: f"{match.group(1)}{match.group(2)}[redacted]", truncate_string(value))
+
+
+def contains_sensitive_text(value: str) -> bool:
+    lowered = value.lower()
+    return any(fragment in lowered for fragment in SENSITIVE_TEXT_FRAGMENTS)
+
+
+def truncate_string(value: str, limit: int = DNS_MAX_STRING_LENGTH) -> str:
+    return value if len(value) <= limit else value[: limit - 12] + "...[truncated]"
+
+
+def as_string_list(value: Any) -> list[str]:
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def dedupe_strings(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
 
 
 def resolve_data_path(relative_path: str) -> Path:

@@ -4,7 +4,8 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, Resp
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import load_settings
-from app.models import DeletedFileResponse, JobListItem, JobRecord, StoredFile, WebAuditRequest
+from app.domain_security import normalize_domain
+from app.models import DeletedFileResponse, DomainAuditRequest, JobListItem, JobRecord, StoredFile, WebAuditRequest
 from app.reporting import (
     build_report_filename,
     render_html_report,
@@ -13,7 +14,15 @@ from app.reporting import (
     render_xml_report,
 )
 from app.sbom import build_sbom_filename, generate_cyclonedx_json, generate_spdx_json
-from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService, WebAuditService
+from app.services import (
+    ArchiveAuditService,
+    DomainAuditService,
+    ImageAuditService,
+    ManifestAuditService,
+    PdfAuditService,
+    ProjectArchiveAuditService,
+    WebAuditService,
+)
 from app.storage import FileStore, JobStore
 from app.web_security import redact_url_query, validate_web_target_url
 
@@ -34,6 +43,7 @@ async def lifespan(app: FastAPI):
     app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
     app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
+    app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     yield
 
 
@@ -156,6 +166,16 @@ async def launch_web_basic_audit(request: Request, payload: WebAuditRequest, bac
     )
     job = request.app.state.jobs.create_web_job(redact_url_query(normalized_url))
     background_tasks.add_task(request.app.state.web_audits.run_web_analysis, job.id, normalized_url)
+    return job
+
+
+@app.post("/audits/domain/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_domain_basic_audit(request: Request, payload: DomainAuditRequest, background_tasks: BackgroundTasks) -> JobRecord:
+    if not payload.authorization_confirmed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Authorization confirmation is required.")
+    normalized_domain = normalize_domain(payload.domain)
+    job = request.app.state.jobs.create_domain_job(normalized_domain)
+    background_tasks.add_task(request.app.state.domain_audits.run_domain_analysis, job.id)
     return job
 
 

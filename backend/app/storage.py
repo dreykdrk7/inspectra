@@ -288,13 +288,24 @@ class JobStore:
     def create_web_job(self, target_url: str) -> JobRecord:
         return self._create_job(None, "web_basic", target_url=target_url)
 
-    def _create_job(self, file_id: str | None, audit_type: str, *, target_url: str | None = None) -> JobRecord:
+    def create_domain_job(self, target_domain: str) -> JobRecord:
+        return self._create_job(None, "domain_basic", target_domain=target_domain)
+
+    def _create_job(
+        self,
+        file_id: str | None,
+        audit_type: str,
+        *,
+        target_url: str | None = None,
+        target_domain: str | None = None,
+    ) -> JobRecord:
         now = utc_now()
         record = JobRecord(
             id=uuid4().hex,
             audit_type=audit_type,
             file_id=file_id,
             target_url=target_url,
+            target_domain=target_domain,
             status="queued",
             created_at=now,
             updated_at=now,
@@ -377,6 +388,7 @@ class JobStore:
             audit_type=record.audit_type,
             file_id=record.file_id,
             target_url=record.target_url,
+            target_domain=record.target_domain,
             status=record.status,
             created_at=record.created_at,
             updated_at=record.updated_at,
@@ -515,6 +527,13 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["findings_count"] = manifest_summary.get("findings_count")
             summary["redirects_count"] = manifest_summary.get("redirects_count")
             summary["tls_present"] = manifest_summary.get("tls_present")
+        if record.audit_type == "domain_basic":
+            summary["domain"] = (record.result.get("target") or {}).get("normalized_domain") or record.target_domain
+            summary["records_found_count"] = manifest_summary.get("records_found_count")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["spf_present"] = manifest_summary.get("spf_present")
+            summary["dmarc_present"] = manifest_summary.get("dmarc_present")
+            summary["dmarc_policy"] = manifest_summary.get("dmarc_policy")
         return summary
     if record.error:
         return {"error": record.error}

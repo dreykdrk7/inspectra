@@ -93,6 +93,7 @@ def render_xml_report(job: JobRecord) -> str:
     add_text(job_node, "status", job.status)
     add_text(job_node, "fileId", job.file_id or "")
     add_text(job_node, "targetUrl", redact_url_query(job.target_url) if job.target_url else "")
+    add_text(job_node, "targetDomain", job.target_domain or "")
     add_text(job_node, "createdAt", job.created_at.isoformat())
     add_text(job_node, "updatedAt", job.updated_at.isoformat())
     job_error = redact_text_urls(job.error) if job.audit_type == "web_basic" and job.error else job.error or ""
@@ -137,6 +138,7 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
                 ("Status", job.status),
                 ("File ID", job.file_id or "N/A"),
                 ("Target URL", redact_url_query(job.target_url) if job.target_url else "N/A"),
+                ("Target domain", job.target_domain or "N/A"),
                 ("Created at", job.created_at.isoformat()),
                 ("Updated at", job.updated_at.isoformat()),
                 ("Source file deleted", job.source_file_deleted_at.isoformat() if job.source_file_deleted_at else "No"),
@@ -159,6 +161,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_project_archive_sections(result))
     elif job.audit_type == "web_basic":
         sections.extend(build_web_sections(result))
+    elif job.audit_type == "domain_basic":
+        sections.extend(build_domain_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -261,6 +265,20 @@ def build_web_sections(result: dict[str, Any]) -> list[ReportSection]:
     ]
 
 
+def build_domain_sections(result: dict[str, Any]) -> list[ReportSection]:
+    dns = as_dict(result.get("dns"))
+    email_security = as_dict(result.get("email_security"))
+    return [
+        ReportSection("Domain Target", flatten_mapping(as_dict(result.get("target")))),
+        ReportSection("DNS Records", flatten_mapping({key: value for key, value in dns.items() if key != "www"})),
+        ReportSection("www Baseline", flatten_mapping(as_dict(dns.get("www")))),
+        ReportSection("SPF", flatten_mapping(as_dict(email_security.get("spf")))),
+        ReportSection("DMARC", flatten_mapping(as_dict(email_security.get("dmarc")))),
+        ReportSection("DKIM", flatten_mapping(as_dict(email_security.get("dkim")))),
+        ReportSection("Findings", flatten_list(result.get("findings"))),
+    ]
+
+
 def build_summary(job: JobRecord) -> dict[str, Any]:
     result = as_dict(job.result)
     validation = as_dict(result.get("validation"))
@@ -305,6 +323,17 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["findings_count"] = summary.get("findings_count", "N/A")
         data["redirects_count"] = summary.get("redirects_count", "N/A")
         data["tls_present"] = summary.get("tls_present", "N/A")
+    elif job.audit_type == "domain_basic":
+        target = as_dict(result.get("target"))
+        data["target_domain"] = target.get("normalized_domain", job.target_domain or "N/A")
+        data["records_found_count"] = summary.get("records_found_count", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["spf_present"] = summary.get("spf_present", "N/A")
+        data["dmarc_present"] = summary.get("dmarc_present", "N/A")
+        data["dmarc_policy"] = summary.get("dmarc_policy", "N/A")
+        data["caa_present"] = summary.get("caa_present", "N/A")
+        data["mx_present"] = summary.get("mx_present", "N/A")
+        data["www_resolves"] = summary.get("www_resolves", "N/A")
     return data
 
 

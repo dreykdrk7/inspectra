@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildArchiveAuditReport } from "./archiveReport";
+import { buildDomainAuditReport } from "./domainReport";
 import { buildImageAuditReport } from "./imageReport";
 import { buildManifestAuditReport } from "./manifestReport";
 import { buildPdfAuditReport } from "./pdfReport";
@@ -12,6 +13,7 @@ const baseJob = {
   id: "job-1",
   file_id: "file-1",
   target_url: null,
+  target_domain: null,
   status: "completed",
   created_at: "2026-05-26T10:00:00Z",
   updated_at: "2026-05-26T10:01:00Z",
@@ -174,5 +176,37 @@ describe("report helpers", () => {
     expect(report.queryStringPresent).toBe(true);
     expect(report.queryParamsRedacted).toBe(true);
     expect(report.redactedQueryParams).toEqual(["token"]);
+  });
+
+  it("normalizes domain audit DNS, email security, and findings", () => {
+    const report = buildDomainAuditReport({
+      ...baseJob,
+      audit_type: "domain_basic",
+      file_id: null,
+      target_domain: "example.com",
+      result: {
+        analyzer: "domain_basic",
+        target: { normalized_domain: "example.com" },
+        dns: {
+          A: ["93.184.216.34"],
+          MX: [{ preference: 10, exchange: "mail.example.com" }],
+          www: { checked: true, domain: "www.example.com", CNAME: ["example.com"] }
+        },
+        email_security: {
+          spf: { present: true, all_mechanism: "-all" },
+          dmarc: { present: true, policy: "reject" },
+          dkim: { checked: false, status: "not_checked" }
+        },
+        findings: [{ id: "domain_caa_absent", title: "CAA absent", level: "info" }],
+        errors: []
+      }
+    });
+
+    expect(report.isDomainAudit).toBe(true);
+    expect(report.target).toContainEqual({ label: "normalized_domain", value: "example.com" });
+    expect(report.spf).toContainEqual({ label: "present", value: "true" });
+    expect(report.dmarc).toContainEqual({ label: "policy", value: "reject" });
+    expect(report.www[0]).toMatchObject({ label: "checked" });
+    expect(report.findings[0]).toMatchObject({ id: "domain_caa_absent" });
   });
 });

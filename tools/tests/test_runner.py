@@ -864,6 +864,111 @@ async def test_analyze_web_basic_limits_response_bytes():
     assert payload["http"]["response_truncated"] is True
 
 
+@pytest.mark.anyio
+async def test_analyze_domain_basic_reports_dns_and_email_security(monkeypatch):
+    records = {
+        ("example.com", "A"): (["93.184.216.34"], []),
+        ("example.com", "AAAA"): (["2606:2800:220:1:248:1893:25c8:1946"], []),
+        ("example.com", "CNAME"): ([], []),
+        ("example.com", "MX"): ([{"preference": 10, "exchange": "mail.example.com"}], []),
+        ("example.com", "NS"): (["ns1.example.com", "ns2.example.com"], []),
+        ("example.com", "TXT"): (["v=spf1 include:_spf.example.com -all"], []),
+        ("example.com", "CAA"): ([{"flags": 0, "tag": "issue", "value": "letsencrypt.org"}], []),
+        ("example.com", "SOA"): ([{"mname": "ns1.example.com", "rname": "hostmaster.example.com", "serial": 1}], []),
+        ("_dmarc.example.com", "TXT"): (["v=DMARC1; p=reject; rua=mailto:dmarc@example.com; pct=100"], []),
+        ("www.example.com", "A"): (["93.184.216.34"], []),
+        ("www.example.com", "AAAA"): ([], []),
+        ("www.example.com", "CNAME"): ([], []),
+    }
+    monkeypatch.setattr(runner, "query_dns_record", lambda domain, record_type, timeout: records.get((domain, record_type), ([], [])))
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/analyze/domain-basic", json={"domain": "Example.COM", "timeout_seconds": 1})
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["analyzer"] == "domain_basic"
+    assert payload["target"]["normalized_domain"] == "example.com"
+    assert payload["dns"]["A"] == ["93.184.216.34"]
+    assert payload["email_security"]["spf"]["present"] is True
+    assert payload["email_security"]["spf"]["all_mechanism"] == "-all"
+    assert payload["email_security"]["dmarc"]["policy"] == "reject"
+    assert payload["summary"]["mx_present"] is True
+    assert payload["summary"]["www_resolves"] is True
+
+
+@pytest.mark.anyio
+async def test_analyze_domain_basic_generates_informational_findings(monkeypatch):
+    records = {
+        ("example.com", "A"): (["93.184.216.34"], []),
+        ("example.com", "AAAA"): ([], []),
+        ("example.com", "CNAME"): ([], []),
+        ("example.com", "MX"): ([], []),
+        ("example.com", "NS"): (["ns1.example-dns.com"], []),
+        ("example.com", "TXT"): (["v=spf1 +all", "v=spf1 include:mail.example.com ?all", "api_key=[redacted]"], []),
+        ("example.com", "CAA"): ([], []),
+        ("example.com", "SOA"): ([], []),
+        ("_dmarc.example.com", "TXT"): (["v=DMARC1; p=none; pct=50"], []),
+        ("www.example.com", "A"): ([], []),
+        ("www.example.com", "AAAA"): ([], []),
+        ("www.example.com", "CNAME"): ([], []),
+    }
+    monkeypatch.setattr(runner, "query_dns_record", lambda domain, record_type, timeout: records.get((domain, record_type), ([], [])))
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/analyze/domain-basic", json={"domain": "example.com", "timeout_seconds": 1})
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    assert response.status_code == 200
+    assert "domain_single_nameserver" in finding_ids
+    assert "domain_mx_absent" in finding_ids
+    assert "domain_multiple_spf_records" in finding_ids
+    assert "domain_spf_plus_all" in finding_ids
+    assert "domain_dmarc_policy_none" in finding_ids
+    assert "domain_dmarc_pct_partial" in finding_ids
+    assert "domain_caa_absent" in finding_ids
+    assert "domain_www_not_resolving" in finding_ids
+    assert "domain_txt_sensitive_indicator" in finding_ids
+
+
+@pytest.mark.anyio
+async def test_analyze_domain_basic_reports_dmarc_absent_and_dns_errors(monkeypatch):
+    def fake_query(domain: str, record_type: str, timeout: float):
+        if domain == "_dmarc.example.com":
+            return [], []
+        if record_type == "A":
+            return [], ["A query via 127.0.0.53 failed safely: TimeoutError."]
+        return [], []
+
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/analyze/domain-basic", json={"domain": "example.com", "timeout_seconds": 1})
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert "domain_dmarc_absent" in {finding["id"] for finding in payload["findings"]}
+    assert payload["errors"]
+
+
+@pytest.mark.anyio
+async def test_analyze_domain_basic_rejects_invalid_domain():
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        url_response = await client.post("/analyze/domain-basic", json={"domain": "https://example.com"})
+        ip_response = await client.post("/analyze/domain-basic", json={"domain": "127.0.0.1"})
+        local_response = await client.post("/analyze/domain-basic", json={"domain": "test.local"})
+
+    assert url_response.status_code == 400
+    assert ip_response.status_code == 400
+    assert local_response.status_code == 400
+
+
 def test_web_tls_certificate_summary_parses_dates():
     cert = {
         "subject": ((("commonName", "example.test"),),),

@@ -12,6 +12,7 @@ AuditType = Literal[
     "archive_basic",
     "project_archive_basic",
     "web_basic",
+    "domain_basic",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 
@@ -32,6 +33,7 @@ class JobRecord(BaseModel):
     audit_type: AuditType
     file_id: str | None = None
     target_url: str | None = None
+    target_domain: str | None = None
     status: JobStatus
     created_at: datetime
     updated_at: datetime
@@ -49,6 +51,7 @@ class JobListItem(BaseModel):
     audit_type: AuditType
     file_id: str | None = None
     target_url: str | None = None
+    target_domain: str | None = None
     status: JobStatus
     created_at: datetime
     updated_at: datetime
@@ -63,4 +66,9 @@ class DeletedFileResponse(BaseModel):
 
 class WebAuditRequest(BaseModel):
     url: str
+    authorization_confirmed: bool = False
+
+
+class DomainAuditRequest(BaseModel):
+    domain: str
     authorization_confirmed: bool = False

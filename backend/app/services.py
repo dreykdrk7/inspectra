@@ -164,3 +164,30 @@ class WebAuditService:
             return
 
         self.jobs.update(job_id, status="completed", result=response.json())
+
+
+class DomainAuditService:
+    def __init__(self, settings: Settings, files: FileStore, jobs: JobStore) -> None:
+        self.settings = settings
+        self.files = files
+        self.jobs = jobs
+
+    async def run_domain_analysis(self, job_id: str) -> None:
+        job = self.jobs.update(job_id, status="running")
+        if not job.target_domain:
+            self.jobs.update(job_id, status="failed", error="Domain audit job is missing a target domain.")
+            return
+        payload = {
+            "domain": job.target_domain,
+            "timeout_seconds": self.settings.domain_dns_timeout_seconds,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.settings.domain_dns_timeout_seconds + 10.0) as client:
+                response = await client.post(f"{self.settings.tool_runner_url}/analyze/domain-basic", json=payload)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            self.jobs.update(job_id, status="failed", error=f"Tool runner request failed: {exc}")
+            return
+
+        self.jobs.update(job_id, status="completed", result=response.json())

@@ -46,6 +46,7 @@ export function filterJobs(
       job.id.toLowerCase().includes(query) ||
       (job.file_id ?? "").toLowerCase().includes(query) ||
       (job.target_url ?? "").toLowerCase().includes(query) ||
+      (job.target_domain ?? "").toLowerCase().includes(query) ||
       job.audit_type.toLowerCase().includes(query) ||
       job.status.toLowerCase().includes(query);
     return matchesStatus && matchesType && matchesSearch;
@@ -78,6 +79,9 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   }
   if (auditType === "web_basic") {
     return "web_basic";
+  }
+  if (auditType === "domain_basic") {
+    return "domain_basic";
   }
   return auditType;
 }

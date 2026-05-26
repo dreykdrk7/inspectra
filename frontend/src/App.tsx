@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Download, Eye, FilePlus2, Globe2, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
+import { Activity, Download, Eye, FilePlus2, Globe2, Network, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 
 import { api } from "./api";
 import {
@@ -14,6 +14,7 @@ import {
   type JobTypeFilter
 } from "./dashboardFilters";
 import { ArchiveJobReport } from "./ArchiveJobReport";
+import { DomainJobReport } from "./DomainJobReport";
 import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
@@ -49,6 +50,9 @@ export function App() {
   const [webUrl, setWebUrl] = useState("");
   const [webAuthorizationConfirmed, setWebAuthorizationConfirmed] = useState(false);
   const [webAuditState, setWebAuditState] = useState<LoadState>(initialLoadState);
+  const [domainName, setDomainName] = useState("");
+  const [domainAuthorizationConfirmed, setDomainAuthorizationConfirmed] = useState(false);
+  const [domainAuditState, setDomainAuditState] = useState<LoadState>(initialLoadState);
 
   const refreshHealth = useCallback(async () => {
     setHealthState({ loading: true, error: null });
@@ -197,6 +201,22 @@ export function App() {
     }
   }
 
+  async function launchDomainAudit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setActionError(null);
+    setDomainAuditState({ loading: true, error: null });
+    try {
+      const job = await api.launchDomainBasicAudit(domainName, domainAuthorizationConfirmed);
+      setSelectedJob(job);
+      setDomainName("");
+      setDomainAuthorizationConfirmed(false);
+      await refreshJobs();
+      setDomainAuditState({ loading: false, error: null });
+    } catch (error) {
+      setDomainAuditState({ loading: false, error: toErrorMessage(error) });
+    }
+  }
+
   async function deleteFile(fileId: string) {
     setActionError(null);
     try {
@@ -322,6 +342,32 @@ export function App() {
           </form>
           {webAuditState.error ? <p className="error-text">{webAuditState.error}</p> : null}
         </Panel>
+
+        <Panel title="Domain Baseline" icon={<Network size={18} aria-hidden="true" />}>
+          <form className="web-audit-form" onSubmit={(event) => void launchDomainAudit(event)}>
+            <input
+              className="search-input"
+              type="text"
+              placeholder="example.com"
+              value={domainName}
+              onChange={(event) => setDomainName(event.target.value)}
+              required
+            />
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={domainAuthorizationConfirmed}
+                onChange={(event) => setDomainAuthorizationConfirmed(event.target.checked)}
+              />
+              Confirmo que tengo autorización para auditar este dominio
+            </label>
+            <button type="submit" disabled={domainAuditState.loading || !domainAuthorizationConfirmed}>
+              <Play size={16} aria-hidden="true" />
+              {domainAuditState.loading ? "Starting" : "Analyze domain"}
+            </button>
+          </form>
+          {domainAuditState.error ? <p className="error-text">{domainAuditState.error}</p> : null}
+        </Panel>
       </section>
 
       <section className="content-grid">
@@ -431,7 +477,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -468,7 +514,7 @@ export function App() {
                         <span className={`status-pill ${job.status}`}>{job.status}</span>
                       </td>
                       <td>{job.audit_type}</td>
-                      <td className="mono">{job.file_id ? shortId(job.file_id) : job.target_url ?? "N/A"}</td>
+                      <td className="mono">{job.file_id ? shortId(job.file_id) : job.target_url ?? job.target_domain ?? "N/A"}</td>
                       <td>{formatDate(job.updated_at)}</td>
                       <td>{summarizeJob(job)}</td>
                       <td>
@@ -499,6 +545,8 @@ export function App() {
               <ArchiveJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "project_archive_basic" ? (
               <ProjectArchiveJobReport job={selectedJob} file={selectedJobFile} />
+            ) : selectedJob.audit_type === "domain_basic" ? (
+              <DomainJobReport job={selectedJob} />
             ) : (
               <WebJobReport job={selectedJob} />
             )}
@@ -703,6 +751,10 @@ function summarizeJob(job: JobListItem): string {
   }
   if (job.audit_type === "web_basic") {
     return `HTTP ${statusCode ?? "pending"}, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "domain_basic") {
+    const recordsFound = typeof job.summary.records_found_count === "number" ? job.summary.records_found_count : 0;
+    return `${recordsFound} records, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

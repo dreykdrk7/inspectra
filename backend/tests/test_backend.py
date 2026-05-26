@@ -14,7 +14,15 @@ from app.main import app
 from app.models import JobRecord
 from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
-from app.services import ArchiveAuditService, ImageAuditService, ManifestAuditService, PdfAuditService, ProjectArchiveAuditService, WebAuditService
+from app.services import (
+    ArchiveAuditService,
+    DomainAuditService,
+    ImageAuditService,
+    ManifestAuditService,
+    PdfAuditService,
+    ProjectArchiveAuditService,
+    WebAuditService,
+)
 from app.storage import FileStore, JobStore
 from app import web_security
 
@@ -44,6 +52,9 @@ class NoopAuditService:
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
         return None
 
+    async def run_domain_analysis(self, job_id: str) -> None:
+        return None
+
 
 class CapturingWebAuditService:
     def __init__(self) -> None:
@@ -70,6 +81,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
     app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
+    app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
 
 
 @pytest.mark.anyio
@@ -701,6 +713,78 @@ async def test_web_basic_audit_blocks_hostname_resolving_to_private_ip(monkeypat
 
 
 @pytest.mark.anyio
+async def test_domain_basic_audit_job_creation_and_list(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.domain_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/domain/basic",
+            json={"domain": "Example.COM", "authorization_confirmed": True},
+        )
+        list_response = await client.get("/jobs")
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["audit_type"] == "domain_basic"
+    assert payload["file_id"] is None
+    assert payload["target_domain"] == "example.com"
+    assert list_response.json()[0]["target_domain"] == "example.com"
+
+
+@pytest.mark.anyio
+async def test_domain_basic_audit_requires_authorization(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.domain_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/domain/basic",
+            json={"domain": "example.com", "authorization_confirmed": False},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Authorization confirmation is required."
+
+
+@pytest.mark.anyio
+async def test_domain_basic_audit_rejects_invalid_domains(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.domain_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        url_response = await client.post(
+            "/audits/domain/basic",
+            json={"domain": "https://example.com", "authorization_confirmed": True},
+        )
+        path_response = await client.post(
+            "/audits/domain/basic",
+            json={"domain": "example.com/path", "authorization_confirmed": True},
+        )
+        ip_response = await client.post(
+            "/audits/domain/basic",
+            json={"domain": "127.0.0.1", "authorization_confirmed": True},
+        )
+        localhost_response = await client.post(
+            "/audits/domain/basic",
+            json={"domain": "localhost", "authorization_confirmed": True},
+        )
+        local_response = await client.post(
+            "/audits/domain/basic",
+            json={"domain": "test.local", "authorization_confirmed": True},
+        )
+
+    assert url_response.status_code == 400
+    assert path_response.status_code == 400
+    assert ip_response.status_code == 400
+    assert localhost_response.status_code == 400
+    assert local_response.status_code == 400
+
+
+@pytest.mark.anyio
 async def test_list_jobs_returns_recent_first_with_summary(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     older = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -1049,6 +1133,35 @@ async def test_export_web_job_all_formats(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_export_domain_job_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_domain_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "domain_basic" in responses["markdown"].text
+    assert "DNS Records" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/targetDomain") == "example.com"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
 async def test_export_returns_404_for_missing_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
@@ -1137,13 +1250,14 @@ async def test_export_sbom_for_project_archive_job(monkeypatch, tmp_path):
 async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 26, tzinfo=timezone.utc)
-    for index, audit_type in enumerate(("pdf_basic", "image_basic", "archive_basic", "web_basic"), start=1):
+    for index, audit_type in enumerate(("pdf_basic", "image_basic", "archive_basic", "web_basic", "domain_basic"), start=1):
         app.state.jobs.save(
             JobRecord(
                 id=f"{index}" * 32,
                 audit_type=audit_type,
-                file_id=None if audit_type == "web_basic" else f"{index + 3}" * 32,
+                file_id=None if audit_type in {"web_basic", "domain_basic"} else f"{index + 3}" * 32,
                 target_url="https://example.com/" if audit_type == "web_basic" else None,
+                target_domain="example.com" if audit_type == "domain_basic" else None,
                 status="completed",
                 created_at=now,
                 updated_at=now,
@@ -1153,7 +1267,7 @@ async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        responses = [await client.get(f"/jobs/{str(index) * 32}/sbom/cyclonedx-json") for index in range(1, 5)]
+        responses = [await client.get(f"/jobs/{str(index) * 32}/sbom/cyclonedx-json") for index in range(1, 6)]
 
     for response in responses:
         assert response.status_code == 400
@@ -1773,6 +1887,57 @@ def save_web_export_fixture_job() -> JobRecord:
                 "tls_present": True,
                 "security_txt_present": False,
                 "robots_txt_present": True,
+            },
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_domain_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="9" * 32,
+        audit_type="domain_basic",
+        file_id=None,
+        target_domain="example.com",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "domain_basic",
+            "target": {
+                "domain": "example.com",
+                "normalized_domain": "example.com",
+                "checked_at": now.isoformat(),
+            },
+            "dns": {
+                "A": ["93.184.216.34"],
+                "AAAA": [],
+                "CNAME": [],
+                "MX": [{"preference": 10, "exchange": "mail.example.com"}],
+                "NS": ["ns1.example.com", "ns2.example.com"],
+                "TXT": ["v=spf1 -all"],
+                "CAA": [{"flags": 0, "tag": "issue", "value": "letsencrypt.org"}],
+                "SOA": [{"mname": "ns1.example.com", "rname": "hostmaster.example.com", "serial": 1}],
+                "www": {"checked": True, "domain": "www.example.com", "CNAME": ["example.com"], "errors": []},
+            },
+            "email_security": {
+                "spf": {"present": True, "record_count": 1, "all_mechanism": "-all", "records": ["v=spf1 -all"]},
+                "dmarc": {"present": True, "record_count": 1, "policy": "reject", "records": ["v=DMARC1; p=reject"]},
+                "dkim": {"checked": False, "status": "not_checked"},
+            },
+            "findings": [{"id": "domain_caa_absent", "title": "CAA records were not observed", "level": "info"}],
+            "summary": {
+                "records_found_count": 7,
+                "findings_count": 1,
+                "spf_present": True,
+                "dmarc_present": True,
+                "dmarc_policy": "reject",
+                "caa_present": True,
+                "mx_present": True,
+                "www_resolves": True,
             },
             "errors": [],
         },

@@ -52,6 +52,7 @@ describe("App", () => {
               audit_type: "pdf_basic",
               file_id: "file-pdf-1",
               target_url: null,
+              target_domain: null,
               status: "completed",
               created_at: "2026-05-26T10:01:00Z",
               updated_at: "2026-05-26T10:02:00Z",
@@ -68,6 +69,7 @@ describe("App", () => {
               audit_type: "manifest_basic",
               file_id: "file-manifest-1",
               target_url: null,
+              target_domain: null,
               status: "completed",
               created_at: "2026-05-26T10:04:00Z",
               updated_at: "2026-05-26T10:05:00Z",
@@ -98,9 +100,30 @@ describe("App", () => {
                 audit_type: "web_basic",
                 file_id: null,
                 target_url: "https://example.test/",
+                target_domain: null,
                 status: "queued",
                 created_at: "2026-05-26T10:06:00Z",
                 updated_at: "2026-05-26T10:06:00Z",
+                source_file_deleted_at: null,
+                result: null,
+                error: null
+              },
+              202
+            )
+          );
+        }
+        if (url.endsWith("/audits/domain/basic")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-domain-1",
+                audit_type: "domain_basic",
+                file_id: null,
+                target_url: null,
+                target_domain: "example.com",
+                status: "queued",
+                created_at: "2026-05-26T10:07:00Z",
+                updated_at: "2026-05-26T10:07:00Z",
                 source_file_deleted_at: null,
                 result: null,
                 error: null
@@ -117,6 +140,7 @@ describe("App", () => {
                 audit_type: "pdf_basic",
                 file_id: "file-pdf-1",
                 target_url: null,
+                target_domain: null,
                 status: "completed",
                 created_at: "2026-05-26T10:01:00Z",
                 updated_at: "2026-05-26T10:02:00Z",
@@ -128,6 +152,7 @@ describe("App", () => {
                 audit_type: "manifest_basic",
                 file_id: "file-manifest-1",
                 target_url: null,
+                target_domain: null,
                 status: "completed",
                 created_at: "2026-05-26T10:04:00Z",
                 updated_at: "2026-05-26T10:05:00Z",
@@ -153,6 +178,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Backend" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Upload File" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Web Audit" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Domain Baseline" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Jobs" })).toBeInTheDocument();
 
@@ -232,5 +258,27 @@ describe("App", () => {
     expect(button).toBeDisabled();
     fireEvent.click(button);
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("starts a domain audit from the domain form", async () => {
+    render(<App />);
+
+    const inputs = await screen.findAllByPlaceholderText("example.com");
+    const input = inputs[inputs.length - 1];
+    fireEvent.change(input, { target: { value: "example.com" } });
+    const checkboxes = screen.getAllByLabelText("Confirmo que tengo autorización para auditar este dominio");
+    fireEvent.click(checkboxes[checkboxes.length - 1]);
+    const buttons = screen.getAllByRole("button", { name: /Analyze domain/i });
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/audits/domain/basic",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ domain: "example.com", authorization_confirmed: true })
+        })
+      );
+    });
   });
 });

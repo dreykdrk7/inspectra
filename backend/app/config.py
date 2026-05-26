@@ -10,6 +10,7 @@ DEFAULT_WEB_TIMEOUT_SECONDS = 10.0
 DEFAULT_WEB_MAX_RESPONSE_BYTES = 1_048_576
 DEFAULT_WEB_MAX_REDIRECTS = 5
 DEFAULT_WEB_ALLOWED_PORTS = (80, 443)
+DEFAULT_DOMAIN_DNS_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class Settings:
     web_max_response_bytes: int = DEFAULT_WEB_MAX_RESPONSE_BYTES
     web_max_redirects: int = DEFAULT_WEB_MAX_REDIRECTS
     web_allowed_ports: tuple[int, ...] = DEFAULT_WEB_ALLOWED_PORTS
+    domain_dns_timeout_seconds: float = DEFAULT_DOMAIN_DNS_TIMEOUT_SECONDS
 
     @property
     def upload_dir(self) -> Path:
@@ -51,6 +53,10 @@ def load_settings() -> Settings:
     web_max_response_bytes = _positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", DEFAULT_WEB_MAX_RESPONSE_BYTES)
     web_max_redirects = _positive_int_from_env("INSPECTRA_WEB_MAX_REDIRECTS", DEFAULT_WEB_MAX_REDIRECTS)
     web_allowed_ports = _ports_from_env("INSPECTRA_WEB_ALLOWED_PORTS", DEFAULT_WEB_ALLOWED_PORTS)
+    domain_dns_timeout_seconds = _positive_float_from_env(
+        "INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS",
+        DEFAULT_DOMAIN_DNS_TIMEOUT_SECONDS,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -61,6 +67,7 @@ def load_settings() -> Settings:
         web_max_response_bytes=web_max_response_bytes,
         web_max_redirects=web_max_redirects,
         web_allowed_ports=web_allowed_ports,
+        domain_dns_timeout_seconds=domain_dns_timeout_seconds,
     )
 
 

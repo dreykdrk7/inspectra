@@ -2,7 +2,7 @@
 
 ## Intended Use
 
-Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-URL web baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, and passive HTTP/HTTPS configuration review.
+Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-target web and domain baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, passive HTTP/HTTPS configuration review, and bounded DNS baseline review.
 
 Use Inspectra only on files, domains, systems, or services that you own or are explicitly authorized to assess.
 
@@ -30,6 +30,8 @@ Allowed in this phase:
 - Exporting offline SBOMs from completed manifest and project-archive manifest jobs as CycloneDX JSON and SPDX JSON.
 - Running a controlled `web_basic` audit against one explicitly authorized HTTP/HTTPS URL.
 - Recording web configuration indicators such as status, redirects, response headers, security headers, cookies, TLS certificate summary, `robots.txt`, and `security.txt`.
+- Running a controlled `domain_basic` DNS baseline audit against one explicitly authorized domain.
+- Recording DNS configuration indicators for bounded `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `CAA`, `SOA`, `_dmarc`, and `www` checks.
 - Using the local web UI to perform the same API actions.
 
 Tools used in this phase:
@@ -51,6 +53,8 @@ For SBOM export, Inspectra uses only declared dependencies already present in co
 
 For web baseline audits, Inspectra makes bounded HTTP/HTTPS requests only to the authorized URL, validated redirects, and common same-origin `robots.txt`/`security.txt` paths. It does not execute JavaScript, render HTML, crawl links, fuzz, brute-force, exploit, scan ports, use Nmap, query CVEs, or call third-party reputation APIs. Missing headers and exposed metadata are reported as indicators for manual review, not confirmed vulnerabilities.
 
+For domain baseline audits, Inspectra makes bounded DNS queries only for the authorized domain, `_dmarc.<domain>`, and `www.<domain>`. It does not brute-force subdomains, use wordlists, attempt zone transfers, perform reverse DNS sweeps, crawl sites, scan ports, query CVEs, or call reputation APIs. Missing SPF, DMARC, CAA, MX, or `www` records are reported as indicators for manual review, not confirmed vulnerabilities.
+
 ## Out of Scope
 
 The MVP does not include:
@@ -59,6 +63,8 @@ The MVP does not include:
 - Vulnerability exploitation.
 - Network or port scanning.
 - Web crawling.
+- Subdomain brute force or wordlist enumeration.
+- DNS zone transfer attempts (`AXFR`).
 - Internet-wide enumeration.
 - Brute force checks.
 - Credential attacks.

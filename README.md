@@ -99,9 +99,10 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
 | `INSPECTRA_WEB_MAX_REDIRECTS` | backend, audit-tools | `5` | Maximum redirects followed by the web audit. Each redirect target is validated before use. |
 | `INSPECTRA_WEB_ALLOWED_PORTS` | backend, audit-tools | `80,443` | Comma-separated ports accepted in web audit URLs. Add lab ports such as `8000,8080,8443` only for authorized environments. |
+| `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS` | backend, audit-tools | `5` | Timeout for each bounded DNS query in the domain baseline audit. |
 | `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Browser-facing backend URL used by the React app. |
 
-The `audit-tools` container is attached to the internal Inspectra network and to a separate egress-capable network so `web_basic` can make the single authorized HTTP/HTTPS request. The runner still does not publish a public port.
+The `audit-tools` container is attached to the internal Inspectra network and to a separate egress-capable network so `web_basic` can make authorized HTTP/HTTPS requests and `domain_basic` can make bounded DNS queries. The runner still does not publish a public port.
 
 ## Use the Web UI
 
@@ -111,7 +112,7 @@ Open:
 http://localhost:5173
 ```
 
-From the UI you can check backend health, upload PDFs, images, manifests, or archives, submit an authorized URL for baseline web audit, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
+From the UI you can check backend health, upload PDFs, images, manifests, or archives, submit an authorized URL for baseline web audit, submit an authorized domain for DNS baseline audit, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
 For archive files, the file list shows two actions: `Analyze archive` for container structure and extraction-risk indicators, and `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive.
 
@@ -239,6 +240,18 @@ Web audits connect only to the port in the URL. The default allowed ports are `8
 Cookie values and sensitive response headers such as `Set-Cookie`, `Authorization`, `Proxy-Authorization`, `X-Api-Key`, and `X-Auth-Token` are redacted in web results and exports. Inspectra uses the submitted URL for the authorized request, but stores and exports a display URL where common sensitive query parameters such as `token`, `api_key`, `session`, `password`, `code`, and `state` are replaced with `REDACTED`. Non-sensitive query parameters are preserved for context. Avoid placing real secrets in audited URLs; uncommon parameter names may not be recognized.
 
 The web audit performs a small set of passive HTTP/HTTPS requests for the provided URL plus `robots.txt` and common `security.txt` locations on the same origin. It does not execute JavaScript, render HTML, crawl links, fuzz, brute-force, exploit, scan ports, use Nmap, query CVEs, or call external reputation APIs.
+
+## Launch a Domain DNS Baseline Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/domain/basic \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"example.com","authorization_confirmed":true}'
+```
+
+This creates a `domain_basic` job. The audit accepts a domain name, not a URL, and rejects IP literals, localhost-style names, paths, query strings, userinfo, and reserved/internal suffixes such as `.local`, `.localhost`, `.internal`, `.test`, and `.invalid`.
+
+The runner performs bounded DNS queries for `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `CAA`, and `SOA`, plus `_dmarc.<domain>` TXT and `www.<domain>` A/AAAA/CNAME. It parses SPF, DMARC, CAA, MX, NS, SOA, and TXT records into informational findings. It does not brute-force subdomains, use wordlists, attempt AXFR, crawl websites, scan ports, use Nmap, query CVEs, or call external reputation APIs.
 
 ## Read Job Results
 

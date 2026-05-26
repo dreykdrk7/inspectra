@@ -80,7 +80,7 @@ SBOM output intentionally reflects only dependencies declared in analyzed manife
   - `qpdf`
   - `file`
 
-The tool runner is reachable by the backend on the internal Compose network. For `web_basic`, the runner is also attached to a separate egress-capable network so it can make the explicitly authorized HTTP/HTTPS requests. It does not publish a public port. For uploaded-file audits it receives a relative path, validates that the path stays inside `data/`, runs passive tools without a shell when tools are needed, and returns structured JSON to the backend.
+The tool runner is reachable by the backend on the internal Compose network. For `web_basic` and `domain_basic`, the runner is also attached to a separate egress-capable network so it can make explicitly authorized HTTP/HTTPS requests and bounded DNS queries. It does not publish a public port. For uploaded-file audits it receives a relative path, validates that the path stays inside `data/`, runs passive tools without a shell when tools are needed, and returns structured JSON to the backend.
 
 Each external command has an `INSPECTRA_TOOL_TIMEOUT_SECONDS` timeout, defaulting to 10 seconds. A timed-out tool is recorded in that tool's output and in the result summary instead of failing the entire job by itself.
 
@@ -96,6 +96,8 @@ Web baseline analysis uses Python standard library HTTP/TLS primitives. It accep
 
 Web results redact cookie values and sensitive response headers before they are stored. Cookie metadata such as name, Secure, HttpOnly, SameSite, Domain, Path, Max-Age, Expires, and value length can be retained for reporting without keeping session tokens. The backend passes the full submitted URL to the web runner only in memory for the authorized request, while job records store a display URL with common sensitive query parameters redacted. The runner applies the same query redaction to target URLs, redirects, findings, errors, and resource URLs before returning JSON. Reporting applies redaction again for compatibility with older jobs that may contain raw URLs.
 
+Domain baseline analysis uses a small standard-library DNS client in the tool runner. It accepts a domain name, rejects URLs, IP literals, userinfo, paths, query strings, localhost-style names, and reserved/internal suffixes, then queries only bounded record types for the authorized domain, `_dmarc.<domain>`, and `www.<domain>`. It parses SPF, DMARC, CAA, MX, NS, SOA, and generic TXT records into informational findings. It does not brute-force subdomains, use wordlists, attempt AXFR, perform reverse DNS sweeps, crawl sites, scan ports, query CVEs, or call external reputation APIs. `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS` controls each DNS query timeout.
+
 ### Local Data
 
 - Uploaded files: `data/uploads`
@@ -106,12 +108,12 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 
 ## Request Flow
 
-1. A user uploads a PDF to `POST /files/pdf`, an image to `POST /files/image`, a manifest to `POST /files/manifest`, or an archive to `POST /files/archive`. For web checks, the user submits a URL to `POST /audits/web/basic` with authorization confirmation.
+1. A user uploads a PDF to `POST /files/pdf`, an image to `POST /files/image`, a manifest to `POST /files/manifest`, or an archive to `POST /files/archive`. For web checks, the user submits a URL to `POST /audits/web/basic` with authorization confirmation. For domain checks, the user submits a domain to `POST /audits/domain/basic` with authorization confirmation.
 2. The backend validates file magic bytes, manifest name/content, or archive name/signature, stores it in `data/uploads`, and records metadata.
-3. A user starts file analysis with `POST /audits/pdf/{file_id}`, `POST /audits/image/{file_id}`, `POST /audits/manifest/{file_id}`, `POST /audits/archive/{file_id}`, or `POST /audits/project-archive/{file_id}`. Web jobs are already created by `POST /audits/web/basic` and store `target_url` instead of `file_id`.
+3. A user starts file analysis with `POST /audits/pdf/{file_id}`, `POST /audits/image/{file_id}`, `POST /audits/manifest/{file_id}`, `POST /audits/archive/{file_id}`, or `POST /audits/project-archive/{file_id}`. Web and domain jobs are already created by `POST /audits/web/basic` or `POST /audits/domain/basic` and store `target_url` or `target_domain` instead of `file_id`.
 4. The backend creates a queued job and schedules background execution.
 5. The backend calls `audit-tools` over the internal Compose network.
-6. The tool runner performs passive analysis inside its container. For `manifest_basic`, it parses local text and returns normalized dependencies and informational findings. For `archive_basic`, it inspects archive metadata and returns structure, size, manifest-presence, extraction-risk, and informational findings without broad extraction. For `project_archive_basic`, it scans archive metadata, reads only bounded supported manifest files in memory, and returns internal dependency summaries plus informational findings. For `web_basic`, it makes bounded HTTP/HTTPS requests to the authorized URL and same-origin `robots.txt`/`security.txt` paths, returning headers, cookies, TLS summary, redirects, and configuration findings.
+6. The tool runner performs passive analysis inside its container. For `manifest_basic`, it parses local text and returns normalized dependencies and informational findings. For `archive_basic`, it inspects archive metadata and returns structure, size, manifest-presence, extraction-risk, and informational findings without broad extraction. For `project_archive_basic`, it scans archive metadata, reads only bounded supported manifest files in memory, and returns internal dependency summaries plus informational findings. For `web_basic`, it makes bounded HTTP/HTTPS requests to the authorized URL and same-origin `robots.txt`/`security.txt` paths, returning headers, cookies, TLS summary, redirects, and configuration findings. For `domain_basic`, it makes bounded DNS queries for the authorized domain and returns DNS, email-security, `www`, findings, and errors.
 7. The backend stores the final job state and result JSON.
 8. A user reads the job with `GET /jobs/{job_id}` from the API or the UI.
 9. A user exports a report with `GET /jobs/{job_id}/export/{format}`. The backend renders the report from the stored job JSON.
@@ -133,6 +135,7 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `POST /audits/archive/{file_id}`: start a basic passive archive inspection.
 - `POST /audits/project-archive/{file_id}`: start passive manifest analysis inside an archive.
 - `POST /audits/web/basic`: start a controlled baseline web configuration audit for one authorized URL.
+- `POST /audits/domain/basic`: start a controlled passive DNS baseline audit for one authorized domain.
 - `GET /jobs`: list jobs, newest first, with summaries when available.
 - `GET /jobs/{job_id}`: read one full job record.
 - `GET /jobs/{job_id}/export/markdown`: export a Markdown report.

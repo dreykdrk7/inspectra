@@ -15,7 +15,7 @@ export type FileRecord = {
 };
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
-export type AuditType = 'pdf_basic' | 'image_basic' | 'manifest_basic' | 'archive_basic' | 'project_archive_basic' | 'web_basic';
+export type AuditType = 'pdf_basic' | 'image_basic' | 'manifest_basic' | 'archive_basic' | 'project_archive_basic' | 'web_basic' | 'domain_basic';
 export type ReportFormat = 'markdown' | 'html' | 'xml' | 'pdf';
 export type SbomFormat = 'cyclonedx-json' | 'spdx-json';
 
@@ -24,6 +24,7 @@ export type JobRecord = {
   audit_type: AuditType;
   file_id: string | null;
   target_url: string | null;
+  target_domain: string | null;
   status: JobStatus;
   created_at: string;
   updated_at: string;

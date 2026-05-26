@@ -15,6 +15,7 @@ services:
       INSPECTRA_WEB_MAX_RESPONSE_BYTES: "1048576"
       INSPECTRA_WEB_MAX_REDIRECTS: "5"
       INSPECTRA_WEB_ALLOWED_PORTS: "80,443"
+      INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS: "5"
     volumes:
       - ./data:/app/data
     ports:
@@ -59,6 +60,7 @@ services:
       INSPECTRA_WEB_MAX_RESPONSE_BYTES: "1048576"
       INSPECTRA_WEB_MAX_REDIRECTS: "5"
       INSPECTRA_WEB_ALLOWED_PORTS: "80,443"
+      INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS: "5"
     volumes:
       - ./data:/app/data:ro
     expose:
