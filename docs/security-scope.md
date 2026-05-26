@@ -22,6 +22,7 @@ Allowed in this phase:
 - Running passive PDF validation.
 - Listing and deleting locally uploaded PDFs, images, and manifests.
 - Storing local JSON audit results.
+- Exporting local reports from stored job JSON as Markdown, HTML, XML, and PDF.
 - Using the local web UI to perform the same API actions.
 
 Tools used in this phase:
@@ -71,6 +72,8 @@ The frontend does not add authentication or authorization. Run Inspectra only on
 Image analysis does not render previews in this phase. Uploaded images are treated as local files for passive metadata and identification only.
 
 Manifest analysis does not execute project code or package scripts. Uploaded manifests are treated as local text inputs for extraction and reporting only.
+
+Report exports are generated locally from existing job results. The generated HTML is static, self-contained, and does not include JavaScript or external CSS. Inspectra escapes dynamic content before writing HTML and XML reports. Exporting a report does not execute uploaded files, manifest scripts, or result content.
 
 ## Container Boundary
 

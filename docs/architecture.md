@@ -17,6 +17,7 @@ Inspectra starts as a small defensive audit API for authorized local files. The 
   - File listing and deletion endpoints.
   - Basic file metadata registry.
   - Job creation, listing, and status management.
+  - Job report export in Markdown, HTML, XML, and PDF.
   - Calling the internal tool runner.
   - Persisting results under `data/results/jobs`.
 
@@ -34,11 +35,23 @@ The backend does not install or execute audit binaries directly.
   - Launch PDF, image, and manifest audits.
   - List recent jobs.
   - Fetch jobs and render readable PDF, image, and manifest reports.
+  - Provide export links for Markdown, HTML, XML, and PDF job reports.
   - Keep raw job JSON available for debugging.
 
 The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
 
 Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, and `frontend/src/manifestReport.ts`. This keeps the backend contract stable while making audit result JSON easier to read.
+
+### Reporting
+
+- Location: `backend/app/reporting.py`
+- Responsibilities:
+  - Normalize stored `JobRecord` JSON into report sections.
+  - Render Markdown, static HTML, Inspectra-specific XML, and a simple PDF.
+  - Escape dynamic content for HTML and XML.
+  - Include job state, hashes, summaries, type-specific sections, errors, and timeouts when present.
+
+PDF output is generated with a small local Python writer to avoid adding browser automation, LaTeX, external services, or heavyweight dependencies in this MVP.
 
 ### Audit Tools Container
 
@@ -74,6 +87,7 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 6. The tool runner performs passive analysis inside its container. For `manifest_basic`, it parses local text and returns normalized dependencies and informational findings.
 7. The backend stores the final job state and result JSON.
 8. A user reads the job with `GET /jobs/{job_id}` from the API or the UI.
+9. A user exports a report with `GET /jobs/{job_id}/export/{format}`. The backend renders the report from the stored job JSON.
 
 ## API Surface
 
@@ -89,6 +103,10 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `POST /audits/manifest/{file_id}`: start a basic passive dependency manifest audit.
 - `GET /jobs`: list jobs, newest first, with summaries when available.
 - `GET /jobs/{job_id}`: read one full job record.
+- `GET /jobs/{job_id}/export/markdown`: export a Markdown report.
+- `GET /jobs/{job_id}/export/html`: export a static HTML report.
+- `GET /jobs/{job_id}/export/xml`: export an Inspectra XML report.
+- `GET /jobs/{job_id}/export/pdf`: export a simple PDF report.
 
 Deleting a file does not remove historical job results. Associated jobs are marked with `source_file_deleted_at`.
 

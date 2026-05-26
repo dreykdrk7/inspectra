@@ -1,11 +1,11 @@
 import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Eye, FilePlus2, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
+import { Activity, Download, Eye, FilePlus2, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 
 import { api } from "./api";
 import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
-import type { FileRecord, HealthResponse, JobListItem, JobRecord } from "./types";
+import type { FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat } from "./types";
 
 type LoadState = {
   loading: boolean;
@@ -297,12 +297,17 @@ export function App() {
       </section>
 
       <Panel title="Job Result">
-        {selectedJob?.audit_type === "pdf_basic" ? (
-          <PdfJobReport job={selectedJob} file={selectedJobFile} />
-        ) : selectedJob?.audit_type === "image_basic" ? (
-          <ImageJobReport job={selectedJob} file={selectedJobFile} />
-        ) : selectedJob?.audit_type === "manifest_basic" ? (
-          <ManifestJobReport job={selectedJob} file={selectedJobFile} />
+        {selectedJob ? (
+          <>
+            <ExportActions job={selectedJob} />
+            {selectedJob.audit_type === "pdf_basic" ? (
+              <PdfJobReport job={selectedJob} file={selectedJobFile} />
+            ) : selectedJob.audit_type === "image_basic" ? (
+              <ImageJobReport job={selectedJob} file={selectedJobFile} />
+            ) : (
+              <ManifestJobReport job={selectedJob} file={selectedJobFile} />
+            )}
+          </>
         ) : (
           <EmptyState text="Select a job to view its result." />
         )}
@@ -338,6 +343,26 @@ function Panel({
 
 function EmptyState({ text }: { text: string }) {
   return <p className="empty-state">{text}</p>;
+}
+
+function ExportActions({ job }: { job: JobRecord }) {
+  const formats: Array<{ format: ReportFormat; label: string }> = [
+    { format: "markdown", label: "Export Markdown" },
+    { format: "html", label: "Export HTML" },
+    { format: "xml", label: "Export XML" },
+    { format: "pdf", label: "Export PDF" }
+  ];
+
+  return (
+    <div className="export-actions" aria-label="Job export actions">
+      {formats.map((item) => (
+        <a key={item.format} className="export-link" href={api.jobExportUrl(job.id, item.format)}>
+          <Download size={15} aria-hidden="true" />
+          {item.label}
+        </a>
+      ))}
+    </div>
+  );
 }
 
 function toErrorMessage(error: unknown): string {

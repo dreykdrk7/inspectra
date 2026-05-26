@@ -1,4 +1,4 @@
-import type { DeletedFileResponse, FileRecord, HealthResponse, JobListItem, JobRecord } from './types';
+import type { DeletedFileResponse, FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat } from './types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
 
@@ -96,6 +96,10 @@ export async function getJob(jobId: string): Promise<JobRecord> {
   return parseJsonResponse<JobRecord>(response);
 }
 
+export function jobExportUrl(jobId: string, format: ReportFormat): string {
+  return `${API_BASE_URL}/jobs/${jobId}/export/${format}`;
+}
+
 export const api = {
   baseUrl: apiBaseUrl,
   health: getHealth,
@@ -109,4 +113,5 @@ export const api = {
   launchManifestAudit,
   listJobs,
   getJob,
+  jobExportUrl,
 };

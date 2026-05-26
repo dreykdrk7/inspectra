@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import json
+from xml.etree import ElementTree
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -399,3 +400,133 @@ async def test_delete_file_removes_source_and_marks_jobs(monkeypatch, tmp_path):
     assert job_response.status_code == 200
     assert job_response.json()["source_file_deleted_at"] is not None
     assert job_response.json()["result"]["hashes"]["sha256"] == file_payload["sha256"]
+
+
+@pytest.mark.anyio
+async def test_export_markdown_for_existing_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_export_fixture_job()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(f"/jobs/{job.id}/export/markdown")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.md"'
+    assert "# Inspectra Audit Report" in response.text
+    assert "manifest_basic" in response.text
+    assert "&lt;script&gt;alert('x')&lt;/script&gt;" in response.text
+
+
+@pytest.mark.anyio
+async def test_export_html_escapes_dynamic_content(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_export_fixture_job()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(f"/jobs/{job.id}/export/html")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.html"'
+    assert "<script>alert('x')</script>" not in response.text
+    assert "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;" in response.text
+
+
+@pytest.mark.anyio
+async def test_export_xml_escapes_dynamic_content_and_is_valid(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_export_fixture_job()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(f"/jobs/{job.id}/export/xml")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/xml")
+    assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.xml"'
+    assert "<script>alert('x')</script>" not in response.text
+    assert "&lt;script&gt;alert('x')&lt;/script&gt;" in response.text
+    root = ElementTree.fromstring(response.text)
+    assert root.tag == "inspectraAuditReport"
+    assert root.findtext("./job/id") == job.id
+
+
+@pytest.mark.anyio
+async def test_export_pdf_for_existing_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_export_fixture_job()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(f"/jobs/{job.id}/export/pdf")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.pdf"'
+    assert response.content.startswith(b"%PDF")
+    assert len(response.content) > 200
+
+
+@pytest.mark.anyio
+async def test_export_returns_404_for_missing_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(f"/jobs/{'f' * 32}/export/html")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_export_rejects_invalid_job_id(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/jobs/../../etc/passwd/export/html")
+        invalid_response = await client.get("/jobs/not-a-job/export/html")
+
+    assert response.status_code in {400, 404}
+    assert invalid_response.status_code == 400
+
+
+def save_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="e" * 32,
+        audit_type="manifest_basic",
+        file_id="1" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "manifest_basic",
+            "completed_at": now.isoformat(),
+            "manifest_type": "package_json",
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 128, "original_filename": "package.json"},
+            "parsed": {
+                "project": {"name": "<script>alert('x')</script>", "version": "1.0.0"},
+                "dependencies": {"dependencies": [{"name": "react", "specifier": "^18.3.1"}]},
+                "scripts": {"postinstall": "node setup.js"},
+            },
+            "summary": {"total_dependencies": 1, "dependency_groups": ["dependencies"], "informational_findings_count": 1},
+            "findings": [
+                {
+                    "id": "package_sensitive_lifecycle_script",
+                    "title": "Lifecycle script should be reviewed",
+                    "level": "medium",
+                    "description": "Review before running package manager commands.",
+                    "evidence": "postinstall: node setup.js",
+                    "recommendation": "Confirm the script is expected.",
+                }
+            ],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job

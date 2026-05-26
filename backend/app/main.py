@@ -1,10 +1,17 @@
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import load_settings
 from app.models import DeletedFileResponse, JobListItem, JobRecord, StoredFile
+from app.reporting import (
+    build_report_filename,
+    render_html_report,
+    render_markdown_report,
+    render_pdf_report,
+    render_xml_report,
+)
 from app.services import ImageAuditService, ManifestAuditService, PdfAuditService
 from app.storage import FileStore, JobStore
 
@@ -116,3 +123,35 @@ async def list_jobs(request: Request) -> list[JobListItem]:
 @app.get("/jobs/{job_id}", response_model=JobRecord)
 async def get_job(request: Request, job_id: str) -> JobRecord:
     return request.app.state.jobs.get(job_id)
+
+
+@app.get("/jobs/{job_id}/export/markdown")
+async def export_job_markdown(request: Request, job_id: str) -> Response:
+    job = request.app.state.jobs.get(job_id)
+    return export_response(render_markdown_report(job), "text/markdown; charset=utf-8", build_report_filename(job, "md"))
+
+
+@app.get("/jobs/{job_id}/export/html")
+async def export_job_html(request: Request, job_id: str) -> Response:
+    job = request.app.state.jobs.get(job_id)
+    return export_response(render_html_report(job), "text/html; charset=utf-8", build_report_filename(job, "html"))
+
+
+@app.get("/jobs/{job_id}/export/xml")
+async def export_job_xml(request: Request, job_id: str) -> Response:
+    job = request.app.state.jobs.get(job_id)
+    return export_response(render_xml_report(job), "application/xml; charset=utf-8", build_report_filename(job, "xml"))
+
+
+@app.get("/jobs/{job_id}/export/pdf")
+async def export_job_pdf(request: Request, job_id: str) -> Response:
+    job = request.app.state.jobs.get(job_id)
+    return export_response(render_pdf_report(job), "application/pdf", build_report_filename(job, "pdf"))
+
+
+def export_response(content: str | bytes, media_type: str, filename: str) -> Response:
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

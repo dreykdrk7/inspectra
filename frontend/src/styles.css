@@ -37,6 +37,10 @@ button {
   white-space: nowrap;
 }
 
+a {
+  color: inherit;
+}
+
 button:hover {
   background: #1a5fc9;
 }
@@ -303,6 +307,32 @@ pre {
 .result-layout {
   display: grid;
   gap: 0.75rem;
+}
+
+.export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.export-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 2.25rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0.45rem 0.7rem;
+  background: #fff;
+  color: #172033;
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.export-link:hover {
+  background: #eef3f8;
 }
 
 .report-layout {
