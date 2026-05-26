@@ -426,7 +426,15 @@ def analyze_requirements_manifest(raw_text: str) -> tuple[dict[str, Any], list[d
             continue
 
         if line == "-e" or line.startswith("-e "):
-            dependencies.append({"name": parse_editable_name(line), "specifier": line, "source": f"line {line_number}"})
+            dependencies.append(
+                {
+                    "name": parse_editable_name(line),
+                    "specifier": line,
+                    "source": f"line {line_number}",
+                    "declared_requirement": line,
+                    "source_type": "editable",
+                }
+            )
             findings.append(
                 make_finding(
                     "requirements_editable_install",
@@ -539,11 +547,20 @@ def empty_manifest_parse() -> dict[str, Any]:
 
 
 def normalize_mapping_dependencies(dependencies: dict[str, Any]) -> list[dict[str, str]]:
-    return [
-        {"name": name, "specifier": stringify_manifest_value(specifier)}
-        for name, specifier in sorted(dependencies.items())
-        if isinstance(name, str)
-    ]
+    normalized: list[dict[str, str]] = []
+    for name, specifier in sorted(dependencies.items()):
+        if not isinstance(name, str):
+            continue
+        specifier_text = stringify_manifest_value(specifier)
+        normalized.append(
+            {
+                "name": name,
+                "specifier": specifier_text,
+                "declared_requirement": f"{name}: {specifier_text}" if specifier_text else name,
+                "source_type": classify_dependency_source_hint("package_json", name, specifier_text),
+            }
+        )
+    return normalized
 
 
 def stringify_mapping(value: Any) -> dict[str, str]:
@@ -556,8 +573,22 @@ def parse_requirement_dependency(line: str, line_number: int) -> dict[str, str]:
     requirement = line.split(";", 1)[0].strip()
     match = re.match(r"^([A-Za-z0-9_.-]+(?:\[[^\]]+\])?)(.*)$", requirement)
     if not match:
-        return {"name": requirement, "specifier": line, "source": f"line {line_number}"}
-    return {"name": match.group(1), "specifier": match.group(2).strip() or "", "source": f"line {line_number}"}
+        return {
+            "name": requirement,
+            "specifier": line,
+            "source": f"line {line_number}",
+            "declared_requirement": line,
+            "source_type": classify_dependency_source_hint("requirements_txt", requirement, line, line),
+        }
+    name = match.group(1)
+    specifier = match.group(2).strip() or ""
+    return {
+        "name": name,
+        "specifier": specifier,
+        "source": f"line {line_number}",
+        "declared_requirement": line,
+        "source_type": classify_dependency_source_hint("requirements_txt", name, specifier, line),
+    }
 
 
 def parse_editable_name(line: str) -> str:
@@ -570,12 +601,31 @@ def parse_editable_name(line: str) -> str:
 def normalize_pep508_dependency(value: str) -> dict[str, str]:
     match = re.match(r"^([A-Za-z0-9_.-]+(?:\[[^\]]+\])?)(.*)$", value.strip())
     if not match:
-        return {"name": value.strip(), "specifier": ""}
-    return {"name": match.group(1), "specifier": match.group(2).strip()}
+        stripped = value.strip()
+        return {
+            "name": stripped,
+            "specifier": "",
+            "declared_requirement": stripped,
+            "source_type": classify_dependency_source_hint("pyproject_toml", stripped, "", stripped),
+        }
+    name = match.group(1)
+    specifier = match.group(2).strip()
+    return {
+        "name": name,
+        "specifier": specifier,
+        "declared_requirement": value.strip(),
+        "source_type": classify_dependency_source_hint("pyproject_toml", name, specifier, value.strip()),
+    }
 
 
 def normalize_poetry_dependency(name: str, specifier: Any) -> dict[str, str]:
-    return {"name": name, "specifier": stringify_manifest_value(specifier)}
+    specifier_text = stringify_manifest_value(specifier)
+    return {
+        "name": name,
+        "specifier": specifier_text,
+        "declared_requirement": f"{name}: {specifier_text}" if specifier_text else name,
+        "source_type": classify_dependency_source_hint("pyproject_toml", name, specifier_text),
+    }
 
 
 def find_dependency_indicators(dependency_groups: dict[str, list[dict[str, str]]]) -> list[dict[str, str]]:
@@ -642,6 +692,84 @@ def contains_external_or_local_source(value: str) -> bool:
     normalized = value.lower()
     source_markers = ("http://", "https://", "git+", "git://", "github:", "gitlab:", "file:", "path =")
     return any(marker in normalized for marker in source_markers)
+
+
+def classify_dependency_source_hint(
+    manifest_type: str,
+    name: str,
+    specifier: str,
+    declared_requirement: str | None = None,
+) -> str:
+    declared = declared_requirement or f"{name} {specifier}".strip()
+    if manifest_type == "package_json":
+        return classify_npm_source_hint(name, specifier)
+    return classify_python_source_hint(name, specifier, declared)
+
+
+def classify_npm_source_hint(name: str, specifier: str) -> str:
+    value = specifier.strip()
+    lowered = value.lower()
+    if not re.fullmatch(r"(?:@[A-Za-z0-9][A-Za-z0-9._~-]*/)?[A-Za-z0-9][A-Za-z0-9._~-]*", name):
+        return "unknown"
+    if not value:
+        return "registry"
+    if lowered.startswith("workspace:"):
+        return "workspace"
+    if lowered.startswith(("file:", "link:", "portal:")) or looks_like_local_dependency_path(value):
+        return "local"
+    if lowered.startswith("npm:"):
+        return "alias"
+    if looks_like_vcs_dependency(value) or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:#[^\s]+)?", value):
+        return "vcs"
+    if looks_like_url_dependency(value):
+        return "url"
+    return "registry"
+
+
+def classify_python_source_hint(name: str, specifier: str, declared_requirement: str) -> str:
+    combined = " ".join(part for part in (name.strip(), specifier.strip(), declared_requirement.strip()) if part)
+    lowered = combined.lower()
+    if lowered.startswith("-e ") or lowered == "-e" or specifier.strip().startswith("-e "):
+        return "editable"
+    if specifier.strip().startswith(("--", "-r", "-c")) or lowered.startswith(("--", "-r ", "-c ")):
+        return "unknown"
+    if looks_like_local_dependency_path(name) or looks_like_local_dependency_path(specifier):
+        return "local"
+    if " @ " in combined or specifier.strip().startswith("@"):
+        reference = combined.split("@", 1)[1].strip()
+        if looks_like_vcs_dependency(reference):
+            return "vcs"
+        if reference.lower().startswith("file:") or looks_like_local_dependency_path(reference):
+            return "local"
+        if looks_like_url_dependency(reference):
+            return "url"
+        return "unknown"
+    if looks_like_vcs_dependency(combined):
+        return "vcs"
+    if looks_like_url_dependency(combined):
+        return "url"
+    if "file:" in lowered or "path =" in lowered:
+        return "local"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,._-]+\])?", name):
+        return "unknown"
+    return "registry"
+
+
+def looks_like_url_dependency(value: str) -> bool:
+    return bool(re.search(r"(?:^|\s)[A-Za-z][A-Za-z0-9+.-]*://", value))
+
+
+def looks_like_vcs_dependency(value: str) -> bool:
+    normalized = value.lower()
+    markers = ("git+", "git://", "git@", "hg+", "svn+", "bzr+", "github:", "gitlab:", "bitbucket:")
+    return any(marker in normalized for marker in markers)
+
+
+def looks_like_local_dependency_path(value: str) -> bool:
+    normalized = value.strip().lower()
+    if re.match(r"^[a-z]:[\\/]", normalized):
+        return True
+    return normalized.startswith(("./", "../", ".\\", "..\\", "/", "\\", "~", "file:"))
 
 
 def starts_with_any(value: str, prefixes: tuple[str, ...]) -> bool:

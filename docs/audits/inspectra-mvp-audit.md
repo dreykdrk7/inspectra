@@ -154,3 +154,7 @@ Existing coverage is healthy for the MVP: uploads, cross-kind audit rejection, i
 5. Frontend reliability: add fake-timer tests for auto-refresh lifecycle and more interaction tests around job details.
 6. Production readiness docs: explicitly state local-only assumptions and deployment warnings.
 7. New features only after the above hardening pass, with ZIP/project archive workflows remaining bounded and offline.
+
+## Follow-up Status
+
+- `INSPECTRA-AUDIT-001`: addressed in the follow-up microfase `fix(sbom): avoid purl for ambiguous dependency sources`. SBOM export now generates package URLs only for clear npm/PyPI registry dependencies, preserves ambiguous declarations, and records an omitted-`purl` reason for URL, VCS, local, editable, workspace, and alias sources.

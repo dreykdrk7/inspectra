@@ -126,6 +126,10 @@ async def test_analyze_manifest_package_json_detects_scripts_and_source_dependen
     assert payload["manifest_type"] == "package_json"
     assert payload["parsed"]["project"]["name"] == "demo-app"
     assert payload["parsed"]["scripts"]["postinstall"] == "node scripts/postinstall.js"
+    dependencies = {item["name"]: item for item in payload["parsed"]["dependencies"]["dependencies"]}
+    assert dependencies["react"]["source_type"] == "registry"
+    assert dependencies["local-lib"]["source_type"] == "local"
+    assert dependencies["local-lib"]["declared_requirement"] == "local-lib: file:../local-lib"
     assert "package_sensitive_lifecycle_script" in finding_ids
     assert "dependency_external_or_local_source" in finding_ids
     assert "dependency_broad_range" in finding_ids
@@ -149,6 +153,10 @@ async def test_analyze_manifest_requirements_detects_unpinned_and_custom_sources
     finding_ids = {finding["id"] for finding in payload["findings"]}
     assert payload["manifest_type"] == "requirements_txt"
     assert payload["summary"]["total_dependencies"] == 3
+    dependencies = {item["name"]: item for item in payload["parsed"]["dependencies"]["dependencies"]}
+    assert dependencies["fastapi"]["source_type"] == "registry"
+    assert dependencies["demo"]["source_type"] == "editable"
+    assert dependencies["demo"]["declared_requirement"].startswith("-e git+https://")
     assert "requirements_dependency_not_exactly_pinned" in finding_ids
     assert "requirements_editable_install" in finding_ids
     assert "requirements_custom_index" in finding_ids
@@ -174,6 +182,10 @@ async def test_analyze_manifest_pyproject_extracts_dependencies_and_findings(mon
     assert payload["parsed"]["project"]["name"] == "demo-service"
     assert "optional:dev" in payload["parsed"]["dependencies"]
     assert "poetry:docs" in payload["parsed"]["dependencies"]
+    dependencies = {item["name"]: item for item in payload["parsed"]["dependencies"]["dependencies"]}
+    assert dependencies["fastapi"]["source_type"] == "registry"
+    assert dependencies["demo"]["source_type"] == "vcs"
+    assert dependencies["demo"]["declared_requirement"] == "demo @ git+https://example.invalid/demo.git"
     assert "dependency_not_exactly_pinned" in finding_ids
     assert "dependency_external_or_local_source" in finding_ids
     assert "dependency_broad_range" in finding_ids

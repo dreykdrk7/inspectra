@@ -45,7 +45,7 @@ For archives, Inspectra uses local Python metadata parsing. It does not extract 
 
 For project archives, Inspectra may read supported internal manifests (`package.json`, `requirements.txt`, and `pyproject.toml`) into bounded memory buffers and parse them with the same local manifest parser used for standalone manifests. It detects other manifest filenames but does not parse them in this phase.
 
-For SBOM export, Inspectra uses only declared dependencies already present in completed `manifest_basic` or `project_archive_basic` job results. It does not execute package managers, install packages, resolve transitive dependencies, infer licenses, query CVEs, or call package registries. Version ranges remain ranges unless the manifest declares an exact local pin that can be represented as such.
+For SBOM export, Inspectra uses only declared dependencies already present in completed `manifest_basic` or `project_archive_basic` job results. It does not execute package managers, install packages, resolve transitive dependencies, infer licenses, query CVEs, verify URL/VCS identities, or call package registries. Version ranges remain ranges unless the manifest declares an exact local pin that can be represented as such. Package URLs are generated only for dependencies that look like clear npm or PyPI registry packages; URL, VCS, local, editable, workspace, and alias declarations are preserved without inferred package URLs.
 
 ## Out of Scope
 
@@ -69,7 +69,7 @@ The MVP does not include:
 - Parsing unsupported internal archive manifests beyond filename detection.
 - Running package managers or dependency resolvers against content found inside archives.
 - Resolving transitive dependencies for SBOM generation.
-- Inferring package licenses, suppliers, or download locations beyond local package URLs where reasonable.
+- Inferring package licenses, suppliers, download locations, or registry identity for URL/VCS/local dependency declarations.
 - External CVE, advisory, package registry, or vulnerability database lookups.
 - Claiming a heuristic dependency signal is a confirmed vulnerability.
 
@@ -95,7 +95,7 @@ Archive analysis reads container metadata and bounded entry listings. Project ar
 
 Report exports are generated locally from existing job results. The generated HTML is static, self-contained, and does not include JavaScript or external CSS. Inspectra escapes dynamic content before writing HTML and XML reports. Exporting a report does not execute uploaded files, manifest scripts, or result content.
 
-SBOM exports are generated locally from existing completed dependency-analysis jobs. They may include package names, declared version ranges, manifest paths inside uploaded archives, and generated package URLs. They do not include vulnerability assertions.
+SBOM exports are generated locally from existing completed dependency-analysis jobs. They may include package names, declared version ranges, manifest paths inside uploaded archives, and conservative package URLs for clear npm/PyPI registry dependencies. Ambiguous URL, VCS, local, editable, workspace, or alias dependencies keep the original declaration and an omitted-`purl` reason. They do not include vulnerability assertions.
 
 ## Container Boundary
 

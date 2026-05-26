@@ -825,7 +825,12 @@ async def test_sbom_export_rejects_missing_and_invalid_job_ids(monkeypatch, tmp_
 def test_sbom_helpers_normalize_npm_dependencies():
     job = save_standalone_job(
         manifest_type="package_json",
-        dependencies={"dependencies": [{"name": "react", "specifier": "^18.3.1"}]},
+        dependencies={
+            "dependencies": [
+                {"name": "react", "specifier": "^18.3.1"},
+                {"name": "@scope/pkg", "specifier": "1.2.3"},
+            ]
+        },
         original_filename="package.json",
     )
 
@@ -834,9 +839,50 @@ def test_sbom_helpers_normalize_npm_dependencies():
 
     assert components[0].ecosystem == "npm"
     assert components[0].declared_requirement == "react: ^18.3.1"
+    assert components[0].dependency_source_type == "registry"
     assert components[0].package_url == "pkg:npm/react"
-    assert cyclonedx["components"][0]["name"] == "react"
-    assert "version" not in cyclonedx["components"][0]
+    assert components[1].package_url == "pkg:npm/%40scope/pkg@1.2.3"
+    react_component = cyclonedx_component_by_name(cyclonedx, "react")
+    assert react_component["name"] == "react"
+    assert "version" not in react_component
+    assert find_cyclonedx_property(react_component, "inspectra:dependency_source_type") == "registry"
+
+
+def test_sbom_helpers_omit_purl_for_ambiguous_npm_sources():
+    job = save_standalone_job(
+        manifest_type="package_json",
+        dependencies={
+            "dependencies": [
+                {"name": "local-lib", "specifier": "file:../local-lib"},
+                {"name": "workspace-lib", "specifier": "workspace:*"},
+                {"name": "git-lib", "specifier": "git+https://example.invalid/git-lib.git"},
+                {"name": "tarball-lib", "specifier": "https://example.invalid/tarball-lib.tgz"},
+                {"name": "repo-lib", "specifier": "github:user/repo"},
+                {"name": "alias-lib", "specifier": "npm:real-package@1.2.3"},
+            ]
+        },
+        original_filename="package.json",
+    )
+
+    components = {component.name: component for component in extract_components_from_job(job)}
+    cyclonedx = json.loads(generate_cyclonedx_json(job))
+
+    expected_sources = {
+        "local-lib": "local",
+        "workspace-lib": "workspace",
+        "git-lib": "vcs",
+        "tarball-lib": "url",
+        "repo-lib": "vcs",
+        "alias-lib": "alias",
+    }
+    for name, source_type in expected_sources.items():
+        component = components[name]
+        cyclonedx_component = cyclonedx_component_by_name(cyclonedx, name)
+        assert component.package_url is None
+        assert component.dependency_source_type == source_type
+        assert "purl" not in cyclonedx_component
+        assert find_cyclonedx_property(cyclonedx_component, "inspectra:dependency_source_type") == source_type
+        assert find_cyclonedx_property(cyclonedx_component, "inspectra:purl_omitted_reason")
 
 
 def test_sbom_helpers_normalize_python_requirements():
@@ -858,6 +904,87 @@ def test_sbom_helpers_normalize_python_requirements():
     assert components[0].package_url == "pkg:pypi/fastapi@0.115.0"
     assert components[1].declared_requirement == "httpx>=0.27"
     assert components[1].package_url == "pkg:pypi/httpx"
+
+
+def test_sbom_helpers_omit_purl_for_ambiguous_python_requirements():
+    job = save_standalone_job(
+        manifest_type="requirements_txt",
+        dependencies={
+            "dependencies": [
+                {"name": "editable-reference", "specifier": "-e .", "declared_requirement": "-e .", "source_type": "editable"},
+                {
+                    "name": "demo",
+                    "specifier": "@ git+https://example.invalid/demo.git",
+                    "declared_requirement": "demo @ git+https://example.invalid/demo.git",
+                },
+                {
+                    "name": "localpkg",
+                    "specifier": "@ file:///tmp/localpkg.whl",
+                    "declared_requirement": "localpkg @ file:///tmp/localpkg.whl",
+                },
+                {
+                    "name": "wheelpkg",
+                    "specifier": "@ https://example.invalid/wheelpkg.whl",
+                    "declared_requirement": "wheelpkg @ https://example.invalid/wheelpkg.whl",
+                },
+                {"name": "./local-package", "specifier": "./local-package", "declared_requirement": "./local-package"},
+            ]
+        },
+        original_filename="requirements.txt",
+    )
+
+    components = {component.name: component for component in extract_components_from_job(job)}
+    spdx = json.loads(generate_spdx_json(job))
+
+    expected_sources = {
+        "editable-reference": "editable",
+        "demo": "vcs",
+        "localpkg": "local",
+        "wheelpkg": "url",
+        "./local-package": "local",
+    }
+    for name, source_type in expected_sources.items():
+        component = components[name]
+        spdx_package_payload = spdx_package_by_name(spdx, name)
+        assert component.package_url is None
+        assert component.dependency_source_type == source_type
+        assert "externalRefs" not in spdx_package_payload
+        assert f"dependency source type: {source_type}" in spdx_package_payload["comment"]
+        assert "Package URL omitted:" in spdx_package_payload["comment"]
+
+
+def test_sbom_helpers_omit_purl_for_ambiguous_pyproject_sources():
+    job = save_standalone_job(
+        manifest_type="pyproject_toml",
+        dependencies={
+            "dependencies": [
+                {"name": "fastapi", "specifier": ">=0.115", "declared_requirement": "fastapi>=0.115"},
+                {
+                    "name": "demo",
+                    "specifier": "@ https://example.invalid/demo.whl",
+                    "declared_requirement": "demo @ https://example.invalid/demo.whl",
+                },
+                {
+                    "name": "localpkg",
+                    "specifier": "path = ../localpkg",
+                    "declared_requirement": "localpkg: path = ../localpkg",
+                },
+            ]
+        },
+        original_filename="pyproject.toml",
+    )
+
+    components = {component.name: component for component in extract_components_from_job(job)}
+    cyclonedx = json.loads(generate_cyclonedx_json(job))
+
+    assert components["fastapi"].package_url == "pkg:pypi/fastapi"
+    for name, source_type in {"demo": "url", "localpkg": "local"}.items():
+        component = components[name]
+        cyclonedx_component = cyclonedx_component_by_name(cyclonedx, name)
+        assert component.package_url is None
+        assert component.dependency_source_type == source_type
+        assert "purl" not in cyclonedx_component
+        assert find_cyclonedx_property(cyclonedx_component, "inspectra:purl_omitted_reason")
 
 
 def test_sbom_helpers_normalize_pyproject_from_project_archive():
@@ -891,11 +1018,81 @@ def test_sbom_helpers_normalize_pyproject_from_project_archive():
     assert components[0].declared_requirement == "requests>=2.31"
 
 
+def test_sbom_helpers_apply_conservative_purl_policy_to_project_archives():
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="b" * 32,
+        audit_type="project_archive_basic",
+        file_id="7" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "project_archive_basic",
+            "parsed_manifests": [
+                {
+                    "path": "web/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {
+                        "project": {"name": "web"},
+                        "dependencies": {
+                            "dependencies": [
+                                {"name": "react", "specifier": "^18.3.1"},
+                                {"name": "local-lib", "specifier": "file:../local-lib"},
+                            ]
+                        },
+                    },
+                },
+                {
+                    "path": "api/requirements.txt",
+                    "manifest_type": "requirements_txt",
+                    "parsed": {
+                        "project": {},
+                        "dependencies": {
+                            "dependencies": [
+                                {
+                                    "name": "demo",
+                                    "specifier": "@ git+https://example.invalid/demo.git",
+                                    "declared_requirement": "demo @ git+https://example.invalid/demo.git",
+                                }
+                            ]
+                        },
+                    },
+                },
+            ],
+        },
+    )
+
+    components = {component.name: component for component in extract_components_from_job(job)}
+
+    assert components["react"].package_url == "pkg:npm/react"
+    assert components["react"].source_manifest_path == "web/package.json"
+    assert components["local-lib"].package_url is None
+    assert components["local-lib"].source_manifest_path == "web/package.json"
+    assert components["demo"].package_url is None
+    assert components["demo"].dependency_source_type == "vcs"
+    assert components["demo"].source_manifest_path == "api/requirements.txt"
+
+
 def find_cyclonedx_property(component: dict, name: str) -> str | None:
     for prop in component.get("properties", []):
         if prop.get("name") == name:
             return prop.get("value")
     return None
+
+
+def cyclonedx_component_by_name(payload: dict, name: str) -> dict:
+    for component in payload["components"]:
+        if component.get("name") == name:
+            return component
+    raise AssertionError(f"CycloneDX component not found: {name}")
+
+
+def spdx_package_by_name(payload: dict, name: str) -> dict:
+    for package in payload["packages"]:
+        if package.get("name") == name:
+            return package
+    raise AssertionError(f"SPDX package not found: {name}")
 
 
 def save_standalone_job(manifest_type: str, dependencies: dict, original_filename: str) -> JobRecord:

@@ -25,7 +25,9 @@ class SbomComponent:
     group: str
     source_manifest_path: str
     declared_requirement: str
+    dependency_source_type: str
     package_url: str | None
+    purl_omitted_reason: str | None
     bom_ref: str
     spdx_id: str
 
@@ -97,9 +99,12 @@ def extract_components_from_job(job: JobRecord) -> list[SbomComponent]:
                 if not name:
                     continue
                 specifier = str(dependency.get("specifier") or "").strip()
-                declared = format_declared_requirement(name, specifier, manifest_type)
+                declared = str(
+                    dependency.get("declared_requirement") or format_declared_requirement(name, specifier, manifest_type)
+                ).strip()
                 index = len(components) + 1
-                package_url = build_package_url(ecosystem, name, specifier)
+                source_type = classify_dependency_source(ecosystem, manifest_type, name, specifier, declared, dependency)
+                package_url = build_package_url(ecosystem, name, specifier, source_type)
                 components.append(
                     SbomComponent(
                         name=name,
@@ -108,7 +113,11 @@ def extract_components_from_job(job: JobRecord) -> list[SbomComponent]:
                         group=str(group),
                         source_manifest_path=source_path,
                         declared_requirement=declared,
+                        dependency_source_type=source_type,
                         package_url=package_url,
+                        purl_omitted_reason=None
+                        if package_url
+                        else build_purl_omitted_reason(source_type, ecosystem, name),
                         bom_ref=build_bom_ref(ecosystem, source_path, str(group), name, index),
                         spdx_id=build_spdx_id(ecosystem, source_path, str(group), name, index),
                     )
@@ -157,6 +166,7 @@ def cyclonedx_component(component: SbomComponent) -> dict[str, Any]:
             {"name": "inspectra:dependency_group", "value": component.group},
             {"name": "inspectra:source_manifest", "value": component.source_manifest_path},
             {"name": "inspectra:ecosystem", "value": component.ecosystem},
+            {"name": "inspectra:dependency_source_type", "value": component.dependency_source_type},
         ],
     }
     if component.exact_version:
@@ -170,6 +180,8 @@ def cyclonedx_component(component: SbomComponent) -> dict[str, Any]:
         )
     if component.package_url:
         payload["purl"] = component.package_url
+    elif component.purl_omitted_reason:
+        payload["properties"].append({"name": "inspectra:purl_omitted_reason", "value": component.purl_omitted_reason})
     return payload
 
 
@@ -185,10 +197,13 @@ def spdx_package(component: SbomComponent) -> dict[str, Any]:
             f"Declared requirement: {component.declared_requirement}; "
             f"dependency group: {component.group}; "
             f"source manifest: {component.source_manifest_path}; "
-            f"ecosystem: {component.ecosystem}. "
+            f"ecosystem: {component.ecosystem}; "
+            f"dependency source type: {component.dependency_source_type}. "
             "Inspectra records declared dependencies only and does not resolve packages."
         ),
     }
+    if component.purl_omitted_reason:
+        package["comment"] += f" Package URL omitted: {component.purl_omitted_reason}"
     if component.package_url:
         package["externalRefs"] = [
             {
@@ -245,16 +260,146 @@ def ecosystem_for_manifest(manifest_type: str) -> str:
     return "pypi"
 
 
-def build_package_url(ecosystem: str, name: str, specifier: str) -> str | None:
+def build_package_url(ecosystem: str, name: str, specifier: str, source_type: str) -> str | None:
+    if source_type != "registry":
+        return None
     exact_version = extract_exact_version(specifier, ecosystem)
     if ecosystem == "npm":
+        if not is_valid_npm_name(name):
+            return None
         encoded_name = quote(name, safe="/")
         return f"pkg:npm/{encoded_name}@{exact_version}" if exact_version else f"pkg:npm/{encoded_name}"
     if ecosystem == "pypi":
+        if not is_valid_pypi_name(name):
+            return None
         normalized_name = canonicalize_python_name(name)
         encoded_name = quote(normalized_name, safe="")
         return f"pkg:pypi/{encoded_name}@{exact_version}" if exact_version else f"pkg:pypi/{encoded_name}"
     return None
+
+
+def classify_dependency_source(
+    ecosystem: str,
+    manifest_type: str,
+    name: str,
+    specifier: str,
+    declared_requirement: str,
+    dependency: dict[str, Any],
+) -> str:
+    explicit_source = normalize_source_type(
+        str(dependency.get("dependency_source_type") or dependency.get("source_type") or "").strip()
+    )
+    inferred_source = infer_dependency_source(ecosystem, manifest_type, name, specifier, declared_requirement)
+    if explicit_source and explicit_source != "registry":
+        return explicit_source
+    if explicit_source == "registry" and inferred_source == "registry":
+        return "registry"
+    return inferred_source
+
+
+def infer_dependency_source(ecosystem: str, manifest_type: str, name: str, specifier: str, declared_requirement: str) -> str:
+    if ecosystem == "npm" or manifest_type == "package_json":
+        return infer_npm_dependency_source(name, specifier)
+    return infer_python_dependency_source(name, specifier, declared_requirement)
+
+
+def infer_npm_dependency_source(name: str, specifier: str) -> str:
+    value = specifier.strip()
+    lowered = value.lower()
+    if not is_valid_npm_name(name):
+        return "unknown"
+    if not value:
+        return "registry"
+    if lowered.startswith("workspace:"):
+        return "workspace"
+    if lowered.startswith(("file:", "link:", "portal:")) or looks_like_local_path(value):
+        return "local"
+    if lowered.startswith("npm:"):
+        return "alias"
+    if looks_like_vcs(value) or looks_like_npm_repository_shorthand(value):
+        return "vcs"
+    if looks_like_url(value):
+        return "url"
+    return "registry"
+
+
+def infer_python_dependency_source(name: str, specifier: str, declared_requirement: str) -> str:
+    combined = " ".join(part for part in (name.strip(), specifier.strip(), declared_requirement.strip()) if part)
+    lowered = combined.lower()
+    specifier_value = specifier.strip()
+    if lowered.startswith("-e ") or lowered == "-e" or specifier_value.startswith("-e "):
+        return "editable"
+    if specifier_value.startswith(("--", "-r", "-c")) or lowered.startswith(("--", "-r ", "-c ")):
+        return "unknown"
+    if looks_like_local_path(name) or looks_like_local_path(specifier_value):
+        return "local"
+    if " @ " in combined or specifier_value.startswith("@"):
+        reference = combined.split("@", 1)[1].strip()
+        if looks_like_vcs(reference):
+            return "vcs"
+        if reference.lower().startswith("file:") or looks_like_local_path(reference):
+            return "local"
+        if looks_like_url(reference):
+            return "url"
+        return "unknown"
+    if looks_like_vcs(combined):
+        return "vcs"
+    if looks_like_url(combined):
+        return "url"
+    if "file:" in lowered or "path =" in lowered:
+        return "local"
+    if not is_valid_pypi_name(name):
+        return "unknown"
+    return "registry"
+
+
+def build_purl_omitted_reason(source_type: str, ecosystem: str, name: str) -> str:
+    if source_type == "registry":
+        return (
+            f"Inspectra could not safely generate a package URL for {name!r} in the {ecosystem} ecosystem; "
+            "the declared requirement is preserved."
+        )
+    if source_type == "unknown":
+        return "Dependency source is unknown or ambiguous; Inspectra did not infer a registry package URL."
+    return (
+        f"Dependency source is {source_type}; Inspectra preserves the declaration but does not infer a registry package URL."
+    )
+
+
+def normalize_source_type(value: str) -> str | None:
+    normalized = value.lower()
+    if normalized in {"registry", "url", "vcs", "local", "editable", "workspace", "alias", "unknown"}:
+        return normalized
+    return None
+
+
+def is_valid_npm_name(name: str) -> bool:
+    return bool(re.fullmatch(r"(?:@[A-Za-z0-9][A-Za-z0-9._~-]*/)?[A-Za-z0-9][A-Za-z0-9._~-]*", name))
+
+
+def is_valid_pypi_name(name: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,._-]+\])?", name))
+
+
+def looks_like_url(value: str) -> bool:
+    return bool(re.search(r"(?:^|\s)[A-Za-z][A-Za-z0-9+.-]*://", value))
+
+
+def looks_like_vcs(value: str) -> bool:
+    lowered = value.lower()
+    vcs_markers = ("git+", "git://", "git@", "hg+", "svn+", "bzr+", "github:", "gitlab:", "bitbucket:")
+    return any(marker in lowered for marker in vcs_markers)
+
+
+def looks_like_local_path(value: str) -> bool:
+    normalized = value.strip().lower()
+    if re.match(r"^[a-z]:[\\/]", normalized):
+        return True
+    return normalized.startswith(("./", "../", ".\\", "..\\", "/", "\\", "~", "file:"))
+
+
+def looks_like_npm_repository_shorthand(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:#[^\s]+)?", value.strip()))
 
 
 def extract_exact_version(specifier: str, ecosystem: str) -> str | None:

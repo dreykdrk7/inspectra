@@ -62,9 +62,10 @@ PDF output is generated with a small local Python writer to avoid adding browser
   - Validate that SBOM export is only used with completed `manifest_basic` and `project_archive_basic` jobs.
   - Normalize declared dependencies from stored job JSON into a small component model.
   - Preserve declared requirement ranges and source manifest paths.
+  - Classify dependency sources as registry, URL, VCS, local, editable, workspace, alias, or unknown.
   - Generate CycloneDX JSON and SPDX JSON without package-manager execution, dependency resolution, registry access, CVE lookup, or license inference.
 
-SBOM output intentionally reflects only dependencies declared in analyzed manifests. It does not claim installed versions unless the manifest declares an exact pin Inspectra can identify locally.
+SBOM output intentionally reflects only dependencies declared in analyzed manifests. It does not claim installed versions unless the manifest declares an exact pin Inspectra can identify locally. Package URLs are generated only for dependencies that can be represented conservatively as npm or PyPI registry packages. URL, VCS, local path, editable, workspace, and alias dependencies keep the original declaration and include an Inspectra omission reason instead of an inferred `purl`.
 
 ### Audit Tools Container
 

@@ -247,6 +247,8 @@ SBOM export is available for completed dependency jobs:
 
 The SBOM is generated offline from declared dependencies already present in the stored job JSON. Inspectra does not call package registries, resolve transitive dependencies, install packages, execute package managers, query CVEs, or infer licenses.
 
+Inspectra generates package URLs (`purl`) only for dependencies that look like registry packages with a clear npm or PyPI identity. URL, VCS, `file:`, local path, workspace, alias, and editable dependencies are preserved as declared requirements and marked with Inspectra properties/comments explaining why `purl` was omitted.
+
 ```bash
 curl -sS -OJ http://localhost:8000/jobs/<job_id>/sbom/cyclonedx-json
 curl -sS -OJ http://localhost:8000/jobs/<job_id>/sbom/spdx-json
