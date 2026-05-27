@@ -1634,7 +1634,8 @@ def contains_sensitive_text(value: str) -> bool:
 
 
 def truncate_string(value: str, limit: int = DNS_MAX_STRING_LENGTH) -> str:
-    return value if len(value) <= limit else value[: limit - 12] + "...[truncated]"
+    suffix = "...[truncated]"
+    return value if len(value) <= limit else value[: max(0, limit - len(suffix))] + suffix
 
 
 def as_string_list(value: Any) -> list[str]:

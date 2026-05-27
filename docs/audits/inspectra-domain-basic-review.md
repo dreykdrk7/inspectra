@@ -137,3 +137,9 @@ Priority order:
 4. Add `django_config_basic` for uploaded/local config artifacts before internet-facing framework probes.
 5. Add `infra_basic` with Nmap only later, with explicit authorization, target allowlists, strict port/rate controls, and separate documentation.
 6. Add CVE/advisory enrichment only after defining offline/online modes and data-source trust boundaries.
+
+## Follow-up status
+
+- `INSPECTRA-DOMAIN-REVIEW-001`: mitigated in the timeout hardening microfase. The backend now calculates the runner HTTP timeout from the bounded domain query set, the runner's maximum nameserver attempts, and a fixed margin instead of using `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS + 10`.
+- `INSPECTRA-DOMAIN-REVIEW-003`: partially addressed. Added direct domain validation coverage and DNS parser wire-format tests for core record types, compression pointers, truncation, response codes, malformed packets, TXT chunking, TXT redaction, and string truncation. Some integration-level resolver behavior remains future work.
+- `INSPECTRA-DOMAIN-REVIEW-004`: addressed in documentation. The security scope now states that the egress-capable runner network supports both authorized web HTTP/HTTPS requests and bounded domain DNS queries, and notes that domain DNS results can contain operational metadata.

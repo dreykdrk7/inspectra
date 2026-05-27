@@ -166,6 +166,21 @@ class WebAuditService:
         self.jobs.update(job_id, status="completed", result=response.json())
 
 
+DOMAIN_BASE_RECORD_QUERIES = 8
+DOMAIN_DMARC_RECORD_QUERIES = 1
+DOMAIN_WWW_RECORD_QUERIES = 3
+DOMAIN_MAX_NAMESERVERS = 3
+DOMAIN_RUNNER_TIMEOUT_MARGIN_SECONDS = 10.0
+
+
+def calculate_domain_runner_timeout_seconds(dns_timeout_seconds: float, *, include_www: bool = True) -> float:
+    query_count = DOMAIN_BASE_RECORD_QUERIES + DOMAIN_DMARC_RECORD_QUERIES
+    if include_www:
+        query_count += DOMAIN_WWW_RECORD_QUERIES
+    worst_case_dns_seconds = query_count * DOMAIN_MAX_NAMESERVERS * dns_timeout_seconds
+    return worst_case_dns_seconds + DOMAIN_RUNNER_TIMEOUT_MARGIN_SECONDS
+
+
 class DomainAuditService:
     def __init__(self, settings: Settings, files: FileStore, jobs: JobStore) -> None:
         self.settings = settings
@@ -181,9 +196,13 @@ class DomainAuditService:
             "domain": job.target_domain,
             "timeout_seconds": self.settings.domain_dns_timeout_seconds,
         }
+        runner_timeout_seconds = calculate_domain_runner_timeout_seconds(
+            self.settings.domain_dns_timeout_seconds,
+            include_www=not job.target_domain.startswith("www."),
+        )
 
         try:
-            async with httpx.AsyncClient(timeout=self.settings.domain_dns_timeout_seconds + 10.0) as client:
+            async with httpx.AsyncClient(timeout=runner_timeout_seconds) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/domain-basic", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:

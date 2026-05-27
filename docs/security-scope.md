@@ -116,13 +116,15 @@ Web audit results are generated from bounded HTTP/HTTPS responses. Anti-SSRF val
 
 Web results redact cookie values, sensitive response headers, and common sensitive query parameters before storage and export. Inspectra uses the full submitted URL for the authorized request, but stores a safer display URL where parameters such as `token`, `api_key`, `session`, `password`, `code`, and `state` are replaced with `REDACTED`. This is a best-effort guardrail; users should still avoid submitting real secrets because unusual parameter names may not be recognized. Inspectra is a local MVP and should not be exposed publicly without authentication, authorization, TLS, and deployment hardening.
 
+Domain audit results can include operational DNS metadata from TXT, SOA, NS, MX, CAA, and related records. TXT values are bounded and obvious `token`, `secret`, `password`, and key-style assignments are redacted best-effort, but DNS records should still be treated as potentially sensitive local result data.
+
 ## Container Boundary
 
 External audit tools run in the `audit-tools` container, not on the host and not in the backend container. The MVP also avoids mounting the Docker socket into the backend.
 
 The container boundary reduces host exposure, but it is not a perfect sandbox. Parser bugs in file tooling are still possible, so the tool container is constrained with:
 
-- Internal Compose networking for backend-to-runner traffic; the runner also has a separate egress-capable network for the explicit `web_basic` target requests.
+- Internal Compose networking for backend-to-runner traffic; the runner also has a separate egress-capable network for explicit `web_basic` HTTP/HTTPS requests and bounded `domain_basic` DNS queries.
 - Read-only root filesystem.
 - Read-only access to `data/`.
 - Dropped Linux capabilities.
@@ -130,6 +132,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Temporary storage limited to `/tmp`.
 - Per-tool command timeouts through `INSPECTRA_TOOL_TIMEOUT_SECONDS`, defaulting to 10 seconds.
 - Web audit timeouts, response byte limits, redirect limits, allowed-port controls, and anti-SSRF checks through `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, `INSPECTRA_WEB_ALLOWED_PORTS`, and `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS`.
+- Domain DNS query timeouts through `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS`; the backend gives the runner a larger calculated call timeout for the full bounded DNS baseline.
 - Archive-specific analysis limits for entries, estimated uncompressed size, entry-name length, and listed entries.
 - ZIP central directory metadata limits before detailed ZIP parsing.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.

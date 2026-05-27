@@ -1,6 +1,7 @@
 import io
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import struct
 import tarfile
 import threading
 import zipfile
@@ -967,6 +968,149 @@ async def test_analyze_domain_basic_rejects_invalid_domain():
     assert url_response.status_code == 400
     assert ip_response.status_code == 400
     assert local_response.status_code == 400
+
+
+def test_runner_normalize_domain_validation_edges():
+    assert runner.normalize_domain("WWW.Example.COM") == "www.example.com"
+    assert runner.normalize_domain("täst.example") == "xn--tst-qla.example"
+
+    invalid_domains = [
+        "http://example.com",
+        "example.com/path",
+        "example.com?x=1",
+        "example.com#fragment",
+        "user:pass@example.com",
+        "exa mple.com",
+        "::1",
+        "localhost",
+        "test.internal",
+        "example..com",
+        f"{'a' * 64}.example",
+    ]
+    for raw_domain in invalid_domains:
+        with pytest.raises(Exception):
+            runner.normalize_domain(raw_domain)
+
+
+def test_parse_dns_response_decodes_core_record_types():
+    a_records, a_truncated = runner.parse_dns_response(
+        make_dns_response(runner.DNS_RECORD_TYPES["A"], bytes([93, 184, 216, 34])),
+        DNS_TEST_QUERY_ID,
+        runner.DNS_RECORD_TYPES["A"],
+    )
+    aaaa_records, _ = runner.parse_dns_response(
+        make_dns_response(runner.DNS_RECORD_TYPES["AAAA"], bytes.fromhex("20010db8000000000000000000000001")),
+        DNS_TEST_QUERY_ID,
+        runner.DNS_RECORD_TYPES["AAAA"],
+    )
+    mx_records, _ = runner.parse_dns_response(
+        make_dns_response(runner.DNS_RECORD_TYPES["MX"], struct.pack("!H", 10) + dns_name("mail.example.com")),
+        DNS_TEST_QUERY_ID,
+        runner.DNS_RECORD_TYPES["MX"],
+    )
+    caa_records, _ = runner.parse_dns_response(
+        make_dns_response(runner.DNS_RECORD_TYPES["CAA"], b"\x00\x05issueletsencrypt.org"),
+        DNS_TEST_QUERY_ID,
+        runner.DNS_RECORD_TYPES["CAA"],
+    )
+    soa_records, _ = runner.parse_dns_response(
+        make_dns_response(
+            runner.DNS_RECORD_TYPES["SOA"],
+            dns_name("ns1.example.com") + dns_name("hostmaster.example.com") + struct.pack("!IIIII", 1, 3600, 600, 86400, 300),
+        ),
+        DNS_TEST_QUERY_ID,
+        runner.DNS_RECORD_TYPES["SOA"],
+    )
+
+    assert a_records == ["93.184.216.34"]
+    assert a_truncated is False
+    assert aaaa_records == ["2001:db8::1"]
+    assert mx_records == [{"preference": 10, "exchange": "mail.example.com"}]
+    assert caa_records == [{"flags": 0, "tag": "issue", "value": "letsencrypt.org"}]
+    assert soa_records == [
+        {
+            "mname": "ns1.example.com",
+            "rname": "hostmaster.example.com",
+            "serial": 1,
+            "refresh": 3600,
+            "retry": 600,
+            "expire": 86400,
+            "minimum": 300,
+        }
+    ]
+
+
+def test_parse_dns_response_handles_txt_chunks_redaction_and_truncation():
+    txt_records, _ = runner.parse_dns_response(
+        make_dns_response(runner.DNS_RECORD_TYPES["TXT"], dns_txt_chunks(["hello ", "token=supersecret", " end"])),
+        DNS_TEST_QUERY_ID,
+        runner.DNS_RECORD_TYPES["TXT"],
+    )
+    long_txt_records, _ = runner.parse_dns_response(
+        make_dns_response(runner.DNS_RECORD_TYPES["TXT"], dns_txt_chunks(["a" * 255, "b" * 255, "c" * 255])),
+        DNS_TEST_QUERY_ID,
+        runner.DNS_RECORD_TYPES["TXT"],
+    )
+
+    assert txt_records == ["hello token=[redacted] end"]
+    assert "supersecret" not in txt_records[0]
+    assert len(long_txt_records[0]) <= runner.DNS_MAX_STRING_LENGTH
+    assert long_txt_records[0].endswith("...[truncated]")
+
+
+def test_parse_dns_response_handles_compression_truncation_and_rcodes():
+    cname_records, _ = runner.parse_dns_response(
+        make_dns_response(runner.DNS_RECORD_TYPES["CNAME"], b"\xc0\x0c"),
+        DNS_TEST_QUERY_ID,
+        runner.DNS_RECORD_TYPES["CNAME"],
+    )
+    nx_records, nx_truncated = runner.parse_dns_response(
+        make_dns_response(runner.DNS_RECORD_TYPES["A"], None, flags=0x8183),
+        DNS_TEST_QUERY_ID,
+        runner.DNS_RECORD_TYPES["A"],
+    )
+    _, truncated = runner.parse_dns_response(
+        make_dns_response(runner.DNS_RECORD_TYPES["A"], bytes([93, 184, 216, 34]), flags=0x8380),
+        DNS_TEST_QUERY_ID,
+        runner.DNS_RECORD_TYPES["A"],
+    )
+
+    assert cname_records == ["example.com"]
+    assert nx_records == []
+    assert nx_truncated is False
+    assert truncated is True
+    with pytest.raises(ValueError, match="DNS response code 2"):
+        runner.parse_dns_response(make_dns_response(runner.DNS_RECORD_TYPES["A"], None, flags=0x8182), DNS_TEST_QUERY_ID, runner.DNS_RECORD_TYPES["A"])
+
+
+def test_parse_dns_response_rejects_malformed_packets():
+    question = dns_name("example.com") + struct.pack("!HH", runner.DNS_RECORD_TYPES["A"], 1)
+    answer = b"\xc0\x0c" + struct.pack("!HHIH", runner.DNS_RECORD_TYPES["A"], 1, 60, 4) + b"\x01\x02"
+    malformed = struct.pack("!HHHHHH", DNS_TEST_QUERY_ID, 0x8180, 1, 1, 0, 0) + question + answer
+
+    with pytest.raises(ValueError, match="too short"):
+        runner.parse_dns_response(b"\x00", DNS_TEST_QUERY_ID, runner.DNS_RECORD_TYPES["A"])
+    with pytest.raises(ValueError, match="rdata exceeds"):
+        runner.parse_dns_response(malformed, DNS_TEST_QUERY_ID, runner.DNS_RECORD_TYPES["A"])
+
+
+DNS_TEST_QUERY_ID = 0xBEEF
+
+
+def dns_name(name: str) -> bytes:
+    return b"".join(bytes([len(label)]) + label.encode("ascii") for label in name.rstrip(".").split(".")) + b"\x00"
+
+
+def dns_txt_chunks(chunks: list[str]) -> bytes:
+    return b"".join(bytes([len(chunk.encode("utf-8"))]) + chunk.encode("utf-8") for chunk in chunks)
+
+
+def make_dns_response(qtype: int, rdata: bytes | None, *, flags: int = 0x8180) -> bytes:
+    question = dns_name("example.com") + struct.pack("!HH", qtype, 1)
+    answer = b""
+    if rdata is not None:
+        answer = b"\xc0\x0c" + struct.pack("!HHIH", qtype, 1, 60, len(rdata)) + rdata
+    return struct.pack("!HHHHHH", DNS_TEST_QUERY_ID, flags, 1, 1 if rdata is not None else 0, 0, 0) + question + answer
 
 
 def test_web_tls_certificate_summary_parses_dates():

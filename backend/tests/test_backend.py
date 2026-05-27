@@ -7,9 +7,11 @@ from xml.etree import ElementTree
 import zipfile
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from app.config import load_settings
+from app.domain_security import normalize_domain
 from app.main import app
 from app.models import JobRecord
 from app.reporting import markdown_block_value, markdown_inline_value
@@ -22,6 +24,7 @@ from app.services import (
     PdfAuditService,
     ProjectArchiveAuditService,
     WebAuditService,
+    calculate_domain_runner_timeout_seconds,
 )
 from app.storage import FileStore, JobStore
 from app import web_security
@@ -782,6 +785,59 @@ async def test_domain_basic_audit_rejects_invalid_domains(monkeypatch, tmp_path)
     assert ip_response.status_code == 400
     assert localhost_response.status_code == 400
     assert local_response.status_code == 400
+
+
+def test_domain_runner_timeout_budget_scales_with_dns_timeout():
+    assert calculate_domain_runner_timeout_seconds(5.0) == 190.0
+    assert calculate_domain_runner_timeout_seconds(5.0, include_www=False) == 145.0
+    assert calculate_domain_runner_timeout_seconds(2.0) > calculate_domain_runner_timeout_seconds(1.0)
+    assert calculate_domain_runner_timeout_seconds(0.25) > 10.0
+
+
+@pytest.mark.parametrize(
+    ("raw_domain", "expected"),
+    [
+        ("example.com", "example.com"),
+        ("www.example.com", "www.example.com"),
+        ("Sub.Example.CO.UK", "sub.example.co.uk"),
+        ("täst.example", "xn--tst-qla.example"),
+        ("example.com.", "example.com"),
+    ],
+)
+def test_normalize_domain_accepts_valid_domains(raw_domain, expected):
+    assert normalize_domain(raw_domain) == expected
+
+
+@pytest.mark.parametrize(
+    "raw_domain",
+    [
+        "",
+        "https://example.com",
+        "http://example.com",
+        "example.com/path",
+        "example.com?x=1",
+        "example.com#fragment",
+        "user:pass@example.com",
+        "exa mple.com",
+        "127.0.0.1",
+        "::1",
+        "localhost",
+        "test.local",
+        "test.localhost",
+        "test.internal",
+        "test.test",
+        "test.invalid",
+        "example..com",
+        f"{'a' * 64}.example",
+        "-bad.example",
+        "bad-.example",
+        ".".join(["a" * 63] * 5),
+        "\ud800.example",
+    ],
+)
+def test_normalize_domain_rejects_invalid_domains(raw_domain):
+    with pytest.raises(HTTPException):
+        normalize_domain(raw_domain)
 
 
 @pytest.mark.anyio
