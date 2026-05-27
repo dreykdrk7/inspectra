@@ -1,6 +1,6 @@
 # Inspectra
 
-Inspectra is a lightweight, open source MVP for defensive and educational security audits. The current phase focuses on passive local file inspection plus a controlled baseline HTTP/HTTPS web audit inside Docker containers so audit tools do not need to be installed on the host system.
+Inspectra is a lightweight, open source MVP for defensive and educational security audits. The current phase focuses on passive local file inspection plus controlled baseline web and DNS audits inside Docker containers so audit tools do not need to be installed on the host system.
 
 This project is intentionally small: a FastAPI backend, a containerized tool runner, local job/result storage, and clear boundaries for authorized use.
 
@@ -15,6 +15,8 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts basic PDF, image, manifest, and archive audit jobs.
 - Starts project-archive manifest analysis jobs for archives that contain supported dependency manifests.
 - Starts authorized baseline web configuration audit jobs for a single URL.
+- Starts authorized DNS baseline audit jobs for a single domain.
+- Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
 - Runs passive tools inside the `audit-tools` container.
 - Calculates file hashes inside the tool container.
 - Stores job state and results under `data/results/jobs`.
@@ -43,6 +45,8 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not resolve transitive dependencies or infer installed package versions.
 - It does not process targets unless you upload them intentionally.
 - It does not audit web targets unless you provide a single URL and confirm authorization.
+- It does not inventory subdomains unless you provide explicit candidates and confirm authorization.
+- It does not brute-force subdomains, use wordlists, query Certificate Transparency logs, attempt AXFR, crawl, scan ports, or call reputation APIs.
 
 ## Requirements
 
@@ -100,9 +104,11 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_WEB_MAX_REDIRECTS` | backend, audit-tools | `5` | Maximum redirects followed by the web audit. Each redirect target is validated before use. |
 | `INSPECTRA_WEB_ALLOWED_PORTS` | backend, audit-tools | `80,443` | Comma-separated ports accepted in web audit URLs. Add lab ports such as `8000,8080,8443` only for authorized environments. |
 | `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS` | backend, audit-tools | `5` | Timeout for each bounded DNS query/resolver attempt in the domain baseline audit. The backend calculates a larger runner-call timeout from this value so the runner can finish its bounded query set. |
+| `INSPECTRA_SUBDOMAIN_MAX_CANDIDATES` | backend, audit-tools | `100` | Maximum explicitly supplied subdomain candidates accepted for one controlled inventory job. |
+| `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS` | backend, audit-tools | `2` | Maximum random wildcard-DNS probe labels checked under the root domain. Set to `0` to disable the heuristic. |
 | `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Browser-facing backend URL used by the React app. |
 
-The `audit-tools` container is attached to the internal Inspectra network and to a separate egress-capable network so `web_basic` can make authorized HTTP/HTTPS requests and `domain_basic` can make bounded DNS queries. The runner still does not publish a public port.
+The `audit-tools` container is attached to the internal Inspectra network and to a separate egress-capable network so `web_basic` can make authorized HTTP/HTTPS requests and `domain_basic`/`subdomain_inventory_basic` can make bounded DNS queries. The runner still does not publish a public port.
 
 ## Use the Web UI
 
@@ -112,7 +118,7 @@ Open:
 http://localhost:5173
 ```
 
-From the UI you can check backend health, upload PDFs, images, manifests, or archives, submit an authorized URL for baseline web audit, submit an authorized domain for DNS baseline audit, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
+From the UI you can check backend health, upload PDFs, images, manifests, or archives, submit an authorized URL for baseline web audit, submit an authorized domain for DNS baseline audit, submit explicit authorized subdomain candidates for inventory, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
 For archive files, the file list shows two actions: `Analyze archive` for container structure and extraction-risk indicators, and `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive.
 
@@ -132,6 +138,8 @@ Completed PDF, image, manifest, archive, and project-archive jobs show readable 
 - Archive structure metrics, detected manifest filenames, entries sample, path traversal indicators, sensitive-name indicators, nested archives, and size/compression indicators.
 - Project-archive supported manifests, unsupported manifest filenames, parsed dependencies, scripts, parser findings, limits, truncation, and controlled errors.
 - Web target URL, redirects, HTTP status, response headers, security headers, cookies, TLS certificate summary, `robots.txt`, `security.txt`, and informational configuration findings.
+- Domain DNS baseline records, email security checks, `www` baseline, and informational DNS findings.
+- Subdomain inventory candidate normalization, A/AAAA/CNAME results, wildcard-DNS heuristic, and informational findings.
 - Tool errors and timeouts.
 - Optional raw JSON for debugging.
 
@@ -252,6 +260,18 @@ curl -sS -X POST http://localhost:8000/audits/domain/basic \
 This creates a `domain_basic` job. The audit accepts a domain name, not a URL, and rejects IP literals, localhost-style names, paths, query strings, userinfo, and reserved/internal suffixes such as `.local`, `.localhost`, `.internal`, `.test`, and `.invalid`.
 
 The runner performs bounded DNS queries for `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `CAA`, and `SOA`, plus `_dmarc.<domain>` TXT and `www.<domain>` A/AAAA/CNAME. If the target already starts with `www.`, Inspectra skips the extra `www` baseline instead of querying `www.www.<domain>`. It parses SPF, DMARC, CAA, MX, NS, SOA, and TXT records into informational findings. The DNS client is a small UDP-only, best-effort baseline that uses configured IPv4 resolvers from `/etc/resolv.conf` and reports controlled errors for truncation or resolver failures rather than attempting TCP fallback. It does not brute-force subdomains, use wordlists, attempt AXFR, crawl websites, scan ports, use Nmap, query CVEs, or call external reputation APIs.
+
+## Launch a Controlled Subdomain Inventory
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/subdomains/basic \
+  -H "Content-Type: application/json" \
+  -d '{"root_domain":"example.com","subdomains":["www","api.example.com","admin"],"authorization_confirmed":true}'
+```
+
+This creates a `subdomain_inventory_basic` job. The root domain must pass the same defensive validation as `domain_basic`. Candidates must be provided explicitly as relative labels such as `api` or FQDNs inside the root domain such as `api.example.com`. Inspectra normalizes, deduplicates, and resolves only accepted candidates for `A`, `AAAA`, and `CNAME`.
+
+The inventory rejects URLs, paths, query strings, userinfo, IP literals, wildcards, candidates outside the root domain, empty labels, and invalid names. It does not generate permutations, use wordlists, query Certificate Transparency, call external APIs, attempt AXFR, crawl, scan ports, use Nmap, or perform brute force. A bounded wildcard-DNS heuristic may query up to `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS` random labels under the root domain; this is only an indicator for manual review.
 
 ## Read Job Results
 

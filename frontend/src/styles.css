@@ -251,6 +251,12 @@ pre {
   padding: 0.45rem 0.65rem;
 }
 
+.multiline-input {
+  width: 100%;
+  min-height: 6rem;
+  resize: vertical;
+}
+
 .table-wrap {
   overflow-x: auto;
 }

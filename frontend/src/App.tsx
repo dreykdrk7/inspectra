@@ -19,6 +19,7 @@ import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
 import { ProjectArchiveJobReport } from "./ProjectArchiveJobReport";
+import { SubdomainJobReport } from "./SubdomainJobReport";
 import { WebJobReport } from "./WebJobReport";
 import type { FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat, SbomFormat } from "./types";
 import { inspectWebUrlQuery } from "./webUrl";
@@ -53,6 +54,10 @@ export function App() {
   const [domainName, setDomainName] = useState("");
   const [domainAuthorizationConfirmed, setDomainAuthorizationConfirmed] = useState(false);
   const [domainAuditState, setDomainAuditState] = useState<LoadState>(initialLoadState);
+  const [subdomainRootDomain, setSubdomainRootDomain] = useState("");
+  const [subdomainCandidates, setSubdomainCandidates] = useState("");
+  const [subdomainAuthorizationConfirmed, setSubdomainAuthorizationConfirmed] = useState(false);
+  const [subdomainAuditState, setSubdomainAuditState] = useState<LoadState>(initialLoadState);
 
   const refreshHealth = useCallback(async () => {
     setHealthState({ loading: true, error: null });
@@ -217,6 +222,24 @@ export function App() {
     }
   }
 
+  async function launchSubdomainAudit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setActionError(null);
+    setSubdomainAuditState({ loading: true, error: null });
+    try {
+      const candidates = parseSubdomainCandidates(subdomainCandidates);
+      const job = await api.launchSubdomainInventoryAudit(subdomainRootDomain, candidates, subdomainAuthorizationConfirmed);
+      setSelectedJob(job);
+      setSubdomainRootDomain("");
+      setSubdomainCandidates("");
+      setSubdomainAuthorizationConfirmed(false);
+      await refreshJobs();
+      setSubdomainAuditState({ loading: false, error: null });
+    } catch (error) {
+      setSubdomainAuditState({ loading: false, error: toErrorMessage(error) });
+    }
+  }
+
   async function deleteFile(fileId: string) {
     setActionError(null);
     try {
@@ -368,6 +391,40 @@ export function App() {
           </form>
           {domainAuditState.error ? <p className="error-text">{domainAuditState.error}</p> : null}
         </Panel>
+
+        <Panel title="Subdomain Inventory" icon={<Network size={18} aria-hidden="true" />}>
+          <form className="web-audit-form" onSubmit={(event) => void launchSubdomainAudit(event)}>
+            <input
+              className="search-input"
+              type="text"
+              placeholder="example.com"
+              value={subdomainRootDomain}
+              onChange={(event) => setSubdomainRootDomain(event.target.value)}
+              required
+            />
+            <textarea
+              className="search-input multiline-input"
+              placeholder={"www\napi.example.com\nadmin"}
+              value={subdomainCandidates}
+              onChange={(event) => setSubdomainCandidates(event.target.value)}
+              rows={4}
+              required
+            />
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={subdomainAuthorizationConfirmed}
+                onChange={(event) => setSubdomainAuthorizationConfirmed(event.target.checked)}
+              />
+              Confirmo que tengo autorización para auditar estos subdominios
+            </label>
+            <button type="submit" disabled={subdomainAuditState.loading || !subdomainAuthorizationConfirmed}>
+              <Play size={16} aria-hidden="true" />
+              {subdomainAuditState.loading ? "Starting" : "Analyze subdomains"}
+            </button>
+          </form>
+          {subdomainAuditState.error ? <p className="error-text">{subdomainAuditState.error}</p> : null}
+        </Panel>
       </section>
 
       <section className="content-grid">
@@ -477,7 +534,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -547,6 +604,8 @@ export function App() {
               <ProjectArchiveJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "domain_basic" ? (
               <DomainJobReport job={selectedJob} />
+            ) : selectedJob.audit_type === "subdomain_inventory_basic" ? (
+              <SubdomainJobReport job={selectedJob} />
             ) : (
               <WebJobReport job={selectedJob} />
             )}
@@ -635,6 +694,13 @@ function supportsSbomExport(job: JobRecord): boolean {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unexpected error";
+}
+
+function parseSubdomainCandidates(value: string): string[] {
+  return value
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function formatDate(value: string): string {
@@ -755,6 +821,11 @@ function summarizeJob(job: JobListItem): string {
   if (job.audit_type === "domain_basic") {
     const recordsFound = typeof job.summary.records_found_count === "number" ? job.summary.records_found_count : 0;
     return `${recordsFound} records, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "subdomain_inventory_basic") {
+    const resolvedCount = typeof job.summary.resolved_count === "number" ? job.summary.resolved_count : 0;
+    const acceptedCount = typeof job.summary.candidates_accepted === "number" ? job.summary.candidates_accepted : 0;
+    return `${resolvedCount}/${acceptedCount} resolved, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

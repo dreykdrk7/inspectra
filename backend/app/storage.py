@@ -291,6 +291,9 @@ class JobStore:
     def create_domain_job(self, target_domain: str) -> JobRecord:
         return self._create_job(None, "domain_basic", target_domain=target_domain)
 
+    def create_subdomain_inventory_job(self, target_domain: str) -> JobRecord:
+        return self._create_job(None, "subdomain_inventory_basic", target_domain=target_domain)
+
     def _create_job(
         self,
         file_id: str | None,
@@ -534,6 +537,15 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["spf_present"] = manifest_summary.get("spf_present")
             summary["dmarc_present"] = manifest_summary.get("dmarc_present")
             summary["dmarc_policy"] = manifest_summary.get("dmarc_policy")
+        if record.audit_type == "subdomain_inventory_basic":
+            summary["root_domain"] = (record.result.get("target") or {}).get("normalized_root_domain") or record.target_domain
+            summary["candidates_accepted"] = manifest_summary.get("candidates_accepted")
+            summary["candidates_rejected"] = manifest_summary.get("candidates_rejected")
+            summary["resolved_count"] = manifest_summary.get("resolved_count")
+            summary["unresolved_count"] = manifest_summary.get("unresolved_count")
+            summary["private_ip_count"] = manifest_summary.get("private_ip_count")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["wildcard_dns_possible"] = manifest_summary.get("wildcard_dns_possible")
         return summary
     if record.error:
         return {"error": record.error}

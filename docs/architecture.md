@@ -15,6 +15,7 @@ Inspectra starts as a small defensive audit API for authorized local files and c
   - Healthcheck endpoint.
   - PDF, image, dependency manifest, and archive upload endpoints.
   - Authorized single-URL web audit endpoint.
+  - Authorized domain and explicit subdomain-inventory audit endpoints.
   - File listing and deletion endpoints.
   - Basic file metadata registry.
   - Job creation, listing, and status management.
@@ -34,16 +35,16 @@ The backend does not install or execute audit binaries directly.
   - Display backend health.
   - Upload PDFs, images, dependency manifests, and archives.
   - List and delete uploaded files.
-  - Launch PDF, image, manifest, archive, project-archive manifest, and web baseline audits.
+  - Launch PDF, image, manifest, archive, project-archive manifest, web baseline, domain baseline, and controlled subdomain inventory audits.
   - List recent jobs.
-  - Fetch jobs and render readable PDF, image, manifest, archive, project-archive, and web reports.
+  - Fetch jobs and render readable PDF, image, manifest, archive, project-archive, web, domain, and subdomain inventory reports.
   - Provide export links for Markdown, HTML, XML, and PDF job reports.
   - Provide SBOM export links for completed manifest and project-archive manifest jobs.
   - Keep raw job JSON available for debugging.
 
 The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
 
-Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, `frontend/src/manifestReport.ts`, `frontend/src/archiveReport.ts`, `frontend/src/projectArchiveReport.ts`, and `frontend/src/webReport.ts`. Dashboard filters and counters live in `frontend/src/dashboardFilters.ts`. This keeps the backend contract stable while making audit result JSON and UI state easier to test.
+Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, `frontend/src/manifestReport.ts`, `frontend/src/archiveReport.ts`, `frontend/src/projectArchiveReport.ts`, `frontend/src/webReport.ts`, `frontend/src/domainReport.ts`, and `frontend/src/subdomainReport.ts`. Dashboard filters and counters live in `frontend/src/dashboardFilters.ts`. This keeps the backend contract stable while making audit result JSON and UI state easier to test.
 
 ### Reporting
 
@@ -80,7 +81,7 @@ SBOM output intentionally reflects only dependencies declared in analyzed manife
   - `qpdf`
   - `file`
 
-The tool runner is reachable by the backend on the internal Compose network. For `web_basic` and `domain_basic`, the runner is also attached to a separate egress-capable network so it can make explicitly authorized HTTP/HTTPS requests and bounded DNS queries. It does not publish a public port. For uploaded-file audits it receives a relative path, validates that the path stays inside `data/`, runs passive tools without a shell when tools are needed, and returns structured JSON to the backend.
+The tool runner is reachable by the backend on the internal Compose network. For `web_basic`, `domain_basic`, and `subdomain_inventory_basic`, the runner is also attached to a separate egress-capable network so it can make explicitly authorized HTTP/HTTPS requests and bounded DNS queries. It does not publish a public port. For uploaded-file audits it receives a relative path, validates that the path stays inside `data/`, runs passive tools without a shell when tools are needed, and returns structured JSON to the backend.
 
 Each external command has an `INSPECTRA_TOOL_TIMEOUT_SECONDS` timeout, defaulting to 10 seconds. A timed-out tool is recorded in that tool's output and in the result summary instead of failing the entire job by itself.
 
@@ -98,6 +99,8 @@ Web results redact cookie values and sensitive response headers before they are 
 
 Domain baseline analysis uses a small standard-library DNS client in the tool runner. It accepts a domain name, rejects URLs, IP literals, userinfo, paths, query strings, localhost-style names, and reserved/internal suffixes, then queries only bounded record types for the authorized domain, `_dmarc.<domain>`, and `www.<domain>` unless the target already starts with `www.`. It parses SPF, DMARC, CAA, MX, NS, SOA, and generic TXT records into informational findings. It does not brute-force subdomains, use wordlists, attempt AXFR, perform reverse DNS sweeps, crawl sites, scan ports, query CVEs, or call external reputation APIs. `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS` controls each UDP DNS query/resolver attempt. The backend computes the HTTP timeout for the runner call from the maximum bounded domain query set, the runner's maximum nameserver attempts, and a fixed margin, so normal bounded DNS timeouts are returned as structured result errors instead of premature backend failures. The current DNS client is UDP-only and best-effort: it uses configured IPv4 resolvers from `/etc/resolv.conf`, reports truncated responses, and does not perform TCP fallback.
 
+Subdomain inventory analysis reuses the same DNS client but only for candidates explicitly supplied by the user. The backend validates the root domain with the `domain_basic` policy, accepts relative labels or FQDNs inside that root, rejects URLs, paths, query strings, userinfo, IP literals, wildcards, and out-of-root names, then creates a `subdomain_inventory_basic` job. The runner defensively normalizes and deduplicates candidates again, resolves only `A`, `AAAA`, and `CNAME`, detects private or reserved IP responses, identifies external CNAMEs, and optionally performs up to `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS` random wildcard-DNS probes. It does not generate candidate permutations, use wordlists, query Certificate Transparency, call external APIs, attempt AXFR, crawl, scan ports, use Nmap, or brute-force subdomains. `INSPECTRA_SUBDOMAIN_MAX_CANDIDATES` bounds explicit candidate count.
+
 ### Local Data
 
 - Uploaded files: `data/uploads`
@@ -108,12 +111,12 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 
 ## Request Flow
 
-1. A user uploads a PDF to `POST /files/pdf`, an image to `POST /files/image`, a manifest to `POST /files/manifest`, or an archive to `POST /files/archive`. For web checks, the user submits a URL to `POST /audits/web/basic` with authorization confirmation. For domain checks, the user submits a domain to `POST /audits/domain/basic` with authorization confirmation.
+1. A user uploads a PDF to `POST /files/pdf`, an image to `POST /files/image`, a manifest to `POST /files/manifest`, or an archive to `POST /files/archive`. For web checks, the user submits a URL to `POST /audits/web/basic` with authorization confirmation. For domain checks, the user submits a domain to `POST /audits/domain/basic` with authorization confirmation. For subdomain inventory, the user submits a root domain plus explicit candidates to `POST /audits/subdomains/basic` with authorization confirmation.
 2. The backend validates file magic bytes, manifest name/content, or archive name/signature, stores it in `data/uploads`, and records metadata.
-3. A user starts file analysis with `POST /audits/pdf/{file_id}`, `POST /audits/image/{file_id}`, `POST /audits/manifest/{file_id}`, `POST /audits/archive/{file_id}`, or `POST /audits/project-archive/{file_id}`. Web and domain jobs are already created by `POST /audits/web/basic` or `POST /audits/domain/basic` and store `target_url` or `target_domain` instead of `file_id`.
+3. A user starts file analysis with `POST /audits/pdf/{file_id}`, `POST /audits/image/{file_id}`, `POST /audits/manifest/{file_id}`, `POST /audits/archive/{file_id}`, or `POST /audits/project-archive/{file_id}`. Web, domain, and subdomain inventory jobs are already created by `POST /audits/web/basic`, `POST /audits/domain/basic`, or `POST /audits/subdomains/basic` and store `target_url` or `target_domain` instead of `file_id`.
 4. The backend creates a queued job and schedules background execution.
 5. The backend calls `audit-tools` over the internal Compose network.
-6. The tool runner performs passive analysis inside its container. For `manifest_basic`, it parses local text and returns normalized dependencies and informational findings. For `archive_basic`, it inspects archive metadata and returns structure, size, manifest-presence, extraction-risk, and informational findings without broad extraction. For `project_archive_basic`, it scans archive metadata, reads only bounded supported manifest files in memory, and returns internal dependency summaries plus informational findings. For `web_basic`, it makes bounded HTTP/HTTPS requests to the authorized URL and same-origin `robots.txt`/`security.txt` paths, returning headers, cookies, TLS summary, redirects, and configuration findings. For `domain_basic`, it makes bounded DNS queries for the authorized domain and returns DNS, email-security, `www`, findings, and errors.
+6. The tool runner performs passive analysis inside its container. For `manifest_basic`, it parses local text and returns normalized dependencies and informational findings. For `archive_basic`, it inspects archive metadata and returns structure, size, manifest-presence, extraction-risk, and informational findings without broad extraction. For `project_archive_basic`, it scans archive metadata, reads only bounded supported manifest files in memory, and returns internal dependency summaries plus informational findings. For `web_basic`, it makes bounded HTTP/HTTPS requests to the authorized URL and same-origin `robots.txt`/`security.txt` paths, returning headers, cookies, TLS summary, redirects, and configuration findings. For `domain_basic`, it makes bounded DNS queries for the authorized domain and returns DNS, email-security, `www`, findings, and errors. For `subdomain_inventory_basic`, it resolves only explicit candidates and bounded wildcard probes, returning candidate status, DNS answers, heuristic findings, and errors.
 7. The backend stores the final job state and result JSON.
 8. A user reads the job with `GET /jobs/{job_id}` from the API or the UI.
 9. A user exports a report with `GET /jobs/{job_id}/export/{format}`. The backend renders the report from the stored job JSON.
@@ -136,6 +139,7 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `POST /audits/project-archive/{file_id}`: start passive manifest analysis inside an archive.
 - `POST /audits/web/basic`: start a controlled baseline web configuration audit for one authorized URL.
 - `POST /audits/domain/basic`: start a controlled passive DNS baseline audit for one authorized domain.
+- `POST /audits/subdomains/basic`: start a controlled passive inventory for explicit authorized subdomain candidates.
 - `GET /jobs`: list jobs, newest first, with summaries when available.
 - `GET /jobs/{job_id}`: read one full job record.
 - `GET /jobs/{job_id}/export/markdown`: export a Markdown report.
@@ -153,7 +157,7 @@ The browser UI consumes these same endpoints. The backend enables CORS only for 
 
 - Audit binaries are installed only in the `audit-tools` image.
 - The Docker socket is not mounted into the backend.
-- The backend reaches the tool runner on an internal Compose network; the tool runner also has outbound network access for the bounded `web_basic` audit.
+- The backend reaches the tool runner on an internal Compose network; the tool runner also has outbound network access for the bounded `web_basic`, `domain_basic`, and `subdomain_inventory_basic` audits.
 - The tool runner mount of `data/` is read-only.
 - Containers drop Linux capabilities and set `no-new-privileges`.
 - Containers use read-only root filesystems with `/tmp` as tmpfs.
@@ -163,6 +167,7 @@ The browser UI consumes these same endpoints. The backend enables CORS only for 
 - Archive inspection is bounded by `INSPECTRA_ARCHIVE_MAX_ENTRIES`, `INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES`, `INSPECTRA_ARCHIVE_MAX_ENTRY_NAME_LENGTH`, `INSPECTRA_ARCHIVE_MAX_LISTED_ENTRIES`, and `INSPECTRA_ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES`.
 - Project archive manifest parsing is bounded by `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS`, `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES`, `INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES`, and `INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES`.
 - Web auditing is bounded by `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, and `INSPECTRA_WEB_ALLOWED_PORTS`. Private targets require `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true`; metadata/link-local/multicast/reserved targets remain blocked.
+- Subdomain inventory is bounded by `INSPECTRA_SUBDOMAIN_MAX_CANDIDATES`, `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS`, and `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS`.
 - Development CORS is explicit and defaults to `http://localhost:5173`, not a wildcard.
 
 These are sensible MVP guardrails, not a substitute for a hardened sandbox.

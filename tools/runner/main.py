@@ -19,6 +19,7 @@ import tarfile
 import time
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from uuid import uuid4
 import zipfile
 
 from fastapi import FastAPI, HTTPException, status
@@ -70,6 +71,14 @@ class DomainBasicAnalysisRequest(BaseModel):
     timeout_seconds: float | None = None
 
 
+class SubdomainInventoryAnalysisRequest(BaseModel):
+    root_domain: str
+    subdomains: list[str]
+    timeout_seconds: float | None = None
+    max_candidates: int | None = None
+    wildcard_checks: int | None = None
+
+
 def positive_float_from_env(name: str, default: float) -> float:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -93,6 +102,19 @@ def positive_int_from_env(name: str, default: int) -> int:
         raise ValueError(f"{name} must be a positive integer.") from exc
     if value <= 0:
         raise ValueError(f"{name} must be greater than zero.")
+    return value
+
+
+def non_negative_int_from_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer.") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be zero or greater.")
     return value
 
 
@@ -157,6 +179,8 @@ WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES
 WEB_MAX_REDIRECTS = positive_int_from_env("INSPECTRA_WEB_MAX_REDIRECTS", 5)
 WEB_ALLOWED_PORTS = ports_from_env("INSPECTRA_WEB_ALLOWED_PORTS", (80, 443))
 DOMAIN_DNS_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS", 5.0)
+SUBDOMAIN_MAX_CANDIDATES = positive_int_from_env("INSPECTRA_SUBDOMAIN_MAX_CANDIDATES", 100)
+SUBDOMAIN_WILDCARD_CHECKS = non_negative_int_from_env("INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS", 2)
 ZIP_EOCD_SIGNATURE = b"PK\x05\x06"
 ZIP_EOCD_MIN_SIZE = 22
 ZIP_EOCD_MAX_COMMENT_SIZE = 65_535
@@ -527,6 +551,32 @@ async def analyze_domain_basic(request: DomainBasicAnalysisRequest) -> dict[str,
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain DNS timeout must be positive.")
     normalized_domain = normalize_domain(request.domain)
     return analyze_domain_basic_target(normalized_domain, timeout_seconds=timeout_seconds)
+
+
+@app.post("/analyze/subdomains-basic")
+async def analyze_subdomains_basic(request: SubdomainInventoryAnalysisRequest) -> dict[str, Any]:
+    timeout_seconds = request.timeout_seconds or DOMAIN_DNS_TIMEOUT_SECONDS
+    if timeout_seconds <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain DNS timeout must be positive.")
+    max_candidates = request.max_candidates or SUBDOMAIN_MAX_CANDIDATES
+    wildcard_checks = SUBDOMAIN_WILDCARD_CHECKS if request.wildcard_checks is None else request.wildcard_checks
+    if max_candidates <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Subdomain candidate limit must be positive.")
+    if wildcard_checks < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Wildcard check count must not be negative.")
+    if len(request.subdomains) > max_candidates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Too many subdomain candidates. Maximum allowed is {max_candidates}.",
+        )
+    normalized_root = normalize_domain(request.root_domain)
+    return analyze_subdomains_basic_target(
+        normalized_root,
+        request.subdomains,
+        timeout_seconds=timeout_seconds,
+        max_candidates=max_candidates,
+        wildcard_checks=wildcard_checks,
+    )
 
 
 def analyze_web_basic_target(
@@ -1307,6 +1357,311 @@ def analyze_domain_basic_target(domain: str, *, timeout_seconds: float) -> dict[
         "summary": summary,
         "errors": dedupe_strings(errors),
     }
+
+
+def analyze_subdomains_basic_target(
+    root_domain: str,
+    raw_candidates: list[str],
+    *,
+    timeout_seconds: float,
+    max_candidates: int,
+    wildcard_checks: int,
+) -> dict[str, Any]:
+    checked_at = datetime.now(timezone.utc).isoformat()
+    candidates, accepted_fqdns, candidate_findings = normalize_subdomain_candidate_list(
+        root_domain,
+        raw_candidates,
+        max_candidates=max_candidates,
+    )
+    results: list[dict[str, Any]] = []
+    errors: list[str] = []
+    findings: list[dict[str, str]] = list(candidate_findings)
+
+    for fqdn in accepted_fqdns:
+        result, result_errors, result_findings = resolve_subdomain_candidate(root_domain, fqdn, timeout_seconds)
+        results.append(result)
+        errors.extend(result_errors)
+        findings.extend(result_findings)
+
+    wildcard_dns = analyze_subdomain_wildcard_dns(root_domain, timeout_seconds=timeout_seconds, wildcard_checks=wildcard_checks)
+    errors.extend(as_string_list(wildcard_dns.get("errors")))
+    if wildcard_dns.get("possible"):
+        findings.append(
+            make_finding(
+                "subdomain_wildcard_dns_possible",
+                "Wildcard DNS may be present",
+                "low",
+                "One or more random probe names under the root domain resolved. This is a heuristic indicator for manual review.",
+                str(wildcard_dns.get("probes", [])),
+                "Confirm whether wildcard DNS is expected before relying on unresolved candidate counts.",
+            )
+        )
+
+    accepted_count = len(accepted_fqdns)
+    unresolved_count = sum(1 for result in results if not result.get("resolves"))
+    if accepted_count >= 3 and unresolved_count / accepted_count >= 0.5:
+        findings.append(
+            make_finding(
+                "subdomain_many_candidates_unresolved",
+                "Many submitted candidates did not resolve",
+                "info",
+                "At least half of the accepted candidates did not return A, AAAA, or CNAME records.",
+                f"{unresolved_count} of {accepted_count} accepted candidates unresolved",
+                "Confirm the submitted inventory is current and authorized.",
+            )
+        )
+
+    findings = dedupe_findings(findings)
+    summary = build_subdomain_inventory_summary(raw_candidates, candidates, results, findings, wildcard_dns)
+    return {
+        "analyzer": "subdomain_inventory_basic",
+        "target": {
+            "root_domain": root_domain,
+            "normalized_root_domain": root_domain,
+            "checked_at": checked_at,
+        },
+        "summary": summary,
+        "candidates": candidates,
+        "results": results,
+        "wildcard_dns": wildcard_dns,
+        "findings": findings,
+        "errors": dedupe_strings(errors),
+    }
+
+
+def normalize_subdomain_candidate_list(
+    root_domain: str,
+    raw_candidates: list[str],
+    *,
+    max_candidates: int,
+) -> tuple[list[dict[str, Any]], list[str], list[dict[str, str]]]:
+    candidates: list[dict[str, Any]] = []
+    accepted_fqdns: list[str] = []
+    findings: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    if not raw_candidates:
+        return (
+            [{"input": "", "fqdn": None, "status": "rejected", "rejection_reason": "At least one candidate is required."}],
+            [],
+            [
+                make_finding(
+                    "subdomain_candidate_rejected",
+                    "Subdomain candidate was rejected",
+                    "info",
+                    "A submitted candidate could not be normalized within the authorized root domain.",
+                    "empty candidate list",
+                    "Submit explicit labels or FQDNs that are inside the authorized root domain.",
+                )
+            ],
+        )
+
+    if len(raw_candidates) > max_candidates:
+        raw_candidates = raw_candidates[:max_candidates]
+        findings.append(
+            make_finding(
+                "subdomain_candidate_limit_reached",
+                "Subdomain candidate limit reached",
+                "low",
+                "The submitted candidate list exceeded the configured limit and was truncated before DNS resolution.",
+                f"configured limit: {max_candidates}",
+                "Submit a smaller explicit inventory or raise the limit only for authorized workflows.",
+            )
+        )
+
+    for raw_candidate in raw_candidates:
+        candidate_text = str(raw_candidate)
+        try:
+            fqdn = normalize_subdomain_candidate(root_domain, candidate_text)
+        except ValueError as exc:
+            reason = str(exc)
+            candidates.append({"input": candidate_text, "fqdn": None, "status": "rejected", "rejection_reason": reason})
+            findings.append(
+                make_finding(
+                    "subdomain_candidate_rejected",
+                    "Subdomain candidate was rejected",
+                    "info",
+                    "A submitted candidate could not be normalized within the authorized root domain.",
+                    f"{candidate_text}: {reason}",
+                    "Submit explicit labels or FQDNs that are inside the authorized root domain.",
+                )
+            )
+            continue
+        if fqdn in seen:
+            candidates.append({"input": candidate_text, "fqdn": fqdn, "status": "rejected", "rejection_reason": "Duplicate candidate."})
+            findings.append(
+                make_finding(
+                    "subdomain_duplicate_candidate",
+                    "Duplicate subdomain candidate removed",
+                    "info",
+                    "A submitted candidate normalized to an already accepted FQDN.",
+                    fqdn,
+                    "Deduplicate candidate lists before submission when possible.",
+                )
+            )
+            continue
+        seen.add(fqdn)
+        accepted_fqdns.append(fqdn)
+        candidates.append({"input": candidate_text, "fqdn": fqdn, "status": "accepted"})
+
+    return candidates, accepted_fqdns, findings
+
+
+def normalize_subdomain_candidate(root_domain: str, raw_candidate: str) -> str:
+    value = raw_candidate.strip()
+    if not value:
+        raise ValueError("Candidate is empty.")
+    if "*" in value:
+        raise ValueError("Wildcard candidates are not accepted.")
+    if any(character.isspace() for character in value):
+        raise ValueError("Candidate must not contain spaces.")
+    if "://" in value or "/" in value or "?" in value or "#" in value or "@" in value or ":" in value:
+        raise ValueError("Candidate must be a label or FQDN, not a URL.")
+
+    candidate = value.rstrip(".").lower()
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("IP literals are not accepted.")
+
+    fqdn = f"{candidate}.{root_domain}" if "." not in candidate else candidate
+    try:
+        normalized = normalize_domain(fqdn)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Domain validation failed."
+        raise ValueError(detail) from exc
+    if normalized == root_domain or not normalized.endswith(f".{root_domain}"):
+        raise ValueError("Candidate is outside the root domain.")
+    return normalized
+
+
+def resolve_subdomain_candidate(root_domain: str, fqdn: str, timeout_seconds: float) -> tuple[dict[str, Any], list[str], list[dict[str, str]]]:
+    result: dict[str, Any] = {
+        "fqdn": fqdn,
+        "resolves": False,
+        "A": [],
+        "AAAA": [],
+        "CNAME": [],
+        "private_or_reserved_ip_detected": False,
+        "errors": [],
+    }
+    errors: list[str] = []
+    findings: list[dict[str, str]] = []
+    for record_type in ("A", "AAAA", "CNAME"):
+        records, record_errors = query_dns_record(fqdn, record_type, timeout_seconds)
+        result[record_type] = records[:DNS_MAX_RECORDS_PER_TYPE]
+        errors.extend(record_errors)
+    result["errors"] = errors
+    result["resolves"] = any(result.get(record_type) for record_type in ("A", "AAAA", "CNAME"))
+
+    ip_records = as_string_list(result.get("A")) + as_string_list(result.get("AAAA"))
+    private_ips = [address for address in ip_records if is_private_or_reserved_ip(address)]
+    if private_ips:
+        result["private_or_reserved_ip_detected"] = True
+        result["private_or_reserved_ips"] = private_ips[:DNS_MAX_RECORDS_PER_TYPE]
+        findings.append(
+            make_finding(
+                "subdomain_private_or_reserved_ip",
+                "Subdomain resolves to private or reserved IP",
+                "medium",
+                "A submitted candidate returned an IP address that appears private, loopback, link-local, multicast, unspecified, or reserved.",
+                f"{fqdn}: {', '.join(private_ips)}",
+                "Confirm whether this host is intended for internal use and avoid exposing private inventory unintentionally.",
+            )
+        )
+
+    external_cnames = [name for name in as_string_list(result.get("CNAME")) if not domain_within_root(name, root_domain)]
+    if external_cnames:
+        result["external_cname_detected"] = True
+        findings.append(
+            make_finding(
+                "subdomain_external_cname",
+                "Subdomain CNAME points outside root domain",
+                "info",
+                "A submitted candidate has a CNAME target outside the authorized root domain. This can be normal for SaaS/CDN services.",
+                f"{fqdn}: {', '.join(external_cnames)}",
+                "Confirm the external target is expected and managed by an authorized provider.",
+            )
+        )
+
+    return result, errors, findings
+
+
+def analyze_subdomain_wildcard_dns(root_domain: str, *, timeout_seconds: float, wildcard_checks: int) -> dict[str, Any]:
+    checks = max(0, min(wildcard_checks, 2))
+    if checks == 0:
+        return {"checked": False, "possible": False, "probes_count": 0, "notes": "Wildcard DNS check disabled.", "errors": []}
+
+    probes: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for _ in range(checks):
+        probe_name = f"inspectra-wildcard-{uuid4().hex[:12]}.{root_domain}"
+        probe: dict[str, Any] = {"fqdn": probe_name, "resolves": False, "A": [], "AAAA": [], "CNAME": []}
+        for record_type in ("A", "AAAA", "CNAME"):
+            records, record_errors = query_dns_record(probe_name, record_type, timeout_seconds)
+            probe[record_type] = records[:DNS_MAX_RECORDS_PER_TYPE]
+            errors.extend(record_errors)
+        probe["resolves"] = any(probe.get(record_type) for record_type in ("A", "AAAA", "CNAME"))
+        probes.append(probe)
+
+    possible = bool(probes) and all(bool(probe.get("resolves")) for probe in probes)
+    return {
+        "checked": True,
+        "possible": possible,
+        "probes_count": len(probes),
+        "probes": probes,
+        "notes": "Heuristic check using bounded random labels; not a brute-force discovery mechanism.",
+        "errors": dedupe_strings(errors),
+    }
+
+
+def build_subdomain_inventory_summary(
+    raw_candidates: list[str],
+    candidates: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    findings: list[dict[str, str]],
+    wildcard_dns: dict[str, Any],
+) -> dict[str, Any]:
+    accepted = [candidate for candidate in candidates if candidate.get("status") == "accepted"]
+    rejected = [candidate for candidate in candidates if candidate.get("status") == "rejected"]
+    resolved_count = sum(1 for result in results if result.get("resolves"))
+    cname_count = sum(1 for result in results if result.get("CNAME"))
+    private_ip_count = sum(1 for result in results if result.get("private_or_reserved_ip_detected"))
+    return {
+        "candidates_submitted": len(raw_candidates),
+        "candidates_accepted": len(accepted),
+        "candidates_rejected": len(rejected),
+        "resolved_count": resolved_count,
+        "unresolved_count": max(0, len(accepted) - resolved_count),
+        "cname_count": cname_count,
+        "private_ip_count": private_ip_count,
+        "findings_count": len(findings),
+        "wildcard_dns_possible": bool(wildcard_dns.get("possible")),
+    }
+
+
+def is_private_or_reserved_ip(value: str) -> bool:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return any(
+        (
+            address.is_private,
+            address.is_loopback,
+            address.is_link_local,
+            address.is_reserved,
+            address.is_multicast,
+            address.is_unspecified,
+        )
+    )
+
+
+def domain_within_root(value: str, root_domain: str) -> bool:
+    normalized = value.rstrip(".").lower()
+    return normalized == root_domain or normalized.endswith(f".{root_domain}")
 
 
 def query_dns_record(domain: str, record_type: str, timeout_seconds: float) -> tuple[list[Any], list[str]]:

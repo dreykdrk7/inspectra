@@ -11,6 +11,8 @@ DEFAULT_WEB_MAX_RESPONSE_BYTES = 1_048_576
 DEFAULT_WEB_MAX_REDIRECTS = 5
 DEFAULT_WEB_ALLOWED_PORTS = (80, 443)
 DEFAULT_DOMAIN_DNS_TIMEOUT_SECONDS = 5.0
+DEFAULT_SUBDOMAIN_MAX_CANDIDATES = 100
+DEFAULT_SUBDOMAIN_WILDCARD_CHECKS = 2
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,8 @@ class Settings:
     web_max_redirects: int = DEFAULT_WEB_MAX_REDIRECTS
     web_allowed_ports: tuple[int, ...] = DEFAULT_WEB_ALLOWED_PORTS
     domain_dns_timeout_seconds: float = DEFAULT_DOMAIN_DNS_TIMEOUT_SECONDS
+    subdomain_max_candidates: int = DEFAULT_SUBDOMAIN_MAX_CANDIDATES
+    subdomain_wildcard_checks: int = DEFAULT_SUBDOMAIN_WILDCARD_CHECKS
 
     @property
     def upload_dir(self) -> Path:
@@ -57,6 +61,14 @@ def load_settings() -> Settings:
         "INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS",
         DEFAULT_DOMAIN_DNS_TIMEOUT_SECONDS,
     )
+    subdomain_max_candidates = _positive_int_from_env(
+        "INSPECTRA_SUBDOMAIN_MAX_CANDIDATES",
+        DEFAULT_SUBDOMAIN_MAX_CANDIDATES,
+    )
+    subdomain_wildcard_checks = _non_negative_int_from_env(
+        "INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS",
+        DEFAULT_SUBDOMAIN_WILDCARD_CHECKS,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -68,6 +80,8 @@ def load_settings() -> Settings:
         web_max_redirects=web_max_redirects,
         web_allowed_ports=web_allowed_ports,
         domain_dns_timeout_seconds=domain_dns_timeout_seconds,
+        subdomain_max_candidates=subdomain_max_candidates,
+        subdomain_wildcard_checks=subdomain_wildcard_checks,
     )
 
 
@@ -94,6 +108,19 @@ def _positive_float_from_env(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a positive number.") from exc
     if value <= 0:
         raise ValueError(f"{name} must be greater than zero.")
+    return value
+
+
+def _non_negative_int_from_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer.") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be zero or greater.")
     return value
 
 

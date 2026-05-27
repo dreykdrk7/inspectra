@@ -83,5 +83,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "domain_basic") {
     return "domain_basic";
   }
+  if (auditType === "subdomain_inventory_basic") {
+    return "subdomain_inventory_basic";
+  }
   return auditType;
 }

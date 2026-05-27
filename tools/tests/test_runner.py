@@ -1006,6 +1006,159 @@ async def test_analyze_domain_basic_rejects_invalid_domain():
     assert local_response.status_code == 400
 
 
+@pytest.mark.anyio
+async def test_analyze_subdomains_basic_normalizes_deduplicates_and_resolves(monkeypatch):
+    calls: list[tuple[str, str]] = []
+    records = {
+        ("www.example.com", "A"): (["93.184.216.34"], []),
+        ("www.example.com", "AAAA"): ([], []),
+        ("www.example.com", "CNAME"): (["example.net"], []),
+        ("api.example.com", "A"): ([], []),
+        ("api.example.com", "AAAA"): ([], []),
+        ("api.example.com", "CNAME"): ([], []),
+    }
+
+    def fake_query(domain: str, record_type: str, timeout: float):
+        calls.append((domain, record_type))
+        return records.get((domain, record_type), ([], []))
+
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/subdomains-basic",
+            json={
+                "root_domain": "Example.COM",
+                "subdomains": ["www", "WWW.example.com", "api.example.com"],
+                "timeout_seconds": 1,
+                "wildcard_checks": 0,
+            },
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["analyzer"] == "subdomain_inventory_basic"
+    assert payload["target"]["normalized_root_domain"] == "example.com"
+    assert payload["summary"]["candidates_submitted"] == 3
+    assert payload["summary"]["candidates_accepted"] == 2
+    assert payload["summary"]["candidates_rejected"] == 1
+    assert payload["summary"]["resolved_count"] == 1
+    assert payload["summary"]["cname_count"] == 1
+    assert payload["wildcard_dns"]["checked"] is False
+    assert {candidate["status"] for candidate in payload["candidates"]} == {"accepted", "rejected"}
+    assert {result["fqdn"] for result in payload["results"]} == {"www.example.com", "api.example.com"}
+    assert "subdomain_duplicate_candidate" in {finding["id"] for finding in payload["findings"]}
+    assert "subdomain_external_cname" in {finding["id"] for finding in payload["findings"]}
+    assert all(not domain.startswith("inspectra-wildcard-") for domain, _ in calls)
+
+
+@pytest.mark.anyio
+async def test_analyze_subdomains_basic_rejects_out_of_scope_candidates(monkeypatch):
+    monkeypatch.setattr(runner, "query_dns_record", lambda domain, record_type, timeout: ([], []))
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/subdomains-basic",
+            json={
+                "root_domain": "example.com",
+                "subdomains": ["api.evil.com", "*.example.com", "https://api.example.com", "127.0.0.1"],
+                "timeout_seconds": 1,
+                "wildcard_checks": 0,
+            },
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["summary"]["candidates_accepted"] == 0
+    assert payload["summary"]["candidates_rejected"] == 4
+    assert all(candidate["status"] == "rejected" for candidate in payload["candidates"])
+    assert "subdomain_candidate_rejected" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_subdomains_basic_detects_private_ips_and_dns_errors(monkeypatch):
+    def fake_query(domain: str, record_type: str, timeout: float):
+        if record_type == "A":
+            return ["192.168.1.10"], []
+        if record_type == "AAAA":
+            return [], ["AAAA query via 127.0.0.53 failed safely: TimeoutError."]
+        return [], []
+
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/subdomains-basic",
+            json={"root_domain": "example.com", "subdomains": ["admin"], "timeout_seconds": 1, "wildcard_checks": 0},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["summary"]["private_ip_count"] == 1
+    assert payload["results"][0]["private_or_reserved_ip_detected"] is True
+    assert payload["errors"]
+    assert "subdomain_private_or_reserved_ip" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_subdomains_basic_reports_wildcard_dns_possible(monkeypatch):
+    def fake_query(domain: str, record_type: str, timeout: float):
+        if domain.startswith("inspectra-wildcard-") and record_type == "A":
+            return ["93.184.216.34"], []
+        return [], []
+
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/subdomains-basic",
+            json={"root_domain": "example.com", "subdomains": ["www"], "timeout_seconds": 1, "wildcard_checks": 2},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["wildcard_dns"]["checked"] is True
+    assert payload["wildcard_dns"]["possible"] is True
+    assert payload["wildcard_dns"]["probes_count"] == 2
+    assert "subdomain_wildcard_dns_possible" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_subdomains_basic_reports_wildcard_dns_not_possible(monkeypatch):
+    monkeypatch.setattr(runner, "query_dns_record", lambda domain, record_type, timeout: ([], []))
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/subdomains-basic",
+            json={"root_domain": "example.com", "subdomains": ["www"], "timeout_seconds": 1, "wildcard_checks": 2},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["wildcard_dns"]["checked"] is True
+    assert payload["wildcard_dns"]["possible"] is False
+    assert payload["summary"]["wildcard_dns_possible"] is False
+
+
+@pytest.mark.anyio
+async def test_analyze_subdomains_basic_respects_max_candidates():
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/subdomains-basic",
+            json={"root_domain": "example.com", "subdomains": ["www", "api"], "max_candidates": 1, "wildcard_checks": 0},
+        )
+
+    assert response.status_code == 400
+    assert "Too many subdomain candidates" in response.json()["detail"]
+
+
 def test_parse_dns_nameserver_lines_is_ipv4_only_and_bounded():
     lines = [
         "# comment",

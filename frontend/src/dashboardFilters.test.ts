@@ -130,6 +130,18 @@ const jobs: JobListItem[] = [
     updated_at: "2026-05-26T10:16:00Z",
     source_file_deleted_at: null,
     summary: null
+  },
+  {
+    id: "job-subdomains-completed",
+    audit_type: "subdomain_inventory_basic",
+    file_id: null,
+    target_url: null,
+    target_domain: "example.com",
+    status: "completed",
+    created_at: "2026-05-26T10:17:00Z",
+    updated_at: "2026-05-26T10:18:00Z",
+    source_file_deleted_at: null,
+    summary: null
   }
 ];
 
@@ -154,6 +166,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "project_archive_basic", "")).toEqual([jobs[4]]);
     expect(filterJobs(jobs, "all", "web_basic", "")).toEqual([jobs[5]]);
     expect(filterJobs(jobs, "all", "domain_basic", "")).toEqual([jobs[6]]);
+    expect(filterJobs(jobs, "all", "subdomain_inventory_basic", "")).toEqual([jobs[7]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
@@ -164,7 +177,8 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "PROJECT_ARCHIVE")).toEqual([jobs[4]]);
     expect(filterJobs(jobs, "all", "all", "FAILED")).toEqual([jobs[2]]);
     expect(filterJobs(jobs, "all", "all", "EXAMPLE.TEST")).toEqual([jobs[5]]);
-    expect(filterJobs(jobs, "all", "all", "EXAMPLE.COM")).toEqual([jobs[6]]);
+    expect(filterJobs(jobs, "all", "all", "EXAMPLE.COM")).toEqual([jobs[6], jobs[7]]);
+    expect(filterJobs(jobs, "all", "all", "SUBDOMAIN_INVENTORY")).toEqual([jobs[7]]);
   });
 
   it("builds dashboard metrics from current files and jobs", () => {
@@ -174,8 +188,8 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 7,
-      completedJobs: 4,
+      totalJobs: 8,
+      completedJobs: 5,
       failedJobs: 1,
       activeJobs: 2
     });

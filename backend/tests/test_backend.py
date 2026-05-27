@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from app.config import load_settings
-from app.domain_security import normalize_domain
+from app.domain_security import normalize_domain, normalize_subdomain_candidate
 from app.main import app
 from app.models import JobRecord
 from app.reporting import markdown_block_value, markdown_inline_value
@@ -23,8 +23,10 @@ from app.services import (
     ManifestAuditService,
     PdfAuditService,
     ProjectArchiveAuditService,
+    SubdomainInventoryAuditService,
     WebAuditService,
     calculate_domain_runner_timeout_seconds,
+    calculate_subdomain_inventory_runner_timeout_seconds,
 )
 from app.storage import FileStore, JobStore
 from app import web_security
@@ -58,6 +60,9 @@ class NoopAuditService:
     async def run_domain_analysis(self, job_id: str) -> None:
         return None
 
+    async def run_subdomain_inventory_analysis(self, job_id: str, candidates: list[str] | None = None) -> None:
+        return None
+
 
 class CapturingWebAuditService:
     def __init__(self) -> None:
@@ -65,6 +70,14 @@ class CapturingWebAuditService:
 
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
         self.calls.append((job_id, request_url))
+
+
+class CapturingSubdomainInventoryAuditService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[str] | None]] = []
+
+    async def run_subdomain_inventory_analysis(self, job_id: str, candidates: list[str] | None = None) -> None:
+        self.calls.append((job_id, candidates))
 
 
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
@@ -85,6 +98,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
+    app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
 
 
 @pytest.mark.anyio
@@ -787,11 +801,126 @@ async def test_domain_basic_audit_rejects_invalid_domains(monkeypatch, tmp_path)
     assert local_response.status_code == 400
 
 
+@pytest.mark.anyio
+async def test_subdomain_inventory_audit_job_creation_and_list(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    service = CapturingSubdomainInventoryAuditService()
+    app.state.subdomain_inventory_audits = service
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/subdomains/basic",
+            json={
+                "root_domain": "Example.COM",
+                "subdomains": ["www", "API.Example.COM"],
+                "authorization_confirmed": True,
+            },
+        )
+        list_response = await client.get("/jobs")
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["audit_type"] == "subdomain_inventory_basic"
+    assert payload["file_id"] is None
+    assert payload["target_domain"] == "example.com"
+    assert list_response.json()[0]["target_domain"] == "example.com"
+    assert service.calls == [(payload["id"], ["www", "API.Example.COM"])]
+
+
+@pytest.mark.anyio
+async def test_subdomain_inventory_audit_requires_authorization(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.subdomain_inventory_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/audits/subdomains/basic",
+            json={"root_domain": "example.com", "subdomains": ["www"], "authorization_confirmed": False},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Authorization confirmation is required."
+
+
+@pytest.mark.anyio
+async def test_subdomain_inventory_audit_rejects_bad_root_and_candidate_lists(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_SUBDOMAIN_MAX_CANDIDATES", "2")
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.subdomain_inventory_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        bad_root = await client.post(
+            "/audits/subdomains/basic",
+            json={"root_domain": "https://example.com", "subdomains": ["www"], "authorization_confirmed": True},
+        )
+        empty_list = await client.post(
+            "/audits/subdomains/basic",
+            json={"root_domain": "example.com", "subdomains": [], "authorization_confirmed": True},
+        )
+        too_many = await client.post(
+            "/audits/subdomains/basic",
+            json={"root_domain": "example.com", "subdomains": ["www", "api", "cdn"], "authorization_confirmed": True},
+        )
+
+    assert bad_root.status_code == 400
+    assert empty_list.status_code == 400
+    assert too_many.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_subdomain_inventory_audit_rejects_invalid_candidates(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.subdomain_inventory_audits = NoopAuditService()
+    bad_candidates = [
+        "api.evil.com",
+        "*.example.com",
+        "https://api.example.com",
+        "api.example.com/path",
+        "api.example.com?x=1",
+        "127.0.0.1",
+        "bad candidate",
+    ]
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [
+            await client.post(
+                "/audits/subdomains/basic",
+                json={"root_domain": "example.com", "subdomains": [candidate], "authorization_confirmed": True},
+            )
+            for candidate in bad_candidates
+        ]
+
+    assert all(response.status_code == 400 for response in responses)
+
+
+@pytest.mark.parametrize(
+    ("root_domain", "candidate", "expected"),
+    [
+        ("example.com", "www", "www.example.com"),
+        ("example.com", "API.Example.COM", "api.example.com"),
+        ("example.com", "täst", "xn--tst-qla.example.com"),
+    ],
+)
+def test_normalize_subdomain_candidate_accepts_labels_and_fqdns(root_domain, candidate, expected):
+    assert normalize_subdomain_candidate(root_domain, candidate) == expected
+
+
 def test_domain_runner_timeout_budget_scales_with_dns_timeout():
     assert calculate_domain_runner_timeout_seconds(5.0) == 190.0
     assert calculate_domain_runner_timeout_seconds(5.0, include_www=False) == 145.0
     assert calculate_domain_runner_timeout_seconds(2.0) > calculate_domain_runner_timeout_seconds(1.0)
     assert calculate_domain_runner_timeout_seconds(0.25) > 10.0
+
+
+def test_subdomain_inventory_runner_timeout_budget_scales_with_dns_timeout_and_candidates():
+    assert calculate_subdomain_inventory_runner_timeout_seconds(5.0, candidate_count=2, wildcard_checks=2) == 190.0
+    assert calculate_subdomain_inventory_runner_timeout_seconds(1.0, candidate_count=4, wildcard_checks=0) > 10.0
+    assert calculate_subdomain_inventory_runner_timeout_seconds(2.0, candidate_count=4, wildcard_checks=1) > calculate_subdomain_inventory_runner_timeout_seconds(1.0, candidate_count=4, wildcard_checks=1)
+    assert calculate_subdomain_inventory_runner_timeout_seconds(1.0, candidate_count=8, wildcard_checks=0) > calculate_subdomain_inventory_runner_timeout_seconds(1.0, candidate_count=1, wildcard_checks=0)
 
 
 @pytest.mark.parametrize(
@@ -1218,6 +1347,35 @@ async def test_export_domain_job_all_formats(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_export_subdomain_inventory_job_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_subdomain_inventory_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "subdomain_inventory_basic" in responses["markdown"].text
+    assert "Subdomain Inventory Metrics" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/targetDomain") == "example.com"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -1378,14 +1536,14 @@ async def test_export_sbom_for_project_archive_job(monkeypatch, tmp_path):
 async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 26, tzinfo=timezone.utc)
-    for index, audit_type in enumerate(("pdf_basic", "image_basic", "archive_basic", "web_basic", "domain_basic"), start=1):
+    for index, audit_type in enumerate(("pdf_basic", "image_basic", "archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic"), start=1):
         app.state.jobs.save(
             JobRecord(
                 id=f"{index}" * 32,
                 audit_type=audit_type,
-                file_id=None if audit_type in {"web_basic", "domain_basic"} else f"{index + 3}" * 32,
+                file_id=None if audit_type in {"web_basic", "domain_basic", "subdomain_inventory_basic"} else f"{index + 3}" * 32,
                 target_url="https://example.com/" if audit_type == "web_basic" else None,
-                target_domain="example.com" if audit_type == "domain_basic" else None,
+                target_domain="example.com" if audit_type in {"domain_basic", "subdomain_inventory_basic"} else None,
                 status="completed",
                 created_at=now,
                 updated_at=now,
@@ -2067,6 +2225,71 @@ def save_domain_export_fixture_job() -> JobRecord:
                 "mx_present": True,
                 "www_resolves": True,
             },
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_subdomain_inventory_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="8" * 32,
+        audit_type="subdomain_inventory_basic",
+        file_id=None,
+        target_domain="example.com",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "subdomain_inventory_basic",
+            "target": {
+                "root_domain": "example.com",
+                "normalized_root_domain": "example.com",
+                "checked_at": now.isoformat(),
+            },
+            "summary": {
+                "candidates_submitted": 3,
+                "candidates_accepted": 2,
+                "candidates_rejected": 1,
+                "resolved_count": 1,
+                "unresolved_count": 1,
+                "cname_count": 1,
+                "private_ip_count": 1,
+                "findings_count": 2,
+                "wildcard_dns_possible": False,
+            },
+            "candidates": [
+                {"input": "www", "fqdn": "www.example.com", "status": "accepted"},
+                {"input": "api.example.com", "fqdn": "api.example.com", "status": "accepted"},
+                {"input": "api.evil.com", "fqdn": None, "status": "rejected", "rejection_reason": "outside root"},
+            ],
+            "results": [
+                {
+                    "fqdn": "www.example.com",
+                    "resolves": True,
+                    "A": ["192.168.1.10"],
+                    "AAAA": [],
+                    "CNAME": ["example.net"],
+                    "private_or_reserved_ip_detected": True,
+                    "errors": [],
+                },
+                {
+                    "fqdn": "api.example.com",
+                    "resolves": False,
+                    "A": [],
+                    "AAAA": [],
+                    "CNAME": [],
+                    "private_or_reserved_ip_detected": False,
+                    "errors": ["A query failed safely."],
+                },
+            ],
+            "wildcard_dns": {"checked": True, "possible": False, "probes_count": 2, "notes": "heuristic", "errors": []},
+            "findings": [
+                {"id": "subdomain_private_or_reserved_ip", "title": "Private IP", "level": "medium"},
+                {"id": "subdomain_external_cname", "title": "External CNAME", "level": "info"},
+            ],
             "errors": [],
         },
     )

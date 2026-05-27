@@ -6,6 +6,7 @@ import { buildImageAuditReport } from "./imageReport";
 import { buildManifestAuditReport } from "./manifestReport";
 import { buildPdfAuditReport } from "./pdfReport";
 import { buildProjectArchiveAuditReport } from "./projectArchiveReport";
+import { buildSubdomainAuditReport } from "./subdomainReport";
 import { buildWebAuditReport } from "./webReport";
 import type { JobRecord } from "./types";
 
@@ -208,5 +209,44 @@ describe("report helpers", () => {
     expect(report.dmarc).toContainEqual({ label: "policy", value: "reject" });
     expect(report.www[0]).toMatchObject({ label: "checked" });
     expect(report.findings[0]).toMatchObject({ id: "domain_caa_absent" });
+  });
+
+  it("normalizes subdomain inventory candidates, DNS results, and findings", () => {
+    const report = buildSubdomainAuditReport({
+      ...baseJob,
+      audit_type: "subdomain_inventory_basic",
+      file_id: null,
+      target_domain: "example.com",
+      result: {
+        analyzer: "subdomain_inventory_basic",
+        target: { normalized_root_domain: "example.com" },
+        summary: { candidates_accepted: 2, resolved_count: 1, findings_count: 1 },
+        candidates: [
+          { input: "www", fqdn: "www.example.com", status: "accepted" },
+          { input: "api.evil.com", status: "rejected", rejection_reason: "outside root" }
+        ],
+        results: [
+          {
+            fqdn: "www.example.com",
+            resolves: true,
+            A: ["93.184.216.34"],
+            AAAA: [],
+            CNAME: ["example.net"],
+            private_or_reserved_ip_detected: false,
+            errors: []
+          }
+        ],
+        wildcard_dns: { checked: true, possible: false, probes_count: 2 },
+        findings: [{ id: "subdomain_external_cname", title: "External CNAME", level: "info" }],
+        errors: []
+      }
+    });
+
+    expect(report.isSubdomainAudit).toBe(true);
+    expect(report.target).toContainEqual({ label: "normalized_root_domain", value: "example.com" });
+    expect(report.candidates[0]).toMatchObject({ input: "www", fqdn: "www.example.com", status: "accepted" });
+    expect(report.candidates[1]).toMatchObject({ status: "rejected", rejectionReason: "outside root" });
+    expect(report.results[0]).toMatchObject({ fqdn: "www.example.com", resolves: true, cname: ["example.net"] });
+    expect(report.findings[0]).toMatchObject({ id: "subdomain_external_cname" });
   });
 });

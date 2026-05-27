@@ -32,6 +32,8 @@ Allowed in this phase:
 - Recording web configuration indicators such as status, redirects, response headers, security headers, cookies, TLS certificate summary, `robots.txt`, and `security.txt`.
 - Running a controlled `domain_basic` DNS baseline audit against one explicitly authorized domain.
 - Recording DNS configuration indicators for bounded `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `CAA`, `SOA`, `_dmarc`, and `www` checks.
+- Running a controlled `subdomain_inventory_basic` audit for explicit subdomain candidates under one authorized root domain.
+- Recording bounded `A`, `AAAA`, and `CNAME` answers plus candidate normalization, private/reserved IP indicators, external CNAME indicators, and wildcard-DNS heuristics for those explicit candidates.
 - Using the local web UI to perform the same API actions.
 
 Tools used in this phase:
@@ -55,6 +57,8 @@ For web baseline audits, Inspectra makes bounded HTTP/HTTPS requests only to the
 
 For domain baseline audits, Inspectra makes bounded DNS queries only for the authorized domain, `_dmarc.<domain>`, and `www.<domain>`. It does not brute-force subdomains, use wordlists, attempt zone transfers, perform reverse DNS sweeps, crawl sites, scan ports, query CVEs, or call reputation APIs. Missing SPF, DMARC, CAA, MX, or `www` records are reported as indicators for manual review, not confirmed vulnerabilities.
 
+For subdomain inventory audits, Inspectra resolves only candidates explicitly supplied by the user under the authorized root domain, plus at most a small configured number of random wildcard-DNS probes. It does not generate candidate permutations, use wordlists, query Certificate Transparency, call third-party APIs, attempt AXFR, crawl, scan ports, use Nmap, or brute-force names. Findings such as private IP responses, external CNAMEs, rejected candidates, or possible wildcard DNS are indicators for manual review.
+
 ## Out of Scope
 
 The MVP does not include:
@@ -64,6 +68,7 @@ The MVP does not include:
 - Network or port scanning.
 - Web crawling.
 - Subdomain brute force or wordlist enumeration.
+- Certificate Transparency subdomain discovery.
 - DNS zone transfer attempts (`AXFR`).
 - Internet-wide enumeration.
 - Brute force checks.
@@ -118,13 +123,15 @@ Web results redact cookie values, sensitive response headers, and common sensiti
 
 Domain audit results can include operational DNS metadata from TXT, SOA, NS, MX, CAA, and related records. TXT values are bounded and obvious `token`, `secret`, `password`, and key-style assignments are redacted best-effort, but DNS records should still be treated as potentially sensitive local result data.
 
+Subdomain inventory results can include hostnames, CNAME targets, IP addresses, and private/internal addressing indicators for explicitly supplied candidates. Treat these results as potentially sensitive inventory data.
+
 ## Container Boundary
 
 External audit tools run in the `audit-tools` container, not on the host and not in the backend container. The MVP also avoids mounting the Docker socket into the backend.
 
 The container boundary reduces host exposure, but it is not a perfect sandbox. Parser bugs in file tooling are still possible, so the tool container is constrained with:
 
-- Internal Compose networking for backend-to-runner traffic; the runner also has a separate egress-capable network for explicit `web_basic` HTTP/HTTPS requests and bounded `domain_basic` DNS queries.
+- Internal Compose networking for backend-to-runner traffic; the runner also has a separate egress-capable network for explicit `web_basic` HTTP/HTTPS requests and bounded `domain_basic`/`subdomain_inventory_basic` DNS queries.
 - Read-only root filesystem.
 - Read-only access to `data/`.
 - Dropped Linux capabilities.
@@ -133,6 +140,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Per-tool command timeouts through `INSPECTRA_TOOL_TIMEOUT_SECONDS`, defaulting to 10 seconds.
 - Web audit timeouts, response byte limits, redirect limits, allowed-port controls, and anti-SSRF checks through `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, `INSPECTRA_WEB_ALLOWED_PORTS`, and `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS`.
 - Domain DNS query timeouts through `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS`; the backend gives the runner a larger calculated call timeout for the full bounded DNS baseline.
+- Subdomain inventory candidate and wildcard-probe limits through `INSPECTRA_SUBDOMAIN_MAX_CANDIDATES` and `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS`.
 - Archive-specific analysis limits for entries, estimated uncompressed size, entry-name length, and listed entries.
 - ZIP central directory metadata limits before detailed ZIP parsing.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.

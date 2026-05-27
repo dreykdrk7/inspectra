@@ -132,6 +132,26 @@ describe("App", () => {
             )
           );
         }
+        if (url.endsWith("/audits/subdomains/basic")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-subdomains-1",
+                audit_type: "subdomain_inventory_basic",
+                file_id: null,
+                target_url: null,
+                target_domain: "example.com",
+                status: "queued",
+                created_at: "2026-05-26T10:08:00Z",
+                updated_at: "2026-05-26T10:08:00Z",
+                source_file_deleted_at: null,
+                result: null,
+                error: null
+              },
+              202
+            )
+          );
+        }
         if (url.endsWith("/jobs")) {
           return Promise.resolve(
             jsonResponse([
@@ -179,6 +199,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Upload File" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Web Audit" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Domain Baseline" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Subdomain Inventory" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Jobs" })).toBeInTheDocument();
 
@@ -264,7 +285,7 @@ describe("App", () => {
     render(<App />);
 
     const inputs = await screen.findAllByPlaceholderText("example.com");
-    const input = inputs[inputs.length - 1];
+    const input = inputs[inputs.length - 2];
     fireEvent.change(input, { target: { value: "example.com" } });
     const checkboxes = screen.getAllByLabelText("Confirmo que tengo autorización para auditar este dominio");
     fireEvent.click(checkboxes[checkboxes.length - 1]);
@@ -277,6 +298,35 @@ describe("App", () => {
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({ domain: "example.com", authorization_confirmed: true })
+        })
+      );
+    });
+  });
+
+  it("starts a subdomain inventory audit from explicit candidates", async () => {
+    render(<App />);
+
+    const rootInputs = await screen.findAllByPlaceholderText("example.com");
+    const rootInput = rootInputs[rootInputs.length - 1];
+    fireEvent.change(rootInput, { target: { value: "example.com" } });
+    const candidateInputs = screen.getAllByPlaceholderText(/api\.example\.com/);
+    const candidatesInput = candidateInputs[candidateInputs.length - 1];
+    fireEvent.change(candidatesInput, { target: { value: "www\napi.example.com" } });
+    const checkboxes = screen.getAllByLabelText("Confirmo que tengo autorización para auditar estos subdominios");
+    fireEvent.click(checkboxes[checkboxes.length - 1]);
+    const buttons = screen.getAllByRole("button", { name: /Analyze subdomains/i });
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/audits/subdomains/basic",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            root_domain: "example.com",
+            subdomains: ["www", "api.example.com"],
+            authorization_confirmed: true
+          })
         })
       );
     });

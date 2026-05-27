@@ -163,6 +163,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_web_sections(result))
     elif job.audit_type == "domain_basic":
         sections.extend(build_domain_sections(result))
+    elif job.audit_type == "subdomain_inventory_basic":
+        sections.extend(build_subdomain_inventory_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -279,6 +281,17 @@ def build_domain_sections(result: dict[str, Any]) -> list[ReportSection]:
     ]
 
 
+def build_subdomain_inventory_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection("Subdomain Target", flatten_mapping(as_dict(result.get("target")))),
+        ReportSection("Subdomain Inventory Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Candidates", flatten_list(result.get("candidates"))),
+        ReportSection("DNS Results", flatten_list(result.get("results"))),
+        ReportSection("Wildcard DNS", flatten_mapping(as_dict(result.get("wildcard_dns")))),
+        ReportSection("Findings", flatten_list(result.get("findings"))),
+    ]
+
+
 def build_summary(job: JobRecord) -> dict[str, Any]:
     result = as_dict(job.result)
     validation = as_dict(result.get("validation"))
@@ -334,6 +347,17 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["caa_present"] = summary.get("caa_present", "N/A")
         data["mx_present"] = summary.get("mx_present", "N/A")
         data["www_resolves"] = summary.get("www_resolves", "N/A")
+    elif job.audit_type == "subdomain_inventory_basic":
+        target = as_dict(result.get("target"))
+        data["root_domain"] = target.get("normalized_root_domain", job.target_domain or "N/A")
+        data["candidates_submitted"] = summary.get("candidates_submitted", "N/A")
+        data["candidates_accepted"] = summary.get("candidates_accepted", "N/A")
+        data["candidates_rejected"] = summary.get("candidates_rejected", "N/A")
+        data["resolved_count"] = summary.get("resolved_count", "N/A")
+        data["unresolved_count"] = summary.get("unresolved_count", "N/A")
+        data["private_ip_count"] = summary.get("private_ip_count", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["wildcard_dns_possible"] = summary.get("wildcard_dns_possible", "N/A")
     return data
 
 

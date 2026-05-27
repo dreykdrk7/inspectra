@@ -13,6 +13,7 @@ AuditType = Literal[
     "project_archive_basic",
     "web_basic",
     "domain_basic",
+    "subdomain_inventory_basic",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 
@@ -71,4 +72,10 @@ class WebAuditRequest(BaseModel):
 
 class DomainAuditRequest(BaseModel):
     domain: str
+    authorization_confirmed: bool = False
+
+
+class SubdomainInventoryRequest(BaseModel):
+    root_domain: str
+    subdomains: list[str]
     authorization_confirmed: bool = False

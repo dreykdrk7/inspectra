@@ -128,6 +128,15 @@ export async function launchDomainBasicAudit(domain: string, authorizationConfir
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function launchSubdomainInventoryAudit(rootDomain: string, subdomains: string[], authorizationConfirmed: boolean): Promise<JobRecord> {
+  const response = await fetch(`${API_BASE_URL}/audits/subdomains/basic`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ root_domain: rootDomain, subdomains, authorization_confirmed: authorizationConfirmed }),
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function listJobs(): Promise<JobListItem[]> {
   const response = await fetch(`${API_BASE_URL}/jobs`);
   return parseJsonResponse<JobListItem[]>(response);
@@ -162,6 +171,7 @@ export const api = {
   launchProjectArchiveAudit,
   launchWebBasicAudit,
   launchDomainBasicAudit,
+  launchSubdomainInventoryAudit,
   listJobs,
   getJob,
   jobExportUrl,

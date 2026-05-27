@@ -4,8 +4,16 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, Resp
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import load_settings
-from app.domain_security import normalize_domain
-from app.models import DeletedFileResponse, DomainAuditRequest, JobListItem, JobRecord, StoredFile, WebAuditRequest
+from app.domain_security import normalize_domain, normalize_subdomain_candidates
+from app.models import (
+    DeletedFileResponse,
+    DomainAuditRequest,
+    JobListItem,
+    JobRecord,
+    StoredFile,
+    SubdomainInventoryRequest,
+    WebAuditRequest,
+)
 from app.reporting import (
     build_report_filename,
     render_html_report,
@@ -21,6 +29,7 @@ from app.services import (
     ManifestAuditService,
     PdfAuditService,
     ProjectArchiveAuditService,
+    SubdomainInventoryAuditService,
     WebAuditService,
 )
 from app.storage import FileStore, JobStore
@@ -44,6 +53,7 @@ async def lifespan(app: FastAPI):
     app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
+    app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
     yield
 
 
@@ -176,6 +186,29 @@ async def launch_domain_basic_audit(request: Request, payload: DomainAuditReques
     normalized_domain = normalize_domain(payload.domain)
     job = request.app.state.jobs.create_domain_job(normalized_domain)
     background_tasks.add_task(request.app.state.domain_audits.run_domain_analysis, job.id)
+    return job
+
+
+@app.post("/audits/subdomains/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_subdomain_inventory_basic_audit(
+    request: Request,
+    payload: SubdomainInventoryRequest,
+    background_tasks: BackgroundTasks,
+) -> JobRecord:
+    if not payload.authorization_confirmed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Authorization confirmation is required.")
+    normalized_root = normalize_domain(payload.root_domain)
+    normalize_subdomain_candidates(
+        normalized_root,
+        payload.subdomains,
+        request.app.state.settings.subdomain_max_candidates,
+    )
+    job = request.app.state.jobs.create_subdomain_inventory_job(normalized_root)
+    background_tasks.add_task(
+        request.app.state.subdomain_inventory_audits.run_subdomain_inventory_analysis,
+        job.id,
+        payload.subdomains,
+    )
     return job
 
 
