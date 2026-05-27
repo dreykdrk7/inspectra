@@ -20,9 +20,12 @@ export type SubdomainCandidate = {
 export type SubdomainResult = {
   fqdn: string;
   resolves: boolean;
+  status: string;
+  skipReason: string | null;
   a: string[];
   aaaa: string[];
   cname: string[];
+  deadlineReached: boolean;
   privateOrReservedIpDetected: boolean;
   errors: string[];
 };
@@ -32,6 +35,9 @@ export type SubdomainAuditReport = {
   analyzer: string | null;
   target: MetadataEntry[];
   summary: MetadataEntry[];
+  limits: MetadataEntry[];
+  truncated: boolean;
+  deadlineReached: boolean;
   candidates: SubdomainCandidate[];
   results: SubdomainResult[];
   wildcardDns: MetadataEntry[];
@@ -46,6 +52,9 @@ export function buildSubdomainAuditReport(job: JobRecord): SubdomainAuditReport 
     analyzer: asString(result?.analyzer),
     target: entriesFromRecord(asRecord(result?.target)),
     summary: entriesFromRecord(asRecord(result?.summary)),
+    limits: entriesFromRecord(asRecord(result?.limits)),
+    truncated: Boolean(asRecord(result?.summary)?.truncated),
+    deadlineReached: Boolean(asRecord(result?.summary)?.deadline_reached),
     candidates: candidatesFromValue(result?.candidates),
     results: resultsFromValue(result?.results),
     wildcardDns: entriesFromRecord(asRecord(result?.wildcard_dns), ["probes"]),
@@ -78,9 +87,12 @@ function resultsFromValue(value: unknown): SubdomainResult[] {
     return {
       fqdn: asString(record?.fqdn) ?? "unknown",
       resolves: Boolean(record?.resolves),
+      status: asString(record?.status) ?? "processed",
+      skipReason: asString(record?.skip_reason),
       a: asStringArray(record?.A),
       aaaa: asStringArray(record?.AAAA),
       cname: asStringArray(record?.CNAME),
+      deadlineReached: Boolean(record?.deadline_reached),
       privateOrReservedIpDetected: Boolean(record?.private_or_reserved_ip_detected),
       errors: asStringArray(record?.errors)
     };

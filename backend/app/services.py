@@ -171,7 +171,6 @@ DOMAIN_DMARC_RECORD_QUERIES = 1
 DOMAIN_WWW_RECORD_QUERIES = 3
 DOMAIN_MAX_NAMESERVERS = 3
 DOMAIN_RUNNER_TIMEOUT_MARGIN_SECONDS = 10.0
-SUBDOMAIN_RECORD_QUERIES_PER_CANDIDATE = 3
 
 
 def calculate_domain_runner_timeout_seconds(dns_timeout_seconds: float, *, include_www: bool = True) -> float:
@@ -183,16 +182,12 @@ def calculate_domain_runner_timeout_seconds(dns_timeout_seconds: float, *, inclu
 
 
 def calculate_subdomain_inventory_runner_timeout_seconds(
-    dns_timeout_seconds: float,
+    global_deadline_seconds: float,
     *,
-    candidate_count: int,
-    wildcard_checks: int,
+    dns_timeout_seconds: float,
 ) -> float:
-    bounded_wildcard_checks = max(0, min(wildcard_checks, 2))
-    query_count = max(1, candidate_count) * SUBDOMAIN_RECORD_QUERIES_PER_CANDIDATE
-    query_count += bounded_wildcard_checks * SUBDOMAIN_RECORD_QUERIES_PER_CANDIDATE
-    worst_case_dns_seconds = query_count * DOMAIN_MAX_NAMESERVERS * dns_timeout_seconds
-    return worst_case_dns_seconds + DOMAIN_RUNNER_TIMEOUT_MARGIN_SECONDS
+    in_flight_dns_margin_seconds = DOMAIN_MAX_NAMESERVERS * dns_timeout_seconds
+    return global_deadline_seconds + in_flight_dns_margin_seconds + DOMAIN_RUNNER_TIMEOUT_MARGIN_SECONDS
 
 
 class DomainAuditService:
@@ -244,11 +239,11 @@ class SubdomainInventoryAuditService:
             "timeout_seconds": self.settings.domain_dns_timeout_seconds,
             "max_candidates": self.settings.subdomain_max_candidates,
             "wildcard_checks": self.settings.subdomain_wildcard_checks,
+            "global_deadline_seconds": self.settings.subdomain_global_deadline_seconds,
         }
         runner_timeout_seconds = calculate_subdomain_inventory_runner_timeout_seconds(
-            self.settings.domain_dns_timeout_seconds,
-            candidate_count=len(candidate_list),
-            wildcard_checks=self.settings.subdomain_wildcard_checks,
+            self.settings.subdomain_global_deadline_seconds,
+            dns_timeout_seconds=self.settings.domain_dns_timeout_seconds,
         )
 
         try:

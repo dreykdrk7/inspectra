@@ -916,11 +916,19 @@ def test_domain_runner_timeout_budget_scales_with_dns_timeout():
     assert calculate_domain_runner_timeout_seconds(0.25) > 10.0
 
 
-def test_subdomain_inventory_runner_timeout_budget_scales_with_dns_timeout_and_candidates():
-    assert calculate_subdomain_inventory_runner_timeout_seconds(5.0, candidate_count=2, wildcard_checks=2) == 190.0
-    assert calculate_subdomain_inventory_runner_timeout_seconds(1.0, candidate_count=4, wildcard_checks=0) > 10.0
-    assert calculate_subdomain_inventory_runner_timeout_seconds(2.0, candidate_count=4, wildcard_checks=1) > calculate_subdomain_inventory_runner_timeout_seconds(1.0, candidate_count=4, wildcard_checks=1)
-    assert calculate_subdomain_inventory_runner_timeout_seconds(1.0, candidate_count=8, wildcard_checks=0) > calculate_subdomain_inventory_runner_timeout_seconds(1.0, candidate_count=1, wildcard_checks=0)
+def test_subdomain_inventory_runner_timeout_uses_global_deadline():
+    assert calculate_subdomain_inventory_runner_timeout_seconds(30.0, dns_timeout_seconds=5.0) == 55.0
+    assert calculate_subdomain_inventory_runner_timeout_seconds(30.0, dns_timeout_seconds=1.0) == 43.0
+    assert calculate_subdomain_inventory_runner_timeout_seconds(120.0, dns_timeout_seconds=5.0) == 145.0
+
+
+def test_subdomain_inventory_global_deadline_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS", "12.5")
+
+    settings = load_settings()
+
+    assert settings.subdomain_global_deadline_seconds == 12.5
 
 
 @pytest.mark.parametrize(
@@ -1370,6 +1378,8 @@ async def test_export_subdomain_inventory_job_all_formats(monkeypatch, tmp_path)
         assert response.headers["content-type"].startswith(content_type)
         assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
     assert "subdomain_inventory_basic" in responses["markdown"].text
+    assert "Subdomain Inventory Limits" in responses["markdown"].text
+    assert "global_deadline_reached" in responses["markdown"].text
     assert "Subdomain Inventory Metrics" in responses["html"].text
     assert ElementTree.fromstring(responses["xml"].text).findtext("./job/targetDomain") == "example.com"
     assert responses["pdf"].content.startswith(b"%PDF")
@@ -2250,25 +2260,37 @@ def save_subdomain_inventory_export_fixture_job() -> JobRecord:
                 "checked_at": now.isoformat(),
             },
             "summary": {
-                "candidates_submitted": 3,
-                "candidates_accepted": 2,
+                "candidates_submitted": 4,
+                "candidates_accepted": 3,
                 "candidates_rejected": 1,
+                "candidates_processed": 2,
+                "candidates_pending": 1,
                 "resolved_count": 1,
                 "unresolved_count": 1,
                 "cname_count": 1,
                 "private_ip_count": 1,
-                "findings_count": 2,
+                "findings_count": 3,
                 "wildcard_dns_possible": False,
+                "truncated": True,
+                "deadline_reached": True,
+            },
+            "limits": {
+                "global_deadline_seconds": 30,
+                "dns_timeout_seconds": 5,
+                "max_candidates": 100,
+                "wildcard_checks": 2,
             },
             "candidates": [
                 {"input": "www", "fqdn": "www.example.com", "status": "accepted"},
                 {"input": "api.example.com", "fqdn": "api.example.com", "status": "accepted"},
+                {"input": "cdn", "fqdn": "cdn.example.com", "status": "accepted"},
                 {"input": "api.evil.com", "fqdn": None, "status": "rejected", "rejection_reason": "outside root"},
             ],
             "results": [
                 {
                     "fqdn": "www.example.com",
                     "resolves": True,
+                    "status": "processed",
                     "A": ["192.168.1.10"],
                     "AAAA": [],
                     "CNAME": ["example.net"],
@@ -2278,18 +2300,33 @@ def save_subdomain_inventory_export_fixture_job() -> JobRecord:
                 {
                     "fqdn": "api.example.com",
                     "resolves": False,
+                    "status": "processed",
                     "A": [],
                     "AAAA": [],
                     "CNAME": [],
                     "private_or_reserved_ip_detected": False,
                     "errors": ["A query failed safely."],
                 },
+                {
+                    "fqdn": "cdn.example.com",
+                    "resolves": False,
+                    "status": "skipped",
+                    "skip_reason": "global_deadline_reached",
+                    "deadline_reached": True,
+                    "A": [],
+                    "AAAA": [],
+                    "CNAME": [],
+                    "private_or_reserved_ip_detected": False,
+                    "errors": ["Skipped because the global subdomain inventory deadline was reached."],
+                },
             ],
             "wildcard_dns": {"checked": True, "possible": False, "probes_count": 2, "notes": "heuristic", "errors": []},
             "findings": [
                 {"id": "subdomain_private_or_reserved_ip", "title": "Private IP", "level": "medium"},
                 {"id": "subdomain_external_cname", "title": "External CNAME", "level": "info"},
+                {"id": "subdomain_global_deadline_reached", "title": "Deadline reached", "level": "low"},
             ],
+            "truncation_reason": "global_deadline_reached",
             "errors": [],
         },
     )

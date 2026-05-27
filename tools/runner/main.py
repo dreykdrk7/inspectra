@@ -17,7 +17,7 @@ import struct
 import subprocess
 import tarfile
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from uuid import uuid4
 import zipfile
@@ -77,6 +77,7 @@ class SubdomainInventoryAnalysisRequest(BaseModel):
     timeout_seconds: float | None = None
     max_candidates: int | None = None
     wildcard_checks: int | None = None
+    global_deadline_seconds: float | None = None
 
 
 def positive_float_from_env(name: str, default: float) -> float:
@@ -181,6 +182,7 @@ WEB_ALLOWED_PORTS = ports_from_env("INSPECTRA_WEB_ALLOWED_PORTS", (80, 443))
 DOMAIN_DNS_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS", 5.0)
 SUBDOMAIN_MAX_CANDIDATES = positive_int_from_env("INSPECTRA_SUBDOMAIN_MAX_CANDIDATES", 100)
 SUBDOMAIN_WILDCARD_CHECKS = non_negative_int_from_env("INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS", 2)
+SUBDOMAIN_GLOBAL_DEADLINE_SECONDS = positive_float_from_env("INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS", 30.0)
 ZIP_EOCD_SIGNATURE = b"PK\x05\x06"
 ZIP_EOCD_MIN_SIZE = 22
 ZIP_EOCD_MAX_COMMENT_SIZE = 65_535
@@ -555,15 +557,22 @@ async def analyze_domain_basic(request: DomainBasicAnalysisRequest) -> dict[str,
 
 @app.post("/analyze/subdomains-basic")
 async def analyze_subdomains_basic(request: SubdomainInventoryAnalysisRequest) -> dict[str, Any]:
-    timeout_seconds = request.timeout_seconds or DOMAIN_DNS_TIMEOUT_SECONDS
+    timeout_seconds = DOMAIN_DNS_TIMEOUT_SECONDS if request.timeout_seconds is None else request.timeout_seconds
     if timeout_seconds <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain DNS timeout must be positive.")
-    max_candidates = request.max_candidates or SUBDOMAIN_MAX_CANDIDATES
+    max_candidates = SUBDOMAIN_MAX_CANDIDATES if request.max_candidates is None else request.max_candidates
     wildcard_checks = SUBDOMAIN_WILDCARD_CHECKS if request.wildcard_checks is None else request.wildcard_checks
+    global_deadline_seconds = (
+        SUBDOMAIN_GLOBAL_DEADLINE_SECONDS
+        if request.global_deadline_seconds is None
+        else request.global_deadline_seconds
+    )
     if max_candidates <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Subdomain candidate limit must be positive.")
     if wildcard_checks < 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Wildcard check count must not be negative.")
+    if global_deadline_seconds <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Subdomain global deadline must be positive.")
     if len(request.subdomains) > max_candidates:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -576,6 +585,7 @@ async def analyze_subdomains_basic(request: SubdomainInventoryAnalysisRequest) -
         timeout_seconds=timeout_seconds,
         max_candidates=max_candidates,
         wildcard_checks=wildcard_checks,
+        global_deadline_seconds=global_deadline_seconds,
     )
 
 
@@ -1366,8 +1376,14 @@ def analyze_subdomains_basic_target(
     timeout_seconds: float,
     max_candidates: int,
     wildcard_checks: int,
+    global_deadline_seconds: float,
 ) -> dict[str, Any]:
     checked_at = datetime.now(timezone.utc).isoformat()
+    started_at = time.monotonic()
+
+    def deadline_reached() -> bool:
+        return time.monotonic() - started_at >= global_deadline_seconds
+
     candidates, accepted_fqdns, candidate_findings = normalize_subdomain_candidate_list(
         root_domain,
         raw_candidates,
@@ -1377,14 +1393,40 @@ def analyze_subdomains_basic_target(
     errors: list[str] = []
     findings: list[dict[str, str]] = list(candidate_findings)
 
+    deadline_hit = False
+    processed_fqdns: set[str] = set()
+
     for fqdn in accepted_fqdns:
-        result, result_errors, result_findings = resolve_subdomain_candidate(root_domain, fqdn, timeout_seconds)
+        if deadline_reached():
+            deadline_hit = True
+            break
+        result, result_errors, result_findings = resolve_subdomain_candidate(
+            root_domain,
+            fqdn,
+            timeout_seconds,
+            deadline_reached=deadline_reached,
+        )
         results.append(result)
+        processed_fqdns.add(fqdn)
         errors.extend(result_errors)
         findings.extend(result_findings)
+        if result.get("deadline_reached"):
+            deadline_hit = True
+            break
 
-    wildcard_dns = analyze_subdomain_wildcard_dns(root_domain, timeout_seconds=timeout_seconds, wildcard_checks=wildcard_checks)
+    pending_fqdns = [fqdn for fqdn in accepted_fqdns if fqdn not in processed_fqdns]
+    if deadline_hit:
+        results.extend(make_skipped_subdomain_result(fqdn) for fqdn in pending_fqdns)
+
+    wildcard_dns = analyze_subdomain_wildcard_dns(
+        root_domain,
+        timeout_seconds=timeout_seconds,
+        wildcard_checks=wildcard_checks,
+        deadline_reached=deadline_reached,
+    )
     errors.extend(as_string_list(wildcard_dns.get("errors")))
+    if wildcard_dns.get("deadline_reached"):
+        deadline_hit = True
     if wildcard_dns.get("possible"):
         findings.append(
             make_finding(
@@ -1397,22 +1439,50 @@ def analyze_subdomains_basic_target(
             )
         )
 
-    accepted_count = len(accepted_fqdns)
-    unresolved_count = sum(1 for result in results if not result.get("resolves"))
-    if accepted_count >= 3 and unresolved_count / accepted_count >= 0.5:
+    processed_results = [result for result in results if result.get("status") != "skipped"]
+    unresolved_count = sum(1 for result in processed_results if not result.get("resolves"))
+    if len(processed_results) >= 3 and unresolved_count / len(processed_results) >= 0.5:
         findings.append(
             make_finding(
                 "subdomain_many_candidates_unresolved",
                 "Many submitted candidates did not resolve",
                 "info",
                 "At least half of the accepted candidates did not return A, AAAA, or CNAME records.",
-                f"{unresolved_count} of {accepted_count} accepted candidates unresolved",
+                f"{unresolved_count} of {len(processed_results)} processed candidates unresolved",
                 "Confirm the submitted inventory is current and authorized.",
             )
         )
 
+    candidate_limit_reached = len(raw_candidates) > max_candidates
+    truncated = deadline_hit or candidate_limit_reached
+    if deadline_hit:
+        findings.append(
+            make_finding(
+                "subdomain_global_deadline_reached",
+                "Subdomain inventory stopped by global deadline",
+                "low",
+                "The controlled inventory returned partial results because the configured global deadline was reached.",
+                f"deadline: {global_deadline_seconds}s; processed: {len(processed_results)}; pending: {len(pending_fqdns)}",
+                "Reduce candidate count, review DNS resolver responsiveness, or increase the deadline only in authorized controlled environments.",
+            )
+        )
+
     findings = dedupe_findings(findings)
-    summary = build_subdomain_inventory_summary(raw_candidates, candidates, results, findings, wildcard_dns)
+    summary = build_subdomain_inventory_summary(
+        raw_candidates,
+        candidates,
+        results,
+        findings,
+        wildcard_dns,
+        truncated=truncated,
+        deadline_reached=deadline_hit,
+    )
+    limits = {
+        "global_deadline_seconds": global_deadline_seconds,
+        "dns_timeout_seconds": timeout_seconds,
+        "max_candidates": max_candidates,
+        "wildcard_checks": max(0, min(wildcard_checks, 2)),
+    }
     return {
         "analyzer": "subdomain_inventory_basic",
         "target": {
@@ -1421,6 +1491,8 @@ def analyze_subdomains_basic_target(
             "checked_at": checked_at,
         },
         "summary": summary,
+        "limits": limits,
+        "truncation_reason": "global_deadline_reached" if deadline_hit else ("candidate_limit_reached" if candidate_limit_reached else None),
         "candidates": candidates,
         "results": results,
         "wildcard_dns": wildcard_dns,
@@ -1537,10 +1609,17 @@ def normalize_subdomain_candidate(root_domain: str, raw_candidate: str) -> str:
     return normalized
 
 
-def resolve_subdomain_candidate(root_domain: str, fqdn: str, timeout_seconds: float) -> tuple[dict[str, Any], list[str], list[dict[str, str]]]:
+def resolve_subdomain_candidate(
+    root_domain: str,
+    fqdn: str,
+    timeout_seconds: float,
+    *,
+    deadline_reached: Callable[[], bool] | None = None,
+) -> tuple[dict[str, Any], list[str], list[dict[str, str]]]:
     result: dict[str, Any] = {
         "fqdn": fqdn,
         "resolves": False,
+        "status": "processed",
         "A": [],
         "AAAA": [],
         "CNAME": [],
@@ -1550,6 +1629,12 @@ def resolve_subdomain_candidate(root_domain: str, fqdn: str, timeout_seconds: fl
     errors: list[str] = []
     findings: list[dict[str, str]] = []
     for record_type in ("A", "AAAA", "CNAME"):
+        if deadline_reached is not None and deadline_reached():
+            result["status"] = "partial"
+            result["deadline_reached"] = True
+            result["skip_reason"] = "global_deadline_reached"
+            errors.append(f"{record_type} query skipped because the global subdomain inventory deadline was reached.")
+            break
         records, record_errors = query_dns_record(fqdn, record_type, timeout_seconds)
         result[record_type] = records[:DNS_MAX_RECORDS_PER_TYPE]
         errors.extend(record_errors)
@@ -1589,17 +1674,76 @@ def resolve_subdomain_candidate(root_domain: str, fqdn: str, timeout_seconds: fl
     return result, errors, findings
 
 
-def analyze_subdomain_wildcard_dns(root_domain: str, *, timeout_seconds: float, wildcard_checks: int) -> dict[str, Any]:
+def make_skipped_subdomain_result(fqdn: str) -> dict[str, Any]:
+    return {
+        "fqdn": fqdn,
+        "resolves": False,
+        "status": "skipped",
+        "skip_reason": "global_deadline_reached",
+        "deadline_reached": True,
+        "A": [],
+        "AAAA": [],
+        "CNAME": [],
+        "private_or_reserved_ip_detected": False,
+        "errors": ["Skipped because the global subdomain inventory deadline was reached."],
+    }
+
+
+def analyze_subdomain_wildcard_dns(
+    root_domain: str,
+    *,
+    timeout_seconds: float,
+    wildcard_checks: int,
+    deadline_reached: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     checks = max(0, min(wildcard_checks, 2))
     if checks == 0:
         return {"checked": False, "possible": False, "probes_count": 0, "notes": "Wildcard DNS check disabled.", "errors": []}
+    if deadline_reached is not None and deadline_reached():
+        return {
+            "checked": False,
+            "possible": False,
+            "probes_count": 0,
+            "notes": "Wildcard DNS skipped because the global deadline was reached.",
+            "skipped_reason": "global_deadline_reached",
+            "deadline_reached": True,
+            "errors": [],
+        }
 
     probes: list[dict[str, Any]] = []
     errors: list[str] = []
     for _ in range(checks):
+        if deadline_reached is not None and deadline_reached():
+            return {
+                "checked": bool(probes),
+                "possible": False,
+                "partial": bool(probes),
+                "deadline_reached": True,
+                "skipped_reason": "global_deadline_reached",
+                "probes_count": len(probes),
+                "probes": probes,
+                "notes": "Wildcard DNS check stopped because the global deadline was reached.",
+                "errors": dedupe_strings(errors),
+            }
         probe_name = f"inspectra-wildcard-{uuid4().hex[:12]}.{root_domain}"
         probe: dict[str, Any] = {"fqdn": probe_name, "resolves": False, "A": [], "AAAA": [], "CNAME": []}
         for record_type in ("A", "AAAA", "CNAME"):
+            if deadline_reached is not None and deadline_reached():
+                probe["deadline_reached"] = True
+                probe["skip_reason"] = "global_deadline_reached"
+                errors.append(f"{record_type} wildcard query skipped because the global subdomain inventory deadline was reached.")
+                probes.append(probe)
+                return {
+                    "checked": True,
+                    "possible": False,
+                    "partial": True,
+                    "deadline_reached": True,
+                    "skipped_reason": "global_deadline_reached",
+                    "probes_count": len(probes),
+                    "probes": probes,
+                    "notes": "Wildcard DNS check stopped because the global deadline was reached.",
+                    "errors": dedupe_strings(errors),
+                }
             records, record_errors = query_dns_record(probe_name, record_type, timeout_seconds)
             probe[record_type] = records[:DNS_MAX_RECORDS_PER_TYPE]
             errors.extend(record_errors)
@@ -1623,22 +1767,32 @@ def build_subdomain_inventory_summary(
     results: list[dict[str, Any]],
     findings: list[dict[str, str]],
     wildcard_dns: dict[str, Any],
+    *,
+    truncated: bool,
+    deadline_reached: bool,
 ) -> dict[str, Any]:
     accepted = [candidate for candidate in candidates if candidate.get("status") == "accepted"]
     rejected = [candidate for candidate in candidates if candidate.get("status") == "rejected"]
-    resolved_count = sum(1 for result in results if result.get("resolves"))
-    cname_count = sum(1 for result in results if result.get("CNAME"))
-    private_ip_count = sum(1 for result in results if result.get("private_or_reserved_ip_detected"))
+    processed_results = [result for result in results if result.get("status") != "skipped"]
+    resolved_count = sum(1 for result in processed_results if result.get("resolves"))
+    cname_count = sum(1 for result in processed_results if result.get("CNAME"))
+    private_ip_count = sum(1 for result in processed_results if result.get("private_or_reserved_ip_detected"))
+    processed_count = len(processed_results)
+    pending_count = max(0, len(accepted) - processed_count)
     return {
         "candidates_submitted": len(raw_candidates),
         "candidates_accepted": len(accepted),
         "candidates_rejected": len(rejected),
+        "candidates_processed": processed_count,
+        "candidates_pending": pending_count,
         "resolved_count": resolved_count,
-        "unresolved_count": max(0, len(accepted) - resolved_count),
+        "unresolved_count": max(0, processed_count - resolved_count),
         "cname_count": cname_count,
         "private_ip_count": private_ip_count,
         "findings_count": len(findings),
         "wildcard_dns_possible": bool(wildcard_dns.get("possible")),
+        "truncated": truncated,
+        "deadline_reached": deadline_reached,
     }
 
 

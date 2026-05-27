@@ -546,6 +546,8 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["private_ip_count"] = manifest_summary.get("private_ip_count")
             summary["findings_count"] = manifest_summary.get("findings_count")
             summary["wildcard_dns_possible"] = manifest_summary.get("wildcard_dns_possible")
+            summary["truncated"] = manifest_summary.get("truncated")
+            summary["deadline_reached"] = manifest_summary.get("deadline_reached")
         return summary
     if record.error:
         return {"error": record.error}

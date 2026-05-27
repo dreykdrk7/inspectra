@@ -13,6 +13,7 @@ DEFAULT_WEB_ALLOWED_PORTS = (80, 443)
 DEFAULT_DOMAIN_DNS_TIMEOUT_SECONDS = 5.0
 DEFAULT_SUBDOMAIN_MAX_CANDIDATES = 100
 DEFAULT_SUBDOMAIN_WILDCARD_CHECKS = 2
+DEFAULT_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class Settings:
     domain_dns_timeout_seconds: float = DEFAULT_DOMAIN_DNS_TIMEOUT_SECONDS
     subdomain_max_candidates: int = DEFAULT_SUBDOMAIN_MAX_CANDIDATES
     subdomain_wildcard_checks: int = DEFAULT_SUBDOMAIN_WILDCARD_CHECKS
+    subdomain_global_deadline_seconds: float = DEFAULT_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS
 
     @property
     def upload_dir(self) -> Path:
@@ -69,6 +71,10 @@ def load_settings() -> Settings:
         "INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS",
         DEFAULT_SUBDOMAIN_WILDCARD_CHECKS,
     )
+    subdomain_global_deadline_seconds = _positive_float_from_env(
+        "INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS",
+        DEFAULT_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -82,6 +88,7 @@ def load_settings() -> Settings:
         domain_dns_timeout_seconds=domain_dns_timeout_seconds,
         subdomain_max_candidates=subdomain_max_candidates,
         subdomain_wildcard_checks=subdomain_wildcard_checks,
+        subdomain_global_deadline_seconds=subdomain_global_deadline_seconds,
     )
 
 

@@ -140,7 +140,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Per-tool command timeouts through `INSPECTRA_TOOL_TIMEOUT_SECONDS`, defaulting to 10 seconds.
 - Web audit timeouts, response byte limits, redirect limits, allowed-port controls, and anti-SSRF checks through `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, `INSPECTRA_WEB_ALLOWED_PORTS`, and `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS`.
 - Domain DNS query timeouts through `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS`; the backend gives the runner a larger calculated call timeout for the full bounded DNS baseline.
-- Subdomain inventory candidate and wildcard-probe limits through `INSPECTRA_SUBDOMAIN_MAX_CANDIDATES` and `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS`.
+- Subdomain inventory candidate, wildcard-probe, and whole-job deadline limits through `INSPECTRA_SUBDOMAIN_MAX_CANDIDATES`, `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS`, and `INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS`. The deadline is a guardrail for availability and can produce partial/truncated results.
 - Archive-specific analysis limits for entries, estimated uncompressed size, entry-name length, and listed entries.
 - ZIP central directory metadata limits before detailed ZIP parsing.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.

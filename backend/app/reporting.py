@@ -285,6 +285,7 @@ def build_subdomain_inventory_sections(result: dict[str, Any]) -> list[ReportSec
     return [
         ReportSection("Subdomain Target", flatten_mapping(as_dict(result.get("target")))),
         ReportSection("Subdomain Inventory Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Subdomain Inventory Limits", flatten_mapping(as_dict(result.get("limits")))),
         ReportSection("Candidates", flatten_list(result.get("candidates"))),
         ReportSection("DNS Results", flatten_list(result.get("results"))),
         ReportSection("Wildcard DNS", flatten_mapping(as_dict(result.get("wildcard_dns")))),

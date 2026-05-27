@@ -1045,6 +1045,9 @@ async def test_analyze_subdomains_basic_normalizes_deduplicates_and_resolves(mon
     assert payload["summary"]["candidates_rejected"] == 1
     assert payload["summary"]["resolved_count"] == 1
     assert payload["summary"]["cname_count"] == 1
+    assert payload["summary"]["truncated"] is False
+    assert payload["summary"]["deadline_reached"] is False
+    assert payload["limits"]["global_deadline_seconds"] == runner.SUBDOMAIN_GLOBAL_DEADLINE_SECONDS
     assert payload["wildcard_dns"]["checked"] is False
     assert {candidate["status"] for candidate in payload["candidates"]} == {"accepted", "rejected"}
     assert {result["fqdn"] for result in payload["results"]} == {"www.example.com", "api.example.com"}
@@ -1104,6 +1107,111 @@ async def test_analyze_subdomains_basic_detects_private_ips_and_dns_errors(monke
 
 
 @pytest.mark.anyio
+async def test_analyze_subdomains_basic_global_deadline_returns_partial_result(monkeypatch):
+    class FakeClock:
+        def __init__(self) -> None:
+            self.value = 0.0
+
+        def monotonic(self) -> float:
+            return self.value
+
+        def advance(self, seconds: float) -> None:
+            self.value += seconds
+
+    clock = FakeClock()
+    calls: list[tuple[str, str]] = []
+
+    def fake_query(domain: str, record_type: str, timeout: float):
+        calls.append((domain, record_type))
+        if domain == "www.example.com" and record_type == "A":
+            clock.advance(2.0)
+            return ["93.184.216.34"], []
+        return [], []
+
+    monkeypatch.setattr(runner.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/subdomains-basic",
+            json={
+                "root_domain": "example.com",
+                "subdomains": ["www", "api", "cdn"],
+                "timeout_seconds": 1,
+                "wildcard_checks": 2,
+                "global_deadline_seconds": 1,
+            },
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["summary"]["truncated"] is True
+    assert payload["summary"]["deadline_reached"] is True
+    assert payload["summary"]["candidates_processed"] == 1
+    assert payload["summary"]["candidates_pending"] == 2
+    assert payload["limits"]["global_deadline_seconds"] == 1
+    assert payload["wildcard_dns"]["checked"] is False
+    assert payload["wildcard_dns"]["skipped_reason"] == "global_deadline_reached"
+    assert {result["fqdn"]: result["status"] for result in payload["results"]} == {
+        "www.example.com": "partial",
+        "api.example.com": "skipped",
+        "cdn.example.com": "skipped",
+    }
+    assert "subdomain_global_deadline_reached" in {finding["id"] for finding in payload["findings"]}
+    assert calls == [("www.example.com", "A")]
+
+
+@pytest.mark.anyio
+async def test_analyze_subdomains_basic_global_deadline_cuts_wildcard_probe(monkeypatch):
+    class FakeClock:
+        def __init__(self) -> None:
+            self.value = 0.0
+
+        def monotonic(self) -> float:
+            return self.value
+
+        def advance(self, seconds: float) -> None:
+            self.value += seconds
+
+    clock = FakeClock()
+    calls: list[tuple[str, str]] = []
+
+    def fake_query(domain: str, record_type: str, timeout: float):
+        calls.append((domain, record_type))
+        if domain.startswith("inspectra-wildcard-") and record_type == "A":
+            clock.advance(2.0)
+            return ["93.184.216.34"], []
+        return [], []
+
+    monkeypatch.setattr(runner.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/subdomains-basic",
+            json={
+                "root_domain": "example.com",
+                "subdomains": ["www"],
+                "timeout_seconds": 1,
+                "wildcard_checks": 2,
+                "global_deadline_seconds": 1,
+            },
+        )
+
+    payload = response.json()
+    wildcard_calls = [call for call in calls if call[0].startswith("inspectra-wildcard-")]
+    assert response.status_code == 200
+    assert payload["summary"]["truncated"] is True
+    assert payload["summary"]["deadline_reached"] is True
+    assert payload["wildcard_dns"]["checked"] is True
+    assert payload["wildcard_dns"]["partial"] is True
+    assert payload["wildcard_dns"]["deadline_reached"] is True
+    assert len(wildcard_calls) == 1
+
+
+@pytest.mark.anyio
 async def test_analyze_subdomains_basic_reports_wildcard_dns_possible(monkeypatch):
     def fake_query(domain: str, record_type: str, timeout: float):
         if domain.startswith("inspectra-wildcard-") and record_type == "A":
@@ -1154,9 +1262,15 @@ async def test_analyze_subdomains_basic_respects_max_candidates():
             "/analyze/subdomains-basic",
             json={"root_domain": "example.com", "subdomains": ["www", "api"], "max_candidates": 1, "wildcard_checks": 0},
         )
+        deadline_response = await client.post(
+            "/analyze/subdomains-basic",
+            json={"root_domain": "example.com", "subdomains": ["www"], "global_deadline_seconds": 0},
+        )
 
     assert response.status_code == 400
     assert "Too many subdomain candidates" in response.json()["detail"]
+    assert deadline_response.status_code == 400
+    assert "global deadline" in deadline_response.json()["detail"]
 
 
 def test_parse_dns_nameserver_lines_is_ipv4_only_and_bounded():

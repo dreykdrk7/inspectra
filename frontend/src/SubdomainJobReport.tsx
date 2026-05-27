@@ -35,12 +35,21 @@ export function SubdomainJobReport({ job }: { job: JobRecord }) {
         </dl>
       </section>
 
+      {report.truncated || report.deadlineReached ? (
+        <div className="alert" role="status">
+          Analysis truncated by the configured global deadline. Review skipped candidates or rerun with fewer candidates.
+        </div>
+      ) : null}
+
       <div className="report-grid">
         <ReportSection title="Target">
           <MetadataList entries={report.target} empty="No subdomain target metadata returned yet." monoValues />
         </ReportSection>
         <ReportSection title="Summary">
           <MetadataList entries={report.summary} empty="No subdomain inventory summary returned yet." />
+        </ReportSection>
+        <ReportSection title="Limits">
+          <MetadataList entries={report.limits} empty="No subdomain inventory limits returned yet." />
         </ReportSection>
       </div>
 
@@ -86,11 +95,14 @@ export function SubdomainJobReport({ job }: { job: JobRecord }) {
               <article className="tool-card" key={result.fqdn}>
                 <div className="tool-card-header">
                   <strong className="mono">{result.fqdn}</strong>
-                  <span className={`status-pill ${result.resolves ? "completed" : "queued"}`}>
-                    {result.resolves ? "resolves" : "unresolved"}
+                  <span className={`status-pill ${result.resolves ? "completed" : result.status === "skipped" ? "failed" : "queued"}`}>
+                    {result.status === "skipped" ? "skipped" : result.resolves ? "resolves" : result.status === "partial" ? "partial" : "unresolved"}
                   </span>
                 </div>
                 <dl className="summary-list">
+                  <MetadataRow label="Status" value={result.status} />
+                  {result.skipReason ? <MetadataRow label="Skip reason" value={result.skipReason} /> : null}
+                  {result.deadlineReached ? <MetadataRow label="Deadline reached" value="true" /> : null}
                   <MetadataRow label="A" value={result.a.length ? result.a.join(", ") : "N/A"} mono />
                   <MetadataRow label="AAAA" value={result.aaaa.length ? result.aaaa.join(", ") : "N/A"} mono />
                   <MetadataRow label="CNAME" value={result.cname.length ? result.cname.join(", ") : "N/A"} mono />

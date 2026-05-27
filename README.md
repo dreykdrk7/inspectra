@@ -106,6 +106,7 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS` | backend, audit-tools | `5` | Timeout for each bounded DNS query/resolver attempt in the domain baseline audit. The backend calculates a larger runner-call timeout from this value so the runner can finish its bounded query set. |
 | `INSPECTRA_SUBDOMAIN_MAX_CANDIDATES` | backend, audit-tools | `100` | Maximum explicitly supplied subdomain candidates accepted for one controlled inventory job. |
 | `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS` | backend, audit-tools | `2` | Maximum random wildcard-DNS probe labels checked under the root domain. Set to `0` to disable the heuristic. |
+| `INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS` | backend, audit-tools | `30` | Global runner deadline for one subdomain inventory job. The backend runner-call timeout is this deadline plus one in-flight DNS query budget and a small safety margin. |
 | `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Browser-facing backend URL used by the React app. |
 
 The `audit-tools` container is attached to the internal Inspectra network and to a separate egress-capable network so `web_basic` can make authorized HTTP/HTTPS requests and `domain_basic`/`subdomain_inventory_basic` can make bounded DNS queries. The runner still does not publish a public port.
@@ -272,6 +273,8 @@ curl -sS -X POST http://localhost:8000/audits/subdomains/basic \
 This creates a `subdomain_inventory_basic` job. The root domain must pass the same defensive validation as `domain_basic`. Candidates must be provided explicitly as relative labels such as `api` or FQDNs inside the root domain such as `api.example.com`. Inspectra normalizes, deduplicates, and resolves only accepted candidates for `A`, `AAAA`, and `CNAME`.
 
 The inventory rejects URLs, paths, query strings, userinfo, IP literals, wildcards, candidates outside the root domain, empty labels, and invalid names. It does not generate permutations, use wordlists, query Certificate Transparency, call external APIs, attempt AXFR, crawl, scan ports, use Nmap, or perform brute force. A bounded wildcard-DNS heuristic may query up to `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS` random labels under the root domain; this is only an indicator for manual review.
+
+`INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS` caps the whole runner analysis. If the deadline is reached, Inspectra returns a completed but partial result with `truncated`, `deadline_reached`, processed/pending candidate counts, skipped candidates, and an informational finding. Prefer reducing the candidate list or fixing slow DNS resolvers before raising this deadline in authorized lab environments.
 
 ## Read Job Results
 

@@ -220,7 +220,14 @@ describe("report helpers", () => {
       result: {
         analyzer: "subdomain_inventory_basic",
         target: { normalized_root_domain: "example.com" },
-        summary: { candidates_accepted: 2, resolved_count: 1, findings_count: 1 },
+        summary: {
+          candidates_accepted: 2,
+          resolved_count: 1,
+          findings_count: 1,
+          truncated: true,
+          deadline_reached: true
+        },
+        limits: { global_deadline_seconds: 30, max_candidates: 100 },
         candidates: [
           { input: "www", fqdn: "www.example.com", status: "accepted" },
           { input: "api.evil.com", status: "rejected", rejection_reason: "outside root" }
@@ -229,11 +236,24 @@ describe("report helpers", () => {
           {
             fqdn: "www.example.com",
             resolves: true,
+            status: "processed",
             A: ["93.184.216.34"],
             AAAA: [],
             CNAME: ["example.net"],
             private_or_reserved_ip_detected: false,
             errors: []
+          },
+          {
+            fqdn: "api.example.com",
+            resolves: false,
+            status: "skipped",
+            skip_reason: "global_deadline_reached",
+            deadline_reached: true,
+            A: [],
+            AAAA: [],
+            CNAME: [],
+            private_or_reserved_ip_detected: false,
+            errors: ["Skipped because the global subdomain inventory deadline was reached."]
           }
         ],
         wildcard_dns: { checked: true, possible: false, probes_count: 2 },
@@ -247,6 +267,10 @@ describe("report helpers", () => {
     expect(report.candidates[0]).toMatchObject({ input: "www", fqdn: "www.example.com", status: "accepted" });
     expect(report.candidates[1]).toMatchObject({ status: "rejected", rejectionReason: "outside root" });
     expect(report.results[0]).toMatchObject({ fqdn: "www.example.com", resolves: true, cname: ["example.net"] });
+    expect(report.results[1]).toMatchObject({ status: "skipped", skipReason: "global_deadline_reached", deadlineReached: true });
+    expect(report.truncated).toBe(true);
+    expect(report.deadlineReached).toBe(true);
+    expect(report.limits).toContainEqual({ label: "global_deadline_seconds", value: "30" });
     expect(report.findings[0]).toMatchObject({ id: "subdomain_external_cname" });
   });
 });

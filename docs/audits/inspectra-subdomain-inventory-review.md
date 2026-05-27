@@ -150,3 +150,7 @@ Priority order:
 4. Only after those fixes, consider `django_config_basic` or another local/passive module.
 5. Add `infra_basic` with Nmap only later, with explicit authorization, target allowlists, strict port/rate controls, and separate documentation.
 6. Add Certificate Transparency or CVE/advisory enrichment only after defining explicit online mode, rate limits, data-source trust boundaries, and user consent.
+
+## Follow-up status
+
+- `INSPECTRA-SUBDOMAIN-REVIEW-001`: mitigated in the deadline hardening microfase. `subdomain_inventory_basic` now has `INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS`, the backend runner timeout is based on that deadline plus one in-flight DNS query budget and a fixed margin, and the runner returns partial/truncated results with skipped candidates and an informational deadline finding when the budget is exhausted.
