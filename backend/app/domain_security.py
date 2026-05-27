@@ -60,6 +60,8 @@ def normalize_subdomain_candidate(root_domain: str, raw_candidate: str) -> str:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Subdomain candidate must not contain spaces.")
     if "://" in value or "/" in value or "?" in value or "#" in value or "@" in value or ":" in value:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter subdomain labels or FQDNs, not URLs.")
+    if value.endswith("."):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Trailing dots are not accepted in subdomain candidates.")
 
     candidate = value.rstrip(".").lower()
     try:

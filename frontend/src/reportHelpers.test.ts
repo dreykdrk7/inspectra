@@ -273,4 +273,24 @@ describe("report helpers", () => {
     expect(report.limits).toContainEqual({ label: "global_deadline_seconds", value: "30" });
     expect(report.findings[0]).toMatchObject({ id: "subdomain_external_cname" });
   });
+
+  it("tolerates sparse subdomain inventory results", () => {
+    const report = buildSubdomainAuditReport({
+      ...baseJob,
+      audit_type: "subdomain_inventory_basic",
+      file_id: null,
+      target_domain: "example.com",
+      result: {
+        analyzer: "subdomain_inventory_basic",
+        target: { normalized_root_domain: "example.com" },
+        summary: {}
+      }
+    });
+
+    expect(report.isSubdomainAudit).toBe(true);
+    expect(report.target).toContainEqual({ label: "normalized_root_domain", value: "example.com" });
+    expect(report.candidates).toEqual([]);
+    expect(report.results).toEqual([]);
+    expect(report.findings).toEqual([]);
+  });
 });

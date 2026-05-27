@@ -866,22 +866,30 @@ async def test_subdomain_inventory_audit_rejects_bad_root_and_candidate_lists(mo
         )
 
     assert bad_root.status_code == 400
-    assert empty_list.status_code == 400
+    assert empty_list.status_code == 422
     assert too_many.status_code == 400
 
 
 @pytest.mark.anyio
 async def test_subdomain_inventory_audit_rejects_invalid_candidates(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
-    app.state.subdomain_inventory_audits = NoopAuditService()
+    service = CapturingSubdomainInventoryAuditService()
+    app.state.subdomain_inventory_audits = service
     bad_candidates = [
+        "example.com",
         "api.evil.com",
         "*.example.com",
         "https://api.example.com",
         "api.example.com/path",
         "api.example.com?x=1",
+        "api.example.com#fragment",
+        "api.example.com.",
+        "api.",
         "127.0.0.1",
+        "::1",
+        "host.local",
         "bad candidate",
+        f"{'a' * 64}.example.com",
     ]
     transport = ASGITransport(app=app)
 
@@ -893,8 +901,36 @@ async def test_subdomain_inventory_audit_rejects_invalid_candidates(monkeypatch,
             )
             for candidate in bad_candidates
         ]
+        mixed_response = await client.post(
+            "/audits/subdomains/basic",
+            json={"root_domain": "example.com", "subdomains": ["www", "api.evil.com"], "authorization_confirmed": True},
+        )
 
     assert all(response.status_code == 400 for response in responses)
+    assert mixed_response.status_code == 400
+    assert service.calls == []
+
+
+@pytest.mark.anyio
+async def test_subdomain_inventory_audit_rejects_oversized_strings(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    service = CapturingSubdomainInventoryAuditService()
+    app.state.subdomain_inventory_audits = service
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        long_root = await client.post(
+            "/audits/subdomains/basic",
+            json={"root_domain": f"{'a' * 250}.com", "subdomains": ["www"], "authorization_confirmed": True},
+        )
+        long_candidate = await client.post(
+            "/audits/subdomains/basic",
+            json={"root_domain": "example.com", "subdomains": [f"{'a' * 254}"], "authorization_confirmed": True},
+        )
+
+    assert long_root.status_code == 422
+    assert long_candidate.status_code == 422
+    assert service.calls == []
 
 
 @pytest.mark.parametrize(
@@ -907,6 +943,23 @@ async def test_subdomain_inventory_audit_rejects_invalid_candidates(monkeypatch,
 )
 def test_normalize_subdomain_candidate_accepts_labels_and_fqdns(root_domain, candidate, expected):
     assert normalize_subdomain_candidate(root_domain, candidate) == expected
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "example.com",
+        "api.evil.com",
+        "api.",
+        "api.example.com.",
+        "::1",
+        "host.local",
+        f"{'a' * 64}.example.com",
+    ],
+)
+def test_normalize_subdomain_candidate_rejects_contract_edges(candidate):
+    with pytest.raises(HTTPException):
+        normalize_subdomain_candidate("example.com", candidate)
 
 
 def test_domain_runner_timeout_budget_scales_with_dns_timeout():
@@ -1449,6 +1502,83 @@ async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch
                 if report_format == "xml":
                     root = ElementTree.fromstring(response.text)
                     assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/targetDomain") == job.target_domain
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert job.target_domain in response.text
+
+
+@pytest.mark.anyio
+async def test_export_subdomain_inventory_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 27, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(
+            id="9" * 32,
+            audit_type="subdomain_inventory_basic",
+            file_id=None,
+            target_domain="queued.example",
+            status="queued",
+            created_at=now,
+            updated_at=now,
+        ),
+        JobRecord(
+            id="a1" * 16,
+            audit_type="subdomain_inventory_basic",
+            file_id=None,
+            target_domain="running.example",
+            status="running",
+            created_at=now,
+            updated_at=now,
+        ),
+        JobRecord(
+            id="b2" * 16,
+            audit_type="subdomain_inventory_basic",
+            file_id=None,
+            target_domain="failed.example",
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="Subdomain inventory runner failed safely.",
+        ),
+        JobRecord(
+            id="c3" * 16,
+            audit_type="subdomain_inventory_basic",
+            file_id=None,
+            target_domain="sparse.example",
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={
+                "analyzer": "subdomain_inventory_basic",
+                "target": {"normalized_root_domain": "sparse.example"},
+                "summary": {"truncated": False, "deadline_reached": False},
+            },
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "subdomain_inventory_basic"
                     assert root.findtext("./job/targetDomain") == job.target_domain
                 elif report_format == "pdf":
                     assert response.content.startswith(b"%PDF")
@@ -2322,7 +2452,7 @@ def save_subdomain_inventory_export_fixture_job() -> JobRecord:
             ],
             "wildcard_dns": {"checked": True, "possible": False, "probes_count": 2, "notes": "heuristic", "errors": []},
             "findings": [
-                {"id": "subdomain_private_or_reserved_ip", "title": "Private IP", "level": "medium"},
+                {"id": "subdomain_private_or_reserved_ip", "title": "Private IP", "level": "low"},
                 {"id": "subdomain_external_cname", "title": "External CNAME", "level": "info"},
                 {"id": "subdomain_global_deadline_reached", "title": "Deadline reached", "level": "low"},
             ],

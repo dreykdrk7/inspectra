@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 FileKind = Literal["pdf", "image", "manifest", "archive"]
@@ -76,6 +76,14 @@ class DomainAuditRequest(BaseModel):
 
 
 class SubdomainInventoryRequest(BaseModel):
-    root_domain: str
-    subdomains: list[str]
+    root_domain: str = Field(min_length=1, max_length=253)
+    subdomains: list[str] = Field(min_length=1)
     authorization_confirmed: bool = False
+
+    @field_validator("subdomains")
+    @classmethod
+    def subdomain_candidates_must_be_bounded(cls, value: list[str]) -> list[str]:
+        for candidate in value:
+            if len(candidate) > 253:
+                raise ValueError("Subdomain candidates must be 253 characters or fewer.")
+        return value

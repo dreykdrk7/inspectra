@@ -123,7 +123,7 @@ Web results redact cookie values, sensitive response headers, and common sensiti
 
 Domain audit results can include operational DNS metadata from TXT, SOA, NS, MX, CAA, and related records. TXT values are bounded and obvious `token`, `secret`, `password`, and key-style assignments are redacted best-effort, but DNS records should still be treated as potentially sensitive local result data.
 
-Subdomain inventory results can include hostnames, CNAME targets, IP addresses, and private/internal addressing indicators for explicitly supplied candidates. Treat these results as potentially sensitive inventory data.
+Subdomain inventory results can include hostnames, CNAME targets, IP addresses, and private/internal addressing indicators for explicitly supplied candidates. Private/reserved IP indicators are inventory signals for manual review, not confirmed vulnerabilities. Treat these results as potentially sensitive inventory data.
 
 ## Container Boundary
 
@@ -141,6 +141,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Web audit timeouts, response byte limits, redirect limits, allowed-port controls, and anti-SSRF checks through `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, `INSPECTRA_WEB_ALLOWED_PORTS`, and `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS`.
 - Domain DNS query timeouts through `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS`; the backend gives the runner a larger calculated call timeout for the full bounded DNS baseline.
 - Subdomain inventory candidate, wildcard-probe, and whole-job deadline limits through `INSPECTRA_SUBDOMAIN_MAX_CANDIDATES`, `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS`, and `INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS`. The deadline is a guardrail for availability and can produce partial/truncated results.
+- The public subdomain inventory API rejects the whole request if any submitted candidate is invalid; the runner is not called for rejected public requests. Wildcard probes are the only generated DNS names and can be disabled with `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS=0`.
 - Archive-specific analysis limits for entries, estimated uncompressed size, entry-name length, and listed entries.
 - ZIP central directory metadata limits before detailed ZIP parsing.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.

@@ -1589,6 +1589,8 @@ def normalize_subdomain_candidate(root_domain: str, raw_candidate: str) -> str:
         raise ValueError("Candidate must not contain spaces.")
     if "://" in value or "/" in value or "?" in value or "#" in value or "@" in value or ":" in value:
         raise ValueError("Candidate must be a label or FQDN, not a URL.")
+    if value.endswith("."):
+        raise ValueError("Trailing dots are not accepted in subdomain candidates.")
 
     candidate = value.rstrip(".").lower()
     try:
@@ -1650,7 +1652,7 @@ def resolve_subdomain_candidate(
             make_finding(
                 "subdomain_private_or_reserved_ip",
                 "Subdomain resolves to private or reserved IP",
-                "medium",
+                "low",
                 "A submitted candidate returned an IP address that appears private, loopback, link-local, multicast, unspecified, or reserved.",
                 f"{fqdn}: {', '.join(private_ips)}",
                 "Confirm whether this host is intended for internal use and avoid exposing private inventory unintentionally.",

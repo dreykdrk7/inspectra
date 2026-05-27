@@ -331,4 +331,26 @@ describe("App", () => {
       );
     });
   });
+
+  it("does not start a subdomain inventory audit without authorization confirmation", async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalled();
+    });
+    vi.mocked(globalThis.fetch).mockClear();
+
+    const rootInputs = screen.getAllByPlaceholderText("example.com");
+    const rootInput = rootInputs[rootInputs.length - 1];
+    fireEvent.change(rootInput, { target: { value: "example.com" } });
+    const candidateInputs = screen.getAllByPlaceholderText(/api\.example\.com/);
+    const candidatesInput = candidateInputs[candidateInputs.length - 1];
+    fireEvent.change(candidatesInput, { target: { value: "www\napi.example.com" } });
+    const buttons = screen.getAllByRole("button", { name: /Analyze subdomains/i });
+    const button = buttons[buttons.length - 1];
+
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });

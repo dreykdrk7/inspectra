@@ -1058,7 +1058,13 @@ async def test_analyze_subdomains_basic_normalizes_deduplicates_and_resolves(mon
 
 @pytest.mark.anyio
 async def test_analyze_subdomains_basic_rejects_out_of_scope_candidates(monkeypatch):
-    monkeypatch.setattr(runner, "query_dns_record", lambda domain, record_type, timeout: ([], []))
+    calls: list[tuple[str, str]] = []
+
+    def fake_query(domain: str, record_type: str, timeout: float):
+        calls.append((domain, record_type))
+        return [], []
+
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
     transport = ASGITransport(app=runner.app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -1066,7 +1072,7 @@ async def test_analyze_subdomains_basic_rejects_out_of_scope_candidates(monkeypa
             "/analyze/subdomains-basic",
             json={
                 "root_domain": "example.com",
-                "subdomains": ["api.evil.com", "*.example.com", "https://api.example.com", "127.0.0.1"],
+                "subdomains": ["api.evil.com", "*.example.com", "https://api.example.com", "api.example.com.", "example.com", "127.0.0.1"],
                 "timeout_seconds": 1,
                 "wildcard_checks": 0,
             },
@@ -1075,9 +1081,10 @@ async def test_analyze_subdomains_basic_rejects_out_of_scope_candidates(monkeypa
     payload = response.json()
     assert response.status_code == 200
     assert payload["summary"]["candidates_accepted"] == 0
-    assert payload["summary"]["candidates_rejected"] == 4
+    assert payload["summary"]["candidates_rejected"] == 6
     assert all(candidate["status"] == "rejected" for candidate in payload["candidates"])
     assert "subdomain_candidate_rejected" in {finding["id"] for finding in payload["findings"]}
+    assert calls == []
 
 
 @pytest.mark.anyio
@@ -1104,6 +1111,64 @@ async def test_analyze_subdomains_basic_detects_private_ips_and_dns_errors(monke
     assert payload["results"][0]["private_or_reserved_ip_detected"] is True
     assert payload["errors"]
     assert "subdomain_private_or_reserved_ip" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ipv6_address", ["::1", "fc00::1", "fe80::1", "ff02::1", "::", "2001:db8::1"])
+async def test_analyze_subdomains_basic_detects_private_or_reserved_ipv6(monkeypatch, ipv6_address):
+    def fake_query(domain: str, record_type: str, timeout: float):
+        if record_type == "AAAA":
+            return [ipv6_address], []
+        return [], []
+
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/subdomains-basic",
+            json={"root_domain": "example.com", "subdomains": ["admin"], "timeout_seconds": 1, "wildcard_checks": 0},
+        )
+
+    payload = response.json()
+    finding = next(finding for finding in payload["findings"] if finding["id"] == "subdomain_private_or_reserved_ip")
+    assert response.status_code == 200
+    assert payload["results"][0]["private_or_reserved_ip_detected"] is True
+    assert finding["level"] == "low"
+    assert "vulnerability" not in json.dumps(payload).lower()
+
+
+@pytest.mark.anyio
+async def test_analyze_subdomains_basic_external_cname_handles_trailing_dot_and_case(monkeypatch):
+    def fake_query(domain: str, record_type: str, timeout: float):
+        if domain == "internal.example.com" and record_type == "CNAME":
+            return ["Target.Example.COM."], []
+        if domain == "external.example.com" and record_type == "CNAME":
+            return ["app.External-Provider.COM."], []
+        return [], []
+
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/subdomains-basic",
+            json={
+                "root_domain": "example.com",
+                "subdomains": ["internal", "external"],
+                "timeout_seconds": 1,
+                "wildcard_checks": 0,
+            },
+        )
+
+    payload = response.json()
+    findings = [finding for finding in payload["findings"] if finding["id"] == "subdomain_external_cname"]
+    results = {result["fqdn"]: result for result in payload["results"]}
+    assert response.status_code == 200
+    assert "external_cname_detected" not in results["internal.example.com"]
+    assert results["external.example.com"]["external_cname_detected"] is True
+    assert len(findings) == 1
+    assert "app.External-Provider.COM." in findings[0]["evidence"]
 
 
 @pytest.mark.anyio

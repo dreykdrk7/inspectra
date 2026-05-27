@@ -154,3 +154,6 @@ Priority order:
 ## Follow-up status
 
 - `INSPECTRA-SUBDOMAIN-REVIEW-001`: mitigated in the deadline hardening microfase. `subdomain_inventory_basic` now has `INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS`, the backend runner timeout is based on that deadline plus one in-flight DNS query budget and a fixed margin, and the runner returns partial/truncated results with skipped candidates and an informational deadline finding when the budget is exhausted.
+- `INSPECTRA-SUBDOMAIN-REVIEW-002`: decided and documented as fail-fast for the public API. Any invalid candidate rejects the whole request before job creation and before runner invocation; per-candidate rejected rows remain for duplicates, limits, deadline/skipped states, and internal runner defense.
+- `INSPECTRA-SUBDOMAIN-REVIEW-003`: partially mitigated with Pydantic length constraints for root domains and individual candidates, plus explicit tests for oversized strings and label/domain edge cases. General ASGI/proxy request-size limits remain deployment hardening.
+- `INSPECTRA-SUBDOMAIN-REVIEW-004`: covered with regression tests for queued, running, failed, and sparse completed `subdomain_inventory_basic` exports across Markdown, HTML, XML, and PDF.
