@@ -1218,6 +1218,78 @@ async def test_export_domain_job_all_formats(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 27, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(
+            id="a" * 32,
+            audit_type="domain_basic",
+            file_id=None,
+            target_domain="queued.example",
+            status="queued",
+            created_at=now,
+            updated_at=now,
+        ),
+        JobRecord(
+            id="b" * 32,
+            audit_type="domain_basic",
+            file_id=None,
+            target_domain="running.example",
+            status="running",
+            created_at=now,
+            updated_at=now,
+        ),
+        JobRecord(
+            id="c" * 32,
+            audit_type="domain_basic",
+            file_id=None,
+            target_domain="failed.example",
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="DNS runner failed safely.",
+        ),
+        JobRecord(
+            id="d" * 32,
+            audit_type="domain_basic",
+            file_id=None,
+            target_domain="sparse.example",
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "domain_basic", "target": {"normalized_domain": "sparse.example"}, "summary": {}},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/targetDomain") == job.target_domain
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert job.target_domain in response.text
+
+
+@pytest.mark.anyio
 async def test_export_returns_404_for_missing_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)

@@ -251,7 +251,7 @@ curl -sS -X POST http://localhost:8000/audits/domain/basic \
 
 This creates a `domain_basic` job. The audit accepts a domain name, not a URL, and rejects IP literals, localhost-style names, paths, query strings, userinfo, and reserved/internal suffixes such as `.local`, `.localhost`, `.internal`, `.test`, and `.invalid`.
 
-The runner performs bounded DNS queries for `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `CAA`, and `SOA`, plus `_dmarc.<domain>` TXT and `www.<domain>` A/AAAA/CNAME. It parses SPF, DMARC, CAA, MX, NS, SOA, and TXT records into informational findings. The DNS client is a small UDP-only, best-effort baseline that uses configured IPv4 resolvers from `/etc/resolv.conf` and reports controlled errors for truncation or resolver failures rather than attempting TCP fallback. It does not brute-force subdomains, use wordlists, attempt AXFR, crawl websites, scan ports, use Nmap, query CVEs, or call external reputation APIs.
+The runner performs bounded DNS queries for `A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `CAA`, and `SOA`, plus `_dmarc.<domain>` TXT and `www.<domain>` A/AAAA/CNAME. If the target already starts with `www.`, Inspectra skips the extra `www` baseline instead of querying `www.www.<domain>`. It parses SPF, DMARC, CAA, MX, NS, SOA, and TXT records into informational findings. The DNS client is a small UDP-only, best-effort baseline that uses configured IPv4 resolvers from `/etc/resolv.conf` and reports controlled errors for truncation or resolver failures rather than attempting TCP fallback. It does not brute-force subdomains, use wordlists, attempt AXFR, crawl websites, scan ports, use Nmap, query CVEs, or call external reputation APIs.
 
 ## Read Job Results
 

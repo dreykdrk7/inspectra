@@ -1332,23 +1332,27 @@ def query_dns_record(domain: str, record_type: str, timeout_seconds: float) -> t
 
 
 def dns_nameservers() -> list[str]:
-    nameservers: list[str] = []
     try:
         with Path("/etc/resolv.conf").open("r", encoding="utf-8") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if not stripped.startswith("nameserver"):
-                    continue
-                parts = stripped.split()
-                if len(parts) >= 2:
-                    try:
-                        address = ipaddress.ip_address(parts[1])
-                    except ValueError:
-                        continue
-                    if isinstance(address, ipaddress.IPv4Address):
-                        nameservers.append(str(address))
+            return parse_dns_nameserver_lines(handle)
     except OSError:
         return []
+
+
+def parse_dns_nameserver_lines(lines: Any) -> list[str]:
+    nameservers: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("nameserver"):
+            continue
+        parts = stripped.split()
+        if len(parts) >= 2:
+            try:
+                address = ipaddress.ip_address(parts[1])
+            except ValueError:
+                continue
+            if isinstance(address, ipaddress.IPv4Address):
+                nameservers.append(str(address))
     return nameservers[:3]
 
 

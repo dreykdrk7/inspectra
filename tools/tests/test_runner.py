@@ -956,6 +956,42 @@ async def test_analyze_domain_basic_reports_dmarc_absent_and_dns_errors(monkeypa
     assert payload["errors"]
 
 
+def test_analyze_domain_basic_queries_www_baseline_without_duplication(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def fake_query(domain: str, record_type: str, timeout: float):
+        calls.append((domain, record_type))
+        if domain == "www.example.com" and record_type == "CNAME":
+            return ["example.com"], []
+        return [], []
+
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
+
+    payload = runner.analyze_domain_basic_target("example.com", timeout_seconds=1)
+
+    assert payload["dns"]["www"]["checked"] is True
+    assert payload["dns"]["www"]["domain"] == "www.example.com"
+    assert ("www.example.com", "A") in calls
+    assert ("www.example.com", "AAAA") in calls
+    assert ("www.example.com", "CNAME") in calls
+
+
+def test_analyze_domain_basic_skips_www_baseline_when_target_already_www(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def fake_query(domain: str, record_type: str, timeout: float):
+        calls.append((domain, record_type))
+        return [], []
+
+    monkeypatch.setattr(runner, "query_dns_record", fake_query)
+
+    payload = runner.analyze_domain_basic_target("www.example.com", timeout_seconds=1)
+
+    assert payload["dns"]["www"] == {"checked": False, "reason": "Target domain already starts with www."}
+    assert all(not domain.startswith("www.www.") for domain, _ in calls)
+    assert ("_dmarc.www.example.com", "TXT") in calls
+
+
 @pytest.mark.anyio
 async def test_analyze_domain_basic_rejects_invalid_domain():
     transport = ASGITransport(app=runner.app)
@@ -968,6 +1004,32 @@ async def test_analyze_domain_basic_rejects_invalid_domain():
     assert url_response.status_code == 400
     assert ip_response.status_code == 400
     assert local_response.status_code == 400
+
+
+def test_parse_dns_nameserver_lines_is_ipv4_only_and_bounded():
+    lines = [
+        "# comment",
+        "search example.test",
+        "nameserver 192.0.2.1",
+        "nameserver 2001:db8::1",
+        "nameserver not-an-ip",
+        "nameserver 198.51.100.2",
+        "nameserver 203.0.113.3",
+        "nameserver 203.0.113.4",
+    ]
+
+    assert runner.parse_dns_nameserver_lines(lines) == ["192.0.2.1", "198.51.100.2", "203.0.113.3"]
+    assert runner.parse_dns_nameserver_lines([]) == []
+    assert runner.parse_dns_nameserver_lines(["nameserver 2001:db8::1"]) == []
+
+
+def test_query_dns_record_reports_no_nameservers(monkeypatch):
+    monkeypatch.setattr(runner, "dns_nameservers", lambda: [])
+
+    records, errors = runner.query_dns_record("example.com", "A", 1)
+
+    assert records == []
+    assert errors == ["No DNS nameservers were configured for the runner."]
 
 
 def test_runner_normalize_domain_validation_edges():
