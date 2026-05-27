@@ -165,6 +165,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_domain_sections(result))
     elif job.audit_type == "subdomain_inventory_basic":
         sections.extend(build_subdomain_inventory_sections(result))
+    elif job.audit_type == "django_config_basic":
+        sections.extend(build_django_config_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -293,6 +295,20 @@ def build_subdomain_inventory_sections(result: dict[str, Any]) -> list[ReportSec
     ]
 
 
+def build_django_config_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "Django Config Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("Django Config Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Django Config Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Detected Files", flatten_list(result.get("detected_files"))),
+        ReportSection("Django Signals", flatten_mapping(as_dict(result.get("django_signals")))),
+        ReportSection("Findings", flatten_list(result.get("findings"))),
+    ]
+
+
 def build_summary(job: JobRecord) -> dict[str, Any]:
     result = as_dict(job.result)
     validation = as_dict(result.get("validation"))
@@ -359,6 +375,15 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["private_ip_count"] = summary.get("private_ip_count", "N/A")
         data["findings_count"] = summary.get("findings_count", "N/A")
         data["wildcard_dns_possible"] = summary.get("wildcard_dns_possible", "N/A")
+    elif job.audit_type == "django_config_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["files_read"] = summary.get("files_read", "N/A")
+        data["settings_files_detected"] = summary.get("settings_files_detected", "N/A")
+        data["deployment_files_detected"] = summary.get("deployment_files_detected", "N/A")
+        data["env_files_detected"] = summary.get("env_files_detected", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["secrets_redacted_count"] = summary.get("secrets_redacted_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
     return data
 
 

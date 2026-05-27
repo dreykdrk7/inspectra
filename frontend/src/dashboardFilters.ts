@@ -86,5 +86,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "subdomain_inventory_basic") {
     return "subdomain_inventory_basic";
   }
+  if (auditType === "django_config_basic") {
+    return "django_config_basic";
+  }
   return auditType;
 }

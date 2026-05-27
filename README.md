@@ -14,6 +14,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Stores uploaded files under `data/uploads`.
 - Starts basic PDF, image, manifest, and archive audit jobs.
 - Starts project-archive manifest analysis jobs for archives that contain supported dependency manifests.
+- Starts passive Django configuration analysis jobs for archive uploads.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -24,7 +25,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Exports job reports as Markdown, HTML, XML, and PDF.
 - Exports offline SBOMs as CycloneDX JSON and SPDX JSON from completed manifest and project-archive manifest jobs.
 - Deletes uploaded source files while keeping historical job results.
-- Provides a minimal React UI for uploads, web audits, filters, jobs, readable PDF/image/manifest/archive/project-archive/web reports, exports, and raw JSON results.
+- Provides a minimal React UI for uploads, web audits, filters, jobs, readable PDF/image/manifest/archive/project-archive/Django-config/web reports, exports, and raw JSON results.
 - Exposes OpenAPI docs at `http://localhost:8000/docs`.
 
 ## What This MVP Does Not Do
@@ -38,6 +39,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not execute package scripts or project code.
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
+- It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env` files from archives.
 - It does not parse unsupported internal manifest formats beyond filename detection.
 - It does not call external services to generate reports.
 - It does not call external services to generate SBOMs.
@@ -98,6 +100,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES` | audit-tools | `1048576` | Maximum bytes read per supported manifest inside an archive. |
 | `INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES` | audit-tools | `5242880` | Maximum total supported-manifest bytes read per project archive analysis. |
 | `INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES` | audit-tools | `5000` | Maximum archive entries scanned while looking for internal manifests. |
+| `INSPECTRA_DJANGO_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Django-related config/deployment/dependency files read from one archive. |
+| `INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Django config candidate file. |
+| `INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Django config audit. |
 | `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
 | `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
@@ -121,7 +126,7 @@ http://localhost:5173
 
 From the UI you can check backend health, upload PDFs, images, manifests, or archives, submit an authorized URL for baseline web audit, submit an authorized domain for DNS baseline audit, submit explicit authorized subdomain candidates for inventory, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
-For archive files, the file list shows two actions: `Analyze archive` for container structure and extraction-risk indicators, and `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive.
+For archive files, the file list shows three actions: `Analyze archive` for container structure and extraction-risk indicators, `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive, and `Analyze Django config` for passive Django configuration heuristics.
 
 The dashboard includes client-side counters, file filters by kind, job filters by status and audit type, quick search fields, manual refresh, and gentle auto-refresh while jobs are queued or running.
 
@@ -138,6 +143,7 @@ Completed PDF, image, manifest, archive, and project-archive jobs show readable 
 - Manifest project metadata, dependencies by group, scripts, and informational supply-chain indicators.
 - Archive structure metrics, detected manifest filenames, entries sample, path traversal indicators, sensitive-name indicators, nested archives, and size/compression indicators.
 - Project-archive supported manifests, unsupported manifest filenames, parsed dependencies, scripts, parser findings, limits, truncation, and controlled errors.
+- Django config detected files, settings/deployment signals, secret-redaction notes, heuristic findings, limits, truncation, and controlled errors.
 - Web target URL, redirects, HTTP status, response headers, security headers, cookies, TLS certificate summary, `robots.txt`, `security.txt`, and informational configuration findings.
 - Domain DNS baseline records, email security checks, `www` baseline, and informational DNS findings.
 - Subdomain inventory candidate normalization, A/AAAA/CNAME results, wildcard-DNS heuristic, and informational findings.
@@ -233,6 +239,18 @@ curl -sS -X POST http://localhost:8000/audits/project-archive/<file_id>
 The source file must be `kind: "archive"`. This audit opens the archive with Python standard library parsers, locates supported internal manifests, and reads only bounded manifest bytes in memory. It currently parses `package.json`, `requirements.txt`, and `pyproject.toml`; it detects but does not parse lockfiles and other ecosystem files such as `go.mod`, `Cargo.toml`, `pom.xml`, `composer.json`, and Docker Compose files.
 
 It does not extract the project, execute files or scripts, follow symlinks, install dependencies, invoke package managers, resolve transitive dependencies, query CVEs, or call the internet.
+
+## Launch a Django Config Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/django-config/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `django_config_basic` job that opens the archive with Python standard library parsers and reads only bounded text from Django-related candidate files such as `settings.py`, `settings/*.py`, environment templates, `requirements.txt`, `pyproject.toml`, `Dockerfile`, Docker Compose, nginx, gunicorn, systemd, and Procfile entries.
+
+The analysis is heuristic and local. It looks for configuration indicators such as `DEBUG=True`, hardcoded or fallback `SECRET_KEY`, broad `ALLOWED_HOSTS`, insecure cookie/proxy/HTTPS settings, permissive CORS, SQLite or hardcoded database passwords, development `runserver` commands, and exposed database/cache ports in Compose files. Findings are review indicators, not confirmed vulnerabilities.
+
+Inspectra does not execute Python, import Django settings, run `manage.py check`, install dependencies, connect to databases, extract the project, follow symlinks or hardlinks, query CVEs, or call the internet. Real `.env` files inside the archive are detected but not read; template files such as `.env.example` may be read within limits. Secret-like values in findings are redacted.
 
 ## Launch a Web Baseline Audit
 
@@ -335,7 +353,7 @@ Supported SBOM formats:
 curl -sS http://localhost:8000/jobs
 ```
 
-Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, archive entry/finding counts, or project-archive dependency/finding counts when present.
+Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, archive entry/finding counts, project-archive dependency/finding counts, Django config file/finding counts, or web/domain/subdomain metrics when present.
 
 ## Delete an Uploaded File
 

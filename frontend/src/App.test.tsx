@@ -41,6 +41,16 @@ describe("App", () => {
                 size_bytes: 200,
                 sha256: "def1234567890def",
                 created_at: "2026-05-26T10:03:00Z"
+              },
+              {
+                id: "file-archive-1",
+                kind: "archive",
+                original_filename: "django.zip",
+                stored_filename: "file-archive-1.zip",
+                content_type: "application/zip",
+                size_bytes: 300,
+                sha256: "fed1234567890fed",
+                created_at: "2026-05-26T10:06:00Z"
               }
             ])
           );
@@ -152,6 +162,26 @@ describe("App", () => {
             )
           );
         }
+        if (url.endsWith("/audits/django-config/file-archive-1")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-django-1",
+                audit_type: "django_config_basic",
+                file_id: "file-archive-1",
+                target_url: null,
+                target_domain: null,
+                status: "queued",
+                created_at: "2026-05-26T10:09:00Z",
+                updated_at: "2026-05-26T10:09:00Z",
+                source_file_deleted_at: null,
+                result: null,
+                error: null
+              },
+              202
+            )
+          );
+        }
         if (url.endsWith("/jobs")) {
           return Promise.resolve(
             jsonResponse([
@@ -205,6 +235,7 @@ describe("App", () => {
 
     expect(await screen.findByText("inspectra-backend")).toBeInTheDocument();
     expect(screen.getByText("sample.pdf")).toBeInTheDocument();
+    expect(screen.getByText("django.zip")).toBeInTheDocument();
     expect(screen.getAllByText("pdf_basic").length).toBeGreaterThan(0);
 
     await waitFor(() => {
@@ -352,5 +383,20 @@ describe("App", () => {
     expect(button).toBeDisabled();
     fireEvent.click(button);
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("starts a Django config audit from an archive action", async () => {
+    render(<App />);
+
+    await screen.findAllByText("django.zip");
+    const buttons = screen.getAllByRole("button", { name: /Analyze Django config/i });
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/audits/django-config/file-archive-1",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
   });
 });

@@ -55,6 +55,9 @@ class ArchiveAnalysisRequest(BaseModel):
     file_id: str
     relative_path: str
     original_filename: str | None = None
+    max_files: int | None = None
+    max_file_bytes: int | None = None
+    max_total_bytes: int | None = None
 
 
 class WebBasicAnalysisRequest(BaseModel):
@@ -174,6 +177,9 @@ PROJECT_ARCHIVE_MAX_MANIFESTS = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE
 PROJECT_ARCHIVE_MAX_MANIFEST_BYTES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES", 1_048_576)
 PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES", 5_242_880)
 PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES", ARCHIVE_MAX_ENTRIES)
+DJANGO_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_DJANGO_CONFIG_MAX_FILES", 100)
+DJANGO_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES", 524_288)
+DJANGO_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
 WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
@@ -491,6 +497,35 @@ async def analyze_project_archive(request: ArchiveAnalysisRequest) -> dict[str, 
         analysis = empty_project_archive_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
 
     return build_project_archive_result(request.file_id, archive_path, original_filename, archive_type, analysis)
+
+
+@app.post("/analyze/django-config")
+async def analyze_django_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = django_config_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_django_config_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_django_config_analysis(
+                errors=["Unsupported or corrupt archive. Inspectra did not extract, import, install, or execute any content."]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_django_config_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        analysis = empty_django_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+
+    return build_django_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/web-basic")
@@ -3276,6 +3311,775 @@ def finalize_project_archive_analysis(analysis: dict[str, Any]) -> None:
             ", ".join(sorted(ecosystems)),
             "Review each ecosystem with the appropriate workflow before installing or running anything.",
         )
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+
+
+def django_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = DJANGO_CONFIG_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = DJANGO_CONFIG_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = DJANGO_CONFIG_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Django config analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_django_config_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_django_config_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            summary = as_dict(analysis["summary"])
+            summary["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"django_config_{scoped['id']}"
+            analysis["findings"].append(scoped)
+            finalize_django_config_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_django_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_django_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda entry_info=info: archive.open(entry_info),
+                )
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_django_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_django_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda tar_member=member: archive.extractfile(tar_member),
+                )
+
+    finalize_django_config_analysis(analysis)
+    return analysis
+
+
+def empty_django_config_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "files_considered": 0,
+            "files_read": 0,
+            "settings_files_detected": 0,
+            "deployment_files_detected": 0,
+            "env_files_detected": 0,
+            "dependency_files_detected": 0,
+            "findings_count": 0,
+            "secrets_redacted_count": 0,
+            "truncated": False,
+        },
+        "detected_files": [],
+        "django_signals": {
+            "debug": {"status": "not_found", "files": []},
+            "secret_key": {"status": "not_found", "files": []},
+            "allowed_hosts": {"status": "not_found", "files": []},
+            "cookies": {},
+            "https_security": {},
+            "cors": {"status": "not_found", "files": []},
+            "database": {"status": "not_found", "files": []},
+            "static_media": {},
+            "deployment": {},
+        },
+        "findings": [],
+        "errors": errors or [],
+    }
+
+
+def build_django_config_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "django_config_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "detected_files": analysis.get("detected_files", []),
+        "django_signals": analysis.get("django_signals", {}),
+        "findings": findings,
+        "errors": analysis.get("errors", []),
+    }
+
+
+def should_stop_django_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    summary = as_dict(analysis["summary"])
+    if index > ARCHIVE_MAX_ENTRIES:
+        summary["truncated"] = True
+        add_django_finding(
+            analysis,
+            "django_config_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    return False
+
+
+def process_django_config_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_django_config_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    increment_django_category_counts(summary, category, path)
+
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = django_config_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["detected_files"].append(record)
+        add_django_skip_finding(analysis, path, skip_reason, size_bytes)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["detected_files"].append(record)
+        add_django_finding(
+            analysis,
+            "django_config_file_read_error",
+            "Config file could not be read safely",
+            "low",
+            "A candidate Django configuration file could not be read from the archive within Inspectra limits.",
+            f"{path}: {exc}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+        )
+        return
+
+    state["files_read"] += 1
+    state["total_bytes_read"] += len(raw_bytes)
+    summary["files_read"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["detected_files"].append(record)
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        record["skip_reason"] = "utf8_decode_error"
+        record["read"] = False
+        add_django_finding(
+            analysis,
+            "django_config_file_decode_error",
+            "Config file is not valid UTF-8 text",
+            "low",
+            "A candidate Django configuration file could not be decoded as UTF-8 text.",
+            f"{path}: {exc}",
+            "Review this file manually before relying on the static analysis result.",
+            file_path=path,
+        )
+        return
+
+    _redacted_text, redacted_count = redact_django_secret_text(text)
+    summary["secrets_redacted_count"] += redacted_count
+    analyze_django_config_text(analysis, path, category, text)
+
+
+def classify_django_config_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    basename = normalized.rsplit("/", 1)[-1]
+    basename_lower = basename.lower()
+    parts = [part.lower() for part in normalized.split("/") if part]
+
+    if basename_lower == ".env":
+        return "env_sensitive"
+    if basename_lower in {".env.example", ".env.template", "env.example", "env.template", "sample.env", ".env.sample"}:
+        return "env_template"
+    if basename in {"Dockerfile", "Procfile"} or basename_lower in {"dockerfile", "procfile", "docker-compose.yml", "compose.yml", "nginx.conf", "gunicorn.conf.py"}:
+        return "deployment"
+    if basename_lower.endswith(".service"):
+        return "deployment"
+    if len(parts) >= 2 and parts[-2] == "nginx" and basename_lower.endswith(".conf"):
+        return "deployment"
+    if basename_lower in {"requirements.txt", "pyproject.toml", "pipfile", "poetry.lock", "package.json"}:
+        return "dependencies"
+    if basename_lower in {"manage.py", "urls.py", "wsgi.py", "asgi.py", "settings.py"}:
+        return "django_config"
+    if len(parts) >= 2 and parts[-2] == "settings" and basename_lower.endswith(".py"):
+        return "django_config"
+    if len(parts) >= 3 and parts[-3:-1] == ["config", "settings"] and basename_lower.endswith(".py"):
+        return "django_config"
+    return None
+
+
+def normalize_archive_entry_path(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.lstrip("/")
+
+
+def increment_django_category_counts(summary: dict[str, Any], category: str, path: str) -> None:
+    basename = normalize_archive_entry_path(path).rsplit("/", 1)[-1].lower()
+    if category == "django_config" and ("settings" in basename or "/settings/" in normalize_archive_entry_path(path).lower()):
+        summary["settings_files_detected"] += 1
+    if category == "deployment":
+        summary["deployment_files_detected"] += 1
+    if category in {"env_template", "env_sensitive"}:
+        summary["env_files_detected"] += 1
+    if category == "dependencies":
+        summary["dependency_files_detected"] += 1
+
+
+def django_config_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if record.get("category") == "env_sensitive":
+        return "sensitive_env_not_read"
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_django_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int) -> None:
+    if reason == "sensitive_env_not_read":
+        add_django_finding(
+            analysis,
+            "django_config_env_file_present",
+            "Sensitive .env file detected but not read",
+            "low",
+            "A real .env file was present inside the archive. Inspectra records its presence but does not read the content in this phase.",
+            path,
+            "Avoid sharing real environment files and review whether this archive should include local secrets.",
+            file_path=path,
+        )
+        return
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit"}:
+        analysis["summary"]["truncated"] = True
+    titles = {
+        "path_traversal": "Config file path uses traversal",
+        "absolute_path": "Config file path is absolute",
+        "entry_name_too_long": "Config file entry name is unusually long",
+        "file_too_large": "Config file omitted because it exceeds the size limit",
+        "too_many_files": "Django config file limit reached",
+        "total_bytes_limit": "Total Django config byte limit reached",
+    }
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    evidence = f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    if reason.startswith("not_regular_file"):
+        title = "Config file omitted because it is not a regular file"
+        evidence = f"{path}: {reason}"
+        level = "low"
+    else:
+        title = titles.get(reason, "Config file skipped by defensive limit")
+    add_django_finding(
+        analysis,
+        f"django_config_{reason.split(':', 1)[0]}",
+        title,
+        level,
+        "Inspectra detected a Django-related file but did not read it because of a defensive limit or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+    )
+
+
+def analyze_django_config_text(analysis: dict[str, Any], path: str, category: str, text: str) -> None:
+    if category == "django_config":
+        analyze_django_settings_text(analysis, path, text)
+    elif category == "dependencies":
+        analyze_django_dependency_text(analysis, path, text)
+    elif category == "deployment":
+        analyze_django_deployment_text(analysis, path, text)
+    elif category == "env_template":
+        note_signal(analysis, "deployment", "env_templates", path)
+
+
+def analyze_django_settings_text(analysis: dict[str, Any], path: str, text: str) -> None:
+    lowered = text.lower()
+    if re.search(r"(?im)^\s*DEBUG\s*=\s*True\b", text) or re.search(r"(?i)DEBUG[^\n#]*(?:default\s*=\s*True|default:\s*True)", text):
+        update_signal(analysis, "debug", "enabled_or_default_true", path)
+        add_django_finding(
+            analysis,
+            "django_debug_enabled",
+            "Django DEBUG appears enabled or defaults to true",
+            "medium",
+            "A settings file appears to enable DEBUG or use an insecure default.",
+            safe_setting_evidence("DEBUG", "True/default=True"),
+            "Ensure DEBUG is false in production and controlled by deployment-specific configuration.",
+            file_path=path,
+        )
+    elif re.search(r"(?im)^\s*DEBUG\s*=\s*False\b", text):
+        update_signal(analysis, "debug", "disabled_literal", path)
+
+    if re.search(r"(?im)^\s*SECRET_KEY\s*=\s*['\"][^'\"]{8,}['\"]", text):
+        update_signal(analysis, "secret_key", "hardcoded", path)
+        add_django_finding(
+            analysis,
+            "django_secret_key_hardcoded",
+            "Django SECRET_KEY appears hardcoded",
+            "medium",
+            "A settings file appears to assign SECRET_KEY directly to a string literal.",
+            safe_setting_evidence("SECRET_KEY", "[REDACTED]"),
+            "Load SECRET_KEY from a protected environment secret without committing the value.",
+            file_path=path,
+        )
+    elif re.search(r"(?is)SECRET_KEY[^\n]*(?:get|config|env)\([^)\n]*,\s*['\"][^'\"]+['\"]", text) or re.search(
+        r"(?is)SECRET_KEY[^\n]*(?:default\s*=\s*['\"][^'\"]+['\"])", text
+    ):
+        update_signal(analysis, "secret_key", "fallback_hardcoded", path)
+        add_django_finding(
+            analysis,
+            "django_secret_key_fallback_hardcoded",
+            "Django SECRET_KEY has a hardcoded fallback",
+            "medium",
+            "A settings file appears to read SECRET_KEY from configuration but provide a string fallback.",
+            safe_setting_evidence("SECRET_KEY", "[REDACTED fallback]"),
+            "Avoid production fallbacks for SECRET_KEY; fail closed when the secret is absent.",
+            file_path=path,
+        )
+    elif "secret_key" in lowered:
+        update_signal(analysis, "secret_key", "referenced", path)
+
+    if re.search(r"(?is)ALLOWED_HOSTS\s*=\s*\[[^\]]*['\"]\*['\"]", text) or re.search(
+        r"(?is)ALLOWED_HOSTS\s*=\s*\[[^\]]*['\"]0\.0\.0\.0['\"]", text
+    ):
+        update_signal(analysis, "allowed_hosts", "wildcard", path)
+        add_django_finding(
+            analysis,
+            "django_allowed_hosts_wildcard",
+            "Django ALLOWED_HOSTS appears overly broad",
+            "medium",
+            "ALLOWED_HOSTS appears to include a wildcard or 0.0.0.0.",
+            safe_setting_evidence("ALLOWED_HOSTS", "[REDACTED broad host list]"),
+            "Use explicit production hostnames and review environment-specific host handling.",
+            file_path=path,
+        )
+    elif re.search(r"(?im)^\s*ALLOWED_HOSTS\s*=\s*\[\s*\]", text):
+        update_signal(analysis, "allowed_hosts", "empty_literal", path)
+        add_django_finding(
+            analysis,
+            "django_allowed_hosts_empty",
+            "Django ALLOWED_HOSTS appears empty",
+            "low",
+            "ALLOWED_HOSTS is an empty literal in a settings file. This may be intentional for development but should be reviewed for deployment.",
+            safe_setting_evidence("ALLOWED_HOSTS", "[]"),
+            "Confirm production settings provide explicit hostnames.",
+            file_path=path,
+        )
+    elif "allowed_hosts" in lowered:
+        update_signal(analysis, "allowed_hosts", "referenced", path)
+
+    analyze_django_cookie_settings(analysis, path, text)
+    analyze_django_https_settings(analysis, path, text)
+    analyze_django_header_settings(analysis, path, text)
+    analyze_django_database_settings(analysis, path, text)
+    analyze_django_static_media_settings(analysis, path, text)
+    analyze_django_cors_settings(analysis, path, text)
+
+
+def analyze_django_cookie_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+    for setting_name in ("CSRF_COOKIE_SECURE", "SESSION_COOKIE_SECURE"):
+        if re.search(rf"(?im)^\s*{setting_name}\s*=\s*True\b", text):
+            note_signal(analysis, "cookies", setting_name.lower(), path, "true")
+        else:
+            add_django_finding(
+                analysis,
+                f"django_{setting_name.lower()}_not_true",
+                f"{setting_name} was not observed as true",
+                "low",
+                f"Inspectra did not observe {setting_name} = True in this settings file.",
+                safe_setting_evidence(setting_name, "not observed as True"),
+                "Confirm secure cookie settings in the production settings module.",
+                file_path=path,
+            )
+    for setting_name in ("CSRF_COOKIE_HTTPONLY", "SESSION_COOKIE_HTTPONLY", "CSRF_COOKIE_SAMESITE", "SESSION_COOKIE_SAMESITE"):
+        if setting_name.lower() in text.lower():
+            note_signal(analysis, "cookies", setting_name.lower(), path, "referenced")
+    if re.search(r"(?is)CSRF_TRUSTED_ORIGINS\s*=\s*\[[^\]]*['\"]http://", text) or re.search(
+        r"(?is)CSRF_TRUSTED_ORIGINS\s*=\s*\[[^\]]*['\"][^'\"]*\*[^'\"]*['\"]", text
+    ):
+        add_django_finding(
+            analysis,
+            "django_csrf_trusted_origins_broad_or_http",
+            "CSRF trusted origins may be broad or use HTTP",
+            "low",
+            "CSRF_TRUSTED_ORIGINS appears to include HTTP or wildcard-like origins.",
+            safe_setting_evidence("CSRF_TRUSTED_ORIGINS", "[REDACTED origins]"),
+            "Review CSRF trusted origins for production HTTPS origins only.",
+            file_path=path,
+        )
+
+
+def analyze_django_https_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+    if re.search(r"(?im)^\s*SECURE_SSL_REDIRECT\s*=\s*True\b", text):
+        note_signal(analysis, "https_security", "secure_ssl_redirect", path, "true")
+    else:
+        add_django_finding(
+            analysis,
+            "django_secure_ssl_redirect_not_true",
+            "SECURE_SSL_REDIRECT was not observed as true",
+            "low",
+            "Inspectra did not observe SECURE_SSL_REDIRECT = True in this settings file.",
+            safe_setting_evidence("SECURE_SSL_REDIRECT", "not observed as True"),
+            "Confirm HTTPS redirect behavior at Django or the reverse proxy for production.",
+            file_path=path,
+        )
+    hsts_match = re.search(r"(?im)^\s*SECURE_HSTS_SECONDS\s*=\s*(\d+)", text)
+    if not hsts_match or int(hsts_match.group(1)) == 0:
+        add_django_finding(
+            analysis,
+            "django_hsts_missing_or_zero",
+            "HSTS setting was not observed or appears disabled",
+            "info",
+            "SECURE_HSTS_SECONDS was absent or set to zero in a settings file.",
+            safe_setting_evidence("SECURE_HSTS_SECONDS", hsts_match.group(1) if hsts_match else "not observed"),
+            "Enable HSTS only after validating HTTPS is consistently available.",
+            file_path=path,
+        )
+    for setting_name in ("SECURE_HSTS_INCLUDE_SUBDOMAINS", "SECURE_HSTS_PRELOAD", "SECURE_PROXY_SSL_HEADER", "USE_X_FORWARDED_HOST"):
+        if setting_name.lower() in text.lower():
+            note_signal(analysis, "https_security", setting_name.lower(), path, "referenced")
+
+
+def analyze_django_header_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+    if re.search(r"(?im)^\s*SECURE_CONTENT_TYPE_NOSNIFF\s*=\s*False\b", text):
+        add_django_finding(
+            analysis,
+            "django_content_type_nosniff_false",
+            "SECURE_CONTENT_TYPE_NOSNIFF appears disabled",
+            "low",
+            "A settings file explicitly sets SECURE_CONTENT_TYPE_NOSNIFF to False.",
+            safe_setting_evidence("SECURE_CONTENT_TYPE_NOSNIFF", "False"),
+            "Use the Django default or explicitly enable nosniff protection.",
+            file_path=path,
+        )
+    if not re.search(r"(?im)^\s*X_FRAME_OPTIONS\s*=", text):
+        add_django_finding(
+            analysis,
+            "django_x_frame_options_not_observed",
+            "X_FRAME_OPTIONS was not observed",
+            "info",
+            "Inspectra did not observe an explicit X_FRAME_OPTIONS setting.",
+            safe_setting_evidence("X_FRAME_OPTIONS", "not observed"),
+            "Confirm clickjacking protections are covered by Django defaults or deployment headers.",
+            file_path=path,
+        )
+    if "secure_referrer_policy" in text.lower():
+        note_signal(analysis, "https_security", "secure_referrer_policy", path, "referenced")
+
+
+def analyze_django_database_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+    lowered = text.lower()
+    if "databases" not in lowered:
+        return
+    update_signal(analysis, "database", "referenced", path)
+    if "sqlite3" in lowered:
+        note_signal(analysis, "database", "sqlite_detected", path, "true")
+        add_django_finding(
+            analysis,
+            "django_sqlite_detected",
+            "SQLite database configuration detected",
+            "info",
+            "SQLite appears in DATABASES. This can be appropriate for development but should be reviewed for production VPS deployments.",
+            safe_setting_evidence("DATABASES", "sqlite3"),
+            "Confirm the production database engine is intentional.",
+            file_path=path,
+        )
+    if re.search(r"(?is)['\"]PASSWORD['\"]\s*:\s*['\"][^'\"]+['\"]", text) or re.search(
+        r"(?im)^\s*(?:DB_)?PASSWORD\s*=\s*['\"][^'\"]+['\"]", text
+    ):
+        update_signal(analysis, "database", "hardcoded_password", path)
+        add_django_finding(
+            analysis,
+            "django_database_password_hardcoded",
+            "Database password appears hardcoded",
+            "medium",
+            "A database password-like value appears hardcoded in configuration text.",
+            safe_setting_evidence("DATABASES.PASSWORD", "[REDACTED]"),
+            "Load database credentials from protected runtime secrets.",
+            file_path=path,
+        )
+
+
+def analyze_django_static_media_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+    for setting_name in ("STATIC_ROOT", "STATIC_URL", "MEDIA_ROOT", "MEDIA_URL"):
+        if setting_name.lower() in text.lower():
+            note_signal(analysis, "static_media", setting_name.lower(), path, "referenced")
+    if "whitenoise" in text.lower():
+        note_signal(analysis, "static_media", "whitenoise", path, "referenced")
+
+
+def analyze_django_cors_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+    if re.search(r"(?im)^\s*CORS_ALLOW_ALL_ORIGINS\s*=\s*True\b", text) or re.search(
+        r"(?im)^\s*CORS_ORIGIN_ALLOW_ALL\s*=\s*True\b", text
+    ) or re.search(r"(?is)CORS_ALLOWED_ORIGINS\s*=\s*\[[^\]]*['\"]\*['\"]", text):
+        update_signal(analysis, "cors", "allow_all", path)
+        add_django_finding(
+            analysis,
+            "django_cors_allow_all",
+            "CORS configuration appears overly permissive",
+            "medium",
+            "CORS settings appear to allow all origins.",
+            safe_setting_evidence("CORS", "[REDACTED broad origin policy]"),
+            "Restrict CORS origins to the expected frontend origins for production.",
+            file_path=path,
+        )
+    elif "cors_" in text.lower():
+        update_signal(analysis, "cors", "referenced", path)
+
+
+def analyze_django_dependency_text(analysis: dict[str, Any], path: str, text: str) -> None:
+    basename = normalize_archive_entry_path(path).rsplit("/", 1)[-1].lower()
+    if re.search(r"(?im)^\s*django(?:[<>=~! ]|$)", text) or "django" in text.lower():
+        note_signal(analysis, "deployment", "django_dependency_detected", path, "true")
+    if basename == "package.json":
+        note_signal(analysis, "deployment", "package_json_present", path, "true")
+
+
+def analyze_django_deployment_text(analysis: dict[str, Any], path: str, text: str) -> None:
+    basename = normalize_archive_entry_path(path).rsplit("/", 1)[-1].lower()
+    note_signal(analysis, "deployment", basename.replace(".", "_").replace("-", "_"), path, "present")
+    lowered = text.lower()
+    if "runserver" in lowered:
+        add_django_finding(
+            analysis,
+            "django_deployment_runserver_detected",
+            "Django development server command detected",
+            "medium",
+            "A deployment file appears to run Django with manage.py runserver.",
+            "manage.py runserver",
+            "Use a production WSGI/ASGI server such as gunicorn or uvicorn behind a reverse proxy.",
+            file_path=path,
+        )
+    if "gunicorn" in lowered or "uvicorn" in lowered:
+        note_signal(analysis, "deployment", "production_server_hint", path, "present")
+    if re.search(r"(?im)^\s*DEBUG\s*=\s*True\b|DEBUG=True", text):
+        add_django_finding(
+            analysis,
+            "django_deployment_debug_env_true",
+            "Deployment file sets DEBUG=True",
+            "medium",
+            "A deployment file appears to set DEBUG=True.",
+            safe_setting_evidence("DEBUG", "True"),
+            "Ensure production deployment variables set DEBUG=False.",
+            file_path=path,
+        )
+    if re.search(r"(?im)SECRET_KEY\s*[:=]\s*[^$\s][^\n]+", text):
+        add_django_finding(
+            analysis,
+            "django_deployment_secret_key_hardcoded",
+            "Deployment file appears to contain SECRET_KEY",
+            "medium",
+            "A deployment file appears to contain a SECRET_KEY value rather than only referencing an external secret.",
+            safe_setting_evidence("SECRET_KEY", "[REDACTED]"),
+            "Move secrets to protected runtime secret storage or an uncommitted environment file.",
+            file_path=path,
+        )
+    if "env_file" in lowered and ".env" in lowered:
+        add_django_finding(
+            analysis,
+            "django_deployment_env_file_reference",
+            "Deployment references an .env file",
+            "info",
+            "A deployment file references an .env file. Inspectra does not read real .env content.",
+            ".env reference",
+            "Confirm the referenced environment file is not committed with secrets.",
+            file_path=path,
+        )
+    if basename in {"docker-compose.yml", "compose.yml"}:
+        for port in ("5432", "3306", "6379"):
+            if re.search(rf"(?m)['\"]?\d*:?{port}:{port}['\"]?", text):
+                add_django_finding(
+                    analysis,
+                    f"django_compose_exposes_{port}",
+                    f"docker-compose exposes service port {port}",
+                    "low",
+                    "docker-compose appears to publish a database or cache service port on the host.",
+                    f"{port}:{port}",
+                    "Confirm the service should be exposed outside the Compose network.",
+                    file_path=path,
+                )
+
+
+def update_signal(analysis: dict[str, Any], group: str, status_value: str, path: str) -> None:
+    signal = as_dict(analysis["django_signals"].setdefault(group, {}))
+    signal["status"] = status_value
+    files = signal.setdefault("files", [])
+    if isinstance(files, list) and path not in files:
+        files.append(path)
+    analysis["django_signals"][group] = signal
+
+
+def note_signal(analysis: dict[str, Any], group: str, key: str, path: str, value: str = "observed") -> None:
+    signal = as_dict(analysis["django_signals"].setdefault(group, {}))
+    signal[key] = value
+    files = signal.setdefault("files", [])
+    if isinstance(files, list) and path not in files:
+        files.append(path)
+    analysis["django_signals"][group] = signal
+
+
+def redact_django_secret_text(text: str) -> tuple[str, int]:
+    redacted_lines: list[str] = []
+    count = 0
+    for line in text.splitlines():
+        if django_line_contains_secret_key(line):
+            redacted, changed = redact_django_secret_line(line)
+            redacted_lines.append(redacted)
+            count += int(changed)
+        else:
+            redacted_lines.append(line)
+    return "\n".join(redacted_lines), count
+
+
+def django_line_contains_secret_key(line: str) -> bool:
+    return bool(re.search(r"(?i)(SECRET_KEY|PASSWORD|PASS|TOKEN|API_KEY|SECRET|DATABASE_URL|REDIS_URL|EMAIL_HOST_PASSWORD|AWS_SECRET_ACCESS_KEY|PRIVATE_KEY)", line))
+
+
+def redact_django_secret_line(line: str) -> tuple[str, bool]:
+    if "=" in line:
+        key, _value = line.split("=", 1)
+        return f"{key}= [REDACTED]", True
+    if ":" in line:
+        key, _value = line.split(":", 1)
+        return f"{key}: [REDACTED]", True
+    return "[REDACTED]", True
+
+
+def safe_setting_evidence(setting_name: str, value: str) -> str:
+    return f"{setting_name} = {value}"
+
+
+def add_django_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str | None = None,
+) -> None:
+    finding = make_finding(finding_id, title, level, description, evidence, recommendation)
+    if file_path:
+        finding["file_path"] = file_path
+    analysis["findings"].append(finding)
+
+
+def finalize_django_config_analysis(analysis: dict[str, Any]) -> None:
+    if analysis["summary"]["settings_files_detected"] == 0:
+        add_django_finding(
+            analysis,
+            "django_settings_not_detected",
+            "Django settings file was not detected",
+            "info",
+            "Inspectra did not detect a settings.py or settings package in the archive candidates it inspected.",
+            "settings.py not observed",
+            "Confirm the archive contains the intended Django configuration files.",
+        )
+    analysis["findings"] = dedupe_findings(analysis["findings"])
     analysis["summary"]["findings_count"] = len(analysis["findings"])
 
 

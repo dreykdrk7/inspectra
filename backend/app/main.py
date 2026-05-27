@@ -24,6 +24,7 @@ from app.reporting import (
 from app.sbom import build_sbom_filename, generate_cyclonedx_json, generate_spdx_json
 from app.services import (
     ArchiveAuditService,
+    DjangoConfigAuditService,
     DomainAuditService,
     ImageAuditService,
     ManifestAuditService,
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI):
     app.state.manifest_audits = ManifestAuditService(settings, file_store, job_store)
     app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
     app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
+    app.state.django_config_audits = DjangoConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -162,6 +164,16 @@ async def launch_project_archive_audit(request: Request, file_id: str, backgroun
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_project_archive_job(file_id)
     background_tasks.add_task(request.app.state.project_archive_audits.run_project_archive_analysis, job.id)
+    return job
+
+
+@app.post("/audits/django-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_django_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
+    stored_file = request.app.state.files.get(file_id)
+    if stored_file.kind != "archive":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
+    job = request.app.state.jobs.create_django_config_job(file_id)
+    background_tasks.add_task(request.app.state.django_config_audits.run_django_config_analysis, job.id)
     return job
 
 

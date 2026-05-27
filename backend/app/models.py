@@ -14,6 +14,7 @@ AuditType = Literal[
     "web_basic",
     "domain_basic",
     "subdomain_inventory_basic",
+    "django_config_basic",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 

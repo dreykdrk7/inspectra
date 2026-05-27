@@ -555,6 +555,184 @@ async def test_analyze_project_archive_handles_corrupt_file(monkeypatch, tmp_pat
 
 
 @pytest.mark.anyio
+async def test_analyze_django_config_zip_detects_settings_findings_and_redacts_secrets(monkeypatch, tmp_path):
+    settings_text = b"""
+DEBUG = True
+SECRET_KEY = "supersecret-django-key"
+ALLOWED_HOSTS = ["*"]
+CORS_ALLOW_ALL_ORIGINS = True
+CSRF_COOKIE_SECURE = False
+SESSION_COOKIE_SECURE = False
+DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "PASSWORD": "db-secret"}}
+"""
+    archive_path = write_zip_archive(tmp_path, {"project/settings.py": settings_text})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/django-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["analyzer"] == "django_config_basic"
+    assert payload["summary"]["settings_files_detected"] == 1
+    assert payload["summary"]["files_read"] == 1
+    assert payload["summary"]["secrets_redacted_count"] >= 2
+    assert "django_debug_enabled" in finding_ids
+    assert "django_secret_key_hardcoded" in finding_ids
+    assert "django_allowed_hosts_wildcard" in finding_ids
+    assert "django_cors_allow_all" in finding_ids
+    assert "django_database_password_hardcoded" in finding_ids
+    assert "supersecret-django-key" not in serialized
+    assert "db-secret" not in serialized
+    assert "[REDACTED]" in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_django_config_detects_env_without_reading_and_deployment_signals(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            ".env": b"SECRET_KEY=should-not-leak\n",
+            ".env.example": b"DEBUG=False\n",
+            "requirements.txt": b"Django==5.0.0\n",
+            "Dockerfile": b'CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]\n',
+            "docker-compose.yml": b'services:\n  db:\n    ports:\n      - "5432:5432"\n  web:\n    env_file: .env\n',
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/django-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    env_record = next(item for item in payload["detected_files"] if item["path"] == ".env")
+    assert response.status_code == 200
+    assert env_record["read"] is False
+    assert env_record["skip_reason"] == "sensitive_env_not_read"
+    assert "should-not-leak" not in json.dumps(payload)
+    assert "django_config_env_file_present" in finding_ids
+    assert "django_deployment_runserver_detected" in finding_ids
+    assert "django_compose_exposes_5432" in finding_ids
+    assert payload["django_signals"]["deployment"]["django_dependency_detected"] == "true"
+
+
+@pytest.mark.anyio
+async def test_analyze_django_config_skips_path_traversal(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {"../settings.py": b"DEBUG=True\n"})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/django-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["detected_files"][0]["read"] is False
+    assert payload["detected_files"][0]["skip_reason"] == "path_traversal"
+    assert "django_config_path_traversal" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_django_config_tar_skips_symlink_and_hardlink(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        link_info = tarfile.TarInfo("settings.py")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real_settings.py"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo("config/settings/prod.py")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real_settings.py"
+        archive.addfile(hardlink_info)
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/django-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert {item["skip_reason"] for item in payload["detected_files"]} == {"not_regular_file:symlink", "not_regular_file:hardlink"}
+    assert "django_config_not_regular_file" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_django_config_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "DJANGO_CONFIG_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "DJANGO_CONFIG_MAX_FILE_BYTES", 30)
+    monkeypatch.setattr(runner, "DJANGO_CONFIG_MAX_TOTAL_BYTES", 40)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "settings.py": b"DEBUG=False\n",
+            "project/settings/prod.py": b"DEBUG=True\n",
+            "project/settings/large.py": b"X = '" + b"a" * 80 + b"'\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/django-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["detected_files"]}
+    assert response.status_code == 200
+    assert payload["summary"]["files_read"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "too_many_files" in reasons
+    assert "file_too_large" in reasons
+
+
+@pytest.mark.anyio
+async def test_analyze_django_config_treats_python_as_text_without_importing(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "project/settings.py": b"raise RuntimeError('would execute if imported')\nDEBUG = True\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/django-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["summary"]["files_read"] == 1
+    assert "django_debug_enabled" in {finding["id"] for finding in payload["findings"]}
+    assert payload["errors"] == []
+
+
+@pytest.mark.anyio
 async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
     server = start_test_http_server()
     transport = ASGITransport(app=runner.app)

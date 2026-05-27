@@ -14,6 +14,9 @@ DEFAULT_DOMAIN_DNS_TIMEOUT_SECONDS = 5.0
 DEFAULT_SUBDOMAIN_MAX_CANDIDATES = 100
 DEFAULT_SUBDOMAIN_WILDCARD_CHECKS = 2
 DEFAULT_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS = 30.0
+DEFAULT_DJANGO_CONFIG_MAX_FILES = 100
+DEFAULT_DJANGO_CONFIG_MAX_FILE_BYTES = 524_288
+DEFAULT_DJANGO_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,9 @@ class Settings:
     subdomain_max_candidates: int = DEFAULT_SUBDOMAIN_MAX_CANDIDATES
     subdomain_wildcard_checks: int = DEFAULT_SUBDOMAIN_WILDCARD_CHECKS
     subdomain_global_deadline_seconds: float = DEFAULT_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS
+    django_config_max_files: int = DEFAULT_DJANGO_CONFIG_MAX_FILES
+    django_config_max_file_bytes: int = DEFAULT_DJANGO_CONFIG_MAX_FILE_BYTES
+    django_config_max_total_bytes: int = DEFAULT_DJANGO_CONFIG_MAX_TOTAL_BYTES
 
     @property
     def upload_dir(self) -> Path:
@@ -75,6 +81,18 @@ def load_settings() -> Settings:
         "INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS",
         DEFAULT_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS,
     )
+    django_config_max_files = _positive_int_from_env(
+        "INSPECTRA_DJANGO_CONFIG_MAX_FILES",
+        DEFAULT_DJANGO_CONFIG_MAX_FILES,
+    )
+    django_config_max_file_bytes = _positive_int_from_env(
+        "INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES",
+        DEFAULT_DJANGO_CONFIG_MAX_FILE_BYTES,
+    )
+    django_config_max_total_bytes = _positive_int_from_env(
+        "INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES",
+        DEFAULT_DJANGO_CONFIG_MAX_TOTAL_BYTES,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -89,6 +107,9 @@ def load_settings() -> Settings:
         subdomain_max_candidates=subdomain_max_candidates,
         subdomain_wildcard_checks=subdomain_wildcard_checks,
         subdomain_global_deadline_seconds=subdomain_global_deadline_seconds,
+        django_config_max_files=django_config_max_files,
+        django_config_max_file_bytes=django_config_max_file_bytes,
+        django_config_max_total_bytes=django_config_max_total_bytes,
     )
 
 

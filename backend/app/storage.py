@@ -285,6 +285,9 @@ class JobStore:
     def create_project_archive_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "project_archive_basic")
 
+    def create_django_config_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "django_config_basic")
+
     def create_web_job(self, target_url: str) -> JobRecord:
         return self._create_job(None, "web_basic", target_url=target_url)
 
@@ -548,6 +551,14 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["wildcard_dns_possible"] = manifest_summary.get("wildcard_dns_possible")
             summary["truncated"] = manifest_summary.get("truncated")
             summary["deadline_reached"] = manifest_summary.get("deadline_reached")
+        if record.audit_type == "django_config_basic":
+            summary["archive_type"] = record.result.get("archive_type")
+            summary["files_read"] = manifest_summary.get("files_read")
+            summary["settings_files_detected"] = manifest_summary.get("settings_files_detected")
+            summary["deployment_files_detected"] = manifest_summary.get("deployment_files_detected")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["secrets_redacted_count"] = manifest_summary.get("secrets_redacted_count")
+            summary["truncated"] = manifest_summary.get("truncated")
         return summary
     if record.error:
         return {"error": record.error}

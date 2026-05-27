@@ -23,7 +23,8 @@ export type AuditType =
   | 'project_archive_basic'
   | 'web_basic'
   | 'domain_basic'
-  | 'subdomain_inventory_basic';
+  | 'subdomain_inventory_basic'
+  | 'django_config_basic';
 export type ReportFormat = 'markdown' | 'html' | 'xml' | 'pdf';
 export type SbomFormat = 'cyclonedx-json' | 'spdx-json';
 

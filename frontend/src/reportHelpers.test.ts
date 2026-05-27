@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildArchiveAuditReport } from "./archiveReport";
+import { buildDjangoConfigAuditReport } from "./djangoConfigReport";
 import { buildDomainAuditReport } from "./domainReport";
 import { buildImageAuditReport } from "./imageReport";
 import { buildManifestAuditReport } from "./manifestReport";
@@ -292,5 +293,64 @@ describe("report helpers", () => {
     expect(report.candidates).toEqual([]);
     expect(report.results).toEqual([]);
     expect(report.findings).toEqual([]);
+  });
+
+  it("normalizes Django config detected files, signals, and redacted findings", () => {
+    const report = buildDjangoConfigAuditReport({
+      ...baseJob,
+      audit_type: "django_config_basic",
+      result: {
+        analyzer: "django_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_read: 1,
+          findings_count: 2,
+          secrets_redacted_count: 1,
+          truncated: false
+        },
+        limits: { max_files: 100 },
+        detected_files: [
+          { path: "project/settings.py", category: "django_config", read: true, size_bytes: 128 },
+          { path: ".env", category: "env_sensitive", read: false, skip_reason: "sensitive_env_not_read" }
+        ],
+        django_signals: {
+          debug: { status: "enabled_or_default_true", files: ["project/settings.py"] },
+          secret_key: { status: "hardcoded", files: ["project/settings.py"] }
+        },
+        findings: [
+          {
+            id: "django_secret_key_hardcoded",
+            title: "Django SECRET_KEY appears hardcoded",
+            level: "medium",
+            evidence: "SECRET_KEY = [REDACTED]",
+            file_path: "project/settings.py"
+          }
+        ],
+        errors: []
+      }
+    });
+
+    expect(report.isDjangoConfigAudit).toBe(true);
+    expect(report.archiveType).toBe("zip");
+    expect(report.detectedFiles[0]).toMatchObject({ path: "project/settings.py", read: true });
+    expect(report.detectedFiles[1]).toMatchObject({ path: ".env", read: false, skipReason: "sensitive_env_not_read" });
+    expect(report.signals).toContainEqual({ label: "debug.status", value: "enabled_or_default_true" });
+    expect(report.findings[0]).toMatchObject({ id: "django_secret_key_hardcoded", evidence: "SECRET_KEY = [REDACTED]" });
+  });
+
+  it("tolerates sparse Django config results", () => {
+    const report = buildDjangoConfigAuditReport({
+      ...baseJob,
+      audit_type: "django_config_basic",
+      result: {
+        analyzer: "django_config_basic",
+        summary: {}
+      }
+    });
+
+    expect(report.isDjangoConfigAudit).toBe(true);
+    expect(report.detectedFiles).toEqual([]);
+    expect(report.findings).toEqual([]);
+    expect(report.errors).toEqual([]);
   });
 });

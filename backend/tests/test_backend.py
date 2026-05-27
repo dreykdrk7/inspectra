@@ -18,6 +18,7 @@ from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
 from app.services import (
     ArchiveAuditService,
+    DjangoConfigAuditService,
     DomainAuditService,
     ImageAuditService,
     ManifestAuditService,
@@ -52,6 +53,9 @@ class NoopAuditService:
         return None
 
     async def run_project_archive_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_django_config_analysis(self, job_id: str) -> None:
         return None
 
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
@@ -96,6 +100,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.manifest_audits = ManifestAuditService(settings, file_store, job_store)
     app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
     app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
+    app.state.django_config_audits = DjangoConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -517,6 +522,33 @@ async def test_project_archive_audit_job_creation_and_rejections(monkeypatch, tm
     assert project_archive_response.json()["audit_type"] == "project_archive_basic"
     assert pdf_as_project_archive_response.status_code == 400
     assert pdf_as_project_archive_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_django_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.django_config_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("django.zip", make_zip_bytes({"project/settings.py": b"DEBUG=True\n"}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        django_response = await client.post(f"/audits/django-config/{archive_file['id']}")
+        pdf_as_django_response = await client.post(f"/audits/django-config/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/django-config/not-a-file-id")
+
+    assert django_response.status_code == 202
+    assert django_response.json()["audit_type"] == "django_config_basic"
+    assert pdf_as_django_response.status_code == 400
+    assert pdf_as_django_response.json()["detail"] == "File is not an archive."
     assert invalid_response.status_code == 400
 
 
@@ -984,6 +1016,19 @@ def test_subdomain_inventory_global_deadline_config(monkeypatch, tmp_path):
     assert settings.subdomain_global_deadline_seconds == 12.5
 
 
+def test_django_config_limits_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_DJANGO_CONFIG_MAX_FILES", "12")
+    monkeypatch.setenv("INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES", "1024")
+    monkeypatch.setenv("INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES", "4096")
+
+    settings = load_settings()
+
+    assert settings.django_config_max_files == 12
+    assert settings.django_config_max_file_bytes == 1024
+    assert settings.django_config_max_total_bytes == 4096
+
+
 @pytest.mark.parametrize(
     ("raw_domain", "expected"),
     [
@@ -1439,6 +1484,37 @@ async def test_export_subdomain_inventory_job_all_formats(monkeypatch, tmp_path)
 
 
 @pytest.mark.anyio
+async def test_export_django_config_job_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_django_config_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "django_config_basic" in responses["markdown"].text
+    assert "Django Config Metrics" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "django_config_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+    assert "supersecret" not in responses["markdown"].text
+    assert "[REDACTED]" in responses["markdown"].text
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -1676,12 +1752,16 @@ async def test_export_sbom_for_project_archive_job(monkeypatch, tmp_path):
 async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 26, tzinfo=timezone.utc)
-    for index, audit_type in enumerate(("pdf_basic", "image_basic", "archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic"), start=1):
+    audit_types = ("pdf_basic", "image_basic", "archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic")
+    job_ids: list[str] = []
+    for index, audit_type in enumerate(audit_types, start=1):
+        job_id = f"{index:x}" * 32
+        job_ids.append(job_id)
         app.state.jobs.save(
             JobRecord(
-                id=f"{index}" * 32,
+                id=job_id,
                 audit_type=audit_type,
-                file_id=None if audit_type in {"web_basic", "domain_basic", "subdomain_inventory_basic"} else f"{index + 3}" * 32,
+                file_id=None if audit_type in {"web_basic", "domain_basic", "subdomain_inventory_basic"} else f"{index + 3:x}" * 32,
                 target_url="https://example.com/" if audit_type == "web_basic" else None,
                 target_domain="example.com" if audit_type in {"domain_basic", "subdomain_inventory_basic"} else None,
                 status="completed",
@@ -1693,7 +1773,7 @@ async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        responses = [await client.get(f"/jobs/{str(index) * 32}/sbom/cyclonedx-json") for index in range(1, 6)]
+        responses = [await client.get(f"/jobs/{job_id}/sbom/cyclonedx-json") for job_id in job_ids]
 
     for response in responses:
         assert response.status_code == 400
@@ -2457,6 +2537,67 @@ def save_subdomain_inventory_export_fixture_job() -> JobRecord:
                 {"id": "subdomain_global_deadline_reached", "title": "Deadline reached", "level": "low"},
             ],
             "truncation_reason": "global_deadline_reached",
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_django_config_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="d" * 32,
+        audit_type="django_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "django_config_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 2048, "original_filename": "django.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 2,
+                "files_read": 1,
+                "settings_files_detected": 1,
+                "deployment_files_detected": 0,
+                "env_files_detected": 1,
+                "findings_count": 2,
+                "secrets_redacted_count": 1,
+                "truncated": False,
+            },
+            "detected_files": [
+                {"path": "project/settings.py", "category": "django_config", "read": True, "size_bytes": 128},
+                {"path": ".env", "category": "env_sensitive", "read": False, "skip_reason": "sensitive_env_not_read"},
+            ],
+            "django_signals": {
+                "debug": {"status": "enabled_or_default_true", "files": ["project/settings.py"]},
+                "secret_key": {"status": "hardcoded", "files": ["project/settings.py"]},
+            },
+            "findings": [
+                {
+                    "id": "django_debug_enabled",
+                    "title": "Django DEBUG appears enabled or defaults to true",
+                    "level": "medium",
+                    "description": "Review production settings.",
+                    "evidence": "DEBUG = True",
+                    "recommendation": "Set DEBUG=False in production.",
+                    "file_path": "project/settings.py",
+                },
+                {
+                    "id": "django_secret_key_hardcoded",
+                    "title": "Django SECRET_KEY appears hardcoded",
+                    "level": "medium",
+                    "description": "Review production secrets.",
+                    "evidence": "SECRET_KEY = [REDACTED]",
+                    "recommendation": "Load SECRET_KEY from a protected environment secret.",
+                    "file_path": "project/settings.py",
+                },
+            ],
             "errors": [],
         },
     )
