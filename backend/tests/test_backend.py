@@ -1515,6 +1515,131 @@ async def test_export_django_config_job_all_formats(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_export_django_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 29, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="e" * 32,
+        audit_type="django_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="TOKEN=super-secret-value-123",
+        result={
+            "analyzer": "django_config_basic",
+            "archive_type": "zip",
+            "summary": {"files_read": 1, "findings_count": 1, "secrets_redacted_count": 0},
+            "detected_files": [
+                {
+                    "path": "project/settings.py",
+                    "category": "django_config",
+                    "read": False,
+                    "skip_reason": "DATABASE_URL=postgres://user:rawpass@db/app",
+                }
+            ],
+            "django_signals": {
+                "secret_key": {"status": "SECRET_KEY = 'django-insecure-test-secret'", "files": ["project/settings.py"]},
+            },
+            "findings": [
+                {
+                    "id": "legacy_secret",
+                    "title": "Legacy raw secret",
+                    "level": "medium",
+                    "description": "DATABASE_URL=postgres://user:rawpass@db/app",
+                    "evidence": "SECRET_KEY = 'super-secret-value-123'",
+                    "recommendation": "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----",
+                    "file_path": "project/settings.py",
+                }
+            ],
+            "errors": ["PASSWORD=super-secret-value-123"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = (
+        b"super-secret-value-123",
+        b"django-insecure-test-secret",
+        b"rawpass",
+        b"abc123",
+        b"BEGIN PRIVATE KEY",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+
+
+@pytest.mark.anyio
+async def test_export_django_config_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 29, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="1" * 32, audit_type="django_config_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="2" * 32, audit_type="django_config_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="3" * 32,
+            audit_type="django_config_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="Django config runner failed safely.",
+        ),
+        JobRecord(
+            id="4" * 32,
+            audit_type="django_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "django_config_basic", "summary": {}, "findings": [], "errors": []},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "django_config_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "django_config_basic" in response.text
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)

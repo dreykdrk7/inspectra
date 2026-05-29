@@ -39,7 +39,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not execute package scripts or project code.
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
-- It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env` files from archives.
+- It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env`/`.env.*` files from archives.
 - It does not parse unsupported internal manifest formats beyond filename detection.
 - It does not call external services to generate reports.
 - It does not call external services to generate SBOMs.
@@ -250,7 +250,7 @@ The source file must be `kind: "archive"`. This creates a `django_config_basic` 
 
 The analysis is heuristic and local. It looks for configuration indicators such as `DEBUG=True`, hardcoded or fallback `SECRET_KEY`, broad `ALLOWED_HOSTS`, insecure cookie/proxy/HTTPS settings, permissive CORS, SQLite or hardcoded database passwords, development `runserver` commands, and exposed database/cache ports in Compose files. Findings are review indicators, not confirmed vulnerabilities.
 
-Inspectra does not execute Python, import Django settings, run `manage.py check`, install dependencies, connect to databases, extract the project, follow symlinks or hardlinks, query CVEs, or call the internet. Real `.env` files inside the archive are detected but not read; template files such as `.env.example` may be read within limits. Secret-like values in findings are redacted.
+Inspectra does not execute Python, import Django settings, run `manage.py check`, install dependencies, connect to databases, extract the project, follow symlinks or hardlinks, query CVEs, or call the internet. Real environment files such as `.env`, `.env.production`, `.env.local`, and other `.env.*` variants are detected but not read; template files such as `.env.example`, `.env.template`, `.env.sample`, `env.example`, `env.template`, `env.sample`, and `sample.env` may be read within limits. Secret-like values in findings, exports, and the Django config UI report are redacted best-effort, but uploaded archives are stored locally and should not include real secrets unless that local storage risk is acceptable.
 
 ## Launch a Web Baseline Audit
 

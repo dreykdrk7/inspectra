@@ -34,7 +34,7 @@ export type DjangoConfigAuditReport = {
 };
 
 export function buildDjangoConfigAuditReport(job: JobRecord): DjangoConfigAuditReport {
-  const result = asRecord(job.result);
+  const result = asRecord(redactDjangoConfigValue(job.result));
   const summary = asRecord(result?.summary);
   return {
     isDjangoConfigAudit: job.audit_type === "django_config_basic",
@@ -49,6 +49,31 @@ export function buildDjangoConfigAuditReport(job: JobRecord): DjangoConfigAuditR
     truncated: Boolean(summary?.truncated),
     secretsRedactedCount: asNumber(summary?.secrets_redacted_count) ?? 0
   };
+}
+
+export function redactDjangoConfigValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return redactDjangoSecretText(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactDjangoConfigValue(item));
+  }
+  const record = asRecord(value);
+  if (record) {
+    return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, redactDjangoConfigValue(item)]));
+  }
+  return value;
+}
+
+function redactDjangoSecretText(value: string): string {
+  const keywords = "(SECRET_KEY|PASSWORD|PASS|TOKEN|API_KEY|SECRET|DATABASE_URL|REDIS_URL|EMAIL_HOST_PASSWORD|AWS_SECRET_ACCESS_KEY|PRIVATE_KEY)";
+  return value
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi, "[REDACTED PRIVATE KEY]")
+    .replace(/django-insecure-[^\s'"<>)\]}]+/gi, "django-insecure-[REDACTED]")
+    .replace(/\b((?:postgres(?:ql)?|mysql|redis|https?):\/\/[^:/@\s]+):([^@\s]+)@/gi, "$1:[REDACTED]@")
+    .replace(/\b((?:postgres(?:ql)?|mysql|redis|https?):\/\/):([^@\s]+)@/gi, "$1:[REDACTED]@")
+    .replace(new RegExp(`\\b${keywords}\\b(\\s*[:=]\\s*)(['"])(.*?)(['"])`, "gi"), "$1$2$3[REDACTED]$5")
+    .replace(new RegExp(`\\b${keywords}\\b(\\s*[:=]\\s*)([^\\s,}\\n]+)`, "gi"), "$1$2[REDACTED]");
 }
 
 function detectedFilesFromValue(value: unknown): DjangoDetectedFile[] {

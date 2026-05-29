@@ -218,3 +218,9 @@ Priority order:
 4. Review deployment-file secret detection for Compose/systemd environment formats.
 5. Only after the above, consider a `production_readiness_docs` or more refined Django deployment checklist module.
 6. Keep `infra_basic` with Nmap and CVE/advisory enrichment for later, explicitly controlled phases.
+
+## Follow-up Status
+
+- 2026-05-29: `INSPECTRA-DJANGO-REVIEW-001` addressed by classifying `.env.*` variants, except explicit example/sample/template names, as sensitive Django environment files that are detected but not read.
+- 2026-05-29: `INSPECTRA-DJANGO-REVIEW-002` addressed with best-effort defensive Django secret redaction in backend exports/reporting and the Django config UI report, including redacted raw JSON display for this job type.
+- 2026-05-29: `INSPECTRA-DJANGO-REVIEW-005` partially addressed with runner tests for `.env.*` handling, backend export tests for legacy raw secrets and sparse/non-completed Django config jobs, and frontend helper tests for redaction.

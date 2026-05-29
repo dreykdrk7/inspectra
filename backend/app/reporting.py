@@ -12,6 +12,19 @@ from app.models import JobRecord
 from app.web_security import redact_text_urls, redact_url_query
 
 SENSITIVE_RESPONSE_HEADERS = {"set-cookie", "authorization", "proxy-authorization", "x-api-key", "x-auth-token"}
+DJANGO_SECRET_KEYWORDS = (
+    "SECRET_KEY",
+    "PASSWORD",
+    "PASS",
+    "TOKEN",
+    "API_KEY",
+    "SECRET",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "EMAIL_HOST_PASSWORD",
+    "AWS_SECRET_ACCESS_KEY",
+    "PRIVATE_KEY",
+)
 
 
 @dataclass(frozen=True)
@@ -96,15 +109,14 @@ def render_xml_report(job: JobRecord) -> str:
     add_text(job_node, "targetDomain", job.target_domain or "")
     add_text(job_node, "createdAt", job.created_at.isoformat())
     add_text(job_node, "updatedAt", job.updated_at.isoformat())
-    job_error = redact_text_urls(job.error) if job.audit_type == "web_basic" and job.error else job.error or ""
-    add_text(job_node, "error", job_error)
+    add_text(job_node, "error", public_job_error(job))
 
     file_node = ElementTree.SubElement(root, "file")
     add_text(file_node, "id", job.file_id or "")
     add_text(file_node, "sourceFileDeletedAt", job.source_file_deleted_at.isoformat() if job.source_file_deleted_at else "")
 
     result = as_dict(job.result)
-    public_result = as_dict(redact_web_value(result)) if job.audit_type == "web_basic" else result
+    public_result = public_result_for_job(job, result)
     append_value(root, "summary", public_result.get("summary", build_summary(job)))
     append_value(root, "hashes", public_result.get("hashes", {}))
     append_value(root, "findings", public_result.get("findings", []))
@@ -128,7 +140,8 @@ def render_pdf_report(job: JobRecord) -> bytes:
 
 
 def build_report_sections(job: JobRecord) -> list[ReportSection]:
-    result = as_dict(job.result)
+    result = public_result_for_job(job, as_dict(job.result))
+    job_error = public_job_error(job)
     sections = [
         ReportSection(
             "Job",
@@ -142,7 +155,7 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
                 ("Created at", job.created_at.isoformat()),
                 ("Updated at", job.updated_at.isoformat()),
                 ("Source file deleted", job.source_file_deleted_at.isoformat() if job.source_file_deleted_at else "No"),
-                ("Job error", redact_text_urls(job.error) if job.audit_type == "web_basic" and job.error else job.error or "N/A"),
+                ("Job error", job_error or "N/A"),
             ],
         ),
         ReportSection("Summary", flatten_mapping(build_summary(job))),
@@ -310,7 +323,7 @@ def build_django_config_sections(result: dict[str, Any]) -> list[ReportSection]:
 
 
 def build_summary(job: JobRecord) -> dict[str, Any]:
-    result = as_dict(job.result)
+    result = public_result_for_job(job, as_dict(job.result))
     validation = as_dict(result.get("validation"))
     summary = as_dict(result.get("summary"))
     data: dict[str, Any] = {
@@ -410,13 +423,66 @@ def redact_web_value(value: Any) -> Any:
     return value
 
 
+def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, Any]:
+    if job.audit_type == "web_basic":
+        return as_dict(redact_web_value(result))
+    if job.audit_type == "django_config_basic":
+        return as_dict(redact_django_config_value(result))
+    return result
+
+
+def public_job_error(job: JobRecord) -> str:
+    if not job.error:
+        return ""
+    if job.audit_type == "web_basic":
+        return redact_text_urls(job.error)
+    if job.audit_type == "django_config_basic":
+        return redact_django_secret_text(job.error)
+    return job.error
+
+
+def redact_django_config_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_django_secret_text(value)
+    if isinstance(value, list):
+        return [redact_django_config_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_django_config_value(item) for key, item in value.items()}
+    return value
+
+
+def redact_django_secret_text(value: str) -> str:
+    redacted = re.sub(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "[REDACTED PRIVATE KEY]",
+        value,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    redacted = re.sub(r"(?i)django-insecure-[^\s'\"<>)\]}]+", "django-insecure-[REDACTED]", redacted)
+    redacted = re.sub(
+        r"(?i)\b((?:postgres(?:ql)?|mysql|redis|https?)://[^:/@\s]+):([^@\s]+)@",
+        r"\1:[REDACTED]@",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b((?:postgres(?:ql)?|mysql|redis|https?)://):([^@\s]+)@",
+        r"\1:[REDACTED]@",
+        redacted,
+    )
+    keywords = "|".join(re.escape(keyword) for keyword in DJANGO_SECRET_KEYWORDS)
+    quoted_pattern = re.compile(rf"(?i)\b({keywords})\b(\s*[:=]\s*)(['\"])(.*?)(['\"])")
+    redacted = quoted_pattern.sub(lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]{match.group(5)}", redacted)
+    bare_pattern = re.compile(rf"(?i)\b({keywords})\b(\s*[:=]\s*)([^\s,}}\n]+)")
+    return bare_pattern.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", redacted)
+
+
 def collect_errors(job: JobRecord) -> dict[str, Any]:
-    result = as_dict(job.result)
+    result = public_result_for_job(job, as_dict(job.result))
     validation = as_dict(result.get("validation"))
     tool_outputs = as_dict(result.get("tool_outputs"))
     errors: dict[str, Any] = {
-        "job_error": redact_text_urls(job.error) if job.audit_type == "web_basic" and job.error else job.error or "",
-        "result_errors": redact_web_value(result.get("errors", [])) if job.audit_type == "web_basic" else result.get("errors", []),
+        "job_error": public_job_error(job),
+        "result_errors": result.get("errors", []),
         "warnings": validation.get("warnings", []),
         "timed_out_tools": validation.get("timed_out_tools", []),
     }

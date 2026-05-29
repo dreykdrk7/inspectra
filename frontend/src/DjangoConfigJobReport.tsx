@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { buildDjangoConfigAuditReport, type DjangoConfigFinding } from "./djangoConfigReport";
+import { buildDjangoConfigAuditReport, redactDjangoConfigValue, type DjangoConfigFinding } from "./djangoConfigReport";
 import type { MetadataEntry } from "./pdfReport";
 import type { FileRecord, JobRecord, JobStatus } from "./types";
 
@@ -182,10 +182,15 @@ function StatusBadge({ status }: { status: JobStatus }) {
 }
 
 function RawJson({ job }: { job: JobRecord }) {
+  const redactedJob = {
+    ...job,
+    error: typeof job.error === "string" ? redactDjangoConfigValue(job.error) : job.error,
+    result: redactDjangoConfigValue(job.result)
+  };
   return (
     <details className="raw-json">
-      <summary>Raw JSON</summary>
-      <pre>{JSON.stringify(job, null, 2)}</pre>
+      <summary>Raw JSON (redacted)</summary>
+      <pre>{JSON.stringify(redactedJob, null, 2)}</pre>
     </details>
   );
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildArchiveAuditReport } from "./archiveReport";
-import { buildDjangoConfigAuditReport } from "./djangoConfigReport";
+import { buildDjangoConfigAuditReport, redactDjangoConfigValue } from "./djangoConfigReport";
 import { buildDomainAuditReport } from "./domainReport";
 import { buildImageAuditReport } from "./imageReport";
 import { buildManifestAuditReport } from "./manifestReport";
@@ -352,5 +352,47 @@ describe("report helpers", () => {
     expect(report.detectedFiles).toEqual([]);
     expect(report.findings).toEqual([]);
     expect(report.errors).toEqual([]);
+  });
+
+  it("redacts legacy Django config secret-like values", () => {
+    const report = buildDjangoConfigAuditReport({
+      ...baseJob,
+      audit_type: "django_config_basic",
+      error: "TOKEN=super-secret-value-123",
+      result: {
+        analyzer: "django_config_basic",
+        summary: { secrets_redacted_count: 0 },
+        detected_files: [
+          { path: "project/settings.py", category: "django_config", read: false, skip_reason: "DATABASE_URL=postgres://user:rawpass@db/app" }
+        ],
+        django_signals: {
+          secret_key: { status: "SECRET_KEY = 'django-insecure-test-secret'", files: ["project/settings.py"] }
+        },
+        findings: [
+          {
+            id: "legacy_secret",
+            title: "Legacy secret",
+            level: "medium",
+            evidence: "SECRET_KEY = 'super-secret-value-123'",
+            description: "DATABASE_URL=postgres://user:rawpass@db/app",
+            recommendation: "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----"
+          }
+        ],
+        errors: ["PASSWORD=super-secret-value-123"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(redactDjangoConfigValue({
+      error: "TOKEN=super-secret-value-123",
+      result: report
+    }));
+
+    for (const secret of ["super-secret-value-123", "django-insecure-test-secret", "rawpass", "abc123", "BEGIN PRIVATE KEY"]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.findings[0].evidence).toContain("[REDACTED]");
+    expect(report.detectedFiles[0].skipReason).toContain("[REDACTED]");
   });
 });

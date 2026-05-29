@@ -3578,10 +3578,10 @@ def classify_django_config_candidate(path: str) -> str | None:
     basename_lower = basename.lower()
     parts = [part.lower() for part in normalized.split("/") if part]
 
-    if basename_lower == ".env":
-        return "env_sensitive"
-    if basename_lower in {".env.example", ".env.template", "env.example", "env.template", "sample.env", ".env.sample"}:
+    if is_django_env_template_name(basename_lower):
         return "env_template"
+    if is_django_sensitive_env_name(basename_lower):
+        return "env_sensitive"
     if basename in {"Dockerfile", "Procfile"} or basename_lower in {"dockerfile", "procfile", "docker-compose.yml", "compose.yml", "nginx.conf", "gunicorn.conf.py"}:
         return "deployment"
     if basename_lower.endswith(".service"):
@@ -3597,6 +3597,16 @@ def classify_django_config_candidate(path: str) -> str | None:
     if len(parts) >= 3 and parts[-3:-1] == ["config", "settings"] and basename_lower.endswith(".py"):
         return "django_config"
     return None
+
+
+def is_django_env_template_name(basename: str) -> bool:
+    if basename in {"env.example", "env.template", "env.sample", "sample.env"}:
+        return True
+    return basename.startswith(".env") and any(marker in basename for marker in ("example", "sample", "template"))
+
+
+def is_django_sensitive_env_name(basename: str) -> bool:
+    return basename == ".env" or basename == ".envrc" or basename.startswith(".env.")
 
 
 def normalize_archive_entry_path(path: str) -> str:

@@ -628,6 +628,46 @@ async def test_analyze_django_config_detects_env_without_reading_and_deployment_
 
 
 @pytest.mark.anyio
+async def test_analyze_django_config_detects_env_variants_without_reading(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            ".env.production": b"SECRET_KEY=prod-secret\n",
+            ".env.prod": b"TOKEN=prod-token\n",
+            ".env.local": b"DATABASE_URL=postgres://user:pass@db/app\n",
+            ".envrc": b"export PASSWORD=envrc-secret\n",
+            ".env.example": b"DEBUG=False\n",
+            ".env.template": b"SECRET_KEY=template-secret\n",
+            ".env.sample": b"TOKEN=sample-token\n",
+            "env.example": b"PASSWORD=example-password\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/django-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    records = {item["path"]: item for item in payload["detected_files"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    for path in (".env.production", ".env.prod", ".env.local", ".envrc"):
+        assert records[path]["category"] == "env_sensitive"
+        assert records[path]["read"] is False
+        assert records[path]["skip_reason"] == "sensitive_env_not_read"
+    for path in (".env.example", ".env.template", ".env.sample", "env.example"):
+        assert records[path]["category"] == "env_template"
+        assert records[path]["read"] is True
+    assert payload["summary"]["env_files_detected"] == 8
+    for secret in ("prod-secret", "prod-token", "pass@db", "envrc-secret"):
+        assert secret not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_django_config_skips_path_traversal(monkeypatch, tmp_path):
     archive_path = write_zip_archive(tmp_path, {"../settings.py": b"DEBUG=True\n"})
     monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
