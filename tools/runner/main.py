@@ -189,6 +189,9 @@ SECRETS_REVIEW_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_SECRETS_REVIEW
 NODE_PACKAGE_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILES", 100)
 NODE_PACKAGE_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES", 524_288)
 NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
+CI_CD_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_CI_CD_CONFIG_MAX_FILES", 100)
+CI_CD_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_CI_CD_CONFIG_MAX_FILE_BYTES", 524_288)
+CI_CD_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_CI_CD_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
 WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
@@ -622,6 +625,35 @@ async def analyze_node_package_config(request: ArchiveAnalysisRequest) -> dict[s
         analysis = empty_node_package_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
 
     return build_node_package_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
+
+
+@app.post("/analyze/ci-cd-config")
+async def analyze_ci_cd_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = ci_cd_config_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_ci_cd_config_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_ci_cd_config_analysis(
+                errors=["Unsupported or corrupt archive. Inspectra did not execute workflows, scripts, actions, or provider calls."]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_ci_cd_config_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        analysis = empty_ci_cd_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+
+    return build_ci_cd_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/web-basic")
@@ -7059,6 +7091,1036 @@ def add_node_package_config_finding(
         finding["file_path"] = file_path
     if context:
         finding["context"] = context
+    if line is not None:
+        finding["line"] = line
+    analysis["findings"].append(finding)
+
+
+def ci_cd_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = CI_CD_CONFIG_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = CI_CD_CONFIG_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = CI_CD_CONFIG_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CI/CD config analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_ci_cd_config_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_ci_cd_config_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            analysis["summary"]["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"ci_cd_config_{scoped['id']}"
+            analysis["findings"].append(scoped)
+            finalize_ci_cd_config_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_ci_cd_config_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_ci_cd_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda entry_info=info: archive.open(entry_info),
+                )
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_ci_cd_config_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_ci_cd_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda tar_member=member: archive.extractfile(tar_member),
+                )
+
+    finalize_ci_cd_config_analysis(analysis)
+    return analysis
+
+
+def empty_ci_cd_config_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "files_considered": 0,
+            "files_reviewed": 0,
+            "workflow_files_detected": 0,
+            "jobs_detected": 0,
+            "steps_detected": 0,
+            "triggers_detected": 0,
+            "findings_count": 0,
+            "redacted_values_count": 0,
+            "truncated": False,
+        },
+        "files_detected": [],
+        "files_reviewed": [],
+        "workflows": [],
+        "jobs": [],
+        "triggers": [],
+        "permissions": [],
+        "actions": [],
+        "service_containers": [],
+        "publish_deploy_signals": [],
+        "findings": [],
+        "redaction_notes": [],
+        "errors": errors or [],
+    }
+
+
+def build_ci_cd_config_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "ci_cd_config_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "files_detected": analysis.get("files_detected", []),
+        "files_reviewed": analysis.get("files_reviewed", []),
+        "workflows": analysis.get("workflows", []),
+        "jobs": analysis.get("jobs", []),
+        "triggers": analysis.get("triggers", []),
+        "permissions": analysis.get("permissions", []),
+        "actions": analysis.get("actions", []),
+        "service_containers": analysis.get("service_containers", []),
+        "publish_deploy_signals": analysis.get("publish_deploy_signals", []),
+        "findings": findings,
+        "redaction_notes": analysis.get("redaction_notes", []),
+        "errors": analysis.get("errors", []),
+        "truncated": bool(summary.get("truncated")),
+    }
+
+
+def should_stop_ci_cd_config_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    if index > ARCHIVE_MAX_ENTRIES:
+        analysis["summary"]["truncated"] = True
+        add_ci_cd_config_finding(
+            analysis,
+            "ci_cd_config_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "high",
+            "limit",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    return False
+
+
+def process_ci_cd_config_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_ci_cd_config_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    if category != "env_sensitive":
+        summary["workflow_files_detected"] += 1
+
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    provider = ci_cd_provider_for_category(category)
+    context = ci_cd_config_file_context(path, category)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "provider": provider,
+        "context": context,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = ci_cd_config_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["files_detected"].append(record)
+        add_ci_cd_config_skip_finding(analysis, path, skip_reason, size_bytes, context)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["files_detected"].append(record)
+        add_ci_cd_config_finding(
+            analysis,
+            "ci_cd_config_file_read_error",
+            "CI/CD config file could not be read safely",
+            "low",
+            "medium",
+            "archive",
+            "A candidate CI/CD configuration file could not be read from the archive within Inspectra limits.",
+            f"{path}: {exc}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+            context=context,
+            provider=provider,
+        )
+        return
+
+    state["total_bytes_read"] += len(raw_bytes)
+    if b"\x00" in raw_bytes:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_ci_cd_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_ci_cd_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    state["files_read"] += 1
+    summary["files_reviewed"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["files_detected"].append(record)
+    analysis["files_reviewed"].append(
+        {
+            "path": path,
+            "category": category,
+            "provider": provider,
+            "context": context,
+            "size_bytes": size_bytes,
+            "bytes_read": len(raw_bytes),
+        }
+    )
+    analyze_ci_cd_config_text(analysis, path, category, provider, context, text)
+
+
+def classify_ci_cd_config_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    lower = normalized.lower()
+    basename = lower.rsplit("/", 1)[-1]
+
+    if is_secrets_sensitive_env_name(basename):
+        return "env_sensitive"
+    if ".github/workflows/" in lower and basename.endswith((".yml", ".yaml")):
+        return "github_workflow"
+    if basename in {"action.yml", "action.yaml"} and (".github/actions/" in lower or "/" not in normalized):
+        return "github_action"
+    if basename in {".gitlab-ci.yml", ".gitlab-ci.yaml"} or (".gitlab/ci/" in lower and basename.endswith((".yml", ".yaml"))):
+        return "gitlab_ci"
+    if basename in {"bitbucket-pipelines.yml", "bitbucket-pipelines.yaml"}:
+        return "bitbucket_pipeline"
+    if basename in {"azure-pipelines.yml", "azure-pipelines.yaml"} or (lower.startswith(".azure-pipelines/") and basename.endswith((".yml", ".yaml"))):
+        return "azure_pipeline"
+    if lower in {".circleci/config.yml", ".circleci/config.yaml"}:
+        return "circleci"
+    if basename == "jenkinsfile" or basename.startswith("jenkinsfile."):
+        return "jenkins"
+    if basename == "buildkite.yml" or lower == ".buildkite/pipeline.yml":
+        return "buildkite"
+    if basename in {"drone.yml", ".drone.yml"}:
+        return "drone"
+    if basename in {"woodpecker.yml", ".woodpecker.yml"}:
+        return "woodpecker"
+    if basename in {".releaserc", ".releaserc.json"} or basename.startswith("release.config."):
+        return "release_config"
+    if lower.endswith(".changeset/config.json"):
+        return "release_config"
+    return None
+
+
+def ci_cd_provider_for_category(category: str) -> str:
+    return {
+        "github_workflow": "github_actions",
+        "github_action": "github_actions",
+        "gitlab_ci": "gitlab_ci",
+        "bitbucket_pipeline": "bitbucket_pipelines",
+        "azure_pipeline": "azure_pipelines",
+        "circleci": "circleci",
+        "jenkins": "jenkins",
+        "buildkite": "buildkite",
+        "drone": "drone",
+        "woodpecker": "woodpecker",
+        "release_config": "release_config",
+        "env_sensitive": "env",
+    }.get(category, "generic_ci")
+
+
+def ci_cd_config_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if record.get("category") == "env_sensitive":
+        return "real_env_file_not_read"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_ci_cd_config_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int, context: str) -> None:
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit"}:
+        analysis["summary"]["truncated"] = True
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    if reason in {"real_env_file_not_read", "binary_or_non_text"}:
+        level = "info"
+    title = {
+        "path_traversal": "CI/CD config path uses traversal",
+        "absolute_path": "CI/CD config path is absolute",
+        "entry_name_too_long": "CI/CD config entry name is unusually long",
+        "file_too_large": "CI/CD config file omitted because it exceeds the size limit",
+        "too_many_files": "CI/CD config file limit reached",
+        "total_bytes_limit": "Total CI/CD config byte limit reached",
+        "binary_or_non_text": "CI/CD config candidate is not UTF-8 text",
+        "real_env_file_not_read": "Real environment file detected but not read",
+    }.get(reason, "CI/CD config candidate skipped by defensive limit")
+    if reason.startswith("not_regular_file"):
+        title = "CI/CD config candidate omitted because it is not a regular file"
+        level = "low"
+    evidence = f"{path}: {reason}" if reason.startswith("not_regular_file") else f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    add_ci_cd_config_finding(
+        analysis,
+        f"ci_cd_config_{reason.split(':', 1)[0]}",
+        title,
+        ci_cd_contextual_level(level, context),
+        ci_cd_contextual_confidence("high" if reason in {"path_traversal", "absolute_path", "real_env_file_not_read"} else "medium", context),
+        "archive",
+        "Inspectra detected a CI/CD-related file but did not read it because of a defensive limit, unsupported format, or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+        context=context,
+    )
+
+
+LOWER_CONFIDENCE_CI_CD_CONTEXTS = {"development", "test", "local", "example"}
+CI_SECRET_NAME_RE = re.compile(
+    r"(?i)(SECRET_KEY|CLIENT_SECRET|PRIVATE_KEY|DATABASE_URL|REDIS_URL|API_KEY|PASSWORD|TOKEN|SECRET|PASS|AUTH|[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY|KEY)[A-Z0-9_]*)"
+)
+CI_ASSIGNMENT_RE = re.compile(r"(?i)\b([A-Z0-9_.-]*(?:SECRET|TOKEN|PASSWORD|API_KEY|PRIVATE_KEY|CLIENT_SECRET|KEY)[A-Z0-9_.-]*)\s*[:=]\s*([^\s,'\"}\]]+)")
+CI_URL_USERINFO_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^:\s/@]+:[^@\s]+@")
+CI_FULL_SHA_RE = re.compile(r"^[a-f0-9]{40}$", re.IGNORECASE)
+
+
+def ci_cd_config_file_context(path: str, category: str = "") -> str:
+    normalized = normalize_archive_entry_path(path).lower()
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    directories = set(parts[:-1])
+    name_tokens = set(re.split(r"[^a-z0-9]+", basename))
+    all_tokens = set(parts[:-1]) | name_tokens
+
+    if directories.intersection({"docs", "doc", "examples", "example", "samples", "sample"}) or all_tokens.intersection(
+        {"example", "examples", "sample", "samples", "template"}
+    ):
+        return "example"
+    if all_tokens.intersection({"test", "tests", "testing", "ci-test"}):
+        return "test"
+    if all_tokens.intersection({"dev", "development"}):
+        return "development"
+    if "local" in all_tokens:
+        return "local"
+    if all_tokens.intersection({"prod", "production", "release", "publish", "deploy"}) or "deploy" in directories:
+        return "production"
+    if category in {"github_workflow", "gitlab_ci", "bitbucket_pipeline", "azure_pipeline", "circleci"}:
+        return "shared"
+    return "ambiguous"
+
+
+def ci_cd_contextual_level(level: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_CI_CD_CONTEXTS:
+        return level
+    if level == "medium":
+        return "low"
+    if level == "low":
+        return "info"
+    return level
+
+
+def ci_cd_contextual_confidence(confidence: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_CI_CD_CONTEXTS:
+        return confidence
+    if confidence == "high":
+        return "medium"
+    if confidence == "medium":
+        return "low"
+    return confidence
+
+
+def active_ci_cd_config_lines(text: str) -> list[tuple[int, str]]:
+    lines: list[tuple[int, str]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("//"):
+            continue
+        lines.append((line_number, line))
+    return lines
+
+
+def analyze_ci_cd_config_text(analysis: dict[str, Any], path: str, category: str, provider: str, context: str, text: str) -> None:
+    lines = active_ci_cd_config_lines(text)
+    active_text = "\n".join(line for _line_number, line in lines)
+    workflow = {
+        "path": path,
+        "provider": provider,
+        "context": context,
+        "category": category,
+        "read": True,
+    }
+    analysis["workflows"].append(workflow)
+
+    job_names = extract_ci_cd_job_names(lines)
+    step_count = count_ci_cd_steps(lines)
+    for job_name in job_names:
+        analysis["jobs"].append({"path": path, "provider": provider, "context": context, "job": job_name})
+    analysis["summary"]["jobs_detected"] += len(job_names)
+    analysis["summary"]["steps_detected"] += step_count
+
+    analyze_ci_cd_triggers(analysis, path, provider, context, active_text)
+    analyze_ci_cd_permissions(analysis, path, provider, context, active_text)
+    analyze_ci_cd_actions_and_images(analysis, path, provider, context, lines)
+    analyze_ci_cd_secret_and_script_signals(analysis, path, provider, context, lines)
+    analyze_ci_cd_publish_deploy_signals(analysis, path, provider, context, lines, active_text)
+    analyze_ci_cd_misc_signals(analysis, path, provider, context, lines, active_text)
+
+
+def extract_ci_cd_job_names(lines: list[tuple[int, str]]) -> list[str]:
+    names: list[str] = []
+    in_jobs = False
+    for _line_number, line in lines:
+        stripped = line.strip()
+        if re.match(r"jobs\s*:\s*$", stripped):
+            in_jobs = True
+            continue
+        if in_jobs:
+            match = re.match(r"([A-Za-z0-9_.-]+)\s*:\s*$", stripped)
+            if match and match.group(1) not in {"steps", "runs-on", "permissions", "env", "strategy", "with", "services"}:
+                names.append(match.group(1))
+            if stripped and not line.startswith((" ", "\t", "-")) and not match:
+                in_jobs = False
+    return names[:100]
+
+
+def count_ci_cd_steps(lines: list[tuple[int, str]]) -> int:
+    return sum(1 for _line_number, line in lines if re.search(r"^\s*-\s+(?:name|run|uses)\s*:", line))
+
+
+def add_ci_cd_trigger(analysis: dict[str, Any], path: str, provider: str, context: str, trigger: str, line: int | None = None) -> None:
+    analysis["triggers"].append({"path": path, "provider": provider, "context": context, "trigger": trigger, **({"line": line} if line else {})})
+    analysis["summary"]["triggers_detected"] = len(analysis["triggers"])
+
+
+def analyze_ci_cd_triggers(analysis: dict[str, Any], path: str, provider: str, context: str, active_text: str) -> None:
+    checks = [
+        ("pull_request_target", "pull_request_target_used", "GitHub pull_request_target trigger is present", "medium"),
+        ("workflow_dispatch", "workflow_dispatch_with_inputs", "Manual workflow dispatch trigger is present", "low"),
+        ("schedule", "schedule_trigger_present", "Scheduled workflow trigger is present", "low"),
+        ("pull_request", "broad_pull_request_trigger", "Pull request trigger appears broad", "low"),
+        ("push", "broad_push_trigger", "Push trigger appears broad", "low"),
+    ]
+    for trigger, finding_id, title, level in checks:
+        if re.search(rf"(?m)^\s*(?:-\s*)?{re.escape(trigger)}\s*:", active_text) or re.search(rf"(?m)^\s*-\s*{re.escape(trigger)}\s*$", active_text):
+            add_ci_cd_trigger(analysis, path, provider, context, trigger)
+            add_ci_cd_config_finding(
+                analysis,
+                finding_id,
+                title,
+                ci_cd_contextual_level(level, context),
+                ci_cd_contextual_confidence("medium", context),
+                "trigger",
+                "A CI/CD trigger was observed. This is a review indicator, not evidence of exploitability.",
+                trigger,
+                "Confirm this trigger matches the intended trust boundary for the workflow.",
+                file_path=path,
+                context=context,
+                provider=provider,
+            )
+
+
+def analyze_ci_cd_permissions(analysis: dict[str, Any], path: str, provider: str, context: str, active_text: str) -> None:
+    if provider != "github_actions":
+        return
+    if "permissions" not in active_text:
+        add_ci_cd_config_finding(
+            analysis,
+            "github_permissions_missing",
+            "GitHub workflow has no explicit permissions block",
+            ci_cd_contextual_level("low", context),
+            ci_cd_contextual_confidence("medium", context),
+            "permissions",
+            "No explicit GitHub Actions permissions block was observed in this workflow.",
+            "permissions: not found",
+            "Declare least-privilege workflow permissions where practical.",
+            file_path=path,
+            context=context,
+            provider=provider,
+        )
+        return
+    permission_checks = [
+        (r"permissions\s*:\s*write-all\b", "github_permissions_write_all", "GitHub workflow grants write-all permissions", "medium", "write-all"),
+        (r"id-token\s*:\s*write\b", "id_token_write_permission", "GitHub workflow grants id-token write permission", "medium", "id-token: write"),
+        (r"contents\s*:\s*write\b", "contents_write_permission", "GitHub workflow grants contents write permission", "low", "contents: write"),
+        (r"packages\s*:\s*write\b", "packages_write_permission", "GitHub workflow grants packages write permission", "low", "packages: write"),
+    ]
+    for pattern, finding_id, title, level, evidence in permission_checks:
+        if re.search(pattern, active_text, flags=re.IGNORECASE):
+            analysis["permissions"].append({"path": path, "provider": provider, "context": context, "permission": evidence})
+            add_ci_cd_config_finding(
+                analysis,
+                finding_id,
+                title,
+                ci_cd_contextual_level(level, context),
+                ci_cd_contextual_confidence("high" if level == "medium" else "medium", context),
+                "permissions",
+                "A write-capable CI/CD permission was observed. This is a review indicator.",
+                evidence,
+                "Confirm the permission is required and scoped to the smallest practical workflow surface.",
+                file_path=path,
+                context=context,
+                provider=provider,
+            )
+
+
+def analyze_ci_cd_actions_and_images(
+    analysis: dict[str, Any],
+    path: str,
+    provider: str,
+    context: str,
+    lines: list[tuple[int, str]],
+) -> None:
+    for line_number, line in lines:
+        stripped = line.strip()
+        uses_match = re.search(r"\buses\s*:\s*['\"]?([^'\"\s#]+)", stripped, flags=re.IGNORECASE)
+        if uses_match:
+            action_ref = uses_match.group(1)
+            analysis["actions"].append({"path": path, "provider": provider, "context": context, "action": action_ref, "line": line_number})
+            if "@" in action_ref and not action_ref.startswith(("./", "../")):
+                _action, ref = action_ref.rsplit("@", 1)
+                if not CI_FULL_SHA_RE.fullmatch(ref):
+                    finding_id = "github_action_uses_branch_ref" if ref.lower() in {"main", "master", "latest"} else "github_action_unpinned_ref"
+                    title = "Action reference is not pinned to a full commit SHA"
+                    add_ci_cd_config_finding(
+                        analysis,
+                        finding_id,
+                        title,
+                        ci_cd_contextual_level("low", context),
+                        ci_cd_contextual_confidence("medium", context),
+                        "actions",
+                        "A workflow action reference is not pinned to a full commit SHA. This is a supply-chain review indicator.",
+                        action_ref[:220],
+                        "Consider pinning third-party actions to immutable commit SHAs where reproducibility matters.",
+                        file_path=path,
+                        context=context,
+                        provider=provider,
+                        line=line_number,
+                    )
+                    if ref.lower() in {"main", "master", "latest"}:
+                        add_ci_cd_config_finding(
+                            analysis,
+                            "github_action_uses_latest_or_master",
+                            "Action reference uses a floating branch-like ref",
+                            ci_cd_contextual_level("low", context),
+                            ci_cd_contextual_confidence("medium", context),
+                            "actions",
+                            "A workflow action uses latest/master/main style ref.",
+                            action_ref[:220],
+                            "Review whether this mutable reference is intentional.",
+                            file_path=path,
+                            context=context,
+                            provider=provider,
+                            line=line_number,
+                        )
+        image_match = re.search(r"\bimage\s*:\s*['\"]?([^'\"\s#]+)", stripped, flags=re.IGNORECASE)
+        if image_match:
+            image_ref = image_match.group(1)
+            if ci_cd_image_uses_latest(image_ref):
+                add_ci_cd_config_finding(
+                    analysis,
+                    "docker_image_latest_tag",
+                    "CI service/container image uses latest tag",
+                    ci_cd_contextual_level("low", context),
+                    ci_cd_contextual_confidence("medium", context),
+                    "image",
+                    "A CI/CD image reference appears to use the latest tag.",
+                    image_ref[:220],
+                    "Consider pinning images to explicit versions or digests where reproducibility matters.",
+                    file_path=path,
+                    context=context,
+                    provider=provider,
+                    line=line_number,
+                )
+            elif ci_cd_image_is_unpinned(image_ref):
+                add_ci_cd_config_finding(
+                    analysis,
+                    "docker_image_unpinned",
+                    "CI service/container image is unpinned",
+                    ci_cd_contextual_level("low", context),
+                    ci_cd_contextual_confidence("medium", context),
+                    "image",
+                    "A CI/CD image reference appears to lack a tag or digest.",
+                    image_ref[:220],
+                    "Consider explicit image versions or digests where reproducibility matters.",
+                    file_path=path,
+                    context=context,
+                    provider=provider,
+                    line=line_number,
+                )
+
+
+def ci_cd_image_uses_latest(image_ref: str) -> bool:
+    return image_ref.lower().endswith(":latest")
+
+
+def ci_cd_image_is_unpinned(image_ref: str) -> bool:
+    if "@" in image_ref:
+        return False
+    tail = image_ref.rsplit("/", 1)[-1]
+    return ":" not in tail
+
+
+def analyze_ci_cd_secret_and_script_signals(
+    analysis: dict[str, Any],
+    path: str,
+    provider: str,
+    context: str,
+    lines: list[tuple[int, str]],
+) -> None:
+    for line_number, line in lines:
+        stripped = line.strip()
+        if "${{ secrets." in stripped or "$CI_" in stripped and "SECRET" in stripped.upper():
+            add_ci_cd_config_finding(
+                analysis,
+                "ci_secret_reference_present",
+                "CI secret-store reference is present",
+                "info",
+                ci_cd_contextual_confidence("medium", context),
+                "secrets",
+                "The workflow references a provider secret context. This is informational and does not expose the secret value.",
+                safe_ci_cd_script_excerpt(stripped),
+                "Confirm secret scopes and event triggers match the intended trust boundary.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+            )
+        if re.search(r"(?i)(?:^|[\s/:])\.env(?:\.|$|\s)", stripped):
+            add_ci_cd_config_finding(
+                analysis,
+                "ci_env_file_reference",
+                "Workflow references an env file",
+                "info",
+                ci_cd_contextual_confidence("medium", context),
+                "secrets",
+                "A CI/CD line appears to reference an env file. Inspectra does not read real env file content.",
+                safe_ci_cd_script_excerpt(stripped),
+                "Confirm real env files are not committed or shared in archives.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+            )
+        assignment = CI_ASSIGNMENT_RE.search(stripped)
+        if assignment and not ci_cd_value_is_placeholder(assignment.group(2)):
+            add_ci_cd_config_finding(
+                analysis,
+                "inline_secret_like_env",
+                "Inline secret-like environment value observed",
+                ci_cd_contextual_level("medium", context),
+                ci_cd_contextual_confidence("high", context),
+                "secrets",
+                "A CI/CD config line appears to define a secret-like value inline. Inspectra redacted the value and did not validate it.",
+                safe_ci_cd_script_excerpt(stripped),
+                "Move real secrets to the provider secret store and rotate if this archive was shared.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+                redacted=True,
+            )
+        if re.search(r"(?i)\b(?:run|script|command)\s*:", stripped) and CI_SECRET_NAME_RE.search(stripped):
+            add_ci_cd_config_finding(
+                analysis,
+                "secret_in_ci_script",
+                "CI script references a secret-like name",
+                ci_cd_contextual_level("low", context),
+                ci_cd_contextual_confidence("medium", context),
+                "secrets",
+                "A CI/CD script references a secret-like variable name. This is a review indicator.",
+                safe_ci_cd_script_excerpt(stripped),
+                "Confirm the value is injected safely and not printed to logs.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+            )
+        if ci_cd_curl_pipe_shell(stripped):
+            add_ci_cd_config_finding(
+                analysis,
+                "ci_curl_pipe_shell",
+                "CI script pipes downloaded content to shell",
+                ci_cd_contextual_level("medium", context),
+                ci_cd_contextual_confidence("high", context),
+                "script",
+                "A CI/CD script appears to pipe curl or wget output directly to sh/bash.",
+                safe_ci_cd_script_excerpt(stripped),
+                "Prefer verified downloads and explicit checksums before executing installer scripts.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+            )
+        if ci_cd_remote_script_execution(stripped):
+            add_ci_cd_config_finding(
+                analysis,
+                "ci_remote_script_execution",
+                "CI script appears to fetch and execute remote code",
+                ci_cd_contextual_level("medium", context),
+                ci_cd_contextual_confidence("medium", context),
+                "script",
+                "A CI/CD script appears to download and execute remote code.",
+                safe_ci_cd_script_excerpt(stripped),
+                "Review remote execution paths and pin/verifiably fetch artifacts where possible.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+            )
+        if re.search(r"(?i)\b(?:npm|yarn|pnpm)\s+(?:install|add)\s+-g\b", stripped):
+            add_ci_cd_config_finding(
+                analysis,
+                "ci_install_and_execute_global_tool",
+                "CI script installs a global tool",
+                ci_cd_contextual_level("low", context),
+                ci_cd_contextual_confidence("medium", context),
+                "script",
+                "A CI/CD script installs a global tool. This is a package execution review indicator.",
+                safe_ci_cd_script_excerpt(stripped),
+                "Pin tools and review install-time script behavior before running in trusted CI.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+            )
+        if CI_SECRET_NAME_RE.search(stripped):
+            add_ci_cd_config_finding(
+                analysis,
+                "ci_script_references_secret_name",
+                "CI line references a secret-like name",
+                "info",
+                ci_cd_contextual_confidence("low", context),
+                "secrets",
+                "A CI/CD line references a secret-like name. This is an informational review signal.",
+                safe_ci_cd_script_excerpt(stripped),
+                "Confirm secret references are scoped and not echoed into logs.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+            )
+
+
+def ci_cd_value_is_placeholder(value: str) -> bool:
+    return value.strip().strip("'\"").lower() in {"changeme", "change-me", "example", "dummy", "secret", "password", "todo", "replace-me"}
+
+
+def ci_cd_curl_pipe_shell(value: str) -> bool:
+    return bool(re.search(r"(?is)\b(?:curl|wget)\b[^\n|]*\|[^\n]*(?:sh|bash)\b", value))
+
+
+def ci_cd_remote_script_execution(value: str) -> bool:
+    return bool(re.search(r"(?is)\b(?:curl|wget)\b[^\n]*(?:https?://)[^\n]*(?:&&|;|\|)[^\n]*(?:sh|bash)\b", value))
+
+
+def analyze_ci_cd_publish_deploy_signals(
+    analysis: dict[str, Any],
+    path: str,
+    provider: str,
+    context: str,
+    lines: list[tuple[int, str]],
+    active_text: str,
+) -> None:
+    signals = [
+        (r"\bnpm\s+publish\b", "npm_publish_job_detected", "npm publish command detected", "publish"),
+        (r"\bdocker\s+push\b", "docker_push_job_detected", "Docker push command detected", "deploy"),
+        (r"\b(?:aws|gcloud|az|kubectl|helm|terraform|serverless)\b[^\n]*(?:deploy|apply|push|sync|update)", "cloud_deploy_job_detected", "Cloud or infrastructure deploy command detected", "deploy"),
+    ]
+    for line_number, line in lines:
+        for pattern, finding_id, title, category in signals:
+            if re.search(pattern, line, flags=re.IGNORECASE):
+                signal = {
+                    "path": path,
+                    "provider": provider,
+                    "context": context,
+                    "signal": finding_id,
+                    "line": line_number,
+                    "evidence": safe_ci_cd_script_excerpt(line),
+                }
+                analysis["publish_deploy_signals"].append(signal)
+                add_ci_cd_config_finding(
+                    analysis,
+                    finding_id,
+                    title,
+                    ci_cd_contextual_level("low", context),
+                    ci_cd_contextual_confidence("medium", context),
+                    category,
+                    "A publish or deploy command was observed. This is a review indicator, not proof the workflow runs in production.",
+                    safe_ci_cd_script_excerpt(line),
+                    "Confirm triggers, permissions, and environment protections around publish/deploy jobs.",
+                    file_path=path,
+                    context=context,
+                    provider=provider,
+                    line=line_number,
+                )
+    if re.search(r"(?im)^\s*environment\s*:\s*['\"]?production['\"]?\s*$", active_text) or context == "production":
+        add_ci_cd_config_finding(
+            analysis,
+            "production_environment_deploy",
+            "Workflow references a production/deploy context",
+            ci_cd_contextual_level("low", context),
+            ci_cd_contextual_confidence("medium", context),
+            "deploy",
+            "The workflow path or content appears to reference production, deploy, release, or publish context.",
+            "production/deploy context",
+            "Confirm environment protections and approval requirements.",
+            file_path=path,
+            context=context,
+            provider=provider,
+        )
+
+
+def analyze_ci_cd_misc_signals(
+    analysis: dict[str, Any],
+    path: str,
+    provider: str,
+    context: str,
+    lines: list[tuple[int, str]],
+    active_text: str,
+) -> None:
+    if re.search(r"(?i)\bruns-on\s*:\s*(?:\[.*)?self-hosted\b", active_text):
+        add_ci_cd_config_finding(
+            analysis,
+            "self_hosted_runner_used",
+            "Workflow uses a self-hosted runner",
+            "info",
+            ci_cd_contextual_confidence("medium", context),
+            "runner",
+            "A self-hosted runner label was observed. This is informational unless combined with risky triggers or permissions.",
+            "runs-on: self-hosted",
+            "Confirm runner isolation and repository trust boundaries.",
+            file_path=path,
+            context=context,
+            provider=provider,
+        )
+    for line_number, line in lines:
+        lower = line.lower()
+        if "upload-artifact" in lower:
+            add_ci_cd_config_finding(
+                analysis,
+                "ci_artifact_upload_present",
+                "Artifact upload step present",
+                "info",
+                ci_cd_contextual_confidence("low", context),
+                "artifact",
+                "A CI/CD artifact upload step was observed.",
+                safe_ci_cd_script_excerpt(line),
+                "Confirm artifacts do not include secrets or unnecessary build outputs.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+            )
+        if "download-artifact" in lower:
+            add_ci_cd_config_finding(
+                analysis,
+                "ci_artifact_download_present",
+                "Artifact download step present",
+                "info",
+                ci_cd_contextual_confidence("low", context),
+                "artifact",
+                "A CI/CD artifact download step was observed.",
+                safe_ci_cd_script_excerpt(line),
+                "Confirm artifact trust boundaries before using downloaded outputs.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+            )
+        if "actions/cache" in lower or re.search(r"(?i)\bcache\s*:", line):
+            add_ci_cd_config_finding(
+                analysis,
+                "ci_cache_key_broad",
+                "CI cache usage present",
+                "info",
+                ci_cd_contextual_confidence("low", context),
+                "cache",
+                "CI cache configuration was observed. Broad cache keys can affect reproducibility and trust boundaries.",
+                safe_ci_cd_script_excerpt(line),
+                "Confirm cache keys are tied to dependency lockfiles or other appropriate inputs.",
+                file_path=path,
+                context=context,
+                provider=provider,
+                line=line_number,
+            )
+
+
+def safe_ci_cd_script_excerpt(value: str) -> str:
+    redacted, _count = redact_ci_cd_secret_text(value)
+    collapsed = re.sub(r"\s+", " ", redacted).strip()
+    return collapsed[:240]
+
+
+def redact_ci_cd_secret_text(text: str) -> tuple[str, int]:
+    redacted, count = redact_node_secret_text(text)
+    updated, replacements = re.subn(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "[REDACTED PRIVATE KEY]",
+        redacted,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    redacted = updated
+    count += replacements
+    return redacted, count
+
+
+def finalize_ci_cd_config_analysis(analysis: dict[str, Any]) -> None:
+    analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+    if analysis["summary"]["redacted_values_count"]:
+        analysis["redaction_notes"] = [
+            "Secret-like values in CI/CD configuration evidence are redacted before storage and export on a best-effort basis.",
+        ]
+
+
+def add_ci_cd_config_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    confidence: str,
+    category: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str | None = None,
+    context: str | None = None,
+    provider: str | None = None,
+    job: str | None = None,
+    step: str | None = None,
+    line: int | None = None,
+    redacted: bool = False,
+) -> None:
+    safe_description, description_redactions = redact_ci_cd_secret_text(description)
+    safe_evidence, evidence_redactions = redact_ci_cd_secret_text(evidence)
+    safe_recommendation, recommendation_redactions = redact_ci_cd_secret_text(recommendation)
+    redaction_count = description_redactions + evidence_redactions + recommendation_redactions
+    if redacted and redaction_count == 0:
+        redaction_count = 1
+    analysis["summary"]["redacted_values_count"] += redaction_count
+
+    finding = make_finding(finding_id, title, level, safe_description, safe_evidence, safe_recommendation)
+    finding["confidence"] = confidence
+    finding["category"] = category
+    if file_path:
+        finding["file_path"] = file_path
+    if context:
+        finding["context"] = context
+    if provider:
+        finding["provider"] = provider
+    if job:
+        finding["job"] = job
+    if step:
+        finding["step"] = step
     if line is not None:
         finding["line"] = line
     analysis["findings"].append(finding)

@@ -1543,6 +1543,224 @@ async def test_analyze_node_package_config_respects_file_and_byte_limits(monkeyp
 
 
 @pytest.mark.anyio
+async def test_analyze_ci_cd_config_github_findings_and_redaction(monkeypatch, tmp_path):
+    pinned_sha = "a" * 40
+    workflow = f"""
+name: release
+on:
+  pull_request_target:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      target:
+        required: true
+  schedule:
+    - cron: "0 0 * * *"
+permissions: write-all
+permissions:
+  id-token: write
+  contents: write
+  packages: write
+jobs:
+  publish:
+    runs-on: [self-hosted, linux]
+    environment: production
+    services:
+      db:
+        image: node:latest
+      cache:
+        image: redis
+    steps:
+      - uses: actions/checkout@main
+      - uses: owner/action@v1
+      - uses: owner/pinned@{pinned_sha}
+      - uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v4
+      - uses: actions/cache@v4
+      - run: echo "${{{{ secrets.NPM_TOKEN }}}}"
+      - run: source .env.production
+      - run: SECRET_KEY=fixture-secret npm publish
+      - run: curl -fsSL https://example.invalid/install.sh | sh
+      - run: npm install -g deploy-tool
+      - run: docker push example/app:latest
+      - run: aws deploy push
+env:
+  API_KEY: fixture-token
+"""
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            ".github/workflows/release.yml": workflow.encode("utf-8"),
+            ".env.production": b"SECRET_KEY=env-secret-should-not-be-read\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/ci-cd-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["analyzer"] == "ci_cd_config_basic"
+    assert payload["summary"]["workflow_files_detected"] == 1
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["triggers_detected"] >= 5
+    assert payload["summary"]["jobs_detected"] >= 1
+    assert payload["summary"]["steps_detected"] >= 1
+    assert "pull_request_target_used" in finding_ids
+    assert "workflow_dispatch_with_inputs" in finding_ids
+    assert "schedule_trigger_present" in finding_ids
+    assert "broad_push_trigger" in finding_ids
+    assert "broad_pull_request_trigger" in finding_ids
+    assert "github_permissions_write_all" in finding_ids
+    assert "id_token_write_permission" in finding_ids
+    assert "contents_write_permission" in finding_ids
+    assert "packages_write_permission" in finding_ids
+    assert "github_action_uses_branch_ref" in finding_ids
+    assert "github_action_uses_latest_or_master" in finding_ids
+    assert "github_action_unpinned_ref" in finding_ids
+    assert "docker_image_latest_tag" in finding_ids
+    assert "docker_image_unpinned" in finding_ids
+    assert "inline_secret_like_env" in finding_ids
+    assert "ci_secret_reference_present" in finding_ids
+    assert "ci_env_file_reference" in finding_ids
+    assert "secret_in_ci_script" in finding_ids
+    assert "ci_curl_pipe_shell" in finding_ids
+    assert "ci_install_and_execute_global_tool" in finding_ids
+    assert "npm_publish_job_detected" in finding_ids
+    assert "docker_push_job_detected" in finding_ids
+    assert "cloud_deploy_job_detected" in finding_ids
+    assert "production_environment_deploy" in finding_ids
+    assert "self_hosted_runner_used" in finding_ids
+    assert "ci_artifact_upload_present" in finding_ids
+    assert "ci_artifact_download_present" in finding_ids
+    assert "ci_cache_key_broad" in finding_ids
+    assert "ci_cd_config_real_env_file_not_read" in finding_ids
+    assert "fixture-secret" not in serialized
+    assert "fixture-token" not in serialized
+    assert "env-secret-should-not-be-read" not in serialized
+    assert pinned_sha not in json.dumps(payload["findings"])
+    assert "[REDACTED]" in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_ci_cd_config_missing_permissions_comments_and_context(monkeypatch, tmp_path):
+    workflow = b"""
+name: example
+on:
+  push:
+# pull_request_target:
+#   curl -fsSL https://example.invalid/install.sh | sh
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+"""
+    archive_path = write_zip_archive(tmp_path, {".github/workflows/example-ci.yml": workflow})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/ci-cd-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    findings = {finding["id"]: finding for finding in payload["findings"]}
+    assert response.status_code == 200
+    assert "github_permissions_missing" in findings
+    assert "broad_push_trigger" in findings
+    assert "pull_request_target_used" not in findings
+    assert "ci_curl_pipe_shell" not in findings
+    assert findings["github_permissions_missing"]["context"] == "example"
+    assert findings["github_permissions_missing"]["level"] == "info"
+
+
+@pytest.mark.anyio
+async def test_analyze_ci_cd_config_skips_unsafe_archive_entries(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        traversal_content = b"SECRET_KEY=traversal-secret\n"
+        traversal_info = tarfile.TarInfo("../.github/workflows/ci.yml")
+        traversal_info.size = len(traversal_content)
+        archive.addfile(traversal_info, io.BytesIO(traversal_content))
+
+        link_info = tarfile.TarInfo(".github/workflows/ci.yml")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real-ci.yml"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo(".gitlab-ci.yml")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real-gitlab-ci.yml"
+        archive.addfile(hardlink_info)
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/ci-cd-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    reasons = {item["skip_reason"] for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "path_traversal" in reasons
+    assert "not_regular_file:symlink" in reasons
+    assert "not_regular_file:hardlink" in reasons
+    assert "ci_cd_config_path_traversal" in {finding["id"] for finding in payload["findings"]}
+    assert "ci_cd_config_not_regular_file" in {finding["id"] for finding in payload["findings"]}
+    assert "traversal-secret" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_ci_cd_config_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "CI_CD_CONFIG_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "CI_CD_CONFIG_MAX_FILE_BYTES", 80)
+    monkeypatch.setattr(runner, "CI_CD_CONFIG_MAX_TOTAL_BYTES", 120)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": b"name: ci\non:\n  push:\njobs:\n  test:\n    steps:\n      - run: echo ok\n",
+            ".gitlab-ci.yml": b"SECRET_KEY=" + b"x" * 100 + b"\n",
+            "azure-pipelines.yml": b"trigger:\n- main\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/ci-cd-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "file_too_large" in reasons
+    assert "too_many_files" in reasons
+    assert "xxxxxxxxxxxxxxxxxxxxxxxx" not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
     server = start_test_http_server()
     transport = ASGITransport(app=runner.app)
