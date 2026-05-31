@@ -8,6 +8,7 @@ import { buildImageAuditReport } from "./imageReport";
 import { buildManifestAuditReport } from "./manifestReport";
 import { buildPdfAuditReport } from "./pdfReport";
 import { buildProjectArchiveAuditReport } from "./projectArchiveReport";
+import { buildSecretsReviewAuditReport, redactSecretsReviewValue } from "./secretsReviewReport";
 import { buildSubdomainAuditReport } from "./subdomainReport";
 import { buildWebAuditReport } from "./webReport";
 import type { JobRecord } from "./types";
@@ -550,5 +551,127 @@ describe("report helpers", () => {
     expect(serializedReport).toContain("REDACTED");
     expect(report.findings[0].evidence).toContain("[REDACTED]");
     expect(report.detectedFiles[0].skipReason).toContain("[REDACTED]");
+  });
+
+  it("normalizes secrets review files, findings, confidence, and redacted values", () => {
+    const report = buildSecretsReviewAuditReport({
+      ...baseJob,
+      audit_type: "secrets_review_basic",
+      result: {
+        analyzer: "secrets_review_basic",
+        archive_type: "zip",
+        summary: {
+          files_considered: 3,
+          files_reviewed: 2,
+          sensitive_files_detected: 1,
+          findings_count: 2,
+          high_confidence_count: 1,
+          redacted_values_count: 2,
+          truncated: false
+        },
+        limits: { max_files: 100 },
+        files_detected: [
+          { path: ".env.production", category: "env_sensitive", read: false, skip_reason: "real_env_file_not_read", context: "production" },
+          { path: ".env.example", category: "env_template", read: true, bytes_read: 64, context: "example" }
+        ],
+        files_reviewed: [{ path: ".env.example", category: "env_template", read: true, bytes_read: 64, context: "example" }],
+        sensitive_files: [{ path: ".env.production", category: "env_sensitive", read: false, skip_reason: "real_env_file_not_read", context: "production" }],
+        findings: [
+          {
+            id: "secret_like_assignment",
+            title: "Secret-like assignment observed",
+            level: "medium",
+            confidence: "high",
+            category: "assignment",
+            context: "production",
+            file_path: "settings.py",
+            line: 12,
+            evidence: "SECRET_KEY=[REDACTED]"
+          },
+          {
+            code: "weak_placeholder_secret",
+            message: "Placeholder secret",
+            severity: "info",
+            confidence: "low",
+            category: "placeholder"
+          }
+        ],
+        redaction_notes: ["Values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isSecretsReviewAudit).toBe(true);
+    expect(report.archiveType).toBe("zip");
+    expect(report.overview).toContainEqual({ label: "Sensitive files", value: "1" });
+    expect(report.sensitiveFiles[0]).toMatchObject({ path: ".env.production", read: false, context: "production" });
+    expect(report.reviewedFiles[0]).toMatchObject({ path: ".env.example", bytesRead: 64 });
+    expect(report.findings[0]).toMatchObject({
+      id: "secret_like_assignment",
+      level: "medium",
+      confidence: "high",
+      category: "assignment",
+      line: 12,
+      filePath: "settings.py"
+    });
+    expect(report.findings[1]).toMatchObject({ id: "weak_placeholder_secret", title: "Placeholder secret", level: "info" });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["medium", "info"]);
+    expect(report.redactionNotes).toEqual(["Values were redacted."]);
+  });
+
+  it("redacts legacy secrets review payloads defensively", () => {
+    const report = buildSecretsReviewAuditReport({
+      ...baseJob,
+      audit_type: "secrets_review_basic",
+      error: "TOKEN=fixture-secret-key-value",
+      result: {
+        analyzer: "secrets_review_basic",
+        summary: { redacted_values_count: 0 },
+        raw_secret: "fixture-secret-key-value",
+        sensitive_files: [
+          { path: ".env.production", category: "env_sensitive", read: false, skip_reason: "SECRET_KEY=fixture-secret-key-value" }
+        ],
+        findings: [
+          {
+            id: "legacy_secret",
+            title: "Legacy secret",
+            level: "medium",
+            evidence: "SECRET_KEY=fixture-secret-key-value",
+            description: "DATABASE_URL=postgres://user:fixture-db-password@db/app",
+            recommendation: "REDIS_URL=redis://:fixture-redis-password@redis:6379/0"
+          },
+          {
+            id: "legacy_private_key",
+            title: "Legacy private key",
+            evidence: "-----BEGIN PRIVATE KEY----- fixture material -----END PRIVATE KEY-----"
+          },
+          {
+            id: "legacy_jwt",
+            title: "Legacy JWT",
+            evidence: "eyJhbGciOiJIUzI1NiJ9.fixture.fixture"
+          }
+        ],
+        errors: ["https://user:fixture-db-password@example.com/path?token=fixture-secret-key-value"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(redactSecretsReviewValue({
+      error: "TOKEN=fixture-secret-key-value",
+      result: report
+    }));
+
+    for (const secret of [
+      "fixture-secret-key-value",
+      "fixture-db-password",
+      "fixture-redis-password",
+      "fixture material",
+      "eyJhbGciOiJIUzI1NiJ9.fixture.fixture"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.findings[0].evidence).toContain("[REDACTED]");
+    expect(report.sensitiveFiles[0].skipReason).toContain("[REDACTED]");
   });
 });

@@ -92,5 +92,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "docker_config_basic") {
     return "docker_config_basic";
   }
+  if (auditType === "secrets_review_basic") {
+    return "secrets_review_basic";
+  }
   return auditType;
 }

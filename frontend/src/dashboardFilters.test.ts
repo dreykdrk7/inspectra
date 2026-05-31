@@ -166,6 +166,18 @@ const jobs: JobListItem[] = [
     updated_at: "2026-05-26T10:22:00Z",
     source_file_deleted_at: null,
     summary: null
+  },
+  {
+    id: "job-secrets-completed",
+    audit_type: "secrets_review_basic",
+    file_id: "archive-file-4",
+    target_url: null,
+    target_domain: null,
+    status: "completed",
+    created_at: "2026-05-26T10:23:00Z",
+    updated_at: "2026-05-26T10:24:00Z",
+    source_file_deleted_at: null,
+    summary: null
   }
 ];
 
@@ -193,6 +205,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "subdomain_inventory_basic", "")).toEqual([jobs[7]]);
     expect(filterJobs(jobs, "all", "django_config_basic", "")).toEqual([jobs[8]]);
     expect(filterJobs(jobs, "all", "docker_config_basic", "")).toEqual([jobs[9]]);
+    expect(filterJobs(jobs, "all", "secrets_review_basic", "")).toEqual([jobs[10]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
@@ -207,6 +220,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "SUBDOMAIN_INVENTORY")).toEqual([jobs[7]]);
     expect(filterJobs(jobs, "all", "all", "DJANGO_CONFIG")).toEqual([jobs[8]]);
     expect(filterJobs(jobs, "all", "all", "DOCKER_CONFIG")).toEqual([jobs[9]]);
+    expect(filterJobs(jobs, "all", "all", "SECRETS_REVIEW")).toEqual([jobs[10]]);
   });
 
   it("builds dashboard metrics from current files and jobs", () => {
@@ -216,8 +230,8 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 10,
-      completedJobs: 7,
+      totalJobs: 11,
+      completedJobs: 8,
       failedJobs: 1,
       activeJobs: 2
     });
