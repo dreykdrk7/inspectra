@@ -16,6 +16,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts project-archive manifest analysis jobs for archives that contain supported dependency manifests.
 - Starts passive Django configuration analysis jobs for archive uploads.
 - Starts passive Docker/Compose configuration analysis jobs for archive uploads through the API.
+- Starts passive secrets exposure review jobs for archive uploads through the API.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -42,6 +43,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not execute, install, or resolve anything found inside archives.
 - It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env`/`.env.*` files from archives.
 - It does not execute Docker, build images, start containers, inspect the Docker socket, download images, or resolve image tags.
+- It does not validate secrets, query providers, scan Git history, run external secret scanners, or claim credentials are active.
 - It does not parse unsupported internal manifest formats beyond filename detection.
 - It does not call external services to generate reports.
 - It does not call external services to generate SBOMs.
@@ -108,6 +110,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_DOCKER_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Docker/Compose candidate files read from one archive. |
 | `INSPECTRA_DOCKER_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Docker config candidate file. |
 | `INSPECTRA_DOCKER_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Docker config audit. |
+| `INSPECTRA_SECRETS_REVIEW_MAX_FILES` | backend, audit-tools | `100` | Maximum secrets-review candidate files read from one archive. |
+| `INSPECTRA_SECRETS_REVIEW_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one secrets-review candidate file. |
+| `INSPECTRA_SECRETS_REVIEW_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one secrets-review audit. |
 | `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
 | `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
@@ -269,6 +274,18 @@ The source file must be `kind: "archive"`. This creates a `docker_config_basic` 
 The analysis is heuristic and local. It looks for review indicators such as missing or root `USER` directives, mutable `latest` image tags, unpinned base images, `curl`/`wget` piped to shell, privileged Compose services, host network or host namespace settings, Docker socket mounts, published database/cache ports, real `.env` file references, and sensitive-looking environment variable names. Findings are indicators for manual review, not confirmed vulnerabilities.
 
 Inspectra does not execute Docker, invoke `docker compose`, build images, start containers, inspect the Docker socket, download images, resolve image tags, scan ports, query CVEs, extract the project broadly, follow symlinks or hardlinks, execute scripts, or call the internet. Secret-like values in Docker config findings and exports are redacted best-effort, but uploaded archives are stored locally and should not include real secrets unless that local storage risk is acceptable.
+
+## Launch a Secrets Review Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/secrets-review/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `secrets_review_basic` job that opens the archive with Python standard library parsers, detects real `.env`, `.env.*`, and `.envrc` files without reading their content, and reads only bounded text from explicit candidate templates, app config, CI/CD config, Docker/Compose, Kubernetes, and Terraform-style files.
+
+The analysis is heuristic and local. It looks for indicators such as secret-like assignments, private key blocks, credential-bearing database/Redis/basic-auth URLs, JWT-like values, inline CI secrets, Docker/Compose secret-like environment values, Kubernetes plaintext secret-like data, and Terraform variable defaults. Findings are review indicators, not confirmation that a credential is valid, active, leaked, or compromised.
+
+Inspectra does not validate tokens, call provider APIs, scan Git history, run external scanners such as TruffleHog or Gitleaks, install dependencies, execute code, extract the project broadly, follow symlinks or hardlinks, query CVEs, or call the internet. Evidence and exports are redacted best-effort without storing prefixes, suffixes, or fingerprints of detected values. Uploaded archive bytes are still stored locally and may contain secrets, so avoid uploading real credentials unless that local storage risk is acceptable.
 
 ## Launch a Web Baseline Audit
 

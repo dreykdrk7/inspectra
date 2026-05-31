@@ -13,7 +13,9 @@ from app.web_security import redact_text_urls, redact_url_query
 
 SENSITIVE_RESPONSE_HEADERS = {"set-cookie", "authorization", "proxy-authorization", "x-api-key", "x-auth-token"}
 DJANGO_SECRET_KEYWORDS = (
+    "DJANGO_SECRET_KEY",
     "SECRET_KEY",
+    "CLIENT_SECRET",
     "PASSWORD",
     "PASS",
     "TOKEN",
@@ -24,6 +26,10 @@ DJANGO_SECRET_KEYWORDS = (
     "EMAIL_HOST_PASSWORD",
     "AWS_SECRET_ACCESS_KEY",
     "PRIVATE_KEY",
+)
+JWT_LIKE_RE = re.compile(r"\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+SENSITIVE_QUERY_PARAM_RE = re.compile(
+    r"(?i)([?&](?:access_token|refresh_token|id_token|api_key|apikey|token|secret|password|passwd|pwd|session|sid|auth|authorization|jwt|bearer|sig|signature|client_secret|code|state)=)[^&#\s]+"
 )
 
 
@@ -182,6 +188,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_django_config_sections(result))
     elif job.audit_type == "docker_config_basic":
         sections.extend(build_docker_config_sections(result))
+    elif job.audit_type == "secrets_review_basic":
+        sections.extend(build_secrets_review_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -341,6 +349,22 @@ def build_docker_config_sections(result: dict[str, Any]) -> list[ReportSection]:
     ]
 
 
+def build_secrets_review_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "Secrets Review Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("Secrets Review Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Secrets Review Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Sensitive Files Detected But Not Read", flatten_django_detected_files(result.get("sensitive_files"))),
+        ReportSection("Files Detected", flatten_django_detected_files(result.get("files_detected"))),
+        ReportSection("Files Reviewed", flatten_list(result.get("files_reviewed"))),
+        ReportSection("Findings", flatten_secrets_findings(result.get("findings"))),
+        ReportSection("Redaction Notes", flatten_list(result.get("redaction_notes"))),
+    ]
+
+
 def flatten_django_detected_files(value: Any) -> list[tuple[str, str]]:
     if not isinstance(value, list):
         return []
@@ -391,6 +415,32 @@ def flatten_django_findings(value: Any) -> list[tuple[str, str]]:
 
 def flatten_docker_findings(value: Any) -> list[tuple[str, str]]:
     return flatten_django_findings(value)
+
+
+def flatten_secrets_findings(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("ID", "id"),
+        ("Title", "title"),
+        ("Level", "level"),
+        ("Confidence", "confidence"),
+        ("Category", "category"),
+        ("Context", "context"),
+        ("File path", "file_path"),
+        ("Line", "line"),
+        ("Description", "description"),
+        ("Evidence", "evidence"),
+        ("Recommendation", "recommendation"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Finding {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"Finding {index}", record, preferred_keys)
+    return rows
 
 
 def append_preferred_rows(
@@ -496,6 +546,16 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["secrets_redacted_count"] = summary.get("secrets_redacted_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
         data["errors_count"] = len(result.get("errors") or [])
+    elif job.audit_type == "secrets_review_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["files_considered"] = summary.get("files_considered", "N/A")
+        data["files_reviewed"] = summary.get("files_reviewed", "N/A")
+        data["sensitive_files_detected"] = summary.get("sensitive_files_detected", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["high_confidence_count"] = summary.get("high_confidence_count", "N/A")
+        data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
+        data["errors_count"] = len(result.get("errors") or [])
     return data
 
 
@@ -529,6 +589,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_django_config_value(result))
     if job.audit_type == "docker_config_basic":
         return as_dict(redact_django_config_value(result))
+    if job.audit_type == "secrets_review_basic":
+        return as_dict(redact_django_config_value(result))
     return result
 
 
@@ -540,6 +602,8 @@ def public_job_error(job: JobRecord) -> str:
     if job.audit_type == "django_config_basic":
         return redact_django_secret_text(job.error)
     if job.audit_type == "docker_config_basic":
+        return redact_django_secret_text(job.error)
+    if job.audit_type == "secrets_review_basic":
         return redact_django_secret_text(job.error)
     return job.error
 
@@ -562,13 +626,15 @@ def redact_django_secret_text(value: str) -> str:
         flags=re.IGNORECASE | re.DOTALL,
     )
     redacted = re.sub(r"(?i)django-insecure-[^\s'\"<>)\]}]+", "django-insecure-[REDACTED]", redacted)
+    redacted = JWT_LIKE_RE.sub("[REDACTED JWT]", redacted)
+    redacted = SENSITIVE_QUERY_PARAM_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
     redacted = re.sub(
-        r"(?i)\b((?:postgres(?:ql)?|mysql|redis|https?)://[^:/@\s]+):([^@\s]+)@",
+        r"(?i)\b((?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|https?)://[^:/@\s]+):([^@\s]+)@",
         r"\1:[REDACTED]@",
         redacted,
     )
     redacted = re.sub(
-        r"(?i)\b((?:postgres(?:ql)?|mysql|redis|https?)://):([^@\s]+)@",
+        r"(?i)\b((?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|https?)://):([^@\s]+)@",
         r"\1:[REDACTED]@",
         redacted,
     )

@@ -291,6 +291,9 @@ class JobStore:
     def create_docker_config_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "docker_config_basic")
 
+    def create_secrets_review_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "secrets_review_basic")
+
     def create_web_job(self, target_url: str) -> JobRecord:
         return self._create_job(None, "web_basic", target_url=target_url)
 
@@ -570,6 +573,16 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["services_detected"] = manifest_summary.get("services_detected", len(record.result.get("compose_services") or []))
             summary["findings_count"] = manifest_summary.get("findings_count")
             summary["secrets_redacted_count"] = manifest_summary.get("secrets_redacted_count")
+            summary["truncated"] = manifest_summary.get("truncated")
+            summary["errors_count"] = len(record.result.get("errors") or [])
+        if record.audit_type == "secrets_review_basic":
+            summary["archive_type"] = record.result.get("archive_type")
+            summary["files_considered"] = manifest_summary.get("files_considered")
+            summary["files_reviewed"] = manifest_summary.get("files_reviewed")
+            summary["sensitive_files_detected"] = manifest_summary.get("sensitive_files_detected")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["high_confidence_count"] = manifest_summary.get("high_confidence_count")
+            summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
             summary["truncated"] = manifest_summary.get("truncated")
             summary["errors_count"] = len(record.result.get("errors") or [])
         return summary

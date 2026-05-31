@@ -25,6 +25,7 @@ from app.services import (
     ManifestAuditService,
     PdfAuditService,
     ProjectArchiveAuditService,
+    SecretsReviewAuditService,
     SubdomainInventoryAuditService,
     WebAuditService,
     calculate_domain_runner_timeout_seconds,
@@ -61,6 +62,9 @@ class NoopAuditService:
         return None
 
     async def run_docker_config_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_secrets_review_analysis(self, job_id: str) -> None:
         return None
 
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
@@ -118,6 +122,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
     app.state.django_config_audits = DjangoConfigAuditService(settings, file_store, job_store)
     app.state.docker_config_audits = DockerConfigAuditService(settings, file_store, job_store)
+    app.state.secrets_review_audits = SecretsReviewAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -652,6 +657,91 @@ async def test_docker_config_service_calls_runner_endpoint(monkeypatch, tmp_path
     assert calls[0]["json"]["max_files"] == app.state.settings.docker_config_max_files
     assert calls[0]["json"]["max_file_bytes"] == app.state.settings.docker_config_max_file_bytes
     assert calls[0]["json"]["max_total_bytes"] == app.state.settings.docker_config_max_total_bytes
+
+
+@pytest.mark.anyio
+async def test_secrets_review_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.secrets_review_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("secrets.zip", make_zip_bytes({".env.example": b"SECRET_KEY=fixture\n"}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        secrets_response = await client.post(f"/audits/secrets-review/{archive_file['id']}")
+        pdf_as_secrets_response = await client.post(f"/audits/secrets-review/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/secrets-review/not-a-file-id")
+
+    assert secrets_response.status_code == 202
+    assert secrets_response.json()["audit_type"] == "secrets_review_basic"
+    assert pdf_as_secrets_response.status_code == 400
+    assert pdf_as_secrets_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_secrets_review_service_calls_runner_endpoint(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("secrets.zip", make_zip_bytes({".env.example": b"SECRET_KEY=fixture\n"}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_secrets_review_job(archive.id)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "secrets_review_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 1,
+                        "files_reviewed": 1,
+                        "sensitive_files_detected": 0,
+                        "findings_count": 1,
+                        "high_confidence_count": 0,
+                        "redacted_values_count": 1,
+                        "truncated": False,
+                    },
+                    "findings": [{"id": "secret_like_assignment", "title": "Secret-like assignment", "level": "medium"}],
+                    "errors": [],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+
+    await app.state.secrets_review_audits.run_secrets_review_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    assert updated.status == "completed"
+    assert updated.result["analyzer"] == "secrets_review_basic"
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/secrets-review"
+    assert calls[0]["json"]["file_id"] == archive.id
+    assert calls[0]["json"]["original_filename"] == "secrets.zip"
+    assert calls[0]["json"]["max_files"] == app.state.settings.secrets_review_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.secrets_review_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.secrets_review_max_total_bytes
 
 
 @pytest.mark.anyio
@@ -1970,6 +2060,186 @@ async def test_export_docker_config_jobs_with_sparse_and_incomplete_results(monk
 
 
 @pytest.mark.anyio
+async def test_secrets_review_job_summary_and_export_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_secrets_review_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    summary = list_response.json()[0]["summary"]
+    assert summary["analyzer"] == "secrets_review_basic"
+    assert summary["files_considered"] == 3
+    assert summary["files_reviewed"] == 2
+    assert summary["sensitive_files_detected"] == 1
+    assert summary["findings_count"] == 2
+    assert summary["high_confidence_count"] == 1
+    assert summary["redacted_values_count"] == 2
+    assert summary["truncated"] is False
+    assert summary["errors_count"] == 0
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "secrets_review_basic" in responses["markdown"].text
+    assert "Secrets Review Metrics" in responses["html"].text
+    assert "Sensitive Files Detected But Not Read" in responses["markdown"].text
+    assert "Finding 1 Confidence" in responses["markdown"].text
+    assert "Finding 1 Category" in responses["markdown"].text
+    assert "project/settings.py" in responses["markdown"].text
+    assert "SECRET_KEY=[REDACTED]" in responses["markdown"].text
+    assert "production" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "secrets_review_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_export_secrets_review_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    private_key = "-----BEGIN PRIVATE KEY-----\nfixture-private-key-material\n-----END PRIVATE KEY-----"
+    jwt_value = "aaaaaaaaaa.bbbbbbbbbb.cccccccccc"
+    job = JobRecord(
+        id="d" * 32,
+        audit_type="secrets_review_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="TOKEN=fixture-secret-token",
+        result={
+            "analyzer": "secrets_review_basic",
+            "archive_type": "zip",
+            "summary": {"files_reviewed": 1, "findings_count": 1, "redacted_values_count": 0},
+            "sensitive_files": [
+                {
+                    "path": ".env.production?token=fixture-query-token",
+                    "category": "env_sensitive",
+                    "read": False,
+                    "skip_reason": "SECRET_KEY=fixture-secret-key",
+                }
+            ],
+            "files_detected": [{"path": "settings.py", "skip_reason": "DATABASE_URL=postgres://user:fixture-pass@db/app"}],
+            "findings": [
+                {
+                    "id": "legacy_secret",
+                    "title": "Legacy raw secret",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secret_assignment",
+                    "description": f"SECRET_KEY=fixture-secret-key and JWT {jwt_value}",
+                    "evidence": "DATABASE_URL=postgres://user:fixture-pass@db/app",
+                    "recommendation": f"Rotate {private_key}",
+                    "file_path": "settings.py",
+                    "context": "production<script>API_KEY=fixture-secret-key</script>",
+                    "line": "12",
+                }
+            ],
+            "errors": ["REDIS_URL=redis://:fixture-pass@redis:6379/0"],
+            "redaction_notes": ["Webhook https://example.test/hook?token=fixture-query-token"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = (
+        b"fixture-secret-token",
+        b"fixture-secret-key",
+        b"fixture-pass",
+        b"fixture-private-key-material",
+        b"BEGIN PRIVATE KEY",
+        b"aaaaaaaaaa.bbbbbbbbbb.cccccccccc",
+        b"fixture-query-token",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
+
+
+@pytest.mark.anyio
+async def test_export_secrets_review_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="e" * 32, audit_type="secrets_review_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="f" * 32, audit_type="secrets_review_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="a" * 31 + "1",
+            audit_type="secrets_review_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="Secrets review runner failed safely.",
+        ),
+        JobRecord(
+            id="a" * 31 + "2",
+            audit_type="secrets_review_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "secrets_review_basic", "summary": {}, "findings": [], "errors": []},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "secrets_review_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "secrets_review_basic" in response.text
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -2216,6 +2486,7 @@ async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
         "subdomain_inventory_basic",
         "django_config_basic",
         "docker_config_basic",
+        "secrets_review_basic",
     )
     job_ids: list[str] = []
     for index, audit_type in enumerate(audit_types, start=1):
@@ -3139,6 +3410,91 @@ def save_docker_config_export_fixture_job() -> JobRecord:
                 },
             ],
             "redaction_notes": ["Secret-like values in Docker/Compose evidence are redacted on a best-effort basis."],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_secrets_review_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="d" * 32,
+        audit_type="secrets_review_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "secrets_review_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 2048, "original_filename": "secrets.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 3,
+                "files_reviewed": 2,
+                "sensitive_files_detected": 1,
+                "findings_count": 2,
+                "high_confidence_count": 1,
+                "redacted_values_count": 2,
+                "truncated": False,
+            },
+            "sensitive_files": [
+                {
+                    "path": ".env.production",
+                    "category": "env_sensitive",
+                    "context": "production",
+                    "read": False,
+                    "skip_reason": "real_env_file_not_read",
+                    "size_bytes": 120,
+                }
+            ],
+            "files_detected": [
+                {
+                    "path": ".env.production",
+                    "category": "env_sensitive",
+                    "read": False,
+                    "skip_reason": "real_env_file_not_read",
+                    "context": "production",
+                },
+                {"path": ".env.example", "category": "env_template", "read": True, "size_bytes": 128, "context": "example"},
+                {"path": "project/settings.py", "category": "app_config", "read": True, "size_bytes": 256, "context": "production"},
+            ],
+            "files_reviewed": [
+                {"path": ".env.example", "category": "env_template", "context": "example", "bytes_read": 128},
+                {"path": "project/settings.py", "category": "app_config", "context": "production", "bytes_read": 256},
+            ],
+            "findings": [
+                {
+                    "id": "secret_like_assignment",
+                    "title": "Secret-like assignment observed",
+                    "level": "medium",
+                    "confidence": "medium",
+                    "category": "secret_assignment",
+                    "description": "A secret-like key appears to have an inline value.",
+                    "evidence": "SECRET_KEY=[REDACTED]",
+                    "recommendation": "Move real secret values to an approved runtime secret mechanism.",
+                    "file_path": "project/settings.py",
+                    "context": "production",
+                    "line": "12",
+                },
+                {
+                    "id": "real_env_file_present_not_read",
+                    "title": "Real environment file detected but not read",
+                    "level": "low",
+                    "confidence": "high",
+                    "category": "sensitive_file",
+                    "description": "A real .env-style file was present in the archive.",
+                    "evidence": ".env.production",
+                    "recommendation": "Remove real environment files from shared archives.",
+                    "file_path": ".env.production",
+                    "context": "production",
+                },
+            ],
+            "redaction_notes": ["Secret-like values are redacted before storage and export on a best-effort basis."],
             "errors": [],
         },
     )
