@@ -212,6 +212,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_secrets_review_sections(result))
     elif job.audit_type == "node_package_config_basic":
         sections.extend(build_node_package_config_sections(result))
+    elif job.audit_type == "ci_cd_config_basic":
+        sections.extend(build_ci_cd_config_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -407,6 +409,28 @@ def build_node_package_config_sections(result: dict[str, Any]) -> list[ReportSec
     ]
 
 
+def build_ci_cd_config_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "CI/CD Config Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("CI/CD Config Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("CI/CD Config Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Workflow Overview", flatten_list(result.get("workflows"))),
+        ReportSection("Triggers", flatten_list(result.get("triggers"))),
+        ReportSection("Permissions", flatten_list(result.get("permissions"))),
+        ReportSection("Jobs / Steps Overview", flatten_list(result.get("jobs"))),
+        ReportSection("Actions / Images", flatten_list(result.get("actions"))),
+        ReportSection("Service Containers", flatten_list(result.get("service_containers"))),
+        ReportSection("Publish / Deploy Signals", flatten_list(result.get("publish_deploy_signals"))),
+        ReportSection("Files Detected", flatten_django_detected_files(result.get("files_detected"))),
+        ReportSection("Files Reviewed", flatten_list(result.get("files_reviewed"))),
+        ReportSection("Findings", flatten_ci_cd_findings(result.get("findings"))),
+        ReportSection("Redaction Notes", flatten_list(result.get("redaction_notes"))),
+    ]
+
+
 def flatten_django_detected_files(value: Any) -> list[tuple[str, str]]:
     if not isinstance(value, list):
         return []
@@ -471,6 +495,35 @@ def flatten_secrets_findings(value: Any) -> list[tuple[str, str]]:
         ("Category", "category"),
         ("Context", "context"),
         ("File path", "file_path"),
+        ("Line", "line"),
+        ("Description", "description"),
+        ("Evidence", "evidence"),
+        ("Recommendation", "recommendation"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Finding {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"Finding {index}", record, preferred_keys)
+    return rows
+
+
+def flatten_ci_cd_findings(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("ID", "id"),
+        ("Title", "title"),
+        ("Level", "level"),
+        ("Confidence", "confidence"),
+        ("Category", "category"),
+        ("Context", "context"),
+        ("Provider", "provider"),
+        ("File path", "file_path"),
+        ("Job", "job"),
+        ("Step", "step"),
         ("Line", "line"),
         ("Description", "description"),
         ("Evidence", "evidence"),
@@ -611,6 +664,18 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
         data["errors_count"] = len(result.get("errors") or [])
+    elif job.audit_type == "ci_cd_config_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["files_considered"] = summary.get("files_considered", "N/A")
+        data["files_reviewed"] = summary.get("files_reviewed", "N/A")
+        data["workflow_files_detected"] = summary.get("workflow_files_detected", "N/A")
+        data["jobs_detected"] = summary.get("jobs_detected", "N/A")
+        data["steps_detected"] = summary.get("steps_detected", "N/A")
+        data["triggers_detected"] = summary.get("triggers_detected", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
+        data["errors_count"] = len(result.get("errors") or [])
     return data
 
 
@@ -648,6 +713,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_django_config_value(result))
     if job.audit_type == "node_package_config_basic":
         return as_dict(redact_node_package_config_value(result))
+    if job.audit_type == "ci_cd_config_basic":
+        return as_dict(redact_ci_cd_config_value(result))
     return result
 
 
@@ -664,6 +731,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_django_secret_text(job.error)
     if job.audit_type == "node_package_config_basic":
         return redact_node_package_secret_text(job.error)
+    if job.audit_type == "ci_cd_config_basic":
+        return redact_ci_cd_secret_text(job.error)
     return job.error
 
 
@@ -773,6 +842,58 @@ def redact_node_package_secret_text(value: str) -> str:
         redacted,
     )
     return redacted
+
+
+def redact_ci_cd_config_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_ci_cd_secret_text(value)
+    if isinstance(value, list):
+        return [redact_ci_cd_config_value(item) for item in value]
+    if isinstance(value, dict):
+        secret_named_value = ci_cd_record_has_secret_name(value)
+        return {
+            key: "[REDACTED]"
+            if is_ci_cd_secret_mapping_key(str(key)) or (secret_named_value and str(key).lower() in {"value", "raw_value", "default"})
+            else redact_ci_cd_config_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def ci_cd_record_has_secret_name(record: dict[str, Any]) -> bool:
+    for marker in ("key", "name", "setting", "variable", "env"):
+        candidate = record.get(marker)
+        if candidate is not None and is_ci_cd_secret_mapping_key(str(candidate)):
+            return True
+    return False
+
+
+def is_ci_cd_secret_mapping_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if "redacted" in normalized or normalized.endswith("_count"):
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "auth_token",
+            "authtoken",
+            "client_secret",
+            "private_key",
+            "api_key",
+            "apikey",
+            "password",
+            "passwd",
+            "token",
+            "secret",
+        )
+    )
+
+
+def redact_ci_cd_secret_text(value: str) -> str:
+    return redact_node_package_secret_text(value)
 
 
 def collect_errors(job: JobRecord) -> dict[str, Any]:

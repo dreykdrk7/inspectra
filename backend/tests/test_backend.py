@@ -18,6 +18,7 @@ from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
 from app.services import (
     ArchiveAuditService,
+    CiCdConfigAuditService,
     DjangoConfigAuditService,
     DomainAuditService,
     DockerConfigAuditService,
@@ -69,6 +70,9 @@ class NoopAuditService:
         return None
 
     async def run_node_package_config_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_ci_cd_config_analysis(self, job_id: str) -> None:
         return None
 
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
@@ -128,6 +132,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.docker_config_audits = DockerConfigAuditService(settings, file_store, job_store)
     app.state.secrets_review_audits = SecretsReviewAuditService(settings, file_store, job_store)
     app.state.node_package_config_audits = NodePackageConfigAuditService(settings, file_store, job_store)
+    app.state.ci_cd_config_audits = CiCdConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -838,6 +843,93 @@ async def test_node_package_config_service_calls_runner_endpoint(monkeypatch, tm
 
 
 @pytest.mark.anyio
+async def test_ci_cd_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.ci_cd_config_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("ci.zip", make_zip_bytes({".github/workflows/ci.yml": b"name: ci\non: push\n"}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        ci_response = await client.post(f"/audits/ci-cd-config/{archive_file['id']}")
+        pdf_as_ci_response = await client.post(f"/audits/ci-cd-config/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/ci-cd-config/not-a-file-id")
+
+    assert ci_response.status_code == 202
+    assert ci_response.json()["audit_type"] == "ci_cd_config_basic"
+    assert pdf_as_ci_response.status_code == 400
+    assert pdf_as_ci_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_ci_cd_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("ci.zip", make_zip_bytes({".github/workflows/ci.yml": b"name: ci\non: push\n"}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_ci_cd_config_job(archive.id)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "ci_cd_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 1,
+                        "files_reviewed": 1,
+                        "workflow_files_detected": 1,
+                        "jobs_detected": 1,
+                        "steps_detected": 2,
+                        "triggers_detected": 1,
+                        "findings_count": 1,
+                        "redacted_values_count": 0,
+                        "truncated": False,
+                    },
+                    "findings": [{"id": "github_permissions_missing", "title": "permissions missing", "level": "low"}],
+                    "errors": [],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+
+    await app.state.ci_cd_config_audits.run_ci_cd_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    assert updated.status == "completed"
+    assert updated.result["analyzer"] == "ci_cd_config_basic"
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/ci-cd-config"
+    assert calls[0]["json"]["file_id"] == archive.id
+    assert calls[0]["json"]["original_filename"] == "ci.zip"
+    assert calls[0]["json"]["max_files"] == app.state.settings.ci_cd_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.ci_cd_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.ci_cd_config_max_total_bytes
+
+
+@pytest.mark.anyio
 async def test_web_basic_audit_requires_authorization(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     app.state.web_audits = NoopAuditService()
@@ -1340,6 +1432,19 @@ def test_node_package_config_limits_config(monkeypatch, tmp_path):
     assert settings.node_package_config_max_total_bytes == 4096
 
 
+def test_ci_cd_config_limits_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_CI_CD_CONFIG_MAX_FILES", "12")
+    monkeypatch.setenv("INSPECTRA_CI_CD_CONFIG_MAX_FILE_BYTES", "1024")
+    monkeypatch.setenv("INSPECTRA_CI_CD_CONFIG_MAX_TOTAL_BYTES", "4096")
+
+    settings = load_settings()
+
+    assert settings.ci_cd_config_max_files == 12
+    assert settings.ci_cd_config_max_file_bytes == 1024
+    assert settings.ci_cd_config_max_total_bytes == 4096
+
+
 @pytest.mark.parametrize(
     ("raw_domain", "expected"),
     [
@@ -1517,6 +1622,55 @@ async def test_list_jobs_includes_node_package_config_summary(monkeypatch, tmp_p
     assert summary["packages_detected"] == 1
     assert summary["scripts_detected"] == 2
     assert summary["findings_count"] == 5
+    assert summary["redacted_values_count"] == 1
+    assert summary["errors_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_list_jobs_includes_ci_cd_config_summary(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    app.state.jobs.save(
+        JobRecord(
+            id="c" * 31 + "1",
+            audit_type="ci_cd_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={
+                "analyzer": "ci_cd_config_basic",
+                "archive_type": "zip",
+                "summary": {
+                    "files_considered": 3,
+                    "files_reviewed": 2,
+                    "workflow_files_detected": 1,
+                    "jobs_detected": 2,
+                    "steps_detected": 5,
+                    "triggers_detected": 2,
+                    "findings_count": 4,
+                    "redacted_values_count": 1,
+                    "truncated": False,
+                },
+                "errors": ["one controlled warning"],
+            },
+        )
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    summary = response.json()[0]["summary"]
+    assert summary["archive_type"] == "zip"
+    assert summary["files_considered"] == 3
+    assert summary["files_reviewed"] == 2
+    assert summary["workflow_files_detected"] == 1
+    assert summary["jobs_detected"] == 2
+    assert summary["steps_detected"] == 5
+    assert summary["triggers_detected"] == 2
+    assert summary["findings_count"] == 4
     assert summary["redacted_values_count"] == 1
     assert summary["errors_count"] == 1
 
@@ -2158,9 +2312,6 @@ async def test_export_docker_config_redacts_legacy_secret_values(monkeypatch, tm
         assert b"REDACTED" in response.content
         for secret in forbidden:
             assert secret not in response.content
-    assert "_authToken" in responses["markdown"].text
-    assert "_authToken" in responses["html"].text
-    assert "_authToken" in responses["xml"].text
     assert "&lt;script&gt;" in responses["html"].text
     assert "<script>" not in responses["html"].text
 
@@ -2525,6 +2676,9 @@ async def test_export_node_package_config_redacts_legacy_secret_values(monkeypat
         assert b"REDACTED" in response.content
         for secret in forbidden:
             assert secret not in response.content
+    assert "_authToken" in responses["markdown"].text
+    assert "_authToken" in responses["html"].text
+    assert "_authToken" in responses["xml"].text
     assert "&lt;script&gt;" in responses["html"].text
     assert "<script>" not in responses["html"].text
 
@@ -2581,6 +2735,207 @@ async def test_export_node_package_config_jobs_with_sparse_and_incomplete_result
                 else:
                     assert job.status in response.text
                     assert "node_package_config_basic" in response.text
+
+
+@pytest.mark.anyio
+async def test_ci_cd_config_job_summary_and_export_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_ci_cd_config_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    summary = list_response.json()[0]["summary"]
+    assert summary["analyzer"] == "ci_cd_config_basic"
+    assert summary["files_considered"] == 4
+    assert summary["files_reviewed"] == 3
+    assert summary["workflow_files_detected"] == 2
+    assert summary["jobs_detected"] == 2
+    assert summary["steps_detected"] == 4
+    assert summary["triggers_detected"] == 2
+    assert summary["findings_count"] == 2
+    assert summary["redacted_values_count"] == 1
+    assert summary["truncated"] is False
+    assert summary["errors_count"] == 0
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "ci_cd_config_basic" in responses["markdown"].text
+    assert "CI/CD Config Metrics" in responses["html"].text
+    assert "Workflow Overview" in responses["markdown"].text
+    assert "Actions / Images" in responses["markdown"].text
+    assert "Finding 1 Confidence" in responses["markdown"].text
+    assert "Finding 1 Provider" in responses["markdown"].text
+    assert "Finding 1 Job" in responses["markdown"].text
+    assert "Finding 1 Step" in responses["markdown"].text
+    assert ".github/workflows/release.yml" in responses["markdown"].text
+    assert "pull_request_target_used" in responses["markdown"].text
+    assert "production" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "ci_cd_config_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_export_ci_cd_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="c" * 31 + "8",
+        audit_type="ci_cd_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="TOKEN=fixture-token",
+        result={
+            "analyzer": "ci_cd_config_basic",
+            "archive_type": "zip",
+            "summary": {"files_reviewed": 1, "findings_count": 1, "redacted_values_count": 0},
+            "jobs": [
+                {
+                    "file_path": ".github/workflows/deploy.yml",
+                    "provider": "github_actions",
+                    "job": "deploy",
+                    "script": "API_KEY=fixture-key npm run deploy",
+                }
+            ],
+            "actions": [
+                {
+                    "file_path": ".github/workflows/deploy.yml",
+                    "provider": "github_actions",
+                    "action": "owner/deploy",
+                    "ref": "main",
+                    "token": "fixture-token",
+                    "url": "https://user:fixture-password@ci.example.test/hook",
+                }
+            ],
+            "publish_deploy_signals": [
+                {
+                    "file_path": ".github/workflows/deploy.yml",
+                    "provider": "github_actions",
+                    "signal": "https://example.test/deploy?token=fixture-token&key=fixture-key",
+                }
+            ],
+            "findings": [
+                {
+                    "id": "legacy_ci_secret",
+                    "title": "Legacy raw token",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets_env",
+                    "provider": "github_actions",
+                    "description": "CLIENT_SECRET=fixture-secret",
+                    "evidence": "PASSWORD=fixture-password",
+                    "recommendation": "-----BEGIN PRIVATE KEY----- fixture-private-key-material -----END PRIVATE KEY-----",
+                    "file_path": ".github/workflows/deploy.yml",
+                    "context": "production<script>secret=fixture-secret</script>",
+                    "job": "deploy",
+                    "step": "publish",
+                    "line": "7",
+                }
+            ],
+            "errors": ["API_KEY=fixture-key"],
+            "redaction_notes": ["TOKEN=fixture-token"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = (
+        b"fixture-token",
+        b"fixture-password",
+        b"fixture-key",
+        b"fixture-secret",
+        b"fixture-private-key-material",
+        b"BEGIN PRIVATE KEY",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
+
+
+@pytest.mark.anyio
+async def test_export_ci_cd_config_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="c" * 31 + "9", audit_type="ci_cd_config_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="d" * 31 + "1", audit_type="ci_cd_config_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="d" * 31 + "2",
+            audit_type="ci_cd_config_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="CI/CD config runner failed safely.",
+        ),
+        JobRecord(
+            id="d" * 31 + "3",
+            audit_type="ci_cd_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "ci_cd_config_basic", "summary": {}, "findings": [], "errors": []},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "ci_cd_config_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "ci_cd_config_basic" in response.text
 
 
 @pytest.mark.anyio
@@ -2832,6 +3187,7 @@ async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
         "docker_config_basic",
         "secrets_review_basic",
         "node_package_config_basic",
+        "ci_cd_config_basic",
     )
     job_ids: list[str] = []
     for index, audit_type in enumerate(audit_types, start=1):
@@ -3945,6 +4301,134 @@ def save_node_package_config_export_fixture_job() -> JobRecord:
                 },
             ],
             "redaction_notes": ["npm registry credentials and script secret-like assignments are redacted on a best-effort basis."],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_ci_cd_config_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="c" * 31 + "7",
+        audit_type="ci_cd_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "ci_cd_config_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 4096, "original_filename": "ci.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 4,
+                "files_reviewed": 3,
+                "workflow_files_detected": 2,
+                "jobs_detected": 2,
+                "steps_detected": 4,
+                "triggers_detected": 2,
+                "findings_count": 2,
+                "redacted_values_count": 1,
+                "truncated": False,
+            },
+            "files_detected": [
+                {"path": ".github/workflows/release.yml", "category": "github_actions", "read": True, "size_bytes": 1024, "context": "production"},
+                {"path": ".gitlab-ci.yml", "category": "gitlab_ci", "read": True, "size_bytes": 512, "context": "shared"},
+                {"path": ".env.production", "category": "env_sensitive", "read": False, "skip_reason": "real_env_file_not_read", "context": "production"},
+            ],
+            "files_reviewed": [
+                {"path": ".github/workflows/release.yml", "category": "github_actions", "context": "production", "bytes_read": 1024},
+                {"path": ".gitlab-ci.yml", "category": "gitlab_ci", "context": "shared", "bytes_read": 512},
+            ],
+            "workflows": [
+                {
+                    "file_path": ".github/workflows/release.yml",
+                    "provider": "github_actions",
+                    "name": "release",
+                    "context": "production",
+                }
+            ],
+            "jobs": [
+                {
+                    "file_path": ".github/workflows/release.yml",
+                    "provider": "github_actions",
+                    "job": "publish",
+                    "steps_detected": 2,
+                    "context": "production",
+                }
+            ],
+            "triggers": [
+                {
+                    "file_path": ".github/workflows/release.yml",
+                    "provider": "github_actions",
+                    "trigger": "pull_request_target",
+                    "context": "production",
+                }
+            ],
+            "permissions": [
+                {
+                    "file_path": ".github/workflows/release.yml",
+                    "provider": "github_actions",
+                    "permission": "contents",
+                    "value": "write",
+                    "context": "production",
+                }
+            ],
+            "actions": [
+                {
+                    "file_path": ".github/workflows/release.yml",
+                    "provider": "github_actions",
+                    "action": "actions/checkout",
+                    "ref": "main",
+                    "job": "publish",
+                    "context": "production",
+                }
+            ],
+            "service_containers": [
+                {"file_path": ".gitlab-ci.yml", "provider": "gitlab_ci", "image": "postgres:latest", "context": "shared"}
+            ],
+            "publish_deploy_signals": [
+                {"file_path": ".github/workflows/release.yml", "provider": "github_actions", "job": "publish", "signal": "npm publish"}
+            ],
+            "findings": [
+                {
+                    "id": "pull_request_target_used",
+                    "title": "pull_request_target trigger requires review",
+                    "level": "medium",
+                    "confidence": "medium",
+                    "category": "triggers",
+                    "provider": "github_actions",
+                    "description": "A workflow uses pull_request_target.",
+                    "evidence": "on: pull_request_target",
+                    "recommendation": "Review checkout and script behavior before using privileged pull request triggers.",
+                    "file_path": ".github/workflows/release.yml",
+                    "job": "publish",
+                    "step": "checkout",
+                    "context": "production",
+                    "line": "4",
+                },
+                {
+                    "id": "inline_secret_like_env",
+                    "title": "Inline secret-like CI environment value observed",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets_env",
+                    "provider": "github_actions",
+                    "description": "A secret-like CI env value was observed.",
+                    "evidence": "TOKEN=[REDACTED]",
+                    "recommendation": "Use provider secret stores and avoid inline values.",
+                    "file_path": ".github/workflows/release.yml",
+                    "job": "publish",
+                    "step": "publish",
+                    "context": "production",
+                    "line": "12",
+                },
+            ],
+            "redaction_notes": ["CI/CD secret-like evidence is redacted on a best-effort basis."],
             "errors": [],
         },
     )

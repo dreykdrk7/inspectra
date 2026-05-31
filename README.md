@@ -18,6 +18,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts passive Docker/Compose configuration analysis jobs for archive uploads.
 - Starts passive secrets exposure review jobs for archive uploads.
 - Starts passive Node package configuration analysis jobs for archive uploads.
+- Starts passive CI/CD configuration analysis jobs for archive uploads through the API.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -41,6 +42,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not install dependencies from uploaded manifests.
 - It does not execute package scripts or project code.
 - It does not execute npm, pnpm, yarn, bun, npx, lifecycle scripts, JS/TS configs, registry lookups, `npm audit`, or advisory/CVE queries for Node package config audits.
+- It does not execute workflows, emulate CI runners, call provider APIs, validate tokens, download actions/images, or query advisory/CVE data for CI/CD config audits.
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
 - It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env`/`.env.*` files from archives.
@@ -118,6 +120,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Node package/config candidate files read from one archive. |
 | `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Node package/config candidate file. |
 | `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Node package/config audit. |
+| `INSPECTRA_CI_CD_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum CI/CD config candidate files read from one archive. |
+| `INSPECTRA_CI_CD_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one CI/CD config candidate file. |
+| `INSPECTRA_CI_CD_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one CI/CD config audit. |
 | `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
 | `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
@@ -162,6 +167,7 @@ Completed PDF, image, manifest, archive, project-archive, Django config, Docker 
 - Docker config exported reports include detected Docker/Compose files, Dockerfile stages, Compose service names, heuristic findings, redaction notes, limits, truncation, and controlled errors.
 - Secrets review reports include sensitive files detected but not read, files reviewed, heuristic findings grouped by severity, confidence/context metadata, redaction notes, limits, truncation, controlled errors, and redacted raw JSON.
 - Node package config reports include package/workspace overview, scripts, dependency groups, package manager config signals, lockfile signals, heuristic findings, redaction notes, limits, truncation, controlled errors, and redacted raw JSON.
+- CI/CD config exported reports include workflow overviews, triggers, permissions, jobs/steps, actions/images, publish/deploy signals, heuristic findings, redaction notes, limits, truncation, and controlled errors.
 - Web target URL, redirects, HTTP status, response headers, security headers, cookies, TLS certificate summary, `robots.txt`, `security.txt`, and informational configuration findings.
 - Domain DNS baseline records, email security checks, `www` baseline, and informational DNS findings.
 - Subdomain inventory candidate normalization, A/AAAA/CNAME results, wildcard-DNS heuristic, and informational findings.
@@ -306,6 +312,18 @@ The analysis is heuristic and local. It looks for review indicators such as life
 
 Inspectra does not execute npm, pnpm, yarn, bun, npx, lifecycle scripts, JavaScript, TypeScript, or config files; it does not install dependencies, resolve transitive dependencies, download packages, query registries, run `npm audit`, query CVEs/advisories, extract the project broadly, follow symlinks or hardlinks, or call the internet. Secret-like `.npmrc` values, URLs with credentials, sensitive query parameters, and script assignment fragments are redacted best-effort in results and exports.
 
+## Launch a CI/CD Config Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/ci-cd-config/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `ci_cd_config_basic` job that opens the archive with Python standard library parsers and reads only bounded text from CI/CD candidates such as GitHub Actions, GitLab CI, Bitbucket Pipelines, Azure Pipelines, CircleCI, Jenkins/generic pipeline files, release helpers, and workflow action descriptors. Real `.env`, `.env.*`, and `.envrc` files are detected as sensitive but not read.
+
+The analysis is heuristic and local. It looks for review indicators such as broad or privileged triggers, missing or broad GitHub permissions, unpinned actions or mutable Docker image tags, inline secret-like CI environment values, secret store references, curl-pipe-shell patterns, publish/deploy commands, self-hosted runner usage, artifact/cache usage, and service container hints. Findings are indicators for manual review, not confirmed vulnerabilities or proof of pipeline compromise.
+
+Inspectra does not execute workflows, emulate GitHub/GitLab/Bitbucket/Azure/CircleCI/Jenkins runners, evaluate dynamic expressions, call provider APIs, validate tokens, execute scripts, install dependencies, resolve remote actions or reusable workflows, download actions/images, query registries, query CVEs/advisories, extract the project broadly, follow symlinks or hardlinks, or call the internet. Secret-like CI values, URLs with credentials, sensitive query parameters, provider-token-like strings, and private key blocks are redacted best-effort in results and exports.
+
 ## Launch a Web Baseline Audit
 
 ```bash
@@ -407,7 +425,7 @@ Supported SBOM formats:
 curl -sS http://localhost:8000/jobs
 ```
 
-Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, archive entry/finding counts, project-archive dependency/finding counts, Django/Docker config and secrets-review file/finding counts, or web/domain/subdomain metrics when present.
+Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, archive entry/finding counts, project-archive dependency/finding counts, passive config/review file/finding counts, or web/domain/subdomain metrics when present.
 
 ## Delete an Uploaded File
 

@@ -24,6 +24,7 @@ from app.reporting import (
 from app.sbom import build_sbom_filename, generate_cyclonedx_json, generate_spdx_json
 from app.services import (
     ArchiveAuditService,
+    CiCdConfigAuditService,
     DjangoConfigAuditService,
     DomainAuditService,
     DockerConfigAuditService,
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI):
     app.state.docker_config_audits = DockerConfigAuditService(settings, file_store, job_store)
     app.state.secrets_review_audits = SecretsReviewAuditService(settings, file_store, job_store)
     app.state.node_package_config_audits = NodePackageConfigAuditService(settings, file_store, job_store)
+    app.state.ci_cd_config_audits = CiCdConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -210,6 +212,16 @@ async def launch_node_package_config_audit(request: Request, file_id: str, backg
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_node_package_config_job(file_id)
     background_tasks.add_task(request.app.state.node_package_config_audits.run_node_package_config_analysis, job.id)
+    return job
+
+
+@app.post("/audits/ci-cd-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_ci_cd_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
+    stored_file = request.app.state.files.get(file_id)
+    if stored_file.kind != "archive":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
+    job = request.app.state.jobs.create_ci_cd_config_job(file_id)
+    background_tasks.add_task(request.app.state.ci_cd_config_audits.run_ci_cd_config_analysis, job.id)
     return job
 
 
