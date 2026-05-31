@@ -324,6 +324,13 @@ describe("report helpers", () => {
             level: "medium",
             evidence: "SECRET_KEY = [REDACTED]",
             file_path: "project/settings.py"
+          },
+          {
+            id: "django_csrf_cookie_secure_not_true",
+            title: "CSRF_COOKIE_SECURE was not observed as true",
+            level: "low",
+            evidence: "CSRF_COOKIE_SECURE = not observed as True; files: project/settings.py; contexts: shared",
+            context: "grouped"
           }
         ],
         errors: []
@@ -336,6 +343,7 @@ describe("report helpers", () => {
     expect(report.detectedFiles[1]).toMatchObject({ path: ".env", read: false, skipReason: "sensitive_env_not_read" });
     expect(report.signals).toContainEqual({ label: "debug.status", value: "enabled_or_default_true" });
     expect(report.findings[0]).toMatchObject({ id: "django_secret_key_hardcoded", evidence: "SECRET_KEY = [REDACTED]" });
+    expect(report.findings[1]).toMatchObject({ id: "django_csrf_cookie_secure_not_true", filePath: null });
   });
 
   it("tolerates sparse Django config results", () => {

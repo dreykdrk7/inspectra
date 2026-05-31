@@ -3421,6 +3421,7 @@ def empty_django_config_analysis(errors: list[str] | None = None) -> dict[str, A
             "static_media": {},
             "deployment": {},
         },
+        "_missing_setting_observations": {},
         "findings": [],
         "errors": errors or [],
     }
@@ -3705,95 +3706,144 @@ def analyze_django_config_text(analysis: dict[str, Any], path: str, category: st
         note_signal(analysis, "deployment", "env_templates", path)
 
 
+LOWER_CONFIDENCE_DJANGO_CONTEXTS = {"development", "test", "local", "example"}
+
+
+def django_active_config_text(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def django_file_context(path: str) -> str:
+    normalized = normalize_archive_entry_path(path).lower()
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    stem = basename.rsplit(".", 1)[0]
+    directories = set(parts[:-1])
+
+    if basename == "conftest.py" or stem in {"test", "tests"} or directories.intersection({"test", "tests"}):
+        return "test"
+    if directories.intersection({"docs", "doc", "examples", "example", "samples", "sample"}) or stem in {"example", "sample"}:
+        return "example"
+    if stem in {"dev", "development"} or directories.intersection({"dev", "development"}):
+        return "development"
+    if stem == "local" or "local" in directories:
+        return "local"
+    if stem in {"prod", "production"} or directories.intersection({"prod", "production"}):
+        return "production"
+    if basename == "settings.py" or stem == "base":
+        return "shared"
+    return "ambiguous"
+
+
+def django_contextual_level(level: str, context: str) -> str:
+    if context in LOWER_CONFIDENCE_DJANGO_CONTEXTS and level in {"medium", "low"}:
+        return "info"
+    return level
+
+
+def contextual_setting_evidence(setting_name: str, value: str, context: str) -> str:
+    evidence = safe_setting_evidence(setting_name, value)
+    if context:
+        return f"{evidence} (context: {context})"
+    return evidence
+
+
 def analyze_django_settings_text(analysis: dict[str, Any], path: str, text: str) -> None:
-    lowered = text.lower()
-    if re.search(r"(?im)^\s*DEBUG\s*=\s*True\b", text) or re.search(r"(?i)DEBUG[^\n#]*(?:default\s*=\s*True|default:\s*True)", text):
+    active_text = django_active_config_text(text)
+    lowered = active_text.lower()
+    context = django_file_context(path)
+    if re.search(r"(?im)^\s*DEBUG\s*=\s*True\b", active_text) or re.search(r"(?i)DEBUG[^\n#]*(?:default\s*=\s*True|default:\s*True)", active_text):
         update_signal(analysis, "debug", "enabled_or_default_true", path)
         add_django_finding(
             analysis,
             "django_debug_enabled",
             "Django DEBUG appears enabled or defaults to true",
-            "medium",
+            django_contextual_level("medium", context),
             "A settings file appears to enable DEBUG or use an insecure default.",
-            safe_setting_evidence("DEBUG", "True/default=True"),
+            contextual_setting_evidence("DEBUG", "True/default=True", context),
             "Ensure DEBUG is false in production and controlled by deployment-specific configuration.",
             file_path=path,
+            context=context,
         )
-    elif re.search(r"(?im)^\s*DEBUG\s*=\s*False\b", text):
+    elif re.search(r"(?im)^\s*DEBUG\s*=\s*False\b", active_text):
         update_signal(analysis, "debug", "disabled_literal", path)
 
-    if re.search(r"(?im)^\s*SECRET_KEY\s*=\s*['\"][^'\"]{8,}['\"]", text):
+    if re.search(r"(?im)^\s*SECRET_KEY\s*=\s*['\"][^'\"]{8,}['\"]", active_text):
         update_signal(analysis, "secret_key", "hardcoded", path)
         add_django_finding(
             analysis,
             "django_secret_key_hardcoded",
             "Django SECRET_KEY appears hardcoded",
-            "medium",
+            django_contextual_level("medium", context),
             "A settings file appears to assign SECRET_KEY directly to a string literal.",
-            safe_setting_evidence("SECRET_KEY", "[REDACTED]"),
+            contextual_setting_evidence("SECRET_KEY", "[REDACTED]", context),
             "Load SECRET_KEY from a protected environment secret without committing the value.",
             file_path=path,
+            context=context,
         )
-    elif re.search(r"(?is)SECRET_KEY[^\n]*(?:get|config|env)\([^)\n]*,\s*['\"][^'\"]+['\"]", text) or re.search(
-        r"(?is)SECRET_KEY[^\n]*(?:default\s*=\s*['\"][^'\"]+['\"])", text
+    elif re.search(r"(?is)SECRET_KEY[^\n]*(?:get|config|env)\([^)\n]*,\s*['\"][^'\"]+['\"]", active_text) or re.search(
+        r"(?is)SECRET_KEY[^\n]*(?:default\s*=\s*['\"][^'\"]+['\"])", active_text
     ):
         update_signal(analysis, "secret_key", "fallback_hardcoded", path)
         add_django_finding(
             analysis,
             "django_secret_key_fallback_hardcoded",
             "Django SECRET_KEY has a hardcoded fallback",
-            "medium",
+            django_contextual_level("medium", context),
             "A settings file appears to read SECRET_KEY from configuration but provide a string fallback.",
-            safe_setting_evidence("SECRET_KEY", "[REDACTED fallback]"),
+            contextual_setting_evidence("SECRET_KEY", "[REDACTED fallback]", context),
             "Avoid production fallbacks for SECRET_KEY; fail closed when the secret is absent.",
             file_path=path,
+            context=context,
         )
     elif "secret_key" in lowered:
         update_signal(analysis, "secret_key", "referenced", path)
 
-    if re.search(r"(?is)ALLOWED_HOSTS\s*=\s*\[[^\]]*['\"]\*['\"]", text) or re.search(
-        r"(?is)ALLOWED_HOSTS\s*=\s*\[[^\]]*['\"]0\.0\.0\.0['\"]", text
+    if re.search(r"(?is)ALLOWED_HOSTS\s*=\s*\[[^\]]*['\"]\*['\"]", active_text) or re.search(
+        r"(?is)ALLOWED_HOSTS\s*=\s*\[[^\]]*['\"]0\.0\.0\.0['\"]", active_text
     ):
         update_signal(analysis, "allowed_hosts", "wildcard", path)
         add_django_finding(
             analysis,
             "django_allowed_hosts_wildcard",
             "Django ALLOWED_HOSTS appears overly broad",
-            "medium",
+            django_contextual_level("medium", context),
             "ALLOWED_HOSTS appears to include a wildcard or 0.0.0.0.",
-            safe_setting_evidence("ALLOWED_HOSTS", "[REDACTED broad host list]"),
+            contextual_setting_evidence("ALLOWED_HOSTS", "[REDACTED broad host list]", context),
             "Use explicit production hostnames and review environment-specific host handling.",
             file_path=path,
+            context=context,
         )
-    elif re.search(r"(?im)^\s*ALLOWED_HOSTS\s*=\s*\[\s*\]", text):
+    elif re.search(r"(?im)^\s*ALLOWED_HOSTS\s*=\s*\[\s*\]", active_text):
         update_signal(analysis, "allowed_hosts", "empty_literal", path)
         add_django_finding(
             analysis,
             "django_allowed_hosts_empty",
             "Django ALLOWED_HOSTS appears empty",
-            "low",
+            django_contextual_level("low", context),
             "ALLOWED_HOSTS is an empty literal in a settings file. This may be intentional for development but should be reviewed for deployment.",
-            safe_setting_evidence("ALLOWED_HOSTS", "[]"),
+            contextual_setting_evidence("ALLOWED_HOSTS", "[]", context),
             "Confirm production settings provide explicit hostnames.",
             file_path=path,
+            context=context,
         )
     elif "allowed_hosts" in lowered:
         update_signal(analysis, "allowed_hosts", "referenced", path)
 
-    analyze_django_cookie_settings(analysis, path, text)
-    analyze_django_https_settings(analysis, path, text)
-    analyze_django_header_settings(analysis, path, text)
-    analyze_django_database_settings(analysis, path, text)
-    analyze_django_static_media_settings(analysis, path, text)
-    analyze_django_cors_settings(analysis, path, text)
+    analyze_django_cookie_settings(analysis, path, active_text, context)
+    analyze_django_https_settings(analysis, path, active_text, context)
+    analyze_django_header_settings(analysis, path, active_text, context)
+    analyze_django_database_settings(analysis, path, active_text, context)
+    analyze_django_static_media_settings(analysis, path, active_text)
+    analyze_django_cors_settings(analysis, path, active_text, context)
 
 
-def analyze_django_cookie_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+def analyze_django_cookie_settings(analysis: dict[str, Any], path: str, text: str, context: str) -> None:
     for setting_name in ("CSRF_COOKIE_SECURE", "SESSION_COOKIE_SECURE"):
         if re.search(rf"(?im)^\s*{setting_name}\s*=\s*True\b", text):
             note_signal(analysis, "cookies", setting_name.lower(), path, "true")
         else:
-            add_django_finding(
+            record_django_missing_setting(
                 analysis,
                 f"django_{setting_name.lower()}_not_true",
                 f"{setting_name} was not observed as true",
@@ -3802,6 +3852,7 @@ def analyze_django_cookie_settings(analysis: dict[str, Any], path: str, text: st
                 safe_setting_evidence(setting_name, "not observed as True"),
                 "Confirm secure cookie settings in the production settings module.",
                 file_path=path,
+                context=context,
             )
     for setting_name in ("CSRF_COOKIE_HTTPONLY", "SESSION_COOKIE_HTTPONLY", "CSRF_COOKIE_SAMESITE", "SESSION_COOKIE_SAMESITE"):
         if setting_name.lower() in text.lower():
@@ -3813,19 +3864,20 @@ def analyze_django_cookie_settings(analysis: dict[str, Any], path: str, text: st
             analysis,
             "django_csrf_trusted_origins_broad_or_http",
             "CSRF trusted origins may be broad or use HTTP",
-            "low",
+            django_contextual_level("low", context),
             "CSRF_TRUSTED_ORIGINS appears to include HTTP or wildcard-like origins.",
-            safe_setting_evidence("CSRF_TRUSTED_ORIGINS", "[REDACTED origins]"),
+            contextual_setting_evidence("CSRF_TRUSTED_ORIGINS", "[REDACTED origins]", context),
             "Review CSRF trusted origins for production HTTPS origins only.",
             file_path=path,
+            context=context,
         )
 
 
-def analyze_django_https_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+def analyze_django_https_settings(analysis: dict[str, Any], path: str, text: str, context: str) -> None:
     if re.search(r"(?im)^\s*SECURE_SSL_REDIRECT\s*=\s*True\b", text):
         note_signal(analysis, "https_security", "secure_ssl_redirect", path, "true")
     else:
-        add_django_finding(
+        record_django_missing_setting(
             analysis,
             "django_secure_ssl_redirect_not_true",
             "SECURE_SSL_REDIRECT was not observed as true",
@@ -3834,10 +3886,11 @@ def analyze_django_https_settings(analysis: dict[str, Any], path: str, text: str
             safe_setting_evidence("SECURE_SSL_REDIRECT", "not observed as True"),
             "Confirm HTTPS redirect behavior at Django or the reverse proxy for production.",
             file_path=path,
+            context=context,
         )
     hsts_match = re.search(r"(?im)^\s*SECURE_HSTS_SECONDS\s*=\s*(\d+)", text)
     if not hsts_match or int(hsts_match.group(1)) == 0:
-        add_django_finding(
+        record_django_missing_setting(
             analysis,
             "django_hsts_missing_or_zero",
             "HSTS setting was not observed or appears disabled",
@@ -3846,26 +3899,28 @@ def analyze_django_https_settings(analysis: dict[str, Any], path: str, text: str
             safe_setting_evidence("SECURE_HSTS_SECONDS", hsts_match.group(1) if hsts_match else "not observed"),
             "Enable HSTS only after validating HTTPS is consistently available.",
             file_path=path,
+            context=context,
         )
     for setting_name in ("SECURE_HSTS_INCLUDE_SUBDOMAINS", "SECURE_HSTS_PRELOAD", "SECURE_PROXY_SSL_HEADER", "USE_X_FORWARDED_HOST"):
         if setting_name.lower() in text.lower():
             note_signal(analysis, "https_security", setting_name.lower(), path, "referenced")
 
 
-def analyze_django_header_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+def analyze_django_header_settings(analysis: dict[str, Any], path: str, text: str, context: str) -> None:
     if re.search(r"(?im)^\s*SECURE_CONTENT_TYPE_NOSNIFF\s*=\s*False\b", text):
         add_django_finding(
             analysis,
             "django_content_type_nosniff_false",
             "SECURE_CONTENT_TYPE_NOSNIFF appears disabled",
-            "low",
+            django_contextual_level("low", context),
             "A settings file explicitly sets SECURE_CONTENT_TYPE_NOSNIFF to False.",
-            safe_setting_evidence("SECURE_CONTENT_TYPE_NOSNIFF", "False"),
+            contextual_setting_evidence("SECURE_CONTENT_TYPE_NOSNIFF", "False", context),
             "Use the Django default or explicitly enable nosniff protection.",
             file_path=path,
+            context=context,
         )
     if not re.search(r"(?im)^\s*X_FRAME_OPTIONS\s*=", text):
-        add_django_finding(
+        record_django_missing_setting(
             analysis,
             "django_x_frame_options_not_observed",
             "X_FRAME_OPTIONS was not observed",
@@ -3874,12 +3929,13 @@ def analyze_django_header_settings(analysis: dict[str, Any], path: str, text: st
             safe_setting_evidence("X_FRAME_OPTIONS", "not observed"),
             "Confirm clickjacking protections are covered by Django defaults or deployment headers.",
             file_path=path,
+            context=context,
         )
     if "secure_referrer_policy" in text.lower():
         note_signal(analysis, "https_security", "secure_referrer_policy", path, "referenced")
 
 
-def analyze_django_database_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+def analyze_django_database_settings(analysis: dict[str, Any], path: str, text: str, context: str) -> None:
     lowered = text.lower()
     if "databases" not in lowered:
         return
@@ -3890,11 +3946,12 @@ def analyze_django_database_settings(analysis: dict[str, Any], path: str, text: 
             analysis,
             "django_sqlite_detected",
             "SQLite database configuration detected",
-            "info",
+            django_contextual_level("info", context),
             "SQLite appears in DATABASES. This can be appropriate for development but should be reviewed for production VPS deployments.",
-            safe_setting_evidence("DATABASES", "sqlite3"),
+            contextual_setting_evidence("DATABASES", "sqlite3", context),
             "Confirm the production database engine is intentional.",
             file_path=path,
+            context=context,
         )
     if re.search(r"(?is)['\"]PASSWORD['\"]\s*:\s*['\"][^'\"]+['\"]", text) or re.search(
         r"(?im)^\s*(?:DB_)?PASSWORD\s*=\s*['\"][^'\"]+['\"]", text
@@ -3904,11 +3961,12 @@ def analyze_django_database_settings(analysis: dict[str, Any], path: str, text: 
             analysis,
             "django_database_password_hardcoded",
             "Database password appears hardcoded",
-            "medium",
+            django_contextual_level("medium", context),
             "A database password-like value appears hardcoded in configuration text.",
-            safe_setting_evidence("DATABASES.PASSWORD", "[REDACTED]"),
+            contextual_setting_evidence("DATABASES.PASSWORD", "[REDACTED]", context),
             "Load database credentials from protected runtime secrets.",
             file_path=path,
+            context=context,
         )
 
 
@@ -3920,7 +3978,7 @@ def analyze_django_static_media_settings(analysis: dict[str, Any], path: str, te
         note_signal(analysis, "static_media", "whitenoise", path, "referenced")
 
 
-def analyze_django_cors_settings(analysis: dict[str, Any], path: str, text: str) -> None:
+def analyze_django_cors_settings(analysis: dict[str, Any], path: str, text: str, context: str) -> None:
     if re.search(r"(?im)^\s*CORS_ALLOW_ALL_ORIGINS\s*=\s*True\b", text) or re.search(
         r"(?im)^\s*CORS_ORIGIN_ALLOW_ALL\s*=\s*True\b", text
     ) or re.search(r"(?is)CORS_ALLOWED_ORIGINS\s*=\s*\[[^\]]*['\"]\*['\"]", text):
@@ -3929,11 +3987,12 @@ def analyze_django_cors_settings(analysis: dict[str, Any], path: str, text: str)
             analysis,
             "django_cors_allow_all",
             "CORS configuration appears overly permissive",
-            "medium",
+            django_contextual_level("medium", context),
             "CORS settings appear to allow all origins.",
-            safe_setting_evidence("CORS", "[REDACTED broad origin policy]"),
+            contextual_setting_evidence("CORS", "[REDACTED broad origin policy]", context),
             "Restrict CORS origins to the expected frontend origins for production.",
             file_path=path,
+            context=context,
         )
     elif "cors_" in text.lower():
         update_signal(analysis, "cors", "referenced", path)
@@ -3950,7 +4009,8 @@ def analyze_django_dependency_text(analysis: dict[str, Any], path: str, text: st
 def analyze_django_deployment_text(analysis: dict[str, Any], path: str, text: str) -> None:
     basename = normalize_archive_entry_path(path).rsplit("/", 1)[-1].lower()
     note_signal(analysis, "deployment", basename.replace(".", "_").replace("-", "_"), path, "present")
-    lowered = text.lower()
+    active_text = django_active_config_text(text)
+    lowered = active_text.lower()
     if "runserver" in lowered:
         add_django_finding(
             analysis,
@@ -3964,7 +4024,7 @@ def analyze_django_deployment_text(analysis: dict[str, Any], path: str, text: st
         )
     if "gunicorn" in lowered or "uvicorn" in lowered:
         note_signal(analysis, "deployment", "production_server_hint", path, "present")
-    if re.search(r"(?im)^\s*DEBUG\s*=\s*True\b|DEBUG=True", text):
+    if re.search(r"(?im)^\s*DEBUG\s*=\s*True\b|DEBUG=True", active_text):
         add_django_finding(
             analysis,
             "django_deployment_debug_env_true",
@@ -3975,7 +4035,7 @@ def analyze_django_deployment_text(analysis: dict[str, Any], path: str, text: st
             "Ensure production deployment variables set DEBUG=False.",
             file_path=path,
         )
-    if re.search(r"(?im)SECRET_KEY\s*[:=]\s*[^$\s][^\n]+", text):
+    if re.search(r"(?im)SECRET_KEY\s*[:=]\s*[^$\s][^\n]+", active_text):
         add_django_finding(
             analysis,
             "django_deployment_secret_key_hardcoded",
@@ -3999,7 +4059,7 @@ def analyze_django_deployment_text(analysis: dict[str, Any], path: str, text: st
         )
     if basename in {"docker-compose.yml", "compose.yml"}:
         for port in ("5432", "3306", "6379"):
-            if re.search(rf"(?m)['\"]?\d*:?{port}:{port}['\"]?", text):
+            if re.search(rf"(?m)['\"]?\d*:?{port}:{port}['\"]?", active_text):
                 add_django_finding(
                     analysis,
                     f"django_compose_exposes_{port}",
@@ -4061,6 +4121,74 @@ def safe_setting_evidence(setting_name: str, value: str) -> str:
     return f"{setting_name} = {value}"
 
 
+def record_django_missing_setting(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str,
+    context: str,
+) -> None:
+    observations = as_dict(analysis.setdefault("_missing_setting_observations", {}))
+    observation = as_dict(observations.get(finding_id))
+    if not observation:
+        observation = {
+            "id": finding_id,
+            "title": title,
+            "level": level,
+            "description": description,
+            "evidence": evidence,
+            "recommendation": recommendation,
+            "files": [],
+            "contexts": [],
+        }
+    files = observation.setdefault("files", [])
+    if isinstance(files, list) and file_path not in files:
+        files.append(file_path)
+    contexts = observation.setdefault("contexts", [])
+    if isinstance(contexts, list) and context not in contexts:
+        contexts.append(context)
+    observations[finding_id] = observation
+    analysis["_missing_setting_observations"] = observations
+
+
+def add_grouped_django_missing_setting_findings(analysis: dict[str, Any]) -> None:
+    observations = as_dict(analysis.get("_missing_setting_observations"))
+    for observation in observations.values():
+        if not isinstance(observation, dict):
+            continue
+        files = [str(item) for item in observation.get("files", []) if isinstance(item, str)]
+        contexts = [str(item) for item in observation.get("contexts", []) if isinstance(item, str)]
+        if not files:
+            continue
+        context_set = set(contexts)
+        base_level = str(observation.get("level") or "info")
+        level = "info" if context_set and context_set.issubset(LOWER_CONFIDENCE_DJANGO_CONTEXTS) else base_level
+        file_preview = ", ".join(files[:8])
+        if len(files) > 8:
+            file_preview = f"{file_preview}, ... (+{len(files) - 8} more)"
+        context_preview = ", ".join(sorted(context_set)) if context_set else "unknown"
+        description = str(observation.get("description") or "")
+        if len(files) > 1:
+            description = f"{description} This finding is grouped across {len(files)} inspected settings files to reduce duplicate noise."
+        if context_set and context_set.issubset(LOWER_CONFIDENCE_DJANGO_CONTEXTS):
+            description = f"{description} The observed files appear to be development, test, local, or example settings, so Inspectra reports this as lower-confidence review context."
+        add_django_finding(
+            analysis,
+            str(observation.get("id") or "django_setting_not_observed"),
+            str(observation.get("title") or "Django setting was not observed"),
+            level,
+            description,
+            f"{observation.get('evidence')}; files: {file_preview}; contexts: {context_preview}",
+            str(observation.get("recommendation") or "Review the relevant production settings manually."),
+            context="grouped",
+        )
+
+
 def add_django_finding(
     analysis: dict[str, Any],
     finding_id: str,
@@ -4071,14 +4199,19 @@ def add_django_finding(
     recommendation: str,
     *,
     file_path: str | None = None,
+    context: str | None = None,
 ) -> None:
     finding = make_finding(finding_id, title, level, description, evidence, recommendation)
     if file_path:
         finding["file_path"] = file_path
+    if context:
+        finding["context"] = context
     analysis["findings"].append(finding)
 
 
 def finalize_django_config_analysis(analysis: dict[str, Any]) -> None:
+    add_grouped_django_missing_setting_findings(analysis)
+    analysis.pop("_missing_setting_observations", None)
     if analysis["summary"]["settings_files_detected"] == 0:
         add_django_finding(
             analysis,

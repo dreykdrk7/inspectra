@@ -668,6 +668,70 @@ async def test_analyze_django_config_detects_env_variants_without_reading(monkey
 
 
 @pytest.mark.anyio
+async def test_analyze_django_config_contextualizes_debug_and_ignores_comment_only(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "project/settings/production.py": b"DEBUG = True\n",
+            "project/settings/dev.py": b"DEBUG = True\n",
+            "project/settings/commented.py": b"# DEBUG=True\nDEBUG = False\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/django-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    debug_findings = [finding for finding in payload["findings"] if finding["id"] == "django_debug_enabled"]
+    production_finding = next(finding for finding in debug_findings if finding.get("file_path") == "project/settings/production.py")
+    dev_finding = next(finding for finding in debug_findings if finding.get("file_path") == "project/settings/dev.py")
+
+    assert response.status_code == 200
+    assert production_finding["level"] == "medium"
+    assert production_finding["context"] == "production"
+    assert dev_finding["level"] == "info"
+    assert dev_finding["context"] == "development"
+    assert not any(finding.get("file_path") == "project/settings/commented.py" for finding in debug_findings)
+
+
+@pytest.mark.anyio
+async def test_analyze_django_config_groups_repeated_missing_setting_findings(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "project/settings/base.py": b"DEBUG = False\n",
+            "project/settings/dev.py": b"DEBUG = False\n",
+            "project/settings/test.py": b"DEBUG = False\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/django-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    csrf_findings = [finding for finding in payload["findings"] if finding["id"] == "django_csrf_cookie_secure_not_true"]
+    hsts_findings = [finding for finding in payload["findings"] if finding["id"] == "django_hsts_missing_or_zero"]
+
+    assert response.status_code == 200
+    assert len(csrf_findings) == 1
+    assert len(hsts_findings) == 1
+    assert csrf_findings[0]["context"] == "grouped"
+    assert "project/settings/base.py" in csrf_findings[0]["evidence"]
+    assert "project/settings/dev.py" in csrf_findings[0]["evidence"]
+    assert "grouped across 3 inspected settings files" in csrf_findings[0]["description"]
+
+
+@pytest.mark.anyio
 async def test_analyze_django_config_skips_path_traversal(monkeypatch, tmp_path):
     archive_path = write_zip_archive(tmp_path, {"../settings.py": b"DEBUG=True\n"})
     monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
