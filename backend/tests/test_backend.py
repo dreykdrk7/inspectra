@@ -1507,7 +1507,15 @@ async def test_export_django_config_job_all_formats(monkeypatch, tmp_path):
         assert response.headers["content-type"].startswith(content_type)
         assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
     assert "django_config_basic" in responses["markdown"].text
+    assert "Finding 1 Context" in responses["markdown"].text
+    assert "production" in responses["markdown"].text
+    assert "Finding 2 Context" in responses["markdown"].text
+    assert "grouped" in responses["markdown"].text
     assert "Django Config Metrics" in responses["html"].text
+    assert "Finding 1 Context" in responses["html"].text
+    assert "production" in responses["html"].text
+    assert "Finding 2 Context" in responses["html"].text
+    assert "grouped" in responses["html"].text
     assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "django_config_basic"
     assert responses["pdf"].content.startswith(b"%PDF")
     assert "supersecret" not in responses["markdown"].text
@@ -1550,6 +1558,7 @@ async def test_export_django_config_redacts_legacy_secret_values(monkeypatch, tm
                     "evidence": "SECRET_KEY = 'super-secret-value-123'",
                     "recommendation": "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----",
                     "file_path": "project/settings.py",
+                    "context": "production<script>TOKEN=super-secret-value-123</script>",
                 }
             ],
             "errors": ["PASSWORD=super-secret-value-123"],
@@ -1583,6 +1592,8 @@ async def test_export_django_config_redacts_legacy_secret_values(monkeypatch, tm
         assert b"REDACTED" in response.content
         for secret in forbidden:
             assert secret not in response.content
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
 
 
 @pytest.mark.anyio
@@ -2696,7 +2707,7 @@ def save_django_config_export_fixture_job() -> JobRecord:
                 "truncated": False,
             },
             "detected_files": [
-                {"path": "project/settings.py", "category": "django_config", "read": True, "size_bytes": 128},
+                {"path": "project/settings.py", "category": "django_config", "read": True, "size_bytes": 128, "context": "production"},
                 {"path": ".env", "category": "env_sensitive", "read": False, "skip_reason": "sensitive_env_not_read"},
             ],
             "django_signals": {
@@ -2712,6 +2723,7 @@ def save_django_config_export_fixture_job() -> JobRecord:
                     "evidence": "DEBUG = True",
                     "recommendation": "Set DEBUG=False in production.",
                     "file_path": "project/settings.py",
+                    "context": "production",
                 },
                 {
                     "id": "django_secret_key_hardcoded",
@@ -2720,7 +2732,7 @@ def save_django_config_export_fixture_job() -> JobRecord:
                     "description": "Review production secrets.",
                     "evidence": "SECRET_KEY = [REDACTED]",
                     "recommendation": "Load SECRET_KEY from a protected environment secret.",
-                    "file_path": "project/settings.py",
+                    "context": "grouped",
                 },
             ],
             "errors": [],

@@ -316,10 +316,72 @@ def build_django_config_sections(result: dict[str, Any]) -> list[ReportSection]:
         ),
         ReportSection("Django Config Metrics", flatten_mapping(as_dict(result.get("summary")))),
         ReportSection("Django Config Limits", flatten_mapping(as_dict(result.get("limits")))),
-        ReportSection("Detected Files", flatten_list(result.get("detected_files"))),
+        ReportSection("Detected Files", flatten_django_detected_files(result.get("detected_files"))),
         ReportSection("Django Signals", flatten_mapping(as_dict(result.get("django_signals")))),
-        ReportSection("Findings", flatten_list(result.get("findings"))),
+        ReportSection("Findings", flatten_django_findings(result.get("findings"))),
     ]
+
+
+def flatten_django_detected_files(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("Path", "path"),
+        ("Category", "category"),
+        ("Context", "context"),
+        ("Read", "read"),
+        ("Skip reason", "skip_reason"),
+        ("Size bytes", "size_bytes"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"File {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"File {index}", record, preferred_keys)
+    return rows
+
+
+def flatten_django_findings(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("ID", "id"),
+        ("Title", "title"),
+        ("Level", "level"),
+        ("Context", "context"),
+        ("File path", "file_path"),
+        ("Description", "description"),
+        ("Evidence", "evidence"),
+        ("Recommendation", "recommendation"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Finding {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"Finding {index}", record, preferred_keys)
+    return rows
+
+
+def append_preferred_rows(
+    rows: list[tuple[str, str]],
+    prefix: str,
+    record: dict[str, Any],
+    preferred_keys: Iterable[tuple[str, str]],
+) -> None:
+    emitted: set[str] = set()
+    for label, key in preferred_keys:
+        value = record.get(key)
+        if value is not None and value != "":
+            rows.append((f"{prefix} {label}", stringify(value)))
+            emitted.add(key)
+    for key, value in record.items():
+        if key in emitted or value is None or value == "":
+            continue
+        rows.append((f"{prefix} {key}", stringify(value)))
 
 
 def build_summary(job: JobRecord) -> dict[str, Any]:
