@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildArchiveAuditReport } from "./archiveReport";
+import { buildCiCdConfigAuditReport, redactCiCdConfigValue } from "./ciCdConfigReport";
 import { buildDjangoConfigAuditReport, redactDjangoConfigValue } from "./djangoConfigReport";
 import { buildDomainAuditReport } from "./domainReport";
 import { buildDockerConfigAuditReport, redactDockerConfigValue } from "./dockerConfigReport";
@@ -817,5 +818,168 @@ describe("report helpers", () => {
     expect(serializedReport).toContain("REDACTED");
     expect(report.scripts[0].excerpt).toContain("[REDACTED]");
     expect(report.packageManagerConfigSignals[0].value).toBe("[REDACTED]");
+  });
+
+  it("normalizes CI/CD config workflows, jobs, signals, and findings", () => {
+    const report = buildCiCdConfigAuditReport({
+      ...baseJob,
+      audit_type: "ci_cd_config_basic",
+      result: {
+        analyzer: "ci_cd_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_considered: 4,
+          files_reviewed: 3,
+          workflow_files_detected: 2,
+          jobs_detected: 1,
+          steps_detected: 2,
+          triggers_detected: 1,
+          findings_count: 2,
+          redacted_values_count: 1,
+          truncated: false
+        },
+        limits: { max_files: 100 },
+        files_detected: [
+          { path: ".github/workflows/release.yml", category: "github_actions", read: true, bytes_read: 1024, context: "production" },
+          { path: ".env.production", category: "env_sensitive", read: false, skip_reason: "real_env_file_not_read", context: "production" }
+        ],
+        files_reviewed: [
+          { path: ".github/workflows/release.yml", category: "github_actions", read: true, bytes_read: 1024, context: "production" }
+        ],
+        workflows: [
+          {
+            file_path: ".github/workflows/release.yml",
+            provider: "github_actions",
+            name: "release",
+            jobs_count: 1,
+            triggers: ["pull_request_target"],
+            context: "production"
+          }
+        ],
+        jobs: [
+          {
+            file_path: ".github/workflows/release.yml",
+            provider: "github_actions",
+            job: "publish",
+            step: "npm publish",
+            steps_detected: 2,
+            evidence: "npm publish",
+            context: "production"
+          }
+        ],
+        triggers: [{ file_path: ".github/workflows/release.yml", provider: "github_actions", trigger: "pull_request_target", context: "production" }],
+        permissions: [
+          { file_path: ".github/workflows/release.yml", provider: "github_actions", permission: "contents", value: "write", context: "production" }
+        ],
+        actions: [
+          {
+            file_path: ".github/workflows/release.yml",
+            provider: "github_actions",
+            action: "actions/checkout",
+            ref: "main",
+            job: "publish",
+            context: "production"
+          },
+          { file_path: ".gitlab-ci.yml", provider: "gitlab_ci", image: "node:latest", context: "shared" }
+        ],
+        service_containers: [
+          { file_path: ".gitlab-ci.yml", provider: "gitlab_ci", service: "postgres", image: "postgres:latest", privileged: false, context: "shared" }
+        ],
+        publish_deploy_signals: [
+          { file_path: ".github/workflows/release.yml", provider: "github_actions", job: "publish", signal: "npm publish", context: "production" }
+        ],
+        findings: [
+          {
+            id: "pull_request_target_used",
+            title: "pull_request_target trigger requires review",
+            level: "medium",
+            confidence: "medium",
+            category: "triggers",
+            provider: "github_actions",
+            context: "production",
+            file_path: ".github/workflows/release.yml",
+            job: "publish",
+            step: "checkout",
+            line: "4",
+            evidence: "on: pull_request_target"
+          },
+          {
+            code: "github_permissions_missing",
+            message: "permissions block not observed",
+            severity: "low",
+            confidence: "medium"
+          }
+        ],
+        redaction_notes: ["CI values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isCiCdConfigAudit).toBe(true);
+    expect(report.archiveType).toBe("zip");
+    expect(report.overview).toContainEqual({ label: "Workflows", value: "2" });
+    expect(report.detectedFiles[0]).toMatchObject({ path: ".github/workflows/release.yml", read: true, context: "production" });
+    expect(report.workflows[0]).toMatchObject({ provider: "github_actions", name: "release", jobsCount: 1 });
+    expect(report.jobs[0]).toMatchObject({ job: "publish", step: "npm publish", stepsDetected: 2 });
+    expect(report.triggers[0]).toMatchObject({ trigger: "pull_request_target" });
+    expect(report.permissions[0]).toMatchObject({ permission: "contents", value: "write" });
+    expect(report.actions[0]).toMatchObject({ action: "actions/checkout", ref: "main" });
+    expect(report.serviceContainers[0]).toMatchObject({ service: "postgres", image: "postgres:latest" });
+    expect(report.publishDeploySignals[0]).toMatchObject({ signal: "npm publish" });
+    expect(report.findings[0]).toMatchObject({ id: "pull_request_target_used", provider: "github_actions", job: "publish", step: "checkout", line: 4 });
+    expect(report.findings[1]).toMatchObject({ id: "github_permissions_missing", level: "low" });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["medium", "low"]);
+    expect(report.redactionNotes).toEqual(["CI values were redacted."]);
+  });
+
+  it("redacts legacy CI/CD config payloads defensively", () => {
+    const report = buildCiCdConfigAuditReport({
+      ...baseJob,
+      audit_type: "ci_cd_config_basic",
+      error: "TOKEN=fixture-token",
+      result: {
+        analyzer: "ci_cd_config_basic",
+        summary: { redacted_values_count: 0 },
+        jobs: [{ file_path: ".github/workflows/release.yml", job: "deploy", command: "API_KEY=fixture-key npm run build" }],
+        actions: [{ file_path: ".github/workflows/release.yml", action: "deploy", image: "https://user:fixture-password@ci.example.test/hook" }],
+        publish_deploy_signals: [
+          { file_path: ".github/workflows/release.yml", signal: "deploy", evidence: "https://example.test/deploy?token=fixture-token&key=fixture-key" }
+        ],
+        findings: [
+          {
+            id: "legacy_ci_secret",
+            title: "Legacy CI secret",
+            evidence: "SECRET_KEY=fixture-secret",
+            description: "PASSWORD=fixture-password",
+            recommendation: "-----BEGIN PRIVATE KEY----- fixture material -----END PRIVATE KEY-----"
+          }
+        ],
+        errors: ["CLIENT_SECRET=fixture-secret"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(
+      redactCiCdConfigValue({
+        error: "TOKEN=fixture-token",
+        result: report
+      })
+    );
+
+    for (const secret of [
+      "fixture-token",
+      "fixture-password",
+      "fixture-key",
+      "fixture-secret",
+      "fixture material",
+      "https://user:fixture-password@ci.example.test/hook",
+      "https://example.test/deploy?token=fixture-token&key=fixture-key",
+      "API_KEY=fixture-key npm run build"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.jobs[0].excerpt).toContain("[REDACTED]");
+    expect(report.actions[0].image).toContain("[REDACTED]");
   });
 });

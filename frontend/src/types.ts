@@ -27,7 +27,8 @@ export type AuditType =
   | 'django_config_basic'
   | 'docker_config_basic'
   | 'secrets_review_basic'
-  | 'node_package_config_basic';
+  | 'node_package_config_basic'
+  | 'ci_cd_config_basic';
 export type ReportFormat = 'markdown' | 'html' | 'xml' | 'pdf';
 export type SbomFormat = 'cyclonedx-json' | 'spdx-json';
 

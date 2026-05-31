@@ -18,7 +18,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts passive Docker/Compose configuration analysis jobs for archive uploads.
 - Starts passive secrets exposure review jobs for archive uploads.
 - Starts passive Node package configuration analysis jobs for archive uploads.
-- Starts passive CI/CD configuration analysis jobs for archive uploads through the API.
+- Starts passive CI/CD configuration analysis jobs for archive uploads.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -29,7 +29,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Exports job reports as Markdown, HTML, XML, and PDF.
 - Exports offline SBOMs as CycloneDX JSON and SPDX JSON from completed manifest and project-archive manifest jobs.
 - Deletes uploaded source files while keeping historical job results.
-- Provides a minimal React UI for uploads, web audits, filters, jobs, readable PDF/image/manifest/archive/project-archive/Django-config/Docker-config/secrets-review/Node-package-config/web reports, exports, and raw JSON results.
+- Provides a minimal React UI for uploads, web audits, filters, jobs, readable PDF/image/manifest/archive/project-archive/Django-config/Docker-config/secrets-review/Node-package-config/CI-CD-config/web reports, exports, and raw JSON results.
 - Exposes OpenAPI docs at `http://localhost:8000/docs`.
 
 ## What This MVP Does Not Do
@@ -146,7 +146,7 @@ http://localhost:5173
 
 From the UI you can check backend health, upload PDFs, images, manifests, or archives, submit an authorized URL for baseline web audit, submit an authorized domain for DNS baseline audit, submit explicit authorized subdomain candidates for inventory, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
-For archive files, the file list shows six archive actions: `Analyze archive` for container structure and extraction-risk indicators, `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive, `Analyze Django config` for passive Django configuration heuristics, `Analyze Docker config` for passive Dockerfile/Compose review indicators, `Analyze secrets review` for redaction-first secret-exposure indicators, and `Analyze Node package config` for passive Node package/configuration review indicators.
+For archive files, the file list shows seven archive actions: `Analyze archive` for container structure and extraction-risk indicators, `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive, `Analyze Django config` for passive Django configuration heuristics, `Analyze Docker config` for passive Dockerfile/Compose review indicators, `Analyze secrets review` for redaction-first secret-exposure indicators, `Analyze Node package config` for passive Node package/configuration review indicators, and `Analyze CI/CD config` for passive workflow/configuration review indicators.
 
 The dashboard includes client-side counters, file filters by kind, job filters by status and audit type, quick search fields, manual refresh, and gentle auto-refresh while jobs are queued or running.
 
@@ -167,7 +167,7 @@ Completed PDF, image, manifest, archive, project-archive, Django config, Docker 
 - Docker config exported reports include detected Docker/Compose files, Dockerfile stages, Compose service names, heuristic findings, redaction notes, limits, truncation, and controlled errors.
 - Secrets review reports include sensitive files detected but not read, files reviewed, heuristic findings grouped by severity, confidence/context metadata, redaction notes, limits, truncation, controlled errors, and redacted raw JSON.
 - Node package config reports include package/workspace overview, scripts, dependency groups, package manager config signals, lockfile signals, heuristic findings, redaction notes, limits, truncation, controlled errors, and redacted raw JSON.
-- CI/CD config exported reports include workflow overviews, triggers, permissions, jobs/steps, actions/images, publish/deploy signals, heuristic findings, redaction notes, limits, truncation, and controlled errors.
+- CI/CD config reports include workflow overviews, triggers, permissions, jobs/steps, actions/images, service containers, publish/deploy signals, heuristic findings, redaction notes, limits, truncation, controlled errors, and redacted raw JSON.
 - Web target URL, redirects, HTTP status, response headers, security headers, cookies, TLS certificate summary, `robots.txt`, `security.txt`, and informational configuration findings.
 - Domain DNS baseline records, email security checks, `www` baseline, and informational DNS findings.
 - Subdomain inventory candidate normalization, A/AAAA/CNAME results, wildcard-DNS heuristic, and informational findings.

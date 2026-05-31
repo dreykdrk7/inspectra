@@ -98,5 +98,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "node_package_config_basic") {
     return "node_package_config_basic";
   }
+  if (auditType === "ci_cd_config_basic") {
+    return "ci_cd_config_basic";
+  }
   return auditType;
 }

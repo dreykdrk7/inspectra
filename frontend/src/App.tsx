@@ -14,6 +14,7 @@ import {
   type JobTypeFilter
 } from "./dashboardFilters";
 import { ArchiveJobReport } from "./ArchiveJobReport";
+import { CiCdConfigJobReport } from "./CiCdConfigJobReport";
 import { DjangoConfigJobReport } from "./DjangoConfigJobReport";
 import { DomainJobReport } from "./DomainJobReport";
 import { DockerConfigJobReport } from "./DockerConfigJobReport";
@@ -231,6 +232,17 @@ export function App() {
     setActionError(null);
     try {
       const job = await api.launchNodePackageConfigAudit(file.id);
+      setSelectedJob(job);
+      await refreshJobs();
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  async function launchCiCdConfigAudit(file: FileRecord) {
+    setActionError(null);
+    try {
+      const job = await api.launchCiCdConfigAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -565,6 +577,12 @@ export function App() {
                               Analyze Node package config
                             </button>
                           ) : null}
+                          {file.kind === "archive" ? (
+                            <button onClick={() => void launchCiCdConfigAudit(file)}>
+                              <Play size={15} aria-hidden="true" />
+                              Analyze CI/CD config
+                            </button>
+                          ) : null}
                           <button className="danger-button" onClick={() => void deleteFile(file.id)}>
                             <Trash2 size={15} aria-hidden="true" />
                             Delete
@@ -606,7 +624,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic", "ci_cd_config_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -686,6 +704,8 @@ export function App() {
               <SecretsReviewJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "node_package_config_basic" ? (
               <NodePackageConfigJobReport job={selectedJob} file={selectedJobFile} />
+            ) : selectedJob.audit_type === "ci_cd_config_basic" ? (
+              <CiCdConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : (
               <WebJobReport job={selectedJob} />
             )}
@@ -925,6 +945,12 @@ function summarizeJob(job: JobListItem): string {
     const packagesDetected = typeof job.summary.packages_detected === "number" ? job.summary.packages_detected : 0;
     const scriptsDetected = typeof job.summary.scripts_detected === "number" ? job.summary.scripts_detected : 0;
     return `${filesReviewed} files reviewed, ${packagesDetected} packages, ${scriptsDetected} scripts, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "ci_cd_config_basic") {
+    const filesReviewed = typeof job.summary.files_reviewed === "number" ? job.summary.files_reviewed : 0;
+    const workflowsDetected = typeof job.summary.workflow_files_detected === "number" ? job.summary.workflow_files_detected : 0;
+    const jobsDetected = typeof job.summary.jobs_detected === "number" ? job.summary.jobs_detected : 0;
+    return `${filesReviewed} files reviewed, ${workflowsDetected} workflows, ${jobsDetected} jobs, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;
