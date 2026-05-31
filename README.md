@@ -15,6 +15,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts basic PDF, image, manifest, and archive audit jobs.
 - Starts project-archive manifest analysis jobs for archives that contain supported dependency manifests.
 - Starts passive Django configuration analysis jobs for archive uploads.
+- Starts passive Docker/Compose configuration analysis jobs for archive uploads through the API.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -40,6 +41,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
 - It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env`/`.env.*` files from archives.
+- It does not execute Docker, build images, start containers, inspect the Docker socket, download images, or resolve image tags.
 - It does not parse unsupported internal manifest formats beyond filename detection.
 - It does not call external services to generate reports.
 - It does not call external services to generate SBOMs.
@@ -103,6 +105,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_DJANGO_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Django-related config/deployment/dependency files read from one archive. |
 | `INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Django config candidate file. |
 | `INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Django config audit. |
+| `INSPECTRA_DOCKER_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Docker/Compose candidate files read from one archive. |
+| `INSPECTRA_DOCKER_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Docker config candidate file. |
+| `INSPECTRA_DOCKER_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Docker config audit. |
 | `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
 | `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
@@ -126,7 +131,7 @@ http://localhost:5173
 
 From the UI you can check backend health, upload PDFs, images, manifests, or archives, submit an authorized URL for baseline web audit, submit an authorized domain for DNS baseline audit, submit explicit authorized subdomain candidates for inventory, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
-For archive files, the file list shows three actions: `Analyze archive` for container structure and extraction-risk indicators, `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive, and `Analyze Django config` for passive Django configuration heuristics.
+For archive files, the file list shows three actions: `Analyze archive` for container structure and extraction-risk indicators, `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive, and `Analyze Django config` for passive Django configuration heuristics. Docker config analysis is available through the API in this phase; a dedicated UI action/report is planned next.
 
 The dashboard includes client-side counters, file filters by kind, job filters by status and audit type, quick search fields, manual refresh, and gentle auto-refresh while jobs are queued or running.
 
@@ -144,6 +149,7 @@ Completed PDF, image, manifest, archive, and project-archive jobs show readable 
 - Archive structure metrics, detected manifest filenames, entries sample, path traversal indicators, sensitive-name indicators, nested archives, and size/compression indicators.
 - Project-archive supported manifests, unsupported manifest filenames, parsed dependencies, scripts, parser findings, limits, truncation, and controlled errors.
 - Django config detected files, settings/deployment signals, secret-redaction notes, heuristic findings, limits, truncation, and controlled errors.
+- Docker config exported reports include detected Docker/Compose files, Dockerfile stages, Compose service names, heuristic findings, redaction notes, limits, truncation, and controlled errors.
 - Web target URL, redirects, HTTP status, response headers, security headers, cookies, TLS certificate summary, `robots.txt`, `security.txt`, and informational configuration findings.
 - Domain DNS baseline records, email security checks, `www` baseline, and informational DNS findings.
 - Subdomain inventory candidate normalization, A/AAAA/CNAME results, wildcard-DNS heuristic, and informational findings.
@@ -252,6 +258,18 @@ The analysis is heuristic and local. It looks for configuration indicators such 
 
 Inspectra does not execute Python, import Django settings, run `manage.py check`, install dependencies, connect to databases, extract the project, follow symlinks or hardlinks, query CVEs, or call the internet. Real environment files such as `.env`, `.env.production`, `.env.local`, and other `.env.*` variants are detected but not read; template files such as `.env.example`, `.env.template`, `.env.sample`, `env.example`, `env.template`, `env.sample`, and `sample.env` may be read within limits. Secret-like values in findings, exports, and the Django config UI report are redacted best-effort, but uploaded archives are stored locally and should not include real secrets unless that local storage risk is acceptable.
 
+## Launch a Docker Config Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/docker-config/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `docker_config_basic` job that opens the archive with Python standard library parsers and reads only bounded text from Docker-related candidate files such as `Dockerfile`, `Dockerfile.*`, Docker Compose files, and `.dockerignore`.
+
+The analysis is heuristic and local. It looks for review indicators such as missing or root `USER` directives, mutable `latest` image tags, unpinned base images, `curl`/`wget` piped to shell, privileged Compose services, host network or host namespace settings, Docker socket mounts, published database/cache ports, real `.env` file references, and sensitive-looking environment variable names. Findings are indicators for manual review, not confirmed vulnerabilities.
+
+Inspectra does not execute Docker, invoke `docker compose`, build images, start containers, inspect the Docker socket, download images, resolve image tags, scan ports, query CVEs, extract the project broadly, follow symlinks or hardlinks, execute scripts, or call the internet. Secret-like values in Docker config findings and exports are redacted best-effort, but uploaded archives are stored locally and should not include real secrets unless that local storage risk is acceptable.
+
 ## Launch a Web Baseline Audit
 
 ```bash
@@ -353,7 +371,7 @@ Supported SBOM formats:
 curl -sS http://localhost:8000/jobs
 ```
 
-Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, archive entry/finding counts, project-archive dependency/finding counts, Django config file/finding counts, or web/domain/subdomain metrics when present.
+Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, archive entry/finding counts, project-archive dependency/finding counts, Django/Docker config file/finding counts, or web/domain/subdomain metrics when present.
 
 ## Delete an Uploaded File
 

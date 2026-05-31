@@ -2,7 +2,7 @@
 
 ## Intended Use
 
-Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-target web and domain baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, passive HTTP/HTTPS configuration review, and bounded DNS baseline review.
+Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-target web and domain baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, passive Docker/Django configuration review, passive HTTP/HTTPS configuration review, and bounded DNS baseline review.
 
 Use Inspectra only on files, domains, systems, or services that you own or are explicitly authorized to assess.
 
@@ -20,6 +20,7 @@ Allowed in this phase:
 - Inspecting archive metadata with Python standard library parsers.
 - Reading bounded supported manifest files from archives in memory.
 - Reading bounded Django-related configuration/deployment text from archives in memory for `django_config_basic`.
+- Reading bounded Dockerfile/Compose text from archives in memory for `docker_config_basic`.
 - Extracting declared dependencies, scripts, engines, and basic project metadata from supported manifests.
 - Recording informational dependency indicators such as lifecycle scripts, unpinned requirements, broad ranges, and URL/VCS/local dependency references.
 - Recording informational archive indicators such as path traversal entries, absolute paths, symlinks, hardlinks, executable bits, nested archives, sensitive-looking filenames, manifest filenames, large estimated uncompressed size, high compression ratio, and truncated analysis.
@@ -36,6 +37,7 @@ Allowed in this phase:
 - Running a controlled `subdomain_inventory_basic` audit for explicit subdomain candidates under one authorized root domain.
 - Recording bounded `A`, `AAAA`, and `CNAME` answers plus candidate normalization, private/reserved IP indicators, external CNAME indicators, and wildcard-DNS heuristics for those explicit candidates.
 - Recording Django configuration indicators such as DEBUG, SECRET_KEY handling, ALLOWED_HOSTS, cookie/HTTPS/proxy settings, CORS, database hints, static/media hints, and deployment-file signals.
+- Recording Docker/Compose configuration indicators such as missing or root `USER`, mutable image tags, privileged services, host networking, Docker socket mounts, published database/cache ports, and sensitive-looking environment names.
 - Using the local web UI to perform the same API actions.
 
 Tools used in this phase:
@@ -54,6 +56,8 @@ For archives, Inspectra uses local Python metadata parsing. It does not extract 
 For project archives, Inspectra may read supported internal manifests (`package.json`, `requirements.txt`, and `pyproject.toml`) into bounded memory buffers and parse them with the same local manifest parser used for standalone manifests. It detects other manifest filenames but does not parse them in this phase.
 
 For Django config audits, Inspectra reads only bounded text from Django-related files inside uploaded archives and reports heuristic indicators for manual review. It does not execute Python, import settings modules, run `manage.py`, install dependencies, connect to databases, read real `.env` files, extract the project broadly, follow symlinks or hardlinks, query CVEs, or call the internet. Real `.env` and `.env.*` files are detected but not read; explicit environment templates and samples may be read within limits. Secret-like evidence is redacted.
+
+For Docker config audits, Inspectra reads only bounded text from Dockerfile, Docker Compose, and `.dockerignore` candidates inside uploaded archives and reports heuristic indicators for manual review. It does not execute Docker, invoke `docker compose`, build images, start containers, inspect or mount the Docker socket, download images, resolve image tags, scan ports, read real `.env` files, extract the project broadly, follow symlinks or hardlinks, query CVEs, or call the internet. Secret-like evidence is redacted best-effort.
 
 For SBOM export, Inspectra uses only declared dependencies already present in completed `manifest_basic` or `project_archive_basic` job results. It does not execute package managers, install packages, resolve transitive dependencies, infer licenses, query CVEs, verify URL/VCS identities, or call package registries. Version ranges remain ranges unless the manifest declares an exact local pin that can be represented as such. Package URLs are generated only for dependencies that look like clear npm or PyPI registry packages; URL, VCS, local, editable, workspace, and alias declarations are preserved without inferred package URLs.
 
@@ -90,6 +94,7 @@ The MVP does not include:
 - Parsing unsupported internal archive manifests beyond filename detection.
 - Running package managers or dependency resolvers against content found inside archives.
 - Running Django, importing Django settings modules, running `manage.py check`, connecting to databases, reading real `.env` files from archives, or treating Django config heuristics as confirmed vulnerabilities.
+- Executing Docker, invoking `docker compose`, building images, starting containers, inspecting the Docker socket, downloading images, resolving image tags, or treating Docker config heuristics as confirmed vulnerabilities.
 - Resolving transitive dependencies for SBOM generation.
 - Inferring package licenses, suppliers, download locations, or registry identity for URL/VCS/local dependency declarations.
 - External CVE, advisory, package registry, or vulnerability database lookups.
@@ -119,6 +124,8 @@ Manifest analysis does not execute project code or package scripts. Uploaded man
 Archive analysis reads container metadata and bounded entry listings. Project archive analysis may additionally read supported manifest text from the archive in bounded memory. Uploaded archives are not generally extracted, and internal files are not executed, installed, rendered, or resolved. ZIP analysis includes a standard metadata preflight for entry count and central directory size before detailed parsing, but archive limits reduce resource risk rather than proving parser safety against every specially crafted file.
 
 Django config analysis may read bounded text from candidate config, dependency, environment-template, and deployment files inside uploaded archives. It does not read real `.env` or `.env.*` content and redacts values associated with `SECRET_KEY`, passwords, tokens, API keys, database URLs, private keys, and similar patterns in runner findings, exports, and the Django config UI report. This redaction is best-effort and does not remove secrets from the uploaded archive bytes stored locally. Because this is heuristic static analysis, findings require manual validation before being treated as production security issues.
+
+Docker config analysis may read bounded text from Dockerfile, Docker Compose, and `.dockerignore` candidates inside uploaded archives. It does not read real `.env` content referenced by Compose files and redacts values associated with passwords, tokens, API keys, database URLs, private keys, and similar patterns in runner findings and exports. This redaction is best-effort and does not remove secrets from the uploaded archive bytes stored locally. Docker findings are review indicators and require manual validation before being treated as production security issues.
 
 Report exports are generated locally from existing job results. The generated HTML is static, self-contained, and does not include JavaScript or external CSS. Inspectra escapes dynamic content before writing HTML and XML reports, and Markdown reports render dynamic values as code spans or fenced code blocks to reduce misleading links, images, inline HTML, headings, tables, and blockquotes in external renderers. Exporting a report does not execute uploaded files, manifest scripts, or result content.
 
@@ -152,6 +159,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Archive-specific analysis limits for entries, estimated uncompressed size, entry-name length, and listed entries.
 - ZIP central directory metadata limits before detailed ZIP parsing.
 - Django config analysis limits through `INSPECTRA_DJANGO_CONFIG_MAX_FILES`, `INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES`.
+- Docker config analysis limits through `INSPECTRA_DOCKER_CONFIG_MAX_FILES`, `INSPECTRA_DOCKER_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_DOCKER_CONFIG_MAX_TOTAL_BYTES`.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.
 
 ## Operational Guidance

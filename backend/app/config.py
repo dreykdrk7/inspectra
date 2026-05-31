@@ -17,6 +17,9 @@ DEFAULT_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS = 30.0
 DEFAULT_DJANGO_CONFIG_MAX_FILES = 100
 DEFAULT_DJANGO_CONFIG_MAX_FILE_BYTES = 524_288
 DEFAULT_DJANGO_CONFIG_MAX_TOTAL_BYTES = 2_097_152
+DEFAULT_DOCKER_CONFIG_MAX_FILES = 100
+DEFAULT_DOCKER_CONFIG_MAX_FILE_BYTES = 524_288
+DEFAULT_DOCKER_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,9 @@ class Settings:
     django_config_max_files: int = DEFAULT_DJANGO_CONFIG_MAX_FILES
     django_config_max_file_bytes: int = DEFAULT_DJANGO_CONFIG_MAX_FILE_BYTES
     django_config_max_total_bytes: int = DEFAULT_DJANGO_CONFIG_MAX_TOTAL_BYTES
+    docker_config_max_files: int = DEFAULT_DOCKER_CONFIG_MAX_FILES
+    docker_config_max_file_bytes: int = DEFAULT_DOCKER_CONFIG_MAX_FILE_BYTES
+    docker_config_max_total_bytes: int = DEFAULT_DOCKER_CONFIG_MAX_TOTAL_BYTES
 
     @property
     def upload_dir(self) -> Path:
@@ -93,6 +99,18 @@ def load_settings() -> Settings:
         "INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES",
         DEFAULT_DJANGO_CONFIG_MAX_TOTAL_BYTES,
     )
+    docker_config_max_files = _positive_int_from_env(
+        "INSPECTRA_DOCKER_CONFIG_MAX_FILES",
+        DEFAULT_DOCKER_CONFIG_MAX_FILES,
+    )
+    docker_config_max_file_bytes = _positive_int_from_env(
+        "INSPECTRA_DOCKER_CONFIG_MAX_FILE_BYTES",
+        DEFAULT_DOCKER_CONFIG_MAX_FILE_BYTES,
+    )
+    docker_config_max_total_bytes = _positive_int_from_env(
+        "INSPECTRA_DOCKER_CONFIG_MAX_TOTAL_BYTES",
+        DEFAULT_DOCKER_CONFIG_MAX_TOTAL_BYTES,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -110,6 +128,9 @@ def load_settings() -> Settings:
         django_config_max_files=django_config_max_files,
         django_config_max_file_bytes=django_config_max_file_bytes,
         django_config_max_total_bytes=django_config_max_total_bytes,
+        docker_config_max_files=docker_config_max_files,
+        docker_config_max_file_bytes=docker_config_max_file_bytes,
+        docker_config_max_total_bytes=docker_config_max_total_bytes,
     )
 
 

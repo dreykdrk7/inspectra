@@ -20,6 +20,7 @@ from app.services import (
     ArchiveAuditService,
     DjangoConfigAuditService,
     DomainAuditService,
+    DockerConfigAuditService,
     ImageAuditService,
     ManifestAuditService,
     PdfAuditService,
@@ -30,6 +31,7 @@ from app.services import (
     calculate_subdomain_inventory_runner_timeout_seconds,
 )
 from app.storage import FileStore, JobStore
+from app import services as audit_services
 from app import web_security
 
 
@@ -58,6 +60,9 @@ class NoopAuditService:
     async def run_django_config_analysis(self, job_id: str) -> None:
         return None
 
+    async def run_docker_config_analysis(self, job_id: str) -> None:
+        return None
+
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
         return None
 
@@ -84,6 +89,17 @@ class CapturingSubdomainInventoryAuditService:
         self.calls.append((job_id, candidates))
 
 
+class FakeRunnerResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
     if max_upload_bytes is not None:
@@ -101,6 +117,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
     app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
     app.state.django_config_audits = DjangoConfigAuditService(settings, file_store, job_store)
+    app.state.docker_config_audits = DockerConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -550,6 +567,91 @@ async def test_django_config_audit_job_creation_and_rejections(monkeypatch, tmp_
     assert pdf_as_django_response.status_code == 400
     assert pdf_as_django_response.json()["detail"] == "File is not an archive."
     assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_docker_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.docker_config_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("docker.zip", make_zip_bytes({"Dockerfile": b"FROM python:latest\n"}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        docker_response = await client.post(f"/audits/docker-config/{archive_file['id']}")
+        pdf_as_docker_response = await client.post(f"/audits/docker-config/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/docker-config/not-a-file-id")
+
+    assert docker_response.status_code == 202
+    assert docker_response.json()["audit_type"] == "docker_config_basic"
+    assert pdf_as_docker_response.status_code == 400
+    assert pdf_as_docker_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_docker_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("docker.zip", make_zip_bytes({"Dockerfile": b"FROM python:latest\n"}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_docker_config_job(archive.id)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "docker_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_reviewed": 1,
+                        "dockerfiles_detected": 1,
+                        "compose_files_detected": 0,
+                        "findings_count": 1,
+                        "secrets_redacted_count": 0,
+                        "truncated": False,
+                    },
+                    "compose_services": [],
+                    "findings": [{"id": "docker_latest_tag", "title": "latest", "level": "low"}],
+                    "errors": [],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+
+    await app.state.docker_config_audits.run_docker_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    assert updated.status == "completed"
+    assert updated.result["analyzer"] == "docker_config_basic"
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/docker-config"
+    assert calls[0]["json"]["file_id"] == archive.id
+    assert calls[0]["json"]["original_filename"] == "docker.zip"
+    assert calls[0]["json"]["max_files"] == app.state.settings.docker_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.docker_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.docker_config_max_total_bytes
 
 
 @pytest.mark.anyio
@@ -1029,6 +1131,19 @@ def test_django_config_limits_config(monkeypatch, tmp_path):
     assert settings.django_config_max_total_bytes == 4096
 
 
+def test_docker_config_limits_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_DOCKER_CONFIG_MAX_FILES", "12")
+    monkeypatch.setenv("INSPECTRA_DOCKER_CONFIG_MAX_FILE_BYTES", "1024")
+    monkeypatch.setenv("INSPECTRA_DOCKER_CONFIG_MAX_TOTAL_BYTES", "4096")
+
+    settings = load_settings()
+
+    assert settings.docker_config_max_files == 12
+    assert settings.docker_config_max_file_bytes == 1024
+    assert settings.docker_config_max_total_bytes == 4096
+
+
 @pytest.mark.parametrize(
     ("raw_domain", "expected"),
     [
@@ -1112,6 +1227,50 @@ async def test_list_jobs_returns_recent_first_with_summary(monkeypatch, tmp_path
     assert [item["id"] for item in payload] == ["b" * 32, "a" * 32]
     assert payload[0]["summary"] == {"error": "runner unavailable"}
     assert payload[1]["summary"]["sha256"] == "abc"
+
+
+@pytest.mark.anyio
+async def test_list_jobs_includes_docker_config_summary(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    app.state.jobs.save(
+        JobRecord(
+            id="c" * 32,
+            audit_type="docker_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={
+                "analyzer": "docker_config_basic",
+                "archive_type": "zip",
+                "summary": {
+                    "files_reviewed": 2,
+                    "dockerfiles_detected": 1,
+                    "compose_files_detected": 1,
+                    "findings_count": 3,
+                    "secrets_redacted_count": 1,
+                    "truncated": False,
+                },
+                "compose_services": [{"name": "web"}],
+                "errors": ["one controlled warning"],
+            },
+        )
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    summary = response.json()[0]["summary"]
+    assert summary["archive_type"] == "zip"
+    assert summary["files_reviewed"] == 2
+    assert summary["dockerfiles_detected"] == 1
+    assert summary["compose_files_detected"] == 1
+    assert summary["services_detected"] == 1
+    assert summary["findings_count"] == 3
+    assert summary["errors_count"] == 1
 
 
 @pytest.mark.anyio
@@ -1651,6 +1810,165 @@ async def test_export_django_config_jobs_with_sparse_and_incomplete_results(monk
 
 
 @pytest.mark.anyio
+async def test_export_docker_config_job_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_docker_config_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "docker_config_basic" in responses["markdown"].text
+    assert "Docker Config Metrics" in responses["html"].text
+    assert "Finding 1 Context" in responses["markdown"].text
+    assert "production" in responses["markdown"].text
+    assert "project/Dockerfile" in responses["markdown"].text
+    assert "docker_runs_as_root" in responses["markdown"].text
+    assert "USER = root" in responses["markdown"].text
+    assert "production" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "docker_config_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_export_docker_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="c" * 32,
+        audit_type="docker_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="TOKEN=super-secret-value-123",
+        result={
+            "analyzer": "docker_config_basic",
+            "archive_type": "zip",
+            "summary": {"files_reviewed": 1, "findings_count": 1, "secrets_redacted_count": 0},
+            "files_detected": [
+                {
+                    "path": "docker-compose.yml",
+                    "category": "compose",
+                    "read": True,
+                    "skip_reason": "DATABASE_URL=postgres://user:rawpass@db/app",
+                }
+            ],
+            "findings": [
+                {
+                    "id": "legacy_secret",
+                    "title": "Legacy raw secret",
+                    "level": "medium",
+                    "description": "API_KEY=super-secret-value-123",
+                    "evidence": "SECRET_KEY = 'super-secret-value-123'",
+                    "recommendation": "PRIVATE_KEY=-----BEGIN PRIVATE KEY-----abc123-----END PRIVATE KEY-----",
+                    "file_path": "docker-compose.yml",
+                    "context": "production<script>TOKEN=super-secret-value-123</script>",
+                }
+            ],
+            "errors": ["PASSWORD=super-secret-value-123"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = (
+        b"super-secret-value-123",
+        b"rawpass",
+        b"abc123",
+        b"BEGIN PRIVATE KEY",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
+
+
+@pytest.mark.anyio
+async def test_export_docker_config_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="5" * 32, audit_type="docker_config_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="6" * 32, audit_type="docker_config_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="7" * 32,
+            audit_type="docker_config_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="Docker config runner failed safely.",
+        ),
+        JobRecord(
+            id="9" * 32,
+            audit_type="docker_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "docker_config_basic", "summary": {}, "findings": [], "errors": []},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "docker_config_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "docker_config_basic" in response.text
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -1888,7 +2206,16 @@ async def test_export_sbom_for_project_archive_job(monkeypatch, tmp_path):
 async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 26, tzinfo=timezone.utc)
-    audit_types = ("pdf_basic", "image_basic", "archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic")
+    audit_types = (
+        "pdf_basic",
+        "image_basic",
+        "archive_basic",
+        "web_basic",
+        "domain_basic",
+        "subdomain_inventory_basic",
+        "django_config_basic",
+        "docker_config_basic",
+    )
     job_ids: list[str] = []
     for index, audit_type in enumerate(audit_types, start=1):
         job_id = f"{index:x}" * 32
@@ -2735,6 +3062,81 @@ def save_django_config_export_fixture_job() -> JobRecord:
                     "context": "grouped",
                 },
             ],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_docker_config_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="c" * 32,
+        audit_type="docker_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "docker_config_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 2048, "original_filename": "docker.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 2,
+                "files_reviewed": 2,
+                "dockerfiles_detected": 1,
+                "compose_files_detected": 1,
+                "dockerignore_files_detected": 0,
+                "findings_count": 2,
+                "secrets_redacted_count": 1,
+                "truncated": False,
+            },
+            "files_detected": [
+                {"path": "project/Dockerfile", "category": "dockerfile", "read": True, "size_bytes": 128, "context": "production"},
+                {"path": "docker-compose.yml", "category": "compose", "read": True, "size_bytes": 256, "context": "shared"},
+            ],
+            "files_reviewed": [
+                {"path": "project/Dockerfile", "category": "dockerfile", "context": "production", "bytes_read": 128},
+                {"path": "docker-compose.yml", "category": "compose", "context": "shared", "bytes_read": 256},
+            ],
+            "dockerfile_stages": [
+                {
+                    "file_path": "project/Dockerfile",
+                    "context": "production",
+                    "base_image": "python:latest",
+                    "stage": None,
+                    "user_observed": True,
+                    "healthcheck_observed": False,
+                }
+            ],
+            "compose_services": [{"file_path": "docker-compose.yml", "name": "web", "context": "shared"}],
+            "findings": [
+                {
+                    "id": "docker_runs_as_root",
+                    "title": "Dockerfile declares root as runtime user",
+                    "level": "medium",
+                    "description": "Review the runtime user.",
+                    "evidence": "USER = root",
+                    "recommendation": "Use a dedicated non-root runtime user where practical.",
+                    "file_path": "project/Dockerfile",
+                    "context": "production",
+                },
+                {
+                    "id": "docker_sensitive_env_name",
+                    "title": "Compose file contains a sensitive-looking environment name",
+                    "level": "low",
+                    "description": "Review secret injection.",
+                    "evidence": "SECRET_KEY= [REDACTED]",
+                    "recommendation": "Avoid committing real secret values.",
+                    "file_path": "docker-compose.yml",
+                    "context": "shared",
+                },
+            ],
+            "redaction_notes": ["Secret-like values in Docker/Compose evidence are redacted on a best-effort basis."],
             "errors": [],
         },
     )

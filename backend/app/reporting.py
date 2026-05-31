@@ -180,6 +180,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_subdomain_inventory_sections(result))
     elif job.audit_type == "django_config_basic":
         sections.extend(build_django_config_sections(result))
+    elif job.audit_type == "docker_config_basic":
+        sections.extend(build_docker_config_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -322,6 +324,23 @@ def build_django_config_sections(result: dict[str, Any]) -> list[ReportSection]:
     ]
 
 
+def build_docker_config_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "Docker Config Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("Docker Config Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Docker Config Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Files Detected", flatten_docker_detected_files(result.get("files_detected"))),
+        ReportSection("Files Reviewed", flatten_list(result.get("files_reviewed"))),
+        ReportSection("Dockerfile Stages", flatten_list(result.get("dockerfile_stages"))),
+        ReportSection("Compose Services", flatten_list(result.get("compose_services"))),
+        ReportSection("Findings", flatten_docker_findings(result.get("findings"))),
+        ReportSection("Redaction Notes", flatten_list(result.get("redaction_notes"))),
+    ]
+
+
 def flatten_django_detected_files(value: Any) -> list[tuple[str, str]]:
     if not isinstance(value, list):
         return []
@@ -341,6 +360,10 @@ def flatten_django_detected_files(value: Any) -> list[tuple[str, str]]:
             continue
         append_preferred_rows(rows, f"File {index}", record, preferred_keys)
     return rows
+
+
+def flatten_docker_detected_files(value: Any) -> list[tuple[str, str]]:
+    return flatten_django_detected_files(value)
 
 
 def flatten_django_findings(value: Any) -> list[tuple[str, str]]:
@@ -364,6 +387,10 @@ def flatten_django_findings(value: Any) -> list[tuple[str, str]]:
             continue
         append_preferred_rows(rows, f"Finding {index}", record, preferred_keys)
     return rows
+
+
+def flatten_docker_findings(value: Any) -> list[tuple[str, str]]:
+    return flatten_django_findings(value)
 
 
 def append_preferred_rows(
@@ -459,6 +486,16 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["findings_count"] = summary.get("findings_count", "N/A")
         data["secrets_redacted_count"] = summary.get("secrets_redacted_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
+    elif job.audit_type == "docker_config_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["files_reviewed"] = summary.get("files_reviewed", "N/A")
+        data["dockerfiles_detected"] = summary.get("dockerfiles_detected", "N/A")
+        data["compose_files_detected"] = summary.get("compose_files_detected", "N/A")
+        data["services_detected"] = len(result.get("compose_services") or [])
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["secrets_redacted_count"] = summary.get("secrets_redacted_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
+        data["errors_count"] = len(result.get("errors") or [])
     return data
 
 
@@ -490,6 +527,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_web_value(result))
     if job.audit_type == "django_config_basic":
         return as_dict(redact_django_config_value(result))
+    if job.audit_type == "docker_config_basic":
+        return as_dict(redact_django_config_value(result))
     return result
 
 
@@ -499,6 +538,8 @@ def public_job_error(job: JobRecord) -> str:
     if job.audit_type == "web_basic":
         return redact_text_urls(job.error)
     if job.audit_type == "django_config_basic":
+        return redact_django_secret_text(job.error)
+    if job.audit_type == "docker_config_basic":
         return redact_django_secret_text(job.error)
     return job.error
 
