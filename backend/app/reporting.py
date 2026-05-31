@@ -1023,7 +1023,12 @@ def is_k8s_secret_mapping_key(key: str) -> bool:
 
 
 def redact_k8s_secret_text(value: str) -> str:
-    return redact_ci_cd_secret_text(value)
+    redacted = redact_ci_cd_secret_text(value).replace("[REDACTED PRIVATE KEY]", "[REDACTED]")
+    return re.sub(
+        r"(?i)\b(?:[a-z0-9._-]*user|username|login):(?:[a-z0-9._-]*(?:pass|password|secret|token|key)[a-z0-9._-]*)\b",
+        "[REDACTED]",
+        redacted,
+    )
 
 
 def collect_errors(job: JobRecord) -> dict[str, Any]:

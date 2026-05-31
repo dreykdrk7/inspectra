@@ -148,7 +148,7 @@ describe("K8sConfigJobReport", () => {
       <K8sConfigJobReport
         job={{
           ...baseJob,
-          error: "SECRET_KEY=fixture-secret",
+          error: "PASSWORD=super-secret-password",
           result: {
             analyzer: "k8s_config_basic",
             summary: { redacted_values_count: 0 },
@@ -156,28 +156,28 @@ describe("K8sConfigJobReport", () => {
               {
                 kind: "Secret",
                 name: "app-secret",
-                stringData: { password: "fixture-password" },
-                data: { token: "fixture-token" }
+                stringData: { password: "super-secret-password", privateKey: "-----BEGIN PRIVATE KEY----- db_password_plaintext -----END PRIVATE KEY-----" },
+                data: { token: "token_should_never_render" }
               }
             ],
             containers: [
               {
                 container: "app",
-                env: [{ name: "API_KEY", value: "fixture-key" }],
-                image: "https://user:fixture-password@registry.example.test/app"
+                env: [{ name: "API_KEY", value: "raw-api-key-123456" }],
+                image: "registry-user:registry-pass/k8s-app:latest"
               }
             ],
-            secrets: [{ kind: "Secret", name: "app-secret", stringData: "TOKEN=fixture-token", data: "password=fixture-password" }],
+            secrets: [{ kind: "Secret", name: "app-secret", stringData: "TOKEN=token_should_never_render", data: "password=db_password_plaintext" }],
             findings: [
               {
                 id: "legacy_k8s_secret",
                 title: "Legacy Kubernetes secret",
-                evidence: "PASSWORD=fixture-password",
-                description: "CLIENT_SECRET=fixture-secret",
-                recommendation: "-----BEGIN PRIVATE KEY----- fixture material -----END PRIVATE KEY-----"
+                evidence: "PASSWORD=super-secret-password",
+                description: "CLIENT_SECRET=token_should_never_render",
+                recommendation: "-----BEGIN PRIVATE KEY----- db_password_plaintext -----END PRIVATE KEY-----"
               }
             ],
-            errors: ["API_KEY=fixture-key"]
+            errors: ["API_KEY=raw-api-key-123456"]
           }
         }}
       />
@@ -185,12 +185,12 @@ describe("K8sConfigJobReport", () => {
 
     const rendered = container.textContent ?? "";
     for (const secret of [
-      "fixture-token",
-      "fixture-password",
-      "fixture-key",
-      "fixture-secret",
-      "fixture material",
-      "https://user:fixture-password@registry.example.test/app"
+      "super-secret-password",
+      "raw-api-key-123456",
+      "token_should_never_render",
+      "PRIVATE KEY",
+      "db_password_plaintext",
+      "registry-user:registry-pass"
     ]) {
       expect(rendered).not.toContain(secret);
     }

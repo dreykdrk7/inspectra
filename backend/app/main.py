@@ -16,6 +16,8 @@ from app.models import (
 )
 from app.reporting import (
     build_report_filename,
+    public_job_error,
+    public_result_for_job,
     render_html_report,
     render_markdown_report,
     render_pdf_report,
@@ -291,7 +293,15 @@ async def list_jobs(request: Request) -> list[JobListItem]:
 
 @app.get("/jobs/{job_id}", response_model=JobRecord)
 async def get_job(request: Request, job_id: str) -> JobRecord:
-    return request.app.state.jobs.get(job_id)
+    job = request.app.state.jobs.get(job_id)
+    if job.audit_type == "k8s_config_basic":
+        return job.model_copy(
+            update={
+                "result": public_result_for_job(job, job.result or {}),
+                "error": public_job_error(job) or None,
+            }
+        )
+    return job
 
 
 @app.get("/jobs/{job_id}/export/markdown")

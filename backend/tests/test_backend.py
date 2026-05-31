@@ -1004,8 +1004,10 @@ async def test_k8s_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
                         "truncated": False,
                     },
                     "resources": [{"kind": "Deployment", "name": "app", "path": "k8s/deployment.yaml"}],
-                    "findings": [{"id": "resource_limits_missing", "title": "resources missing", "level": "low"}],
-                    "errors": [],
+                    "containers": [{"container": "app", "image": "registry-user:registry-pass/k8s-app:latest"}],
+                    "secrets": [{"kind": "Secret", "stringData": {"password": "super-secret-password"}}],
+                    "findings": [{"id": "resource_limits_missing", "title": "resources missing", "level": "low", "evidence": "API_KEY=raw-api-key-123456"}],
+                    "errors": ["TOKEN=token_should_never_render"],
                 }
             )
 
@@ -1014,8 +1016,12 @@ async def test_k8s_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
     await app.state.k8s_config_audits.run_k8s_config_analysis(job.id)
 
     updated = app.state.jobs.get(job.id)
+    serialized_result = json.dumps(updated.result)
     assert updated.status == "completed"
     assert updated.result["analyzer"] == "k8s_config_basic"
+    assert "[REDACTED]" in serialized_result
+    for secret in ("super-secret-password", "raw-api-key-123456", "token_should_never_render", "registry-user:registry-pass"):
+        assert secret not in serialized_result
     assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/k8s-config"
     assert calls[0]["json"]["file_id"] == archive.id
     assert calls[0]["json"]["original_filename"] == "k8s.zip"
@@ -3165,7 +3171,7 @@ async def test_export_k8s_config_redacts_legacy_secret_values(monkeypatch, tmp_p
         status="completed",
         created_at=now,
         updated_at=now,
-        error="SECRET_KEY=fixture-secret",
+        error="PASSWORD=super-secret-password",
         result={
             "analyzer": "k8s_config_basic",
             "archive_type": "zip",
@@ -3175,23 +3181,24 @@ async def test_export_k8s_config_redacts_legacy_secret_values(monkeypatch, tmp_p
                     "kind": "Secret",
                     "name": "app-secret",
                     "namespace": "production",
-                    "stringData": {"password": "fixture-password"},
-                    "data": {"token": "fixture-token"},
+                    "stringData": {"password": "super-secret-password", "privateKey": "-----BEGIN PRIVATE KEY----- db_password_plaintext -----END PRIVATE KEY-----"},
+                    "data": {"token": "token_should_never_render"},
                 }
             ],
             "containers": [
                 {
                     "container": "app",
-                    "env": [{"name": "API_KEY", "value": "fixture-key"}],
-                    "registry": "https://user:fixture-password@registry.example.test/app",
+                    "env": [{"name": "API_KEY", "value": "raw-api-key-123456"}],
+                    "image": "registry-user:registry-pass/k8s-app:latest",
+                    "registry": "https://registry-user:registry-pass@registry.example.test/app",
                 }
             ],
             "secrets": [
                 {
                     "kind": "Secret",
                     "name": "app-secret",
-                    "data": "password=fixture-password",
-                    "stringData": "TOKEN=fixture-token",
+                    "data": "password=db_password_plaintext",
+                    "stringData": "TOKEN=token_should_never_render",
                 }
             ],
             "findings": [
@@ -3201,19 +3208,19 @@ async def test_export_k8s_config_redacts_legacy_secret_values(monkeypatch, tmp_p
                     "level": "medium",
                     "confidence": "high",
                     "category": "secrets",
-                    "description": "CLIENT_SECRET=fixture-secret",
-                    "evidence": "PASSWORD=fixture-password",
-                    "recommendation": "-----BEGIN PRIVATE KEY----- fixture-private-key-material -----END PRIVATE KEY-----",
+                    "description": "CLIENT_SECRET=token_should_never_render",
+                    "evidence": "PASSWORD=super-secret-password",
+                    "recommendation": "-----BEGIN PRIVATE KEY----- db_password_plaintext -----END PRIVATE KEY-----",
                     "file_path": "deploy/app.yaml",
-                    "context": "production<script>secret=fixture-secret</script>",
+                    "context": "production<script>API_KEY=raw-api-key-123456</script>",
                     "kind": "Secret",
                     "resource_name": "app-secret",
                     "namespace": "production",
                     "field_path": "stringData.password",
                 }
             ],
-            "errors": ["API_KEY=fixture-key"],
-            "redaction_notes": ["TOKEN=fixture-token"],
+            "errors": ["API_KEY=raw-api-key-123456", "TOKEN=token_should_never_render"],
+            "redaction_notes": ["PASSWORD=super-secret-password"],
         },
     )
     app.state.jobs.save(job)
@@ -3224,21 +3231,26 @@ async def test_export_k8s_config_redacts_legacy_secret_values(monkeypatch, tmp_p
         "pdf": "application/pdf",
     }
     forbidden = (
-        b"fixture-token",
-        b"fixture-password",
-        b"fixture-key",
-        b"fixture-secret",
-        b"fixture-private-key-material",
-        b"BEGIN PRIVATE KEY",
+        b"super-secret-password",
+        b"raw-api-key-123456",
+        b"token_should_never_render",
+        b"PRIVATE KEY",
+        b"db_password_plaintext",
+        b"registry-user:registry-pass",
     )
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
         responses = {
             report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
             for report_format in expected
         }
 
+    assert api_response.status_code == 200
+    assert b"REDACTED" in api_response.content
+    for secret in forbidden:
+        assert secret not in api_response.content
     for report_format, response in responses.items():
         assert response.status_code == 200
         assert response.headers["content-type"].startswith(expected[report_format])

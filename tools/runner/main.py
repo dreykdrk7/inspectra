@@ -8850,6 +8850,8 @@ def analyze_k8s_workload(
     text = "\n".join(line for _line_number, line in lines)
     containers = k8s_extract_containers(lines)
     for container in containers:
+        image_ref = container.get("image")
+        safe_image_ref = redact_k8s_secret_text(str(image_ref))[0] if image_ref else None
         analysis["containers"].append(
             {
                 "path": path,
@@ -8858,7 +8860,7 @@ def analyze_k8s_workload(
                 "resource_name": resource_name,
                 "namespace": namespace,
                 "container": container.get("name"),
-                "image": container.get("image"),
+                "image": safe_image_ref,
             }
         )
     if re.search(r"(?im)^\s*hostNetwork\s*:\s*true\s*$", text):
@@ -9244,12 +9246,15 @@ def k8s_block_has_wildcard(lines: list[tuple[int, str]], key: str) -> bool:
 
 def redact_k8s_secret_text(text: str) -> tuple[str, int]:
     redacted, count = redact_ci_cd_secret_text(text)
+    if "[REDACTED PRIVATE KEY]" in redacted:
+        redacted = redacted.replace("[REDACTED PRIVATE KEY]", "[REDACTED]")
 
     def apply(pattern: str, replacement: str) -> None:
         nonlocal redacted, count
         redacted, replacements = re.subn(pattern, replacement, redacted, flags=re.IGNORECASE)
         count += replacements
 
+    apply(r"\b(?:[a-z0-9._-]*user|username|login):(?:[a-z0-9._-]*(?:pass|password|secret|token|key)[a-z0-9._-]*)\b", "[REDACTED]")
     apply(r"(\b(?:password|token|secret|api_key|apikey|private_key|client_secret|key)\b\s*[:=]\s*)(['\"]?)[^\s,'\"}\]]+", r"\1\2[REDACTED]")
     return redacted, count
 

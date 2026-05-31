@@ -1913,6 +1913,72 @@ rules:
 
 
 @pytest.mark.anyio
+async def test_analyze_k8s_config_serialized_result_omits_sensitive_fixture_values(monkeypatch, tmp_path):
+    manifests = b"""
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: production
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: registry-user:registry-pass/k8s-app:latest
+          env:
+            - name: PASSWORD
+              value: super-secret-password
+            - name: API_KEY
+              value: raw-api-key-123456
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+stringData:
+  password: db_password_plaintext
+  privateKey: |
+    -----BEGIN PRIVATE KEY-----
+    token_should_never_render
+    -----END PRIVATE KEY-----
+data:
+  token: token_should_never_render
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  API_KEY: raw-api-key-123456
+"""
+    archive_path = write_zip_archive(tmp_path, {"deploy/production/app.yaml": manifests})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/k8s-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["analyzer"] == "k8s_config_basic"
+    assert "[REDACTED]" in serialized
+    for secret in (
+        "super-secret-password",
+        "raw-api-key-123456",
+        "token_should_never_render",
+        "PRIVATE KEY",
+        "db_password_plaintext",
+        "registry-user:registry-pass",
+    ):
+        assert secret not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_k8s_config_context_templates_and_comments(monkeypatch, tmp_path):
     example_manifest = b"""
 apiVersion: apps/v1

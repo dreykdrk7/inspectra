@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 
 from app.config import Settings
+from app.reporting import redact_k8s_config_value
 from app.storage import FileStore, JobStore
 
 
@@ -305,7 +306,8 @@ class K8sConfigAuditService:
             self.jobs.update(job_id, status="failed", error=f"Tool runner request failed: {exc}")
             return
 
-        self.jobs.update(job_id, status="completed", result=response.json())
+        result = redact_k8s_config_value(response.json())
+        self.jobs.update(job_id, status="completed", result=result if isinstance(result, dict) else {"result": result})
 
 
 class WebAuditService:
