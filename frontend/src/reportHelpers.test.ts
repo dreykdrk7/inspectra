@@ -13,6 +13,7 @@ import { buildPdfAuditReport } from "./pdfReport";
 import { buildProjectArchiveAuditReport } from "./projectArchiveReport";
 import { buildSecretsReviewAuditReport, redactSecretsReviewValue } from "./secretsReviewReport";
 import { buildSubdomainAuditReport } from "./subdomainReport";
+import { buildTerraformConfigAuditReport, redactTerraformConfigValue } from "./terraformConfigReport";
 import { buildWebAuditReport } from "./webReport";
 import type { JobRecord } from "./types";
 
@@ -1133,5 +1134,128 @@ describe("report helpers", () => {
     expect(serializedReport).toContain("REDACTED");
     expect(report.findings[0].evidence).toContain("[REDACTED]");
     expect(report.containers[0].image).toContain("[REDACTED]");
+  });
+
+  it("normalizes Terraform config providers, resources, state files, findings, and runner field names", () => {
+    const report = buildTerraformConfigAuditReport({
+      ...baseJob,
+      audit_type: "terraform_config_basic",
+      result: {
+        analyzer: "terraform_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_considered: 5,
+          files_reviewed: 4,
+          terraform_files_detected: 3,
+          tfvars_files_detected: 1,
+          state_files_detected: 1,
+          providers_detected: 1,
+          backends_detected: 1,
+          modules_detected: 1,
+          resources_detected: 2,
+          findings_count: 2,
+          redacted_values_count: 1,
+          truncated: false
+        },
+        files_detected: [
+          { path: "infra/production/main.tf", category: "terraform", read: true, context: "production" },
+          { path: "infra/production/terraform.tfstate", category: "terraform_state", read: false, skip_reason: "state_file_not_read", context: "production" }
+        ],
+        providers: [{ file_path: "infra/production/providers.tf", name: "aws", source: "hashicorp/aws", version: "~> 5.0", context: "production" }],
+        backends: [{ file_path: "infra/production/backend.tf", type: "s3", config_keys: ["bucket", "region"], context: "production" }],
+        modules: [{ file_path: "infra/production/main.tf", name: "vpc", source: "terraform-aws-modules/vpc/aws", version: "5.0.0", context: "production" }],
+        resources: [{ file_path: "infra/production/main.tf", provider: "aws", resource_type: "aws_security_group", resource_name: "web", context: "production" }],
+        variables: [{ file_path: "infra/production/variables.tf", name: "db_password", sensitive: true, default_present: true, context: "production" }],
+        outputs: [{ file_path: "infra/production/outputs.tf", name: "api_key", sensitive: false, context: "production" }],
+        state_files: [{ path: "infra/production/terraform.tfstate", category: "terraform_state", read: false, skip_reason: "state_file_not_read", context: "production" }],
+        findings: [
+          {
+            id: "aws_security_group_ssh_open_world",
+            title: "Security group allows SSH from any IPv4 address",
+            level: "medium",
+            confidence: "high",
+            category: "aws_network",
+            provider: "aws",
+            resource_type: "aws_security_group",
+            resource_name: "web",
+            field_path: "ingress.cidr_blocks",
+            file_path: "infra/production/main.tf",
+            context: "production",
+            line: "22",
+            evidence: "resource=aws_security_group.web; field=ingress.cidr_blocks"
+          },
+          { code: "terraform_lockfile_missing", message: "lockfile missing", severity: "low" }
+        ],
+        redaction_notes: ["Terraform values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isTerraformConfigAudit).toBe(true);
+    expect(report.overview).toContainEqual({ label: "Resources", value: "2" });
+    expect(report.detectedFiles[0]).toMatchObject({ path: "infra/production/main.tf", context: "production" });
+    expect(report.providers[0]).toMatchObject({ name: "aws", source: "hashicorp/aws" });
+    expect(report.backends[0]).toMatchObject({ type: "s3", configKeys: ["bucket", "region"] });
+    expect(report.modules[0]).toMatchObject({ name: "vpc" });
+    expect(report.resources[0]).toMatchObject({ resourceType: "aws_security_group", resourceName: "web" });
+    expect(report.variables[0]).toMatchObject({ name: "db_password", defaultPresent: true });
+    expect(report.outputs[0]).toMatchObject({ kind: "output", name: "api_key" });
+    expect(report.stateFiles[0]).toMatchObject({ path: "infra/production/terraform.tfstate", read: false });
+    expect(report.findings[0]).toMatchObject({ id: "aws_security_group_ssh_open_world", fieldPath: "ingress.cidr_blocks", line: 22 });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["medium", "low"]);
+    expect(report.redactionNotes).toEqual(["Terraform values were redacted."]);
+  });
+
+  it("redacts legacy Terraform config payloads defensively", () => {
+    const report = buildTerraformConfigAuditReport({
+      ...baseJob,
+      audit_type: "terraform_config_basic",
+      error: "PASSWORD=super-secret-password",
+      result: {
+        analyzer: "terraform_config_basic",
+        summary: { redacted_values_count: 0 },
+        providers: [{ name: "aws", access_key: "AKIAIOSFODNN7EXAMPLE", secret_key: "aws_secret_access_key_should_not_render" }],
+        backends: [{ type: "s3", config: { secret_key: "aws_secret_access_key_should_not_render", password: "super-secret-password" } }],
+        modules: [{ name: "db", source: "postgres://user:pass@example.com/db" }],
+        resources: [{ resource_type: "aws_instance", resource_name: "web", user_data: "TOKEN=token_should_never_render" }],
+        variables: [{ name: "db_password", default: "db_password_plaintext" }],
+        outputs: [{ name: "api_key", value: "raw-api-key-123456", sensitive: false }],
+        state_files: [{ path: "terraform.tfstate", read: false, content: "super-secret-password raw-api-key-123456" }],
+        findings: [
+          {
+            id: "legacy_terraform_secret",
+            title: "Legacy Terraform secret",
+            evidence: "PASSWORD=super-secret-password",
+            description: "CLIENT_SECRET=token_should_never_render",
+            recommendation: "-----BEGIN PRIVATE KEY----- PRIVATE KEY db_password_plaintext -----END PRIVATE KEY-----"
+          }
+        ],
+        errors: ["API_KEY=raw-api-key-123456", "AWS_SECRET_ACCESS_KEY=aws_secret_access_key_should_not_render", "postgres://user:pass@example.com/db"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(
+      redactTerraformConfigValue({
+        error: "SECRET_KEY=fixture-secret",
+        result: report
+      })
+    );
+
+    for (const secret of [
+      "super-secret-password",
+      "raw-api-key-123456",
+      "token_should_never_render",
+      "PRIVATE KEY",
+      "db_password_plaintext",
+      "AKIAIOSFODNN7EXAMPLE",
+      "aws_secret_access_key_should_not_render",
+      "postgres://user:pass@example.com/db"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.findings[0].evidence).toContain("[REDACTED]");
+    expect(report.stateFiles[0]).toMatchObject({ read: false });
   });
 });

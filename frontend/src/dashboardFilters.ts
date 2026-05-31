@@ -104,5 +104,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "k8s_config_basic") {
     return "k8s_config_basic";
   }
+  if (auditType === "terraform_config_basic") {
+    return "terraform_config_basic";
+  }
   return auditType;
 }
