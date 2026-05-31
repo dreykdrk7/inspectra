@@ -1761,6 +1761,294 @@ async def test_analyze_ci_cd_config_respects_file_and_byte_limits(monkeypatch, t
 
 
 @pytest.mark.anyio
+async def test_analyze_k8s_config_reports_passive_findings_and_redacts_secrets(monkeypatch, tmp_path):
+    manifests = b"""
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+  namespace: production
+stringData:
+  password: fixture-stringdata-secret
+data:
+  token: fixture-data-secret
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: production
+data:
+  API_KEY: fixture-configmap-key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+spec:
+  replicas: 1
+  template:
+    spec:
+      hostNetwork: true
+      hostPID: true
+      hostIPC: true
+      containers:
+        - name: app
+          image: nginx:latest
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+          env:
+            - name: SECRET_KEY
+              value: fixture-env-secret
+            - name: FROM_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: password
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+        - name: sidecar
+          image: busybox:1.36
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-lb
+  namespace: production
+spec:
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-nodeport
+  namespace: production
+spec:
+  type: NodePort
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: production
+spec:
+  rules:
+    - host: app.example.test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: broad
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+"""
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "deploy/production/app.yaml": manifests,
+            ".env.production": b"SECRET_KEY=env-secret-should-not-be-read\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/k8s-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["analyzer"] == "k8s_config_basic"
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["resources_detected"] >= 7
+    assert payload["summary"]["workloads_detected"] == 1
+    assert payload["summary"]["services_detected"] == 2
+    assert payload["summary"]["secrets_detected"] == 1
+    assert payload["summary"]["rbac_resources_detected"] == 1
+    assert "k8s_secret_stringdata_present" in finding_ids
+    assert "k8s_secret_plaintext_data" in finding_ids
+    assert "k8s_configmap_secret_like_key" in finding_ids
+    assert "env_secret_like_value" in finding_ids
+    assert "env_from_secret_reference" in finding_ids
+    assert "privileged_container" in finding_ids
+    assert "allow_privilege_escalation_true" in finding_ids
+    assert "host_network_enabled" in finding_ids
+    assert "host_pid_enabled" in finding_ids
+    assert "host_ipc_enabled" in finding_ids
+    assert "host_path_volume_present" in finding_ids
+    assert "docker_socket_mount" in finding_ids
+    assert "image_latest_tag" in finding_ids
+    assert "image_missing_digest" in finding_ids
+    assert "resource_limits_missing" in finding_ids
+    assert "resource_requests_missing" in finding_ids
+    assert "service_type_loadbalancer" in finding_ids
+    assert "service_type_nodeport" in finding_ids
+    assert "ingress_tls_missing" in finding_ids
+    assert "clusterrole_wildcard_verbs" in finding_ids
+    assert "clusterrole_wildcard_resources" in finding_ids
+    assert "replicas_singleton_hint" in finding_ids
+    assert "liveness_probe_missing" in finding_ids
+    assert "readiness_probe_missing" in finding_ids
+    assert "namespace_missing_or_default" in finding_ids
+    assert "k8s_config_real_env_file_not_read" in finding_ids
+    assert "fixture-stringdata-secret" not in serialized
+    assert "fixture-data-secret" not in serialized
+    assert "fixture-configmap-key" not in serialized
+    assert "fixture-env-secret" not in serialized
+    assert "env-secret-should-not-be-read" not in serialized
+    assert "[REDACTED]" in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_k8s_config_context_templates_and_comments(monkeypatch, tmp_path):
+    example_manifest = b"""
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+spec:
+  template:
+    spec:
+      # hostNetwork: true
+      containers:
+        - name: app
+          image: nginx
+          securityContext:
+            privileged: true
+"""
+    helm_template = b"""
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: templated
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          securityContext:
+            privileged: true
+"""
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "examples/deployment.yaml": example_manifest,
+            "charts/app/templates/deployment.yaml": helm_template,
+            "kustomization.yaml": b"resources:\n  - deployment.yaml\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/k8s-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    findings = {finding["id"]: finding for finding in payload["findings"]}
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    privileged_findings = [finding for finding in payload["findings"] if finding["id"] == "privileged_container"]
+    assert response.status_code == 200
+    assert "helm_template_detected_not_rendered" in finding_ids
+    assert "kustomize_detected_not_built" in finding_ids
+    assert "host_network_enabled" not in finding_ids
+    assert len(privileged_findings) == 1
+    assert privileged_findings[0]["context"] == "example"
+    assert privileged_findings[0]["level"] == "low"
+    assert findings["helm_template_detected_not_rendered"]["level"] == "info"
+
+
+@pytest.mark.anyio
+async def test_analyze_k8s_config_skips_unsafe_archive_entries(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        traversal_content = b"apiVersion: v1\nkind: Secret\nstringData:\n  password: traversal-secret\n"
+        traversal_info = tarfile.TarInfo("../k8s/secret.yaml")
+        traversal_info.size = len(traversal_content)
+        archive.addfile(traversal_info, io.BytesIO(traversal_content))
+
+        link_info = tarfile.TarInfo("k8s/deployment.yaml")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real-deployment.yaml"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo("k8s/service.yaml")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real-service.yaml"
+        archive.addfile(hardlink_info)
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/k8s-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    reasons = {item["skip_reason"] for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "path_traversal" in reasons
+    assert "not_regular_file:symlink" in reasons
+    assert "not_regular_file:hardlink" in reasons
+    assert "k8s_config_path_traversal" in {finding["id"] for finding in payload["findings"]}
+    assert "k8s_config_not_regular_file" in {finding["id"] for finding in payload["findings"]}
+    assert "traversal-secret" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_k8s_config_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "K8S_CONFIG_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "K8S_CONFIG_MAX_FILE_BYTES", 80)
+    monkeypatch.setattr(runner, "K8S_CONFIG_MAX_TOTAL_BYTES", 120)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "k8s/deployment.yaml": b"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: app\n",
+            "k8s/secret.yaml": b"apiVersion: v1\nkind: Secret\nstringData:\n  password: " + b"x" * 100 + b"\n",
+            "k8s/service.yaml": b"apiVersion: v1\nkind: Service\nmetadata:\n  name: app\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/k8s-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "file_too_large" in reasons
+    assert "too_many_files" in reasons
+    assert "xxxxxxxxxxxxxxxxxxxxxxxx" not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
     server = start_test_http_server()
     transport = ASGITransport(app=runner.app)

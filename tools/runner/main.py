@@ -192,6 +192,9 @@ NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_NODE_PACK
 CI_CD_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_CI_CD_CONFIG_MAX_FILES", 100)
 CI_CD_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_CI_CD_CONFIG_MAX_FILE_BYTES", 524_288)
 CI_CD_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_CI_CD_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
+K8S_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_K8S_CONFIG_MAX_FILES", 100)
+K8S_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_K8S_CONFIG_MAX_FILE_BYTES", 524_288)
+K8S_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_K8S_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
 WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
@@ -654,6 +657,35 @@ async def analyze_ci_cd_config(request: ArchiveAnalysisRequest) -> dict[str, Any
         analysis = empty_ci_cd_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
 
     return build_ci_cd_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
+
+
+@app.post("/analyze/k8s-config")
+async def analyze_k8s_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = k8s_config_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_k8s_config_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_k8s_config_analysis(
+                errors=["Unsupported or corrupt archive. Inspectra did not run kubectl, render manifests, contact clusters, or execute content."]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_k8s_config_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        analysis = empty_k8s_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+
+    return build_k8s_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/web-basic")
@@ -8123,6 +8155,1162 @@ def add_ci_cd_config_finding(
         finding["step"] = step
     if line is not None:
         finding["line"] = line
+    analysis["findings"].append(finding)
+
+
+def k8s_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = K8S_CONFIG_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = K8S_CONFIG_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = K8S_CONFIG_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Kubernetes config analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_k8s_config_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_k8s_config_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            analysis["summary"]["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"k8s_config_{scoped['id']}"
+            analysis["findings"].append(scoped)
+            finalize_k8s_config_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_k8s_config_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_k8s_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda entry_info=info: archive.open(entry_info),
+                )
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_k8s_config_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_k8s_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda tar_member=member: archive.extractfile(tar_member),
+                )
+
+    finalize_k8s_config_analysis(analysis)
+    return analysis
+
+
+def empty_k8s_config_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "files_considered": 0,
+            "files_reviewed": 0,
+            "manifest_files_detected": 0,
+            "resources_detected": 0,
+            "workloads_detected": 0,
+            "services_detected": 0,
+            "secrets_detected": 0,
+            "rbac_resources_detected": 0,
+            "findings_count": 0,
+            "redacted_values_count": 0,
+            "truncated": False,
+        },
+        "files_detected": [],
+        "files_reviewed": [],
+        "resources": [],
+        "workloads": [],
+        "containers": [],
+        "services": [],
+        "ingress": [],
+        "rbac": [],
+        "secrets": [],
+        "helm_kustomize_signals": [],
+        "findings": [],
+        "redaction_notes": [],
+        "errors": errors or [],
+    }
+
+
+def build_k8s_config_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "k8s_config_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "files_detected": analysis.get("files_detected", []),
+        "files_reviewed": analysis.get("files_reviewed", []),
+        "resources": analysis.get("resources", []),
+        "workloads": analysis.get("workloads", []),
+        "containers": analysis.get("containers", []),
+        "services": analysis.get("services", []),
+        "ingress": analysis.get("ingress", []),
+        "rbac": analysis.get("rbac", []),
+        "secrets": analysis.get("secrets", []),
+        "helm_kustomize_signals": analysis.get("helm_kustomize_signals", []),
+        "findings": findings,
+        "redaction_notes": analysis.get("redaction_notes", []),
+        "errors": analysis.get("errors", []),
+        "truncated": bool(summary.get("truncated")),
+    }
+
+
+def should_stop_k8s_config_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    if index > ARCHIVE_MAX_ENTRIES:
+        analysis["summary"]["truncated"] = True
+        add_k8s_config_finding(
+            analysis,
+            "k8s_config_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "high",
+            "limit",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    return False
+
+
+def process_k8s_config_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_k8s_config_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    if category != "env_sensitive":
+        summary["manifest_files_detected"] += 1
+
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    context = k8s_config_file_context(path, category)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "context": context,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = k8s_config_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["files_detected"].append(record)
+        add_k8s_config_skip_finding(analysis, path, skip_reason, size_bytes, context)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["files_detected"].append(record)
+        add_k8s_config_finding(
+            analysis,
+            "k8s_config_file_read_error",
+            "Kubernetes config candidate could not be read safely",
+            "low",
+            "medium",
+            "archive",
+            "A Kubernetes-related candidate file could not be read from the archive within Inspectra limits.",
+            f"{path}: {exc}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+            context=context,
+        )
+        return
+
+    state["total_bytes_read"] += len(raw_bytes)
+    if b"\x00" in raw_bytes:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_k8s_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_k8s_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    state["files_read"] += 1
+    summary["files_reviewed"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["files_detected"].append(record)
+    analysis["files_reviewed"].append(
+        {"path": path, "category": category, "context": context, "size_bytes": size_bytes, "bytes_read": len(raw_bytes)}
+    )
+    analyze_k8s_config_text(analysis, path, category, context, text)
+
+
+def classify_k8s_config_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    lower = normalized.lower()
+    basename = lower.rsplit("/", 1)[-1]
+    parts = [part for part in lower.split("/") if part]
+
+    if is_secrets_sensitive_env_name(basename):
+        return "env_sensitive"
+    if basename == "chart.yaml":
+        return "helm_chart"
+    if basename in {"kustomization.yaml", "kustomization.yml"}:
+        return "kustomize_config"
+    if basename == "values.yaml" or (basename.startswith("values") and basename.endswith((".yaml", ".yml"))):
+        return "helm_values"
+    if "/templates/" in lower and basename.endswith((".yaml", ".yml")):
+        return "helm_template"
+    if lower.endswith((".k8s.yaml", ".k8s.yml")):
+        return "k8s_manifest"
+    if basename in K8S_COMMON_RESOURCE_FILENAMES:
+        return "k8s_manifest"
+    if basename.endswith((".yaml", ".yml")) and any(part in {"k8s", "kubernetes", "manifests", "deploy"} for part in parts[:-1]):
+        return "k8s_manifest"
+    if basename.endswith((".yaml", ".yml")):
+        return "yaml_candidate"
+    return None
+
+
+K8S_COMMON_RESOURCE_FILENAMES = {
+    "deployment.yaml",
+    "deployment.yml",
+    "service.yaml",
+    "service.yml",
+    "ingress.yaml",
+    "ingress.yml",
+    "secret.yaml",
+    "secret.yml",
+    "configmap.yaml",
+    "configmap.yml",
+    "cronjob.yaml",
+    "job.yaml",
+    "daemonset.yaml",
+    "statefulset.yaml",
+    "role.yaml",
+    "rolebinding.yaml",
+    "clusterrole.yaml",
+    "clusterrolebinding.yaml",
+    "serviceaccount.yaml",
+}
+
+
+def k8s_config_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if record.get("category") == "env_sensitive":
+        return "real_env_file_not_read"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_k8s_config_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int, context: str) -> None:
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit"}:
+        analysis["summary"]["truncated"] = True
+    titles = {
+        "path_traversal": "Kubernetes config path uses traversal",
+        "absolute_path": "Kubernetes config path is absolute",
+        "entry_name_too_long": "Kubernetes config entry name is unusually long",
+        "file_too_large": "Kubernetes config file omitted because it exceeds the size limit",
+        "too_many_files": "Kubernetes config file limit reached",
+        "total_bytes_limit": "Total Kubernetes config byte limit reached",
+        "binary_or_non_text": "Kubernetes config candidate is not UTF-8 text",
+        "real_env_file_not_read": "Real environment file detected but not read",
+    }
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    if reason in {"binary_or_non_text", "real_env_file_not_read"}:
+        level = "info"
+    evidence = f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    if reason.startswith("not_regular_file"):
+        title = "Kubernetes config candidate omitted because it is not a regular file"
+        evidence = f"{path}: {reason}"
+        level = "low"
+    else:
+        title = titles.get(reason, "Kubernetes config candidate skipped by defensive limit")
+    add_k8s_config_finding(
+        analysis,
+        f"k8s_config_{reason.split(':', 1)[0]}",
+        title,
+        k8s_contextual_level(level, context),
+        k8s_contextual_confidence("high" if reason in {"path_traversal", "absolute_path", "real_env_file_not_read"} else "medium", context),
+        "archive",
+        "Inspectra detected a Kubernetes-related file but did not read it because of a defensive limit, unsupported format, or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+        context=context,
+    )
+
+
+LOWER_CONFIDENCE_K8S_CONTEXTS = {"development", "test", "local", "example"}
+K8S_WORKLOAD_KINDS = {"Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "ReplicaSet", "ReplicationController"}
+K8S_RBAC_KINDS = {"Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"}
+K8S_CLUSTER_SCOPED_KINDS = {"Namespace", "ClusterRole", "ClusterRoleBinding", "CustomResourceDefinition"}
+K8S_SECRET_KEY_RE = re.compile(
+    r"(?i)(SECRET_KEY|CLIENT_SECRET|PRIVATE_KEY|DATABASE_URL|REDIS_URL|API_KEY|PASSWORD|TOKEN|SECRET|PASS|AUTH|KEY)"
+)
+
+
+def k8s_config_file_context(path: str, category: str = "") -> str:
+    normalized = normalize_archive_entry_path(path).lower()
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    name_tokens = set(re.split(r"[^a-z0-9]+", basename))
+    directories = set(parts[:-1])
+    all_tokens = set(parts[:-1]) | name_tokens
+
+    if directories.intersection({"docs", "doc", "examples", "example", "samples", "sample"}) or all_tokens.intersection(
+        {"example", "examples", "sample", "samples", "template", "templates"}
+    ):
+        return "example"
+    if all_tokens.intersection({"test", "tests", "testing"}):
+        return "test"
+    if all_tokens.intersection({"dev", "development"}):
+        return "development"
+    if "local" in all_tokens:
+        return "local"
+    if all_tokens.intersection({"prod", "production", "release", "deploy"}) or "deploy" in directories:
+        return "production"
+    if category in {"k8s_manifest", "helm_chart", "helm_values", "kustomize_config"} and len(parts) <= 2:
+        return "shared"
+    return "ambiguous"
+
+
+def k8s_contextual_level(level: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_K8S_CONTEXTS:
+        return level
+    if level == "medium":
+        return "low"
+    if level == "low":
+        return "info"
+    return level
+
+
+def k8s_contextual_confidence(confidence: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_K8S_CONTEXTS:
+        return confidence
+    if confidence == "high":
+        return "medium"
+    if confidence == "medium":
+        return "low"
+    return confidence
+
+
+def analyze_k8s_config_text(analysis: dict[str, Any], path: str, category: str, context: str, text: str) -> None:
+    if category in {"helm_chart", "helm_values", "helm_template", "kustomize_config"}:
+        analyze_k8s_context_file(analysis, path, category, context, text)
+        return
+    for document_lines in split_k8s_documents(text):
+        active_lines = active_k8s_lines(document_lines)
+        if not active_lines:
+            continue
+        analyze_k8s_document(analysis, path, category, context, active_lines)
+
+
+def analyze_k8s_context_file(analysis: dict[str, Any], path: str, category: str, context: str, text: str) -> None:
+    if category.startswith("helm"):
+        signal = {"path": path, "category": category, "context": context, "rendered": False}
+        analysis["helm_kustomize_signals"].append(signal)
+        if category == "helm_template":
+            add_k8s_config_finding(
+                analysis,
+                "helm_template_detected_not_rendered",
+                "Helm template detected but not rendered",
+                "info",
+                "high",
+                "helm",
+                "A Helm template file was detected. Inspectra records it as context and does not render templates in this phase.",
+                f"{path}: helm template not rendered",
+                "Render and validate Helm output in a controlled workflow when deeper review is required.",
+                file_path=path,
+                context=context,
+            )
+    if category == "kustomize_config":
+        analysis["helm_kustomize_signals"].append({"path": path, "category": category, "context": context, "built": False})
+        add_k8s_config_finding(
+            analysis,
+            "kustomize_detected_not_built",
+            "Kustomize configuration detected but not built",
+            "info",
+            "high",
+            "kustomize",
+            "A Kustomize configuration file was detected. Inspectra records it as context and does not build overlays in this phase.",
+            f"{path}: kustomize not built",
+            "Build and validate Kustomize output in a controlled workflow when deeper review is required.",
+            file_path=path,
+            context=context,
+        )
+    if category == "helm_values":
+        for line_number, line in active_k8s_lines(list(enumerate(text.splitlines(), start=1))):
+            key = k8s_mapping_key(line)
+            if key and K8S_SECRET_KEY_RE.search(key):
+                add_k8s_config_finding(
+                    analysis,
+                    "values_secret_like_key",
+                    "Helm values file contains a secret-like key",
+                    k8s_contextual_level("low", context),
+                    k8s_contextual_confidence("medium", context),
+                    "helm",
+                    "A Helm values key appears secret-like. Inspectra redacted any value and did not render templates.",
+                    f"key {key}=[REDACTED]",
+                    "Keep real secrets out of values files shared in archives.",
+                    file_path=path,
+                    context=context,
+                    line=line_number,
+                    redacted=True,
+                )
+
+
+def split_k8s_documents(text: str) -> list[list[tuple[int, str]]]:
+    documents: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if line.strip() == "---":
+            if current:
+                documents.append(current)
+                current = []
+            continue
+        current.append((line_number, line))
+    if current:
+        documents.append(current)
+    return documents
+
+
+def active_k8s_lines(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    active: list[tuple[int, str]] = []
+    for line_number, line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("//"):
+            continue
+        active.append((line_number, line))
+    return active
+
+
+def analyze_k8s_document(
+    analysis: dict[str, Any],
+    path: str,
+    category: str,
+    context: str,
+    lines: list[tuple[int, str]],
+) -> None:
+    kind = k8s_first_scalar(lines, "kind")
+    if not kind:
+        return
+    metadata = k8s_metadata(lines)
+    resource_name = metadata.get("name")
+    namespace = metadata.get("namespace")
+    resource = {
+        "path": path,
+        "context": context,
+        "kind": kind,
+        "name": resource_name,
+        "namespace": namespace,
+    }
+    analysis["resources"].append(resource)
+    analysis["summary"]["resources_detected"] = len(analysis["resources"])
+    if kind in K8S_WORKLOAD_KINDS:
+        analysis["workloads"].append(resource)
+        analysis["summary"]["workloads_detected"] = len(analysis["workloads"])
+    if kind == "Service":
+        analysis["services"].append(resource)
+        analysis["summary"]["services_detected"] = len(analysis["services"])
+    if kind == "Ingress":
+        analysis["ingress"].append(resource)
+    if kind in K8S_RBAC_KINDS:
+        analysis["rbac"].append(resource)
+        analysis["summary"]["rbac_resources_detected"] = len(analysis["rbac"])
+    if kind == "Secret":
+        analysis["secrets"].append(resource)
+        analysis["summary"]["secrets_detected"] = len(analysis["secrets"])
+
+    analyze_k8s_namespace(analysis, path, context, kind, resource_name, namespace)
+    if kind == "Secret":
+        analyze_k8s_secret(analysis, path, context, kind, resource_name, namespace, lines)
+    if kind == "ConfigMap":
+        analyze_k8s_configmap(analysis, path, context, kind, resource_name, namespace, lines)
+    if kind in K8S_WORKLOAD_KINDS:
+        analyze_k8s_workload(analysis, path, context, kind, resource_name, namespace, lines)
+    if kind == "Service":
+        analyze_k8s_service(analysis, path, context, kind, resource_name, namespace, lines)
+    if kind == "Ingress":
+        analyze_k8s_ingress(analysis, path, context, kind, resource_name, namespace, lines)
+    if kind == "ClusterRole":
+        analyze_k8s_clusterrole(analysis, path, context, kind, resource_name, namespace, lines)
+
+
+def analyze_k8s_namespace(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    kind: str,
+    resource_name: str | None,
+    namespace: str | None,
+) -> None:
+    if kind in K8S_CLUSTER_SCOPED_KINDS:
+        return
+    if namespace and namespace != "default":
+        return
+    evidence = f"kind={kind}; metadata.name={resource_name or 'unknown'}; namespace={namespace or '[missing]'}"
+    add_k8s_config_finding(
+        analysis,
+        "namespace_missing_or_default",
+        "Resource uses default or missing namespace",
+        k8s_contextual_level("low", context),
+        k8s_contextual_confidence("medium", context),
+        "namespace",
+        "A namespaced Kubernetes resource has no namespace or uses the default namespace. This is a review indicator.",
+        evidence,
+        "Use explicit namespaces where practical and review default namespace usage.",
+        file_path=path,
+        context=context,
+        kind=kind,
+        resource_name=resource_name,
+        namespace=namespace,
+        field_path="metadata.namespace",
+    )
+
+
+def analyze_k8s_secret(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    kind: str,
+    resource_name: str | None,
+    namespace: str | None,
+    lines: list[tuple[int, str]],
+) -> None:
+    for section, finding_id, title in [
+        ("stringData", "k8s_secret_stringdata_present", "Kubernetes Secret stringData contains plaintext values"),
+        ("data", "k8s_secret_plaintext_data", "Kubernetes Secret data entries are present"),
+    ]:
+        for line_number, key in k8s_section_keys(lines, section):
+            evidence = f"kind=Secret; metadata.name={resource_name or 'unknown'}; key {key}=[REDACTED]"
+            add_k8s_config_finding(
+                analysis,
+                finding_id,
+                title,
+                k8s_contextual_level("medium", context),
+                k8s_contextual_confidence("high", context),
+                "secrets",
+                "A Kubernetes Secret contains secret material. Inspectra records only key names and a redacted placeholder.",
+                evidence,
+                "Avoid sharing plaintext secret material in archives and review secret distribution separately.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                kind=kind,
+                resource_name=resource_name,
+                namespace=namespace,
+                field_path=section,
+                redacted=True,
+            )
+
+
+def analyze_k8s_configmap(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    kind: str,
+    resource_name: str | None,
+    namespace: str | None,
+    lines: list[tuple[int, str]],
+) -> None:
+    for line_number, key in k8s_section_keys(lines, "data"):
+        if not K8S_SECRET_KEY_RE.search(key):
+            continue
+        add_k8s_config_finding(
+            analysis,
+            "k8s_configmap_secret_like_key",
+            "ConfigMap contains a secret-like key",
+            k8s_contextual_level("medium", context),
+            k8s_contextual_confidence("medium", context),
+            "config",
+            "A ConfigMap key appears secret-like. Inspectra redacted any value and did not validate it.",
+            f"kind=ConfigMap; metadata.name={resource_name or 'unknown'}; key {key}=[REDACTED]",
+            "Move real secret values to an approved secret mechanism and avoid sharing them in ConfigMaps.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            kind=kind,
+            resource_name=resource_name,
+            namespace=namespace,
+            field_path=f"data.{key}",
+            redacted=True,
+        )
+
+
+def analyze_k8s_workload(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    kind: str,
+    resource_name: str | None,
+    namespace: str | None,
+    lines: list[tuple[int, str]],
+) -> None:
+    text = "\n".join(line for _line_number, line in lines)
+    containers = k8s_extract_containers(lines)
+    for container in containers:
+        analysis["containers"].append(
+            {
+                "path": path,
+                "context": context,
+                "kind": kind,
+                "resource_name": resource_name,
+                "namespace": namespace,
+                "container": container.get("name"),
+                "image": container.get("image"),
+            }
+        )
+    if re.search(r"(?im)^\s*hostNetwork\s*:\s*true\s*$", text):
+        add_k8s_resource_finding(analysis, "host_network_enabled", "Workload enables hostNetwork", "medium", "pod_security", path, context, kind, resource_name, namespace, "spec.hostNetwork")
+    if re.search(r"(?im)^\s*hostPID\s*:\s*true\s*$", text):
+        add_k8s_resource_finding(analysis, "host_pid_enabled", "Workload enables hostPID", "medium", "pod_security", path, context, kind, resource_name, namespace, "spec.hostPID")
+    if re.search(r"(?im)^\s*hostIPC\s*:\s*true\s*$", text):
+        add_k8s_resource_finding(analysis, "host_ipc_enabled", "Workload enables hostIPC", "medium", "pod_security", path, context, kind, resource_name, namespace, "spec.hostIPC")
+    if re.search(r"(?im)^\s*hostPath\s*:\s*$", text):
+        add_k8s_resource_finding(analysis, "host_path_volume_present", "Workload uses a hostPath volume", "medium", "volume", path, context, kind, resource_name, namespace, "spec.volumes.hostPath")
+    if "/var/run/docker.sock" in text:
+        add_k8s_resource_finding(analysis, "docker_socket_mount", "Workload references the Docker socket", "medium", "volume", path, context, kind, resource_name, namespace, "volumeMounts/hostPath")
+    for line_number, line in lines:
+        stripped = line.strip()
+        container = k8s_nearest_container(lines, line_number)
+        if re.search(r"(?i)^privileged\s*:\s*true\s*$", stripped):
+            add_k8s_resource_finding(
+                analysis,
+                "privileged_container",
+                "Container is configured as privileged",
+                "medium",
+                "pod_security",
+                path,
+                context,
+                kind,
+                resource_name,
+                namespace,
+                "securityContext.privileged",
+                container=container,
+                line=line_number,
+            )
+        if re.search(r"(?i)^allowPrivilegeEscalation\s*:\s*true\s*$", stripped):
+            add_k8s_resource_finding(
+                analysis,
+                "allow_privilege_escalation_true",
+                "Container allows privilege escalation",
+                "medium",
+                "pod_security",
+                path,
+                context,
+                kind,
+                resource_name,
+                namespace,
+                "securityContext.allowPrivilegeEscalation",
+                container=container,
+                line=line_number,
+            )
+        image_match = re.match(r"image\s*:\s*['\"]?([^'\"\s#]+)", stripped, flags=re.IGNORECASE)
+        if image_match:
+            analyze_k8s_image(analysis, path, context, kind, resource_name, namespace, container, image_match.group(1), line_number)
+    analyze_k8s_env(analysis, path, context, kind, resource_name, namespace, lines)
+    if "resources:" not in text:
+        add_k8s_resource_finding(analysis, "resource_limits_missing", "Workload container resources limits were not observed", "low", "resources", path, context, kind, resource_name, namespace, "containers.resources.limits")
+        add_k8s_resource_finding(analysis, "resource_requests_missing", "Workload container resources requests were not observed", "low", "resources", path, context, kind, resource_name, namespace, "containers.resources.requests")
+    else:
+        if "limits:" not in text:
+            add_k8s_resource_finding(analysis, "resource_limits_missing", "Workload container resource limits were not observed", "low", "resources", path, context, kind, resource_name, namespace, "containers.resources.limits")
+        if "requests:" not in text:
+            add_k8s_resource_finding(analysis, "resource_requests_missing", "Workload container resource requests were not observed", "low", "resources", path, context, kind, resource_name, namespace, "containers.resources.requests")
+    if "livenessProbe:" not in text:
+        add_k8s_resource_finding(analysis, "liveness_probe_missing", "Workload liveness probe was not observed", "low", "reliability", path, context, kind, resource_name, namespace, "containers.livenessProbe")
+    if "readinessProbe:" not in text:
+        add_k8s_resource_finding(analysis, "readiness_probe_missing", "Workload readiness probe was not observed", "low", "reliability", path, context, kind, resource_name, namespace, "containers.readinessProbe")
+    if re.search(r"(?im)^\s*replicas\s*:\s*1\s*$", text):
+        add_k8s_resource_finding(analysis, "replicas_singleton_hint", "Workload declares a single replica", "low", "reliability", path, context, kind, resource_name, namespace, "spec.replicas")
+
+
+def analyze_k8s_image(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    kind: str,
+    resource_name: str | None,
+    namespace: str | None,
+    container: str | None,
+    image_ref: str,
+    line: int,
+) -> None:
+    if image_ref.lower().endswith(":latest"):
+        add_k8s_resource_finding(
+            analysis,
+            "image_latest_tag",
+            "Container image uses latest tag",
+            "low",
+            "image",
+            path,
+            context,
+            kind,
+            resource_name,
+            namespace,
+            "containers.image",
+            container=container,
+            line=line,
+            evidence_extra=f"image={image_ref[:160]}",
+        )
+    elif "@" not in image_ref:
+        add_k8s_resource_finding(
+            analysis,
+            "image_missing_digest",
+            "Container image is not pinned by digest",
+            "low",
+            "image",
+            path,
+            context,
+            kind,
+            resource_name,
+            namespace,
+            "containers.image",
+            container=container,
+            line=line,
+            evidence_extra=f"image={image_ref[:160]}",
+        )
+
+
+def analyze_k8s_env(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    kind: str,
+    resource_name: str | None,
+    namespace: str | None,
+    lines: list[tuple[int, str]],
+) -> None:
+    for index, (line_number, line) in enumerate(lines):
+        stripped = line.strip()
+        name_match = re.match(r"-?\s*name\s*:\s*['\"]?([^'\"\s#]+)", stripped)
+        if name_match and K8S_SECRET_KEY_RE.search(name_match.group(1)):
+            following_lines: list[str] = []
+            for _next_number, next_line in lines[index + 1 : index + 6]:
+                if re.match(r"\s*-\s*name\s*:", next_line):
+                    break
+                following_lines.append(next_line)
+            nearby = "\n".join(following_lines)
+            if re.search(r"(?im)^\s*value\s*:", nearby) and "valueFrom:" not in nearby:
+                key = name_match.group(1)
+                add_k8s_config_finding(
+                    analysis,
+                    "env_secret_like_value",
+                    "Container env contains a secret-like inline value",
+                    k8s_contextual_level("medium", context),
+                    k8s_contextual_confidence("medium", context),
+                    "secrets",
+                    "A container environment variable with a secret-like name appears to have an inline value. Inspectra redacted the value.",
+                    f"kind={kind}; metadata.name={resource_name or 'unknown'}; env {key}=[REDACTED]",
+                    "Use Kubernetes Secret references or another approved runtime secret mechanism for sensitive values.",
+                    file_path=path,
+                    context=context,
+                    line=line_number,
+                    kind=kind,
+                    resource_name=resource_name,
+                    namespace=namespace,
+                    field_path=f"env.{key}",
+                    redacted=True,
+                )
+        if "secretRef:" in stripped or "secretKeyRef:" in stripped:
+            add_k8s_config_finding(
+                analysis,
+                "env_from_secret_reference",
+                "Workload references a Kubernetes Secret",
+                "info",
+                k8s_contextual_confidence("medium", context),
+                "secrets",
+                "A workload references a Kubernetes Secret. Inspectra does not resolve or read referenced secret values.",
+                f"kind={kind}; metadata.name={resource_name or 'unknown'}; field={stripped.split(':', 1)[0]}",
+                "Confirm referenced secrets are scoped and distributed through the intended runtime mechanism.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                kind=kind,
+                resource_name=resource_name,
+                namespace=namespace,
+            )
+
+
+def analyze_k8s_service(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    kind: str,
+    resource_name: str | None,
+    namespace: str | None,
+    lines: list[tuple[int, str]],
+) -> None:
+    service_type = k8s_first_scalar(lines, "type")
+    if service_type:
+        analysis["services"][-1]["type"] = service_type
+    if service_type == "LoadBalancer":
+        level = "medium" if context == "production" else "low"
+        add_k8s_resource_finding(analysis, "service_type_loadbalancer", "Service exposes a LoadBalancer", level, "service", path, context, kind, resource_name, namespace, "spec.type")
+    if service_type == "NodePort":
+        level = "medium" if context == "production" else "low"
+        add_k8s_resource_finding(analysis, "service_type_nodeport", "Service exposes a NodePort", level, "service", path, context, kind, resource_name, namespace, "spec.type")
+
+
+def analyze_k8s_ingress(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    kind: str,
+    resource_name: str | None,
+    namespace: str | None,
+    lines: list[tuple[int, str]],
+) -> None:
+    text = "\n".join(line for _line_number, line in lines)
+    if "tls:" not in text:
+        add_k8s_resource_finding(analysis, "ingress_tls_missing", "Ingress TLS block was not observed", "low", "ingress", path, context, kind, resource_name, namespace, "spec.tls")
+
+
+def analyze_k8s_clusterrole(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    kind: str,
+    resource_name: str | None,
+    namespace: str | None,
+    lines: list[tuple[int, str]],
+) -> None:
+    if k8s_block_has_wildcard(lines, "verbs"):
+        add_k8s_resource_finding(analysis, "clusterrole_wildcard_verbs", "ClusterRole uses wildcard verbs", "medium", "rbac", path, context, kind, resource_name, namespace, "rules.verbs")
+    if k8s_block_has_wildcard(lines, "resources"):
+        add_k8s_resource_finding(analysis, "clusterrole_wildcard_resources", "ClusterRole uses wildcard resources", "medium", "rbac", path, context, kind, resource_name, namespace, "rules.resources")
+
+
+def add_k8s_resource_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    category: str,
+    path: str,
+    context: str,
+    kind: str,
+    resource_name: str | None,
+    namespace: str | None,
+    field_path: str,
+    *,
+    container: str | None = None,
+    line: int | None = None,
+    evidence_extra: str | None = None,
+) -> None:
+    parts = [f"kind={kind}", f"metadata.name={resource_name or 'unknown'}", f"field={field_path}"]
+    if namespace:
+        parts.append(f"namespace={namespace}")
+    if container:
+        parts.append(f"container={container}")
+    if evidence_extra:
+        parts.append(evidence_extra)
+    add_k8s_config_finding(
+        analysis,
+        finding_id,
+        title,
+        k8s_contextual_level(level, context),
+        k8s_contextual_confidence("high" if level == "medium" else "medium", context),
+        category,
+        "A Kubernetes manifest review indicator was observed. Inspectra does not contact a cluster or validate runtime state.",
+        "; ".join(parts),
+        "Review the manifest in the intended deployment context and apply least-privilege hardening where appropriate.",
+        file_path=path,
+        context=context,
+        line=line,
+        kind=kind,
+        resource_name=resource_name,
+        namespace=namespace,
+        container=container,
+        field_path=field_path,
+    )
+
+
+def k8s_first_scalar(lines: list[tuple[int, str]], key: str) -> str | None:
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*:\s*['\"]?([^'\"\s#]+)")
+    for _line_number, line in lines:
+        match = pattern.match(line)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def k8s_metadata(lines: list[tuple[int, str]]) -> dict[str, str | None]:
+    metadata: dict[str, str | None] = {"name": None, "namespace": None}
+    in_metadata = False
+    metadata_indent = 0
+    for _line_number, line in lines:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+        if re.match(r"metadata\s*:\s*$", stripped):
+            in_metadata = True
+            metadata_indent = indent
+            continue
+        if in_metadata and stripped and indent <= metadata_indent:
+            in_metadata = False
+        if in_metadata:
+            for key in ("name", "namespace"):
+                match = re.match(rf"{key}\s*:\s*['\"]?([^'\"\s#]+)", stripped)
+                if match:
+                    metadata[key] = match.group(1).strip()
+    return metadata
+
+
+def k8s_section_keys(lines: list[tuple[int, str]], section: str) -> list[tuple[int, str]]:
+    keys: list[tuple[int, str]] = []
+    in_section = False
+    section_indent = 0
+    for line_number, line in lines:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+        if re.match(rf"{re.escape(section)}\s*:\s*$", stripped):
+            in_section = True
+            section_indent = indent
+            continue
+        if in_section and stripped and indent <= section_indent:
+            in_section = False
+        if not in_section:
+            continue
+        match = re.match(r"['\"]?([A-Za-z0-9_.-]+)['\"]?\s*:", stripped)
+        if match:
+            keys.append((line_number, match.group(1)))
+    return keys[:100]
+
+
+def k8s_mapping_key(line: str) -> str | None:
+    match = re.match(r"\s*['\"]?([A-Za-z0-9_.-]+)['\"]?\s*:", line)
+    return match.group(1) if match else None
+
+
+def k8s_extract_containers(lines: list[tuple[int, str]]) -> list[dict[str, Any]]:
+    containers: list[dict[str, Any]] = []
+    in_containers = False
+    containers_indent = 0
+    current: dict[str, Any] | None = None
+    for line_number, line in lines:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+        if re.match(r"(?:initContainers|containers)\s*:\s*$", stripped):
+            in_containers = True
+            containers_indent = indent
+            current = None
+            continue
+        if in_containers and stripped and indent <= containers_indent:
+            in_containers = False
+            current = None
+        if not in_containers:
+            continue
+        name_match = re.match(r"-\s*name\s*:\s*['\"]?([^'\"\s#]+)", stripped)
+        if name_match:
+            current = {"name": name_match.group(1), "line": line_number}
+            containers.append(current)
+            continue
+        image_match = re.match(r"image\s*:\s*['\"]?([^'\"\s#]+)", stripped, flags=re.IGNORECASE)
+        if image_match and current is not None:
+            current["image"] = image_match.group(1)
+    return containers[:100]
+
+
+def k8s_nearest_container(lines: list[tuple[int, str]], line_number: int) -> str | None:
+    name: str | None = None
+    for current_line_number, line in lines:
+        if current_line_number > line_number:
+            break
+        match = re.match(r"\s*-\s*name\s*:\s*['\"]?([^'\"\s#]+)", line.strip())
+        if match:
+            name = match.group(1)
+    return name
+
+
+def k8s_block_has_wildcard(lines: list[tuple[int, str]], key: str) -> bool:
+    in_block = False
+    block_indent = 0
+    for _line_number, line in lines:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+        if re.match(rf"{re.escape(key)}\s*:\s*\[.*['\"]?\*['\"]?.*\]\s*$", stripped):
+            return True
+        if re.match(rf"{re.escape(key)}\s*:\s*$", stripped):
+            in_block = True
+            block_indent = indent
+            continue
+        if in_block and stripped and indent <= block_indent:
+            in_block = False
+        if in_block and re.match(r"-\s*['\"]?\*['\"]?\s*$", stripped):
+            return True
+    return False
+
+
+def redact_k8s_secret_text(text: str) -> tuple[str, int]:
+    redacted, count = redact_ci_cd_secret_text(text)
+
+    def apply(pattern: str, replacement: str) -> None:
+        nonlocal redacted, count
+        redacted, replacements = re.subn(pattern, replacement, redacted, flags=re.IGNORECASE)
+        count += replacements
+
+    apply(r"(\b(?:password|token|secret|api_key|apikey|private_key|client_secret|key)\b\s*[:=]\s*)(['\"]?)[^\s,'\"}\]]+", r"\1\2[REDACTED]")
+    return redacted, count
+
+
+def finalize_k8s_config_analysis(analysis: dict[str, Any]) -> None:
+    analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+    if analysis["summary"]["redacted_values_count"]:
+        analysis["redaction_notes"] = [
+            "Secret-like Kubernetes manifest values are redacted before storage on a best-effort basis.",
+        ]
+
+
+def add_k8s_config_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    confidence: str,
+    category: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str | None = None,
+    context: str | None = None,
+    line: int | None = None,
+    kind: str | None = None,
+    resource_name: str | None = None,
+    namespace: str | None = None,
+    container: str | None = None,
+    field_path: str | None = None,
+    redacted: bool = False,
+) -> None:
+    safe_description, description_redactions = redact_k8s_secret_text(description)
+    safe_evidence, evidence_redactions = redact_k8s_secret_text(evidence)
+    safe_recommendation, recommendation_redactions = redact_k8s_secret_text(recommendation)
+    redaction_count = description_redactions + evidence_redactions + recommendation_redactions
+    if redacted and redaction_count == 0:
+        redaction_count = 1
+    analysis["summary"]["redacted_values_count"] += redaction_count
+
+    finding = make_finding(finding_id, title, level, safe_description, safe_evidence, safe_recommendation)
+    finding["confidence"] = confidence
+    finding["category"] = category
+    if file_path:
+        finding["file_path"] = file_path
+    if context:
+        finding["context"] = context
+    if line is not None:
+        finding["line"] = line
+    if kind:
+        finding["kind"] = kind
+    if resource_name:
+        finding["resource_name"] = resource_name
+    if namespace:
+        finding["namespace"] = namespace
+    if container:
+        finding["container"] = container
+    if field_path:
+        finding["field_path"] = field_path
     analysis["findings"].append(finding)
 
 
