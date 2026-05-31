@@ -2110,7 +2110,7 @@ async def test_export_secrets_review_redacts_legacy_secret_values(monkeypatch, t
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 31, tzinfo=timezone.utc)
     private_key = "-----BEGIN PRIVATE KEY-----\nfixture-private-key-material\n-----END PRIVATE KEY-----"
-    jwt_value = "aaaaaaaaaa.bbbbbbbbbb.cccccccccc"
+    jwt_value = "eyJhbGciOiJIUzI1NiJ9.fixture.fixture"
     job = JobRecord(
         id="d" * 32,
         audit_type="secrets_review_basic",
@@ -2123,9 +2123,10 @@ async def test_export_secrets_review_redacts_legacy_secret_values(monkeypatch, t
             "analyzer": "secrets_review_basic",
             "archive_type": "zip",
             "summary": {"files_reviewed": 1, "findings_count": 1, "redacted_values_count": 0},
+            "raw_secret": "fixture-secret-key-value",
             "sensitive_files": [
                 {
-                    "path": ".env.production?token=fixture-query-token",
+                    "path": ".env.production?token=fixture-query-token&key=fixture-query-key",
                     "category": "env_sensitive",
                     "read": False,
                     "skip_reason": "SECRET_KEY=fixture-secret-key",
@@ -2145,10 +2146,11 @@ async def test_export_secrets_review_redacts_legacy_secret_values(monkeypatch, t
                     "file_path": "settings.py",
                     "context": "production<script>API_KEY=fixture-secret-key</script>",
                     "line": "12",
+                    "raw_secret": "fixture-secret-key-value",
                 }
             ],
             "errors": ["REDIS_URL=redis://:fixture-pass@redis:6379/0"],
-            "redaction_notes": ["Webhook https://example.test/hook?token=fixture-query-token"],
+            "redaction_notes": ["Webhook https://example.test/hook?token=fixture-query-token&key=fixture-query-key"],
         },
     )
     app.state.jobs.save(job)
@@ -2162,10 +2164,12 @@ async def test_export_secrets_review_redacts_legacy_secret_values(monkeypatch, t
         b"fixture-secret-token",
         b"fixture-secret-key",
         b"fixture-pass",
+        b"fixture-secret-key-value",
         b"fixture-private-key-material",
         b"BEGIN PRIVATE KEY",
-        b"aaaaaaaaaa.bbbbbbbbbb.cccccccccc",
+        b"eyJhbGciOiJIUzI1NiJ9.fixture.fixture",
         b"fixture-query-token",
+        b"fixture-query-key",
     )
     transport = ASGITransport(app=app)
 

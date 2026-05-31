@@ -585,7 +585,7 @@ describe("report helpers", () => {
             category: "assignment",
             context: "production",
             file_path: "settings.py",
-            line: 12,
+            line: "12",
             evidence: "SECRET_KEY=[REDACTED]"
           },
           {
@@ -628,6 +628,7 @@ describe("report helpers", () => {
         analyzer: "secrets_review_basic",
         summary: { redacted_values_count: 0 },
         raw_secret: "fixture-secret-key-value",
+        secret_value: { nested: "fixture-secret-key-value" },
         sensitive_files: [
           { path: ".env.production", category: "env_sensitive", read: false, skip_reason: "SECRET_KEY=fixture-secret-key-value" }
         ],

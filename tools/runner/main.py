@@ -5408,7 +5408,7 @@ SECRET_ASSIGNMENT_RE = re.compile(
 DATABASE_URL_RE = re.compile(r"(?i)\b((?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?)://[^\s'\"<>]+)")
 REDIS_URL_RE = re.compile(r"(?i)\b(redis://[^\s'\"<>]+)")
 BASIC_AUTH_URL_RE = re.compile(r"(?i)\b(https?://[^\s'\"<>/@:]+:[^\s'\"<>/@]+@[^\s'\"<>]+)")
-JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b")
 PRIVATE_KEY_BLOCK_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", re.IGNORECASE)
 
 
@@ -5793,7 +5793,7 @@ def add_secrets_review_finding(
     if context:
         finding["context"] = context
     if line is not None:
-        finding["line"] = str(line)
+        finding["line"] = line
     if redacted:
         analysis["summary"]["redacted_values_count"] += 1
     analysis["findings"].append(finding)

@@ -27,9 +27,23 @@ DJANGO_SECRET_KEYWORDS = (
     "AWS_SECRET_ACCESS_KEY",
     "PRIVATE_KEY",
 )
-JWT_LIKE_RE = re.compile(r"\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+JWT_LIKE_RE = re.compile(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b")
 SENSITIVE_QUERY_PARAM_RE = re.compile(
-    r"(?i)([?&](?:access_token|refresh_token|id_token|api_key|apikey|token|secret|password|passwd|pwd|session|sid|auth|authorization|jwt|bearer|sig|signature|client_secret|code|state)=)[^&#\s]+"
+    r"(?i)([?&](?:access_token|refresh_token|id_token|api_key|apikey|key|token|secret|password|passwd|pwd|session|sid|auth|authorization|jwt|bearer|sig|signature|client_secret|code|state)=)[^&#\s]+"
+)
+SECRET_LIKE_MAPPING_TOKENS = (
+    "secret_key",
+    "django_secret_key",
+    "client_secret",
+    "private_key",
+    "database_url",
+    "redis_url",
+    "api_key",
+    "apikey",
+    "password",
+    "passwd",
+    "token",
+    "secret",
 )
 
 
@@ -614,8 +628,18 @@ def redact_django_config_value(value: Any) -> Any:
     if isinstance(value, list):
         return [redact_django_config_value(item) for item in value]
     if isinstance(value, dict):
-        return {key: redact_django_config_value(item) for key, item in value.items()}
+        return {
+            key: "[REDACTED]" if is_secret_like_mapping_key(str(key)) else redact_django_config_value(item)
+            for key, item in value.items()
+        }
     return value
+
+
+def is_secret_like_mapping_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if "redacted" in normalized or normalized.endswith("_count"):
+        return False
+    return any(token in normalized for token in SECRET_LIKE_MAPPING_TOKENS)
 
 
 def redact_django_secret_text(value: str) -> str:
@@ -629,13 +653,13 @@ def redact_django_secret_text(value: str) -> str:
     redacted = JWT_LIKE_RE.sub("[REDACTED JWT]", redacted)
     redacted = SENSITIVE_QUERY_PARAM_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
     redacted = re.sub(
-        r"(?i)\b((?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|https?)://[^:/@\s]+):([^@\s]+)@",
-        r"\1:[REDACTED]@",
+        r"(?i)\b((?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|https?)://)([^@\s/]+)@",
+        r"\1[REDACTED]@",
         redacted,
     )
     redacted = re.sub(
         r"(?i)\b((?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|https?)://):([^@\s]+)@",
-        r"\1:[REDACTED]@",
+        r"\1[REDACTED]@",
         redacted,
     )
     keywords = "|".join(re.escape(keyword) for keyword in DJANGO_SECRET_KEYWORDS)

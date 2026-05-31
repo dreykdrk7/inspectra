@@ -71,7 +71,7 @@ describe("SecretsReviewJobReport", () => {
                 category: "assignment",
                 context: "production",
                 file_path: "settings.py",
-                line: 12,
+                line: "12",
                 description: "Review this secret-like setting.",
                 evidence: "SECRET_KEY=[REDACTED]",
                 recommendation: "Move secrets to an approved secret manager or environment source."
@@ -142,6 +142,7 @@ describe("SecretsReviewJobReport", () => {
             analyzer: "secrets_review_basic",
             summary: { redacted_values_count: 0 },
             raw_secret: "fixture-secret-key-value",
+            secret_value: { nested: "fixture-secret-key-value" },
             sensitive_files: [
               {
                 path: ".env.production",

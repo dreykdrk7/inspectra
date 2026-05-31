@@ -1137,6 +1137,7 @@ MIIEvprivate-key-material-that-must-not-appear
         b"REDIS_URL=redis://:redis-pass-secret@redis:6379/0\n"
         b"CALLBACK_URL=https://api-user:web-pass-secret@example.com/path\n"
         b"JWT_TOKEN=aaaaaaaaaa.bbbbbbbbbb.cccccccccc\n"
+        b"DEBUG_NOTE=eyJhbGciOiJIUzI1NiJ9.fixture.fixture\n"
     ) + private_key
     archive_path = write_zip_archive(tmp_path, {"settings.py": settings_text})
     monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
@@ -1164,6 +1165,7 @@ MIIEvprivate-key-material-that-must-not-appear
     assert "web-pass-secret" not in serialized
     assert "private-key-material-that-must-not-appear" not in serialized
     assert "aaaaaaaaaa.bbbbbbbbbb.cccccccccc" not in serialized
+    assert "eyJhbGciOiJIUzI1NiJ9.fixture.fixture" not in serialized
 
 
 @pytest.mark.anyio

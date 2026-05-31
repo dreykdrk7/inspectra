@@ -114,7 +114,7 @@ export function redactSecretsReviewValue(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(record).map(([key, item]) => [
         key,
-        isSecretLikeObjectKey(key) && typeof item === "string" ? "[REDACTED]" : redactSecretsReviewValue(item)
+        isSecretLikeObjectKey(key) ? "[REDACTED]" : redactSecretsReviewValue(item)
       ])
     );
   }
@@ -138,9 +138,24 @@ export function redactSecretsReviewText(value: string): string {
 }
 
 function isSecretLikeObjectKey(key: string): boolean {
-  return /(^|[_-])(secret|secret_key|client_secret|password|passwd|pwd|token|api_key|apikey|private_key|database_url|redis_url)(s)?$/i.test(
-    key
-  );
+  const normalized = key.toLowerCase().replace(/-/g, "_");
+  if (normalized.includes("redacted") || normalized.endsWith("_count")) {
+    return false;
+  }
+  return [
+    "secret_key",
+    "django_secret_key",
+    "client_secret",
+    "private_key",
+    "database_url",
+    "redis_url",
+    "api_key",
+    "apikey",
+    "password",
+    "passwd",
+    "token",
+    "secret"
+  ].some((token) => normalized.includes(token));
 }
 
 function sensitiveFilesFromValues(value: unknown, detectedFiles: SecretsReviewFile[]): SecretsReviewFile[] {
@@ -254,6 +269,10 @@ function asStringArray(value: unknown): string[] {
 }
 
 function asNumber(value: unknown): number | null {
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
