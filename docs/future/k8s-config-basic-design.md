@@ -1,6 +1,6 @@
 # k8s_config_basic Design
 
-Status: proposed docs-first design. No runtime endpoint, runner analyzer, backend job, frontend UI, or exports are implemented by this document.
+Status: historical docs-first design reference. `k8s_config_basic` v1 is implemented and closed as of commits `5523d89`, `02a4ff0`, `16668ee`, `a093453`, and `a026b7d`; see `docs/future/k8s-config-basic-closeout.md` for the runtime closeout and smoke checklist.
 
 ## 1. Module Objective
 

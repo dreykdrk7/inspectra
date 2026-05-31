@@ -1,6 +1,6 @@
 # Passive CI/CD Config Audits v3 Closeout
 
-Status: `django_config_basic`, `docker_config_basic`, `secrets_review_basic`, `node_package_config_basic`, and `ci_cd_config_basic` are closed as v1 passive archive-based audit modules.
+Status: historical pre-Kubernetes closeout. `django_config_basic`, `docker_config_basic`, `secrets_review_basic`, `node_package_config_basic`, and `ci_cd_config_basic` were closed as v1 passive archive-based audit modules here; `k8s_config_basic` was later implemented and closed in `docs/future/k8s-config-basic-closeout.md`.
 
 This document is a lightweight smoke and scope reference before opening another passive module. Runtime details remain in `README.md`, `docs/architecture.md`, and `docs/security-scope.md`; design documents in `docs/future/` remain historical references.
 
