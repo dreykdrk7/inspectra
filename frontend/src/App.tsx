@@ -16,6 +16,7 @@ import {
 import { ArchiveJobReport } from "./ArchiveJobReport";
 import { DjangoConfigJobReport } from "./DjangoConfigJobReport";
 import { DomainJobReport } from "./DomainJobReport";
+import { DockerConfigJobReport } from "./DockerConfigJobReport";
 import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { PdfJobReport } from "./PdfJobReport";
@@ -195,6 +196,17 @@ export function App() {
     setActionError(null);
     try {
       const job = await api.launchDjangoConfigAudit(file.id);
+      setSelectedJob(job);
+      await refreshJobs();
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  async function launchDockerConfigAudit(file: FileRecord) {
+    setActionError(null);
+    try {
+      const job = await api.launchDockerConfigAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -511,6 +523,12 @@ export function App() {
                               Analyze Django config
                             </button>
                           ) : null}
+                          {file.kind === "archive" ? (
+                            <button onClick={() => void launchDockerConfigAudit(file)}>
+                              <Play size={15} aria-hidden="true" />
+                              Analyze Docker config
+                            </button>
+                          ) : null}
                           <button className="danger-button" onClick={() => void deleteFile(file.id)}>
                             <Trash2 size={15} aria-hidden="true" />
                             Delete
@@ -552,7 +570,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -626,6 +644,8 @@ export function App() {
               <SubdomainJobReport job={selectedJob} />
             ) : selectedJob.audit_type === "django_config_basic" ? (
               <DjangoConfigJobReport job={selectedJob} file={selectedJobFile} />
+            ) : selectedJob.audit_type === "docker_config_basic" ? (
+              <DockerConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : (
               <WebJobReport job={selectedJob} />
             )}
@@ -850,6 +870,10 @@ function summarizeJob(job: JobListItem): string {
   if (job.audit_type === "django_config_basic") {
     const filesRead = typeof job.summary.files_read === "number" ? job.summary.files_read : 0;
     return `${filesRead} files read, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "docker_config_basic") {
+    const filesReviewed = typeof job.summary.files_reviewed === "number" ? job.summary.files_reviewed : 0;
+    return `${filesReviewed} files reviewed, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

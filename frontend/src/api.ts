@@ -117,6 +117,13 @@ export async function launchDjangoConfigAudit(fileId: string): Promise<JobRecord
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function launchDockerConfigAudit(fileId: string): Promise<JobRecord> {
+  const response = await fetch(`${API_BASE_URL}/audits/docker-config/${fileId}`, {
+    method: 'POST',
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function launchWebBasicAudit(url: string, authorizationConfirmed: boolean): Promise<JobRecord> {
   const response = await fetch(`${API_BASE_URL}/audits/web/basic`, {
     method: 'POST',
@@ -177,6 +184,7 @@ export const api = {
   launchArchiveAudit,
   launchProjectArchiveAudit,
   launchDjangoConfigAudit,
+  launchDockerConfigAudit,
   launchWebBasicAudit,
   launchDomainBasicAudit,
   launchSubdomainInventoryAudit,

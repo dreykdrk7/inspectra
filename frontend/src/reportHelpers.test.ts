@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildArchiveAuditReport } from "./archiveReport";
 import { buildDjangoConfigAuditReport, redactDjangoConfigValue } from "./djangoConfigReport";
 import { buildDomainAuditReport } from "./domainReport";
+import { buildDockerConfigAuditReport, redactDockerConfigValue } from "./dockerConfigReport";
 import { buildImageAuditReport } from "./imageReport";
 import { buildManifestAuditReport } from "./manifestReport";
 import { buildPdfAuditReport } from "./pdfReport";
@@ -405,6 +406,145 @@ describe("report helpers", () => {
     }));
 
     for (const secret of ["super-secret-value-123", "django-insecure-test-secret", "rawpass", "abc123", "BEGIN PRIVATE KEY"]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.findings[0].evidence).toContain("[REDACTED]");
+    expect(report.detectedFiles[0].skipReason).toContain("[REDACTED]");
+  });
+
+  it("normalizes Docker config files, stages, services, and findings", () => {
+    const report = buildDockerConfigAuditReport({
+      ...baseJob,
+      audit_type: "docker_config_basic",
+      result: {
+        analyzer: "docker_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_reviewed: 2,
+          dockerfiles_detected: 1,
+          compose_files_detected: 1,
+          services_detected: 1,
+          findings_count: 2,
+          secrets_redacted_count: 1,
+          truncated: false
+        },
+        limits: { max_files: 100 },
+        files_detected: [
+          { path: "Dockerfile", category: "dockerfile", read: true, size_bytes: 128, context: "shared" },
+          { path: "docker-compose.yml", category: "compose", read: true, size_bytes: 256, context: "production" }
+        ],
+        dockerfile_stages: [
+          {
+            file_path: "Dockerfile",
+            context: "shared",
+            stage: "runtime",
+            base_image: "python:latest",
+            user_observed: false,
+            healthcheck_observed: true
+          }
+        ],
+        compose_services: [
+          {
+            file_path: "docker-compose.yml",
+            service: "web",
+            context: "production",
+            image: "example/web:latest",
+            ports: ["8000:8000"],
+            privileged: false,
+            read_only: true,
+            network_mode: "bridge"
+          }
+        ],
+        findings: [
+          {
+            id: "docker_latest_tag",
+            title: "Docker base image uses latest tag",
+            level: "low",
+            category: "image",
+            context: "shared",
+            file_path: "Dockerfile",
+            stage: "runtime",
+            evidence: "FROM python:latest"
+          },
+          {
+            id: "docker_missing_healthcheck",
+            title: "Healthcheck not observed",
+            level: "info",
+            category: "compose",
+            context: "production",
+            service: "web",
+            evidence: "healthcheck not observed"
+          }
+        ],
+        redaction_notes: ["Sensitive environment values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isDockerConfigAudit).toBe(true);
+    expect(report.archiveType).toBe("zip");
+    expect(report.overview).toContainEqual({ label: "Files reviewed", value: "2" });
+    expect(report.overview).toContainEqual({ label: "Dockerfiles", value: "1" });
+    expect(report.detectedFiles[0]).toMatchObject({ path: "Dockerfile", context: "shared", read: true });
+    expect(report.stages[0]).toMatchObject({ filePath: "Dockerfile", baseImage: "python:latest", userObserved: false });
+    expect(report.composeServices[0]).toMatchObject({ filePath: "docker-compose.yml", name: "web", ports: ["8000:8000"] });
+    expect(report.findings[0]).toMatchObject({ id: "docker_latest_tag", level: "low", filePath: "Dockerfile" });
+    expect(report.findings[1]).toMatchObject({ id: "docker_missing_healthcheck", filePath: null, service: "web" });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["low", "info"]);
+    expect(report.redactionNotes).toEqual(["Sensitive environment values were redacted."]);
+  });
+
+  it("tolerates sparse Docker config results", () => {
+    const report = buildDockerConfigAuditReport({
+      ...baseJob,
+      audit_type: "docker_config_basic",
+      result: {
+        analyzer: "docker_config_basic",
+        summary: {}
+      }
+    });
+
+    expect(report.isDockerConfigAudit).toBe(true);
+    expect(report.detectedFiles).toEqual([]);
+    expect(report.stages).toEqual([]);
+    expect(report.composeServices).toEqual([]);
+    expect(report.findings).toEqual([]);
+    expect(report.errors).toEqual([]);
+  });
+
+  it("redacts legacy Docker config secret-like values", () => {
+    const report = buildDockerConfigAuditReport({
+      ...baseJob,
+      audit_type: "docker_config_basic",
+      error: "TOKEN=super-secret-value-123",
+      result: {
+        analyzer: "docker_config_basic",
+        summary: { secrets_redacted_count: 0 },
+        files_detected: [
+          { path: "docker-compose.yml", category: "compose", read: false, skip_reason: "DATABASE_URL=postgres://user:rawpass@db/app" }
+        ],
+        findings: [
+          {
+            id: "legacy_secret",
+            title: "Legacy secret",
+            level: "medium",
+            evidence: "SECRET_KEY = 'super-secret-value-123'",
+            description: "DATABASE_URL=postgres://user:rawpass@db/app",
+            recommendation: "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----"
+          }
+        ],
+        errors: ["PASSWORD=super-secret-value-123"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(redactDockerConfigValue({
+      error: "TOKEN=super-secret-value-123",
+      result: report
+    }));
+
+    for (const secret of ["super-secret-value-123", "rawpass", "abc123", "BEGIN PRIVATE KEY"]) {
       expect(serializedReport).not.toContain(secret);
       expect(redactedRaw).not.toContain(secret);
     }

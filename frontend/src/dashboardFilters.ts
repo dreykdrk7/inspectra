@@ -89,5 +89,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "django_config_basic") {
     return "django_config_basic";
   }
+  if (auditType === "docker_config_basic") {
+    return "docker_config_basic";
+  }
   return auditType;
 }
