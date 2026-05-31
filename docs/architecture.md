@@ -35,16 +35,16 @@ The backend does not install or execute audit binaries directly.
   - Display backend health.
   - Upload PDFs, images, dependency manifests, and archives.
   - List and delete uploaded files.
-  - Launch PDF, image, manifest, archive, project-archive manifest, Django config, Docker config, web baseline, domain baseline, and controlled subdomain inventory audits.
+  - Launch PDF, image, manifest, archive, project-archive manifest, Django config, Docker config, secrets review, web baseline, domain baseline, and controlled subdomain inventory audits.
   - List recent jobs.
-  - Fetch jobs and render readable PDF, image, manifest, archive, project-archive, Django config, Docker config, web, domain, and subdomain inventory reports.
+  - Fetch jobs and render readable PDF, image, manifest, archive, project-archive, Django config, Docker config, secrets review, web, domain, and subdomain inventory reports.
   - Provide export links for Markdown, HTML, XML, and PDF job reports.
   - Provide SBOM export links for completed manifest and project-archive manifest jobs.
   - Keep raw job JSON available for debugging.
 
 The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
 
-Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, `frontend/src/manifestReport.ts`, `frontend/src/archiveReport.ts`, `frontend/src/projectArchiveReport.ts`, `frontend/src/djangoConfigReport.ts`, `frontend/src/webReport.ts`, `frontend/src/domainReport.ts`, and `frontend/src/subdomainReport.ts`. Dashboard filters and counters live in `frontend/src/dashboardFilters.ts`. This keeps the backend contract stable while making audit result JSON and UI state easier to test.
+Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, `frontend/src/manifestReport.ts`, `frontend/src/archiveReport.ts`, `frontend/src/projectArchiveReport.ts`, `frontend/src/djangoConfigReport.ts`, `frontend/src/dockerConfigReport.ts`, `frontend/src/secretsReviewReport.ts`, `frontend/src/webReport.ts`, `frontend/src/domainReport.ts`, and `frontend/src/subdomainReport.ts`. Dashboard filters and counters live in `frontend/src/dashboardFilters.ts`. This keeps the backend contract stable while making audit result JSON and UI state easier to test.
 
 ### Reporting
 
@@ -177,6 +177,7 @@ The browser UI consumes these same endpoints. The backend enables CORS only for 
 - Project archive manifest parsing is bounded by `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS`, `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES`, `INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES`, and `INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES`.
 - Django config archive analysis is bounded by `INSPECTRA_DJANGO_CONFIG_MAX_FILES`, `INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES`, `INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES`, archive entry limits, and ZIP central directory metadata limits.
 - Docker config archive analysis is bounded by `INSPECTRA_DOCKER_CONFIG_MAX_FILES`, `INSPECTRA_DOCKER_CONFIG_MAX_FILE_BYTES`, `INSPECTRA_DOCKER_CONFIG_MAX_TOTAL_BYTES`, archive entry limits, and ZIP central directory metadata limits.
+- Secrets review archive analysis is bounded by `INSPECTRA_SECRETS_REVIEW_MAX_FILES`, `INSPECTRA_SECRETS_REVIEW_MAX_FILE_BYTES`, `INSPECTRA_SECRETS_REVIEW_MAX_TOTAL_BYTES`, archive entry limits, and ZIP central directory metadata limits.
 - Web auditing is bounded by `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, and `INSPECTRA_WEB_ALLOWED_PORTS`. Private targets require `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true`; metadata/link-local/multicast/reserved targets remain blocked.
 - Subdomain inventory is bounded by `INSPECTRA_SUBDOMAIN_MAX_CANDIDATES`, `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS`, `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS`, and the global deadline `INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS`.
 - Development CORS is explicit and defaults to `http://localhost:5173`, not a wildcard.

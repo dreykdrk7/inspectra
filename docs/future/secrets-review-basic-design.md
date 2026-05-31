@@ -1,6 +1,6 @@
 # secrets_review_basic Design
 
-Status: proposed. This document is a docs-first design reference only; no runtime endpoint, runner analyzer, backend job, frontend UI, or exports are implemented yet.
+Status: implemented in v1 across runner, backend, exports, and frontend. This document remains as the historical docs-first design reference for the passive secrets review audit.
 
 ## 1. Module Objective
 
@@ -369,4 +369,4 @@ When `secrets_review_basic` is implemented, update:
   - explicitly keep token validation, provider APIs, Git history scanning, external scanners, and credential validity claims out of scope;
   - document that redaction is best-effort and uploaded archive bytes may still contain real secrets in local storage.
 
-No runtime docs should claim that `secrets_review_basic` exists until the endpoint, runner, backend, reporting, and frontend are implemented.
+Runtime documentation now lives in `README.md`, `docs/architecture.md`, and `docs/security-scope.md`. This design document should not be treated as the source of truth for exact UI wording or implementation status.

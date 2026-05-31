@@ -15,8 +15,8 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts basic PDF, image, manifest, and archive audit jobs.
 - Starts project-archive manifest analysis jobs for archives that contain supported dependency manifests.
 - Starts passive Django configuration analysis jobs for archive uploads.
-- Starts passive Docker/Compose configuration analysis jobs for archive uploads through the API.
-- Starts passive secrets exposure review jobs for archive uploads through the API.
+- Starts passive Docker/Compose configuration analysis jobs for archive uploads.
+- Starts passive secrets exposure review jobs for archive uploads.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -389,7 +389,7 @@ Supported SBOM formats:
 curl -sS http://localhost:8000/jobs
 ```
 
-Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, archive entry/finding counts, project-archive dependency/finding counts, Django/Docker config file/finding counts, or web/domain/subdomain metrics when present.
+Jobs are returned with the most recently created first. Completed jobs include a compact summary with analyzer name, hash, validation state, warnings, timed-out tools, manifest dependency/finding counts, archive entry/finding counts, project-archive dependency/finding counts, Django/Docker config and secrets-review file/finding counts, or web/domain/subdomain metrics when present.
 
 ## Delete an Uploaded File
 
