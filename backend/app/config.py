@@ -32,6 +32,9 @@ DEFAULT_CI_CD_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_K8S_CONFIG_MAX_FILES = 100
 DEFAULT_K8S_CONFIG_MAX_FILE_BYTES = 524_288
 DEFAULT_K8S_CONFIG_MAX_TOTAL_BYTES = 2_097_152
+DEFAULT_TERRAFORM_CONFIG_MAX_FILES = 100
+DEFAULT_TERRAFORM_CONFIG_MAX_FILE_BYTES = 524_288
+DEFAULT_TERRAFORM_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,9 @@ class Settings:
     k8s_config_max_files: int = DEFAULT_K8S_CONFIG_MAX_FILES
     k8s_config_max_file_bytes: int = DEFAULT_K8S_CONFIG_MAX_FILE_BYTES
     k8s_config_max_total_bytes: int = DEFAULT_K8S_CONFIG_MAX_TOTAL_BYTES
+    terraform_config_max_files: int = DEFAULT_TERRAFORM_CONFIG_MAX_FILES
+    terraform_config_max_file_bytes: int = DEFAULT_TERRAFORM_CONFIG_MAX_FILE_BYTES
+    terraform_config_max_total_bytes: int = DEFAULT_TERRAFORM_CONFIG_MAX_TOTAL_BYTES
 
     @property
     def upload_dir(self) -> Path:
@@ -183,6 +189,18 @@ def load_settings() -> Settings:
         "INSPECTRA_K8S_CONFIG_MAX_TOTAL_BYTES",
         DEFAULT_K8S_CONFIG_MAX_TOTAL_BYTES,
     )
+    terraform_config_max_files = _positive_int_from_env(
+        "INSPECTRA_TERRAFORM_CONFIG_MAX_FILES",
+        DEFAULT_TERRAFORM_CONFIG_MAX_FILES,
+    )
+    terraform_config_max_file_bytes = _positive_int_from_env(
+        "INSPECTRA_TERRAFORM_CONFIG_MAX_FILE_BYTES",
+        DEFAULT_TERRAFORM_CONFIG_MAX_FILE_BYTES,
+    )
+    terraform_config_max_total_bytes = _positive_int_from_env(
+        "INSPECTRA_TERRAFORM_CONFIG_MAX_TOTAL_BYTES",
+        DEFAULT_TERRAFORM_CONFIG_MAX_TOTAL_BYTES,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -215,6 +233,9 @@ def load_settings() -> Settings:
         k8s_config_max_files=k8s_config_max_files,
         k8s_config_max_file_bytes=k8s_config_max_file_bytes,
         k8s_config_max_total_bytes=k8s_config_max_total_bytes,
+        terraform_config_max_files=terraform_config_max_files,
+        terraform_config_max_file_bytes=terraform_config_max_file_bytes,
+        terraform_config_max_total_bytes=terraform_config_max_total_bytes,
     )
 
 

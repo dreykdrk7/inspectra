@@ -30,6 +30,7 @@ from app.services import (
     ProjectArchiveAuditService,
     SecretsReviewAuditService,
     SubdomainInventoryAuditService,
+    TerraformConfigAuditService,
     WebAuditService,
     calculate_domain_runner_timeout_seconds,
     calculate_subdomain_inventory_runner_timeout_seconds,
@@ -77,6 +78,9 @@ class NoopAuditService:
         return None
 
     async def run_k8s_config_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_terraform_config_analysis(self, job_id: str) -> None:
         return None
 
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
@@ -138,6 +142,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.node_package_config_audits = NodePackageConfigAuditService(settings, file_store, job_store)
     app.state.ci_cd_config_audits = CiCdConfigAuditService(settings, file_store, job_store)
     app.state.k8s_config_audits = K8sConfigAuditService(settings, file_store, job_store)
+    app.state.terraform_config_audits = TerraformConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -1031,6 +1036,108 @@ async def test_k8s_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_terraform_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.terraform_config_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("tf.zip", make_zip_bytes({"infra/main.tf": b'resource "aws_s3_bucket" "app" {}\n'}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        terraform_response = await client.post(f"/audits/terraform-config/{archive_file['id']}")
+        pdf_as_terraform_response = await client.post(f"/audits/terraform-config/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/terraform-config/not-a-file-id")
+
+    assert terraform_response.status_code == 202
+    assert terraform_response.json()["audit_type"] == "terraform_config_basic"
+    assert pdf_as_terraform_response.status_code == 400
+    assert pdf_as_terraform_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_terraform_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("tf.zip", make_zip_bytes({"infra/main.tf": b'resource "aws_s3_bucket" "app" {}\n'}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_terraform_config_job(archive.id)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "terraform_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 2,
+                        "files_reviewed": 1,
+                        "terraform_files_detected": 1,
+                        "tfvars_files_detected": 1,
+                        "state_files_detected": 0,
+                        "providers_detected": 1,
+                        "backends_detected": 1,
+                        "modules_detected": 0,
+                        "resources_detected": 1,
+                        "findings_count": 1,
+                        "redacted_values_count": 1,
+                        "truncated": False,
+                    },
+                    "variables": [{"name": "password", "default": "super-secret-password"}],
+                    "findings": [
+                        {
+                            "id": "terraform_variable_default_secret_like",
+                            "title": "Variable default contains secret-like value",
+                            "level": "medium",
+                            "evidence": "password=super-secret-password",
+                        }
+                    ],
+                    "errors": ["API_KEY=raw-api-key-123456"],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+
+    await app.state.terraform_config_audits.run_terraform_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    serialized_result = json.dumps(updated.result)
+    assert updated.status == "completed"
+    assert updated.result["analyzer"] == "terraform_config_basic"
+    assert "[REDACTED]" in serialized_result
+    for secret in ("super-secret-password", "raw-api-key-123456"):
+        assert secret not in serialized_result
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/terraform-config"
+    assert calls[0]["json"]["file_id"] == archive.id
+    assert calls[0]["json"]["original_filename"] == "tf.zip"
+    assert calls[0]["json"]["max_files"] == app.state.settings.terraform_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.terraform_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.terraform_config_max_total_bytes
+
+
+@pytest.mark.anyio
 async def test_web_basic_audit_requires_authorization(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     app.state.web_audits = NoopAuditService()
@@ -1546,6 +1653,19 @@ def test_ci_cd_config_limits_config(monkeypatch, tmp_path):
     assert settings.ci_cd_config_max_total_bytes == 4096
 
 
+def test_terraform_config_limits_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_TERRAFORM_CONFIG_MAX_FILES", "12")
+    monkeypatch.setenv("INSPECTRA_TERRAFORM_CONFIG_MAX_FILE_BYTES", "1024")
+    monkeypatch.setenv("INSPECTRA_TERRAFORM_CONFIG_MAX_TOTAL_BYTES", "4096")
+
+    settings = load_settings()
+
+    assert settings.terraform_config_max_files == 12
+    assert settings.terraform_config_max_file_bytes == 1024
+    assert settings.terraform_config_max_total_bytes == 4096
+
+
 @pytest.mark.parametrize(
     ("raw_domain", "expected"),
     [
@@ -1841,6 +1961,77 @@ async def test_list_jobs_includes_k8s_config_summary_and_sparse_payload(monkeypa
     assert summary["errors_count"] == 1
     sparse_summary = summaries["e" * 31 + "2"]
     assert sparse_summary["analyzer"] == "k8s_config_basic"
+    assert sparse_summary["files_reviewed"] is None
+    assert sparse_summary["errors_count"] == 0
+
+
+@pytest.mark.anyio
+async def test_list_jobs_includes_terraform_config_summary_and_sparse_payload(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    app.state.jobs.save(
+        JobRecord(
+            id="a" * 31 + "1",
+            audit_type="terraform_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={
+                "analyzer": "terraform_config_basic",
+                "archive_type": "zip",
+                "summary": {
+                    "files_considered": 5,
+                    "files_reviewed": 3,
+                    "terraform_files_detected": 2,
+                    "tfvars_files_detected": 1,
+                    "state_files_detected": 1,
+                    "providers_detected": 1,
+                    "backends_detected": 1,
+                    "modules_detected": 1,
+                    "resources_detected": 2,
+                    "findings_count": 4,
+                    "redacted_values_count": 3,
+                    "truncated": False,
+                },
+                "errors": ["one controlled warning"],
+            },
+        )
+    )
+    app.state.jobs.save(
+        JobRecord(
+            id="a" * 31 + "2",
+            audit_type="terraform_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "terraform_config_basic", "summary": "unexpected"},
+        )
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    summaries = {item["id"]: item["summary"] for item in response.json()}
+    summary = summaries["a" * 31 + "1"]
+    assert summary["archive_type"] == "zip"
+    assert summary["files_considered"] == 5
+    assert summary["files_reviewed"] == 3
+    assert summary["terraform_files_detected"] == 2
+    assert summary["tfvars_files_detected"] == 1
+    assert summary["state_files_detected"] == 1
+    assert summary["providers_detected"] == 1
+    assert summary["backends_detected"] == 1
+    assert summary["modules_detected"] == 1
+    assert summary["resources_detected"] == 2
+    assert summary["findings_count"] == 4
+    assert summary["redacted_values_count"] == 3
+    assert summary["errors_count"] == 1
+    sparse_summary = summaries["a" * 31 + "2"]
+    assert sparse_summary["analyzer"] == "terraform_config_basic"
     assert sparse_summary["files_reviewed"] is None
     assert sparse_summary["errors_count"] == 0
 
@@ -3316,6 +3507,215 @@ async def test_export_k8s_config_jobs_with_sparse_and_incomplete_results(monkeyp
 
 
 @pytest.mark.anyio
+async def test_terraform_config_job_summary_and_export_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_terraform_config_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    summary = list_response.json()[0]["summary"]
+    assert summary["analyzer"] == "terraform_config_basic"
+    assert summary["files_considered"] == 5
+    assert summary["files_reviewed"] == 3
+    assert summary["terraform_files_detected"] == 2
+    assert summary["tfvars_files_detected"] == 1
+    assert summary["state_files_detected"] == 1
+    assert summary["providers_detected"] == 1
+    assert summary["backends_detected"] == 1
+    assert summary["modules_detected"] == 1
+    assert summary["resources_detected"] == 2
+    assert summary["findings_count"] == 2
+    assert summary["redacted_values_count"] == 2
+    assert summary["truncated"] is False
+    assert summary["errors_count"] == 0
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "terraform_config_basic" in responses["markdown"].text
+    assert "Terraform Config Metrics" in responses["html"].text
+    assert "Providers" in responses["markdown"].text
+    assert "Backends" in responses["markdown"].text
+    assert "Modules" in responses["markdown"].text
+    assert "State Files Detected But Not Read" in responses["markdown"].text
+    assert "Finding 1 Provider" in responses["markdown"].text
+    assert "Finding 1 Resource type" in responses["markdown"].text
+    assert "Finding 1 Field path" in responses["markdown"].text
+    assert "infra/prod/main.tf" in responses["markdown"].text
+    assert "aws_security_group_ssh_open_world" in responses["markdown"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "terraform_config_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_export_terraform_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="f" * 31 + "8",
+        audit_type="terraform_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="PASSWORD=super-secret-password",
+        result={
+            "analyzer": "terraform_config_basic",
+            "archive_type": "zip",
+            "summary": {"files_reviewed": 1, "findings_count": 1, "redacted_values_count": 0},
+            "providers": [{"name": "aws", "access_key": "AKIAIOSFODNN7EXAMPLE", "secret_key": "aws_secret_access_key_should_not_render"}],
+            "backends": [{"type": "s3", "secret_key": "aws_secret_access_key_should_not_render"}],
+            "modules": [{"name": "app", "source": "https://user:pass@example.com/db"}],
+            "resources": [
+                {
+                    "resource_type": "aws_instance",
+                    "resource_name": "app",
+                    "user_data": "TOKEN=token_should_never_render\npostgres://user:pass@example.com/db",
+                }
+            ],
+            "variables": [{"name": "db_password", "default": "db_password_plaintext"}],
+            "outputs": [{"name": "api_key", "value": "raw-api-key-123456", "sensitive": False}],
+            "state_files": [
+                {
+                    "path": "terraform.tfstate",
+                    "read": False,
+                    "content": "super-secret-password raw-api-key-123456 token_should_never_render",
+                }
+            ],
+            "findings": [
+                {
+                    "id": "legacy_terraform_secret",
+                    "title": "Legacy raw secret",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets",
+                    "description": "CLIENT_SECRET=token_should_never_render",
+                    "evidence": "PASSWORD=super-secret-password",
+                    "recommendation": "-----BEGIN PRIVATE KEY----- PRIVATE KEY db_password_plaintext -----END PRIVATE KEY-----",
+                    "file_path": "infra/prod/main.tf",
+                    "context": "production<script>API_KEY=raw-api-key-123456</script>",
+                    "provider": "aws",
+                    "resource_type": "aws_instance",
+                    "resource_name": "app",
+                    "field_path": "user_data",
+                }
+            ],
+            "errors": [
+                "API_KEY=raw-api-key-123456",
+                "AWS_SECRET_ACCESS_KEY=aws_secret_access_key_should_not_render",
+                "postgres://user:pass@example.com/db",
+            ],
+            "redaction_notes": ["TOKEN=token_should_never_render"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = (
+        b"super-secret-password",
+        b"raw-api-key-123456",
+        b"token_should_never_render",
+        b"PRIVATE KEY",
+        b"db_password_plaintext",
+        b"AKIAIOSFODNN7EXAMPLE",
+        b"aws_secret_access_key_should_not_render",
+        b"postgres://user:pass@example.com/db",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    assert api_response.status_code == 200
+    assert b"REDACTED" in api_response.content
+    for secret in forbidden:
+        assert secret not in api_response.content
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
+
+
+@pytest.mark.anyio
+async def test_export_terraform_config_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="f" * 31 + "9", audit_type="terraform_config_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="a" * 31 + "3", audit_type="terraform_config_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="a" * 31 + "4",
+            audit_type="terraform_config_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="Terraform config runner failed safely.",
+        ),
+        JobRecord(
+            id="a" * 31 + "5",
+            audit_type="terraform_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "terraform_config_basic", "summary": {}, "findings": [{"id": "sparse"}], "errors": []},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "terraform_config_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "terraform_config_basic" in response.text
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -3566,6 +3966,7 @@ async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
         "node_package_config_basic",
         "ci_cd_config_basic",
         "k8s_config_basic",
+        "terraform_config_basic",
     )
     job_ids: list[str] = []
     for index, audit_type in enumerate(audit_types, start=1):
@@ -4916,6 +5317,119 @@ def save_k8s_config_export_fixture_job() -> JobRecord:
                 },
             ],
             "redaction_notes": ["Secret-like Kubernetes manifest values are redacted on a best-effort basis."],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_terraform_config_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="f" * 31 + "7",
+        audit_type="terraform_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "terraform_config_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 4096, "original_filename": "terraform.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 5,
+                "files_reviewed": 3,
+                "terraform_files_detected": 2,
+                "tfvars_files_detected": 1,
+                "state_files_detected": 1,
+                "providers_detected": 1,
+                "backends_detected": 1,
+                "modules_detected": 1,
+                "resources_detected": 2,
+                "findings_count": 2,
+                "redacted_values_count": 2,
+                "truncated": False,
+            },
+            "files_detected": [
+                {"path": "infra/prod/main.tf", "category": "terraform", "read": True, "size_bytes": 2048, "context": "production"},
+                {"path": "infra/prod/variables.tf", "category": "terraform", "read": True, "size_bytes": 512, "context": "production"},
+                {"path": "infra/prod/prod.tfvars", "category": "tfvars", "read": True, "size_bytes": 256, "context": "production"},
+                {"path": "infra/prod/terraform.tfstate", "category": "state_file", "read": False, "skip_reason": "terraform_state_file_not_read", "context": "production"},
+            ],
+            "files_reviewed": [
+                {"path": "infra/prod/main.tf", "category": "terraform", "context": "production", "bytes_read": 2048},
+                {"path": "infra/prod/variables.tf", "category": "terraform", "context": "production", "bytes_read": 512},
+                {"path": "infra/prod/prod.tfvars", "category": "tfvars", "context": "production", "bytes_read": 256},
+            ],
+            "providers": [{"file_path": "infra/prod/main.tf", "name": "aws", "version": "~> 5.0", "context": "production"}],
+            "backends": [{"file_path": "infra/prod/main.tf", "type": "s3", "context": "production"}],
+            "modules": [{"file_path": "infra/prod/main.tf", "name": "network", "source": "git::https://example.com/net.git?ref=v1", "context": "production"}],
+            "resources": [
+                {
+                    "file_path": "infra/prod/main.tf",
+                    "provider": "aws",
+                    "resource_type": "aws_security_group",
+                    "resource_name": "web",
+                    "context": "production",
+                },
+                {
+                    "file_path": "infra/prod/main.tf",
+                    "provider": "aws",
+                    "resource_type": "aws_s3_bucket",
+                    "resource_name": "assets",
+                    "context": "production",
+                },
+            ],
+            "variables": [
+                {"file_path": "infra/prod/variables.tf", "name": "db_password", "default": "[REDACTED]", "context": "production"}
+            ],
+            "outputs": [{"file_path": "infra/prod/main.tf", "name": "api_key", "sensitive": False, "context": "production"}],
+            "state_files": [
+                {
+                    "path": "infra/prod/terraform.tfstate",
+                    "category": "terraform_state",
+                    "read": False,
+                    "skip_reason": "terraform_state_file_not_read",
+                    "context": "production",
+                }
+            ],
+            "findings": [
+                {
+                    "id": "aws_security_group_ssh_open_world",
+                    "title": "Security group allows SSH from any IPv4 address",
+                    "level": "medium",
+                    "confidence": "medium",
+                    "category": "aws_network",
+                    "context": "production",
+                    "provider": "aws",
+                    "resource_type": "aws_security_group",
+                    "resource_name": "web",
+                    "block_type": "resource",
+                    "field_path": "ingress.cidr_blocks",
+                    "file_path": "infra/prod/main.tf",
+                    "line": "22",
+                    "description": "A Terraform review indicator was observed.",
+                    "evidence": "aws_security_group.web ingress cidr_blocks includes 0.0.0.0/0 on port 22",
+                    "recommendation": "Review the rule in the intended cloud context.",
+                },
+                {
+                    "id": "terraform_state_file_present",
+                    "title": "Terraform state file present in archive",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "state",
+                    "context": "production",
+                    "file_path": "infra/prod/terraform.tfstate",
+                    "description": "Terraform state files can contain secrets and generated values.",
+                    "evidence": "path=infra/prod/terraform.tfstate; read=false",
+                    "recommendation": "Avoid sharing Terraform state files in archives.",
+                },
+            ],
+            "redaction_notes": ["Terraform secret-like values and state contents are redacted on a best-effort basis."],
             "errors": [],
         },
     )

@@ -20,6 +20,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts passive Node package configuration analysis jobs for archive uploads.
 - Starts passive CI/CD configuration analysis jobs for archive uploads.
 - Starts passive Kubernetes manifest configuration analysis jobs for archive uploads.
+- Starts passive Terraform/OpenTofu/Terragrunt configuration analysis jobs for archive uploads through the API.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -44,6 +45,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not execute package scripts or project code.
 - It does not execute npm, pnpm, yarn, bun, npx, lifecycle scripts, JS/TS configs, registry lookups, `npm audit`, or advisory/CVE queries for Node package config audits.
 - It does not execute workflows, emulate CI runners, call provider APIs, validate tokens, download actions/images, or query advisory/CVE data for CI/CD config audits.
+- It does not execute Terraform, OpenTofu, or Terragrunt, run init/validate/plan/apply, download providers/modules, access state remotely, call cloud APIs, or query advisory/CVE data for Terraform config audits.
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
 - It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env`/`.env.*` files from archives.
@@ -127,6 +129,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_K8S_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Kubernetes manifest/config candidate files read from one archive. |
 | `INSPECTRA_K8S_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Kubernetes config candidate file. |
 | `INSPECTRA_K8S_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Kubernetes config audit. |
+| `INSPECTRA_TERRAFORM_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Terraform/OpenTofu/Terragrunt candidate files read from one archive. |
+| `INSPECTRA_TERRAFORM_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Terraform config candidate file. |
+| `INSPECTRA_TERRAFORM_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Terraform config audit. |
 | `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
 | `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
@@ -340,6 +345,18 @@ The source file must be `kind: "archive"`. This creates a `k8s_config_basic` job
 The analysis is heuristic and local. It looks for review indicators such as plaintext Kubernetes Secret data/stringData, secret-like ConfigMap/env values, privileged containers, host namespaces, hostPath/Docker socket usage, mutable or unpinned images, missing resources/probes, LoadBalancer/NodePort services, Ingress without TLS, wildcard ClusterRole rules, namespace defaults, and Helm/Kustomize files that were detected but not rendered or built. Findings are indicators for manual review, not confirmed vulnerabilities or proof of exploitability.
 
 Inspectra does not run `kubectl`, access clusters, validate manifests against an API server, apply manifests, render Helm, build Kustomize overlays, resolve remote bases/charts/includes, download images, query registries, query CVEs/advisories, extract the project broadly, follow symlinks or hardlinks, or call the internet. Kubernetes Secret values, secret-like env/config values, credential-bearing URLs, and private key blocks are redacted best-effort in results and exports.
+
+## Launch a Terraform Config Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/terraform-config/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `terraform_config_basic` job that opens the archive with Python standard library parsers and reads only bounded text from Terraform/OpenTofu-compatible `.tf`, `.tf.json`, `.tfvars`, `.tfvars.json`, `.auto.tfvars*`, `.terraform.lock.hcl`, and Terragrunt `.hcl` candidates. Terraform state files such as `terraform.tfstate`, `*.tfstate`, and `*.tfstate.backup` are detected as sensitive files present but are not read.
+
+The analysis is heuristic and local. It looks for review indicators such as secret-like tfvars/default/output/backend/provider values, Terraform state files in archives, missing version/backend/lockfile signals, unpinned providers/modules, AWS security group world ingress, IAM wildcard policy hints, and S3 public-access hints. Findings are indicators for manual review, not confirmed vulnerabilities or proof of exploitability.
+
+Inspectra does not execute Terraform, OpenTofu, or Terragrunt; run `init`, `validate`, `plan`, `apply`, or `destroy`; download providers or modules; resolve remote module sources; evaluate expressions or variables; access remote state; call cloud, Kubernetes, or provider APIs; query registries; query CVEs/advisories; extract the project broadly; follow symlinks or hardlinks; or call the internet. Secret-like Terraform values, credential-bearing URLs, private key blocks, state-content-like fields, errors, and exports are redacted best-effort.
 
 ## Launch a Web Baseline Audit
 

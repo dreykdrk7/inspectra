@@ -303,6 +303,9 @@ class JobStore:
     def create_k8s_config_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "k8s_config_basic")
 
+    def create_terraform_config_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "terraform_config_basic")
+
     def create_web_job(self, target_url: str) -> JobRecord:
         return self._create_job(None, "web_basic", target_url=target_url)
 
@@ -635,6 +638,21 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["services_detected"] = manifest_summary.get("services_detected")
             summary["secrets_detected"] = manifest_summary.get("secrets_detected")
             summary["rbac_resources_detected"] = manifest_summary.get("rbac_resources_detected")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
+            summary["truncated"] = manifest_summary.get("truncated")
+            summary["errors_count"] = len(record.result.get("errors") or [])
+        if record.audit_type == "terraform_config_basic":
+            summary["archive_type"] = record.result.get("archive_type")
+            summary["files_considered"] = manifest_summary.get("files_considered")
+            summary["files_reviewed"] = manifest_summary.get("files_reviewed")
+            summary["terraform_files_detected"] = manifest_summary.get("terraform_files_detected")
+            summary["tfvars_files_detected"] = manifest_summary.get("tfvars_files_detected")
+            summary["state_files_detected"] = manifest_summary.get("state_files_detected")
+            summary["providers_detected"] = manifest_summary.get("providers_detected")
+            summary["backends_detected"] = manifest_summary.get("backends_detected")
+            summary["modules_detected"] = manifest_summary.get("modules_detected")
+            summary["resources_detected"] = manifest_summary.get("resources_detected")
             summary["findings_count"] = manifest_summary.get("findings_count")
             summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
             summary["truncated"] = manifest_summary.get("truncated")

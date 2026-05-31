@@ -2,7 +2,7 @@
 
 ## Intended Use
 
-Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-target web and domain baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, passive Docker/Django/Node package configuration review, passive CI/CD configuration review, redaction-first secrets review, passive HTTP/HTTPS configuration review, and bounded DNS baseline review.
+Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-target web and domain baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, passive Docker/Django/Node package configuration review, passive CI/CD configuration review, passive Terraform/OpenTofu/Terragrunt configuration review, redaction-first secrets review, passive HTTP/HTTPS configuration review, and bounded DNS baseline review.
 
 Use Inspectra only on files, domains, systems, or services that you own or are explicitly authorized to assess.
 
@@ -25,6 +25,7 @@ Allowed in this phase:
 - Reading bounded Node package/config text from archives in memory for `node_package_config_basic`, while detecting real `.env`, `.env.*`, and `.envrc` files without reading their content.
 - Reading bounded CI/CD workflow/config text from archives in memory for `ci_cd_config_basic`, while detecting real `.env`, `.env.*`, and `.envrc` files without reading their content.
 - Reading bounded Kubernetes manifest/config text from archives in memory for `k8s_config_basic`, while detecting real `.env`, `.env.*`, and `.envrc` files without reading their content.
+- Reading bounded Terraform/OpenTofu/Terragrunt config text from archives in memory for `terraform_config_basic`, while detecting Terraform state files as sensitive files present without reading their content.
 - Extracting declared dependencies, scripts, engines, and basic project metadata from supported manifests.
 - Recording informational dependency indicators such as lifecycle scripts, unpinned requirements, broad ranges, and URL/VCS/local dependency references.
 - Recording informational archive indicators such as path traversal entries, absolute paths, symlinks, hardlinks, executable bits, nested archives, sensitive-looking filenames, manifest filenames, large estimated uncompressed size, high compression ratio, and truncated analysis.
@@ -44,6 +45,7 @@ Allowed in this phase:
 - Recording Docker/Compose configuration indicators such as missing or root `USER`, mutable image tags, privileged services, host networking, Docker socket mounts, published database/cache ports, and sensitive-looking environment names.
 - Recording Node package configuration indicators such as lifecycle scripts, broad or wildcard dependency declarations, Git/URL/file/workspace dependencies, npm config token references, lockfile consistency, and simple JS/TS config hints.
 - Recording CI/CD configuration indicators such as broad or privileged triggers, missing or broad permissions, action/image pinning signals, inline secret-like env values, curl-pipe-shell scripts, publish/deploy commands, self-hosted runner usage, and artifact/cache/service-container hints.
+- Recording Terraform/OpenTofu/Terragrunt configuration indicators such as secret-like tfvars/default/output/backend/provider values, state-file presence, missing version/backend/lockfile signals, unpinned provider/module references, AWS world-ingress security group hints, IAM wildcard hints, and S3 public-access hints.
 - Using the local web UI to perform implemented UI actions for the same bounded audit families.
 
 Tools used in this phase:
@@ -70,6 +72,8 @@ For secrets review audits, Inspectra reads only bounded text from candidate file
 For Node package config audits, Inspectra reads only bounded text from Node package/config candidates inside uploaded archives and reports heuristic indicators for manual review. It detects real `.env`, `.env.*`, and `.envrc` files but does not read their content. It does not execute npm, pnpm, yarn, bun, npx, lifecycle scripts, JavaScript, TypeScript, or config files; install dependencies; resolve transitive dependencies; download packages; query package registries; run `npm audit`; query CVEs/advisories; or call the internet. Secret-like npm config values and credential-bearing URLs are redacted best-effort.
 
 For CI/CD config audits, Inspectra reads only bounded text from CI/CD workflow/config candidates inside uploaded archives and reports heuristic indicators for manual review. It detects real `.env`, `.env.*`, and `.envrc` files but does not read their content. It does not execute workflows, emulate runners, evaluate dynamic expressions, call provider APIs, validate tokens, execute scripts, install dependencies, resolve remote actions or reusable workflows, download actions/images, query CVEs/advisories, or call the internet. Secret-like CI values, credential-bearing URLs, sensitive query parameters, provider-token-like strings, and private key blocks are redacted best-effort.
+
+For Terraform config audits, Inspectra reads only bounded text from Terraform/OpenTofu-compatible `.tf`, `.tf.json`, `.tfvars`, `.tfvars.json`, `.auto.tfvars*`, `.terraform.lock.hcl`, and Terragrunt `.hcl` candidates inside uploaded archives and reports heuristic indicators for manual review. It detects Terraform state files as sensitive files present but does not read their content. It does not execute Terraform, OpenTofu, or Terragrunt; run init, validate, plan, apply, destroy, state, refresh, import, or output commands; download providers or modules; resolve remote module sources; evaluate expressions or variables; access remote state; call cloud or Kubernetes APIs; query registries; query CVEs/advisories; or call the internet. Secret-like Terraform values, state-content-like fields, credential-bearing URLs, sensitive query parameters, and private key blocks are redacted best-effort.
 
 For SBOM export, Inspectra uses only declared dependencies already present in completed `manifest_basic` or `project_archive_basic` job results. It does not execute package managers, install packages, resolve transitive dependencies, infer licenses, query CVEs, verify URL/VCS identities, or call package registries. Version ranges remain ranges unless the manifest declares an exact local pin that can be represented as such. Package URLs are generated only for dependencies that look like clear npm or PyPI registry packages; URL, VCS, local, editable, workspace, and alias declarations are preserved without inferred package URLs.
 
@@ -107,6 +111,7 @@ The MVP does not include:
 - Downloading Node packages, querying registries, running `npm audit`, querying advisories/CVEs, resolving transitive dependencies, or making malicious-package verdicts for Node package config review.
 - Executing workflows, emulating CI/CD runners, evaluating provider expressions dynamically, calling provider APIs, validating tokens, downloading actions/images, resolving remote reusable workflows/includes, querying advisories/CVEs, or claiming pipeline exploitability for CI/CD config review.
 - Running `kubectl`, connecting to clusters, validating manifests against API servers, applying manifests, rendering Helm, building Kustomize overlays, resolving remote bases/charts/includes/CRDs, downloading images, querying registries/CVEs/advisories, or claiming exploitability for Kubernetes config review.
+- Executing Terraform, OpenTofu, or Terragrunt; running init/validate/plan/apply/destroy/state/refresh/import/output commands; downloading providers or modules; resolving remote modules; evaluating variables or expressions; reading remote state; calling cloud/Kubernetes APIs; querying registries/CVEs/advisories; or claiming exploitability for Terraform config review.
 - Extracting uploaded archives broadly to the filesystem.
 - Executing files, scripts, binaries, symlinks, or hardlinks from uploaded archives.
 - Installing or resolving dependencies discovered inside archives.
@@ -189,6 +194,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Node package config analysis limits through `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILES`, `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES`.
 - CI/CD config analysis limits through `INSPECTRA_CI_CD_CONFIG_MAX_FILES`, `INSPECTRA_CI_CD_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_CI_CD_CONFIG_MAX_TOTAL_BYTES`.
 - Kubernetes config analysis limits through `INSPECTRA_K8S_CONFIG_MAX_FILES`, `INSPECTRA_K8S_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_K8S_CONFIG_MAX_TOTAL_BYTES`.
+- Terraform config analysis limits through `INSPECTRA_TERRAFORM_CONFIG_MAX_FILES`, `INSPECTRA_TERRAFORM_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_TERRAFORM_CONFIG_MAX_TOTAL_BYTES`.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.
 
 ## Operational Guidance
