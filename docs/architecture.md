@@ -35,16 +35,16 @@ The backend does not install or execute audit binaries directly.
   - Display backend health.
   - Upload PDFs, images, dependency manifests, and archives.
   - List and delete uploaded files.
-  - Launch PDF, image, manifest, archive, project-archive manifest, Django config, Docker config, secrets review, web baseline, domain baseline, and controlled subdomain inventory audits.
+  - Launch PDF, image, manifest, archive, project-archive manifest, Django config, Docker config, secrets review, Node package config, web baseline, domain baseline, and controlled subdomain inventory audits.
   - List recent jobs.
-  - Fetch jobs and render readable PDF, image, manifest, archive, project-archive, Django config, Docker config, secrets review, web, domain, and subdomain inventory reports.
+  - Fetch jobs and render readable PDF, image, manifest, archive, project-archive, Django config, Docker config, secrets review, Node package config, web, domain, and subdomain inventory reports.
   - Provide export links for Markdown, HTML, XML, and PDF job reports.
   - Provide SBOM export links for completed manifest and project-archive manifest jobs.
   - Keep raw job JSON available for debugging.
 
 The frontend is a development service in Docker Compose. Browser requests go to the backend through `VITE_API_BASE_URL`, defaulting to `http://localhost:8000`.
 
-Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, `frontend/src/manifestReport.ts`, `frontend/src/archiveReport.ts`, `frontend/src/projectArchiveReport.ts`, `frontend/src/djangoConfigReport.ts`, `frontend/src/dockerConfigReport.ts`, `frontend/src/secretsReviewReport.ts`, `frontend/src/webReport.ts`, `frontend/src/domainReport.ts`, and `frontend/src/subdomainReport.ts`. Dashboard filters and counters live in `frontend/src/dashboardFilters.ts`. This keeps the backend contract stable while making audit result JSON and UI state easier to test.
+Report presentation is normalized client-side in `frontend/src/pdfReport.ts`, `frontend/src/imageReport.ts`, `frontend/src/manifestReport.ts`, `frontend/src/archiveReport.ts`, `frontend/src/projectArchiveReport.ts`, `frontend/src/djangoConfigReport.ts`, `frontend/src/dockerConfigReport.ts`, `frontend/src/secretsReviewReport.ts`, `frontend/src/nodePackageConfigReport.ts`, `frontend/src/webReport.ts`, `frontend/src/domainReport.ts`, and `frontend/src/subdomainReport.ts`. Dashboard filters and counters live in `frontend/src/dashboardFilters.ts`. This keeps the backend contract stable while making audit result JSON and UI state easier to test.
 
 ### Reporting
 
