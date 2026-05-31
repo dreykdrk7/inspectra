@@ -982,4 +982,27 @@ describe("report helpers", () => {
     expect(report.jobs[0].excerpt).toContain("[REDACTED]");
     expect(report.actions[0].image).toContain("[REDACTED]");
   });
+
+  it("keeps CI/CD config sparse summaries aligned with runner field names", () => {
+    const report = buildCiCdConfigAuditReport({
+      ...baseJob,
+      audit_type: "ci_cd_config_basic",
+      result: {
+        analyzer: "ci_cd_config_basic",
+        files_detected: [
+          { path: ".github/workflows/ci.yml", category: "github_workflow", read: true, context: "shared" },
+          { path: ".github/actions/setup/action.yml", category: "github_action", read: true, context: "shared" },
+          { path: ".env.production", category: "env_sensitive", read: false, skip_reason: "real_env_file_not_read", context: "production" }
+        ],
+        actions: [{ path: ".github/workflows/ci.yml", provider: "github_actions", action: "actions/checkout@main", context: "shared" }],
+        findings: [{ id: "github_permissions_missing", title: "permissions missing" }],
+        errors: []
+      }
+    });
+
+    expect(report.workflowFilesDetectedCount).toBe(2);
+    expect(report.overview).toContainEqual({ label: "Workflows", value: "2" });
+    expect(report.actions[0]).toMatchObject({ action: "actions/checkout", ref: "main" });
+    expect(report.findings[0]).toMatchObject({ id: "github_permissions_missing", level: "unknown", confidence: null });
+  });
 });

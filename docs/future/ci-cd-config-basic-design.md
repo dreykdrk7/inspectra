@@ -1,6 +1,6 @@
 # ci_cd_config_basic Design
 
-Status: proposed. This document is a docs-first design reference only; no runtime endpoint, runner analyzer, backend job, frontend UI, or exports are implemented yet.
+Status: historical design reference. `ci_cd_config_basic` v1 is now implemented end to end with a passive runner analyzer, backend job/reporting, exports, and frontend report UX. This document remains the design baseline and does not expand the implemented runtime scope.
 
 ## 1. Module Objective
 

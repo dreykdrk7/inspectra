@@ -153,7 +153,7 @@ export function buildCiCdConfigAuditReport(job: JobRecord): CiCdConfigAuditRepor
   const filesReviewedCount = asNumber(summary?.files_reviewed) ?? reviewedFiles.length;
   const workflowFilesDetectedCount =
     asNumber(summary?.workflow_files_detected) ??
-    detectedFiles.filter((item) => ["github_actions", "gitlab_ci", "bitbucket", "azure", "circleci", "jenkins", "generic_ci"].includes(item.category)).length;
+    detectedFiles.filter((item) => item.category !== "env_sensitive").length;
   const jobsDetectedCount = asNumber(summary?.jobs_detected) ?? jobs.length;
   const stepsDetectedCount = asNumber(summary?.steps_detected) ?? jobs.reduce((total, item) => total + (item.stepsDetected ?? 0), 0);
   const triggersDetectedCount = asNumber(summary?.triggers_detected) ?? triggers.length;
@@ -368,12 +368,13 @@ function actionsFromValue(value: unknown): CiCdActionImage[] {
   }
   return value.map((item) => {
     const record = asRecord(item);
+    const actionWithRef = splitActionRef(asString(record?.action) ?? asString(record?.uses));
     return {
       path: asString(record?.path) ?? asString(record?.file_path) ?? "",
       provider: asString(record?.provider),
       context: asString(record?.context),
-      action: asString(record?.action) ?? asString(record?.uses),
-      ref: asString(record?.ref),
+      action: actionWithRef.action,
+      ref: asString(record?.ref) ?? actionWithRef.ref,
       image: asString(record?.image) ?? asString(record?.image_ref),
       pinned: asBoolean(record?.pinned),
       signal: asString(record?.signal) ?? asString(record?.indicator),
@@ -381,6 +382,14 @@ function actionsFromValue(value: unknown): CiCdActionImage[] {
       step: asString(record?.step)
     };
   });
+}
+
+function splitActionRef(value: string | null): { action: string | null; ref: string | null } {
+  if (!value || value.startsWith("./") || value.startsWith("../") || !value.includes("@")) {
+    return { action: value, ref: null };
+  }
+  const [action, ref] = value.split(/@(.+)/, 2);
+  return { action: action || value, ref: ref || null };
 }
 
 function serviceContainersFromValue(value: unknown): CiCdServiceContainer[] {
