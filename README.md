@@ -152,7 +152,7 @@ The dashboard includes client-side counters, file filters by kind, job filters b
 
 From the upload panel, choose `PDF`, `Image`, `Manifest`, or `Archive`. Image uploads currently accept JPEG, PNG, and WebP. Manifest uploads currently accept `package.json`, `requirements.txt`, and `pyproject.toml`. Archive uploads currently accept `.zip`, `.tar`, `.tar.gz`, and `.tgz`. Inspectra does not render image previews or extract archives broadly in this phase.
 
-Completed PDF, image, manifest, archive, project-archive, Django config, Docker config, secrets review, Node package config, web, domain, and subdomain jobs show readable reports with:
+Completed PDF, image, manifest, archive, project-archive, Django config, Docker config, secrets review, Node package config, CI/CD config, web, domain, and subdomain jobs show readable reports with:
 
 - General job summary.
 - Hashes.
