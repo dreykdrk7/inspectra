@@ -723,7 +723,7 @@ def redact_node_package_config_value(value: Any) -> Any:
         secret_named_value = node_package_record_has_secret_name(value)
         return {
             key: "[REDACTED]"
-            if is_secret_like_mapping_key(str(key)) or (secret_named_value and str(key).lower() in {"value", "raw_value", "default"})
+            if is_node_package_secret_mapping_key(str(key)) or (secret_named_value and str(key).lower() in {"value", "raw_value", "default"})
             else redact_node_package_config_value(item)
             for key, item in value.items()
         }
@@ -733,9 +733,31 @@ def redact_node_package_config_value(value: Any) -> Any:
 def node_package_record_has_secret_name(record: dict[str, Any]) -> bool:
     for marker in ("key", "name", "setting", "variable", "env"):
         candidate = record.get(marker)
-        if candidate is not None and is_secret_like_mapping_key(str(candidate)):
+        if candidate is not None and is_node_package_secret_mapping_key(str(candidate)):
             return True
     return False
+
+
+def is_node_package_secret_mapping_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if "redacted" in normalized or normalized.endswith("_count"):
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "_auth",
+            "auth_token",
+            "authtoken",
+            "_password",
+            "password",
+            "passwd",
+            "api_key",
+            "apikey",
+            "private_key",
+            "token",
+            "secret",
+        )
+    )
 
 
 def redact_node_package_secret_text(value: str) -> str:

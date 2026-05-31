@@ -1,10 +1,10 @@
 # node_package_config_basic Design
 
-Status: proposed. This document is a docs-first design reference only; no runtime endpoint, runner analyzer, backend job, frontend UI, or exports are implemented yet.
+Status: implemented v1 / historical design reference. The runner analyzer, backend job, reporting/exports, frontend action, and report UI were implemented across commits `2a98d63`, `86f6203`, and `bfe29a9`; this document remains the design baseline and should not be read as the current runtime manual.
 
 ## 1. Module Objective
 
-`node_package_config_basic` is a future passive archive-based audit type for reviewing Node.js, JavaScript, and TypeScript package configuration supplied by the user. It should help Inspectra users identify package-management and build-configuration indicators that deserve manual review before installing dependencies, publishing a package, or deploying an application.
+`node_package_config_basic` is a passive archive-based audit type for reviewing Node.js, JavaScript, and TypeScript package configuration supplied by the user. It should help Inspectra users identify package-management and build-configuration indicators that deserve manual review before installing dependencies, publishing a package, or deploying an application.
 
 The module should detect review signals such as lifecycle scripts, shell/remote-code script patterns, broad dependency ranges, URL/Git/file/workspace dependency references, multiple lockfiles, package-manager config risks, publishing metadata, and basic framework/build-tool configuration hints.
 
@@ -388,4 +388,4 @@ When `node_package_config_basic` is implemented, update:
 - `docs/future/passive-config-audits-v1-closeout.md`
   - optionally create a v2 closeout or add a new closeout document after the Node module is implemented and reviewed end-to-end.
 
-No runtime docs should claim that `node_package_config_basic` exists until the endpoint, runner, backend, reporting, and frontend are implemented.
+Runtime docs now describe the implemented v1 module in `README.md`, `docs/architecture.md`, and `docs/security-scope.md`.

@@ -2158,6 +2158,9 @@ async def test_export_docker_config_redacts_legacy_secret_values(monkeypatch, tm
         assert b"REDACTED" in response.content
         for secret in forbidden:
             assert secret not in response.content
+    assert "_authToken" in responses["markdown"].text
+    assert "_authToken" in responses["html"].text
+    assert "_authToken" in responses["xml"].text
     assert "&lt;script&gt;" in responses["html"].text
     assert "<script>" not in responses["html"].text
 
