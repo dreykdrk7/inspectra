@@ -837,6 +837,231 @@ async def test_analyze_django_config_treats_python_as_text_without_importing(mon
 
 
 @pytest.mark.anyio
+async def test_analyze_docker_config_dockerfile_findings_ignore_comments(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "Dockerfile": b"""
+# USER root
+FROM python:latest
+RUN curl -fsSL https://example.invalid/install.sh | sh
+""",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/docker-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    assert response.status_code == 200
+    assert payload["analyzer"] == "docker_config_basic"
+    assert payload["summary"]["dockerfiles_detected"] == 1
+    assert payload["summary"]["files_reviewed"] == 1
+    assert "docker_missing_user_directive" in finding_ids
+    assert "docker_latest_tag" in finding_ids
+    assert "docker_suspicious_curl_pipe_shell" in finding_ids
+    assert "docker_runs_as_root" not in finding_ids
+
+
+@pytest.mark.anyio
+async def test_analyze_docker_config_user_app_avoids_missing_user(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {"Dockerfile": b"FROM python:3.12-slim\nUSER app\n"})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/docker-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert "docker_missing_user_directive" not in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_docker_config_root_user_unpinned_and_context(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {"deploy/prod/Dockerfile.prod": b"FROM python\nUSER root\n"})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/docker-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    findings = {finding["id"]: finding for finding in payload["findings"]}
+    assert response.status_code == 200
+    assert findings["docker_runs_as_root"]["level"] == "medium"
+    assert findings["docker_runs_as_root"]["context"] == "production"
+    assert "docker_unpinned_base_image" in findings
+
+
+@pytest.mark.anyio
+async def test_analyze_docker_config_compose_findings_and_secret_redaction(monkeypatch, tmp_path):
+    compose_text = b"""
+services:
+  web:
+    privileged: true
+    network_mode: host
+    pid: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - .env.production
+    environment:
+      SECRET_KEY: supersecret-value
+      DATABASE_URL: postgres://user:rawpass@db/app
+  db:
+    ports:
+      - "5432:5432"
+"""
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "docker-compose.yml": compose_text,
+            ".env.production": b"SECRET_KEY=should-not-be-read\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/docker-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["compose_files_detected"] == 1
+    assert "docker_privileged_container" in finding_ids
+    assert "docker_host_network" in finding_ids
+    assert "docker_host_pid_or_ipc" in finding_ids
+    assert "docker_socket_mount" in finding_ids
+    assert "docker_published_database_port" in finding_ids
+    assert "docker_env_file_real_reference" in finding_ids
+    assert "docker_sensitive_env_name" in finding_ids
+    assert "supersecret-value" not in serialized
+    assert "rawpass" not in serialized
+    assert "should-not-be-read" not in serialized
+    assert "[REDACTED]" in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_docker_config_lower_confidence_context_degrades_severity(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {"examples/Dockerfile": b"FROM python\nUSER root\n"})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/docker-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    runs_as_root = next(finding for finding in payload["findings"] if finding["id"] == "docker_runs_as_root")
+    unpinned = next(finding for finding in payload["findings"] if finding["id"] == "docker_unpinned_base_image")
+    assert response.status_code == 200
+    assert runs_as_root["context"] == "example"
+    assert runs_as_root["level"] == "low"
+    assert unpinned["level"] == "info"
+
+
+@pytest.mark.anyio
+async def test_analyze_docker_config_skips_path_traversal(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {"../Dockerfile": b"FROM python:latest\n"})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/docker-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["files_detected"][0]["read"] is False
+    assert payload["files_detected"][0]["skip_reason"] == "path_traversal"
+    assert "docker_config_path_traversal" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_docker_config_tar_skips_symlink_and_hardlink(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        link_info = tarfile.TarInfo("Dockerfile")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real.Dockerfile"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo("compose.prod.yml")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real-compose.yml"
+        archive.addfile(hardlink_info)
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/docker-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert {item["skip_reason"] for item in payload["files_detected"]} == {"not_regular_file:symlink", "not_regular_file:hardlink"}
+    assert "docker_config_not_regular_file" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_docker_config_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "DOCKER_CONFIG_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "DOCKER_CONFIG_MAX_FILE_BYTES", 40)
+    monkeypatch.setattr(runner, "DOCKER_CONFIG_MAX_TOTAL_BYTES", 80)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "Dockerfile": b"FROM python:3.12\n",
+            "Dockerfile.large": b"FROM python:3.12\nRUN " + b"x" * 80 + b"\n",
+            "docker-compose.yml": b"services:\n  web:\n    image: app\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/docker-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "file_too_large" in reasons
+    assert "too_many_files" in reasons
+
+
+@pytest.mark.anyio
 async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
     server = start_test_http_server()
     transport = ASGITransport(app=runner.app)

@@ -180,6 +180,9 @@ PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES = positive_int_from_env("INSPECTRA_PROJECT_A
 DJANGO_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_DJANGO_CONFIG_MAX_FILES", 100)
 DJANGO_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES", 524_288)
 DJANGO_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
+DOCKER_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_DOCKER_CONFIG_MAX_FILES", 100)
+DOCKER_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_DOCKER_CONFIG_MAX_FILE_BYTES", 524_288)
+DOCKER_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_DOCKER_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
 WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
@@ -526,6 +529,35 @@ async def analyze_django_config(request: ArchiveAnalysisRequest) -> dict[str, An
         analysis = empty_django_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
 
     return build_django_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
+
+
+@app.post("/analyze/docker-config")
+async def analyze_docker_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = docker_config_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_docker_config_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_docker_config_analysis(
+                errors=["Unsupported or corrupt archive. Inspectra did not extract, build, install, or execute any content."]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_docker_config_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        analysis = empty_docker_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+
+    return build_docker_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/web-basic")
@@ -4222,6 +4254,697 @@ def finalize_django_config_analysis(analysis: dict[str, Any]) -> None:
             "settings.py not observed",
             "Confirm the archive contains the intended Django configuration files.",
         )
+    analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+
+
+def docker_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = DOCKER_CONFIG_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = DOCKER_CONFIG_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = DOCKER_CONFIG_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Docker config analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_docker_config_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_docker_config_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            analysis["summary"]["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"docker_config_{scoped['id']}"
+            analysis["findings"].append(scoped)
+            finalize_docker_config_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_docker_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_docker_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda entry_info=info: archive.open(entry_info),
+                )
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_docker_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_docker_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda tar_member=member: archive.extractfile(tar_member),
+                )
+
+    finalize_docker_config_analysis(analysis)
+    return analysis
+
+
+def empty_docker_config_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "files_considered": 0,
+            "files_reviewed": 0,
+            "dockerfiles_detected": 0,
+            "compose_files_detected": 0,
+            "dockerignore_files_detected": 0,
+            "findings_count": 0,
+            "secrets_redacted_count": 0,
+            "truncated": False,
+        },
+        "files_detected": [],
+        "files_reviewed": [],
+        "dockerfile_stages": [],
+        "compose_services": [],
+        "findings": [],
+        "redaction_notes": [],
+        "errors": errors or [],
+    }
+
+
+def build_docker_config_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "docker_config_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "files_detected": analysis.get("files_detected", []),
+        "files_reviewed": analysis.get("files_reviewed", []),
+        "dockerfile_stages": analysis.get("dockerfile_stages", []),
+        "compose_services": analysis.get("compose_services", []),
+        "findings": findings,
+        "redaction_notes": analysis.get("redaction_notes", []),
+        "errors": analysis.get("errors", []),
+        "truncated": bool(summary.get("truncated")),
+    }
+
+
+def should_stop_docker_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    summary = as_dict(analysis["summary"])
+    if index > ARCHIVE_MAX_ENTRIES:
+        summary["truncated"] = True
+        add_docker_finding(
+            analysis,
+            "docker_config_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    return False
+
+
+def process_docker_config_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_docker_config_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    increment_docker_category_counts(summary, category)
+
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    context = docker_file_context(path)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "context": context,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = docker_config_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["files_detected"].append(record)
+        add_docker_skip_finding(analysis, path, skip_reason, size_bytes, context)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["files_detected"].append(record)
+        add_docker_finding(
+            analysis,
+            "docker_config_file_read_error",
+            "Docker config file could not be read safely",
+            "low",
+            "A candidate Docker configuration file could not be read from the archive within Inspectra limits.",
+            f"{path}: {exc}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+            context=context,
+        )
+        return
+
+    state["files_read"] += 1
+    state["total_bytes_read"] += len(raw_bytes)
+    summary["files_reviewed"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["files_detected"].append(record)
+    analysis["files_reviewed"].append(
+        {"path": path, "category": category, "context": context, "size_bytes": size_bytes, "bytes_read": len(raw_bytes)}
+    )
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        record["skip_reason"] = "utf8_decode_error"
+        record["read"] = False
+        add_docker_finding(
+            analysis,
+            "docker_config_file_decode_error",
+            "Docker config file is not valid UTF-8 text",
+            "low",
+            "A candidate Docker configuration file could not be decoded as UTF-8 text.",
+            f"{path}: {exc}",
+            "Review this file manually before relying on the static analysis result.",
+            file_path=path,
+            context=context,
+        )
+        return
+
+    _redacted_text, redacted_count = redact_django_secret_text(text)
+    summary["secrets_redacted_count"] += redacted_count
+    analyze_docker_config_text(analysis, path, category, context, text)
+
+
+def classify_docker_config_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    basename = normalized.rsplit("/", 1)[-1]
+    basename_lower = basename.lower()
+    if basename == "Dockerfile" or basename_lower.startswith("dockerfile."):
+        return "dockerfile"
+    if basename_lower == ".dockerignore":
+        return "dockerignore"
+    if is_docker_compose_filename(basename_lower):
+        return "compose"
+    return None
+
+
+def is_docker_compose_filename(basename: str) -> bool:
+    if basename in {"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}:
+        return True
+    return bool(re.match(r"^(?:docker-)?compose\.[a-z0-9_.-]+\.(?:ya?ml)$", basename))
+
+
+def increment_docker_category_counts(summary: dict[str, Any], category: str) -> None:
+    if category == "dockerfile":
+        summary["dockerfiles_detected"] += 1
+    elif category == "compose":
+        summary["compose_files_detected"] += 1
+    elif category == "dockerignore":
+        summary["dockerignore_files_detected"] += 1
+
+
+def docker_config_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_docker_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int, context: str) -> None:
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit"}:
+        analysis["summary"]["truncated"] = True
+    titles = {
+        "path_traversal": "Docker config path uses traversal",
+        "absolute_path": "Docker config path is absolute",
+        "entry_name_too_long": "Docker config entry name is unusually long",
+        "file_too_large": "Docker config file omitted because it exceeds the size limit",
+        "too_many_files": "Docker config file limit reached",
+        "total_bytes_limit": "Total Docker config byte limit reached",
+    }
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    evidence = f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    if reason.startswith("not_regular_file"):
+        title = "Docker config file omitted because it is not a regular file"
+        evidence = f"{path}: {reason}"
+        level = "low"
+    else:
+        title = titles.get(reason, "Docker config file skipped by defensive limit")
+    add_docker_finding(
+        analysis,
+        f"docker_config_{reason.split(':', 1)[0]}",
+        title,
+        level,
+        "Inspectra detected a Docker-related file but did not read it because of a defensive limit or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+        context=context,
+    )
+
+
+LOWER_CONFIDENCE_DOCKER_CONTEXTS = {"development", "test", "local", "example"}
+
+
+def docker_file_context(path: str) -> str:
+    normalized = normalize_archive_entry_path(path).lower()
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    directories = set(parts[:-1])
+    name_tokens = set(re.split(r"[^a-z0-9]+", basename))
+    all_tokens = set(parts[:-1]) | name_tokens
+
+    if directories.intersection({"docs", "doc", "examples", "example", "samples", "sample"}) or all_tokens.intersection(
+        {"example", "examples", "sample", "samples"}
+    ):
+        return "example"
+    if all_tokens.intersection({"test", "tests", "testing"}):
+        return "test"
+    if "override" in name_tokens or all_tokens.intersection({"dev", "development"}):
+        return "development"
+    if "local" in all_tokens:
+        return "local"
+    if all_tokens.intersection({"prod", "production"}) or "deploy" in directories:
+        return "production"
+    if normalized in {"dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}:
+        return "shared"
+    return "ambiguous"
+
+
+def docker_contextual_level(level: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_DOCKER_CONTEXTS:
+        return level
+    if level == "medium":
+        return "low"
+    if level == "low":
+        return "info"
+    return level
+
+
+def docker_active_config_text(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def analyze_docker_config_text(analysis: dict[str, Any], path: str, category: str, context: str, text: str) -> None:
+    if category == "dockerfile":
+        analyze_dockerfile_text(analysis, path, context, text)
+    elif category == "compose":
+        analyze_docker_compose_text(analysis, path, context, text)
+
+
+def analyze_dockerfile_text(analysis: dict[str, Any], path: str, context: str, text: str) -> None:
+    active_text = docker_active_config_text(text)
+    user_matches = re.findall(r"(?im)^\s*USER\s+([^\s#]+)", active_text)
+    from_matches = list(re.finditer(r"(?im)^\s*FROM\s+([^\s#]+)(?:\s+AS\s+([^\s#]+))?", active_text))
+
+    if not user_matches:
+        add_docker_finding(
+            analysis,
+            "docker_missing_user_directive",
+            "Dockerfile does not declare a USER",
+            docker_contextual_level("low", context),
+            "Inspectra did not observe a USER directive in this Dockerfile. Containers may run as the image default user.",
+            docker_contextual_evidence("USER", "not observed", context),
+            "Review whether the runtime image should set a non-root user.",
+            file_path=path,
+            context=context,
+        )
+    for user in user_matches:
+        normalized_user = user.strip().strip("\"'").lower()
+        if normalized_user in {"root", "0"}:
+            add_docker_finding(
+                analysis,
+                "docker_runs_as_root",
+                "Dockerfile declares root as runtime user",
+                docker_contextual_level("medium", context),
+                "A USER directive appears to select root. This is a review indicator, not a confirmed vulnerability.",
+                docker_contextual_evidence("USER", "root", context),
+                "Use a dedicated non-root runtime user where practical.",
+                file_path=path,
+                context=context,
+            )
+
+    for match in from_matches:
+        image = match.group(1)
+        stage = match.group(2) or None
+        analysis["dockerfile_stages"].append(
+            {
+                "file_path": path,
+                "context": context,
+                "base_image": redact_docker_secret_text(image),
+                "stage": stage,
+                "user_observed": bool(user_matches),
+                "healthcheck_observed": bool(re.search(r"(?im)^\s*HEALTHCHECK\b", active_text)),
+            }
+        )
+        if docker_image_uses_latest_tag(image):
+            add_docker_finding(
+                analysis,
+                "docker_latest_tag",
+                "Docker base image uses latest tag",
+                docker_contextual_level("low", context),
+                "A FROM directive uses the mutable latest tag.",
+                docker_contextual_evidence("FROM", redact_docker_secret_text(image), context),
+                "Pin base images to an explicit version tag or digest when the deployment process requires repeatability.",
+                file_path=path,
+                context=context,
+            )
+        elif docker_image_unpinned(image):
+            add_docker_finding(
+                analysis,
+                "docker_unpinned_base_image",
+                "Docker base image is not pinned by tag or digest",
+                docker_contextual_level("low", context),
+                "A FROM directive does not include a tag or digest.",
+                docker_contextual_evidence("FROM", redact_docker_secret_text(image), context),
+                "Use an explicit version tag or digest where reproducible builds are expected.",
+                file_path=path,
+                context=context,
+            )
+
+    if re.search(r"(?is)\b(?:curl|wget)\b[^\n|]*\|[^\n]*(?:sh|bash)\b", active_text):
+        add_docker_finding(
+            analysis,
+            "docker_suspicious_curl_pipe_shell",
+            "Dockerfile pipes downloaded content to a shell",
+            docker_contextual_level("medium", context),
+            "A Dockerfile command appears to pipe curl or wget output directly to sh/bash.",
+            docker_contextual_evidence("RUN", "curl/wget | sh/bash", context),
+            "Prefer verified downloads and explicit checksums before executing installer scripts.",
+            file_path=path,
+            context=context,
+        )
+
+
+def docker_image_uses_latest_tag(image: str) -> bool:
+    image_without_digest = image.split("@", 1)[0]
+    return image_without_digest.lower().endswith(":latest")
+
+
+def docker_image_unpinned(image: str) -> bool:
+    if "@" in image:
+        return False
+    name = image.rsplit("/", 1)[-1]
+    return ":" not in name
+
+
+def analyze_docker_compose_text(analysis: dict[str, Any], path: str, context: str, text: str) -> None:
+    active_text = docker_active_config_text(text)
+    lowered = active_text.lower()
+    service_names = docker_compose_service_names(active_text)
+    for service_name in service_names:
+        analysis["compose_services"].append({"file_path": path, "name": service_name, "context": context})
+
+    if re.search(r"(?im)^\s*privileged\s*:\s*true\b", active_text):
+        add_docker_finding(
+            analysis,
+            "docker_privileged_container",
+            "Compose service appears privileged",
+            docker_contextual_level("medium", context),
+            "A Compose file appears to set privileged: true for a service.",
+            docker_contextual_evidence("privileged", "true", context),
+            "Avoid privileged containers unless they are explicitly required and isolated.",
+            file_path=path,
+            context=context,
+        )
+    if re.search(r"(?im)^\s*network_mode\s*:\s*['\"]?host['\"]?\s*$", active_text):
+        add_docker_finding(
+            analysis,
+            "docker_host_network",
+            "Compose service uses host network mode",
+            docker_contextual_level("medium", context),
+            "A Compose file appears to set network_mode: host.",
+            docker_contextual_evidence("network_mode", "host", context),
+            "Confirm host networking is intentional and not used as a shortcut for normal service networking.",
+            file_path=path,
+            context=context,
+        )
+    if re.search(r"(?im)^\s*(?:pid|ipc)\s*:\s*['\"]?host['\"]?\s*$", active_text):
+        add_docker_finding(
+            analysis,
+            "docker_host_pid_or_ipc",
+            "Compose service uses host pid/ipc namespace",
+            docker_contextual_level("medium", context),
+            "A Compose file appears to share host pid or ipc namespaces.",
+            docker_contextual_evidence("pid/ipc", "host", context),
+            "Use host pid/ipc only for tightly controlled operational cases.",
+            file_path=path,
+            context=context,
+        )
+    if "/var/run/docker.sock" in lowered:
+        add_docker_finding(
+            analysis,
+            "docker_socket_mount",
+            "Compose file mounts the Docker socket",
+            docker_contextual_level("medium", context),
+            "A Compose volume appears to mount /var/run/docker.sock.",
+            "/var/run/docker.sock",
+            "Avoid exposing the Docker socket to application containers unless a narrowly scoped control-plane use case requires it.",
+            file_path=path,
+            context=context,
+        )
+    for port in ("5432", "3306", "6379", "27017"):
+        if re.search(rf"(?m)['\"]?(?:\d{{1,3}}(?:\.\d{{1,3}}){{3}}:)?{port}:{port}(?:/(?:tcp|udp))?['\"]?", active_text):
+            add_docker_finding(
+                analysis,
+                "docker_published_database_port",
+                f"Compose file publishes service port {port}",
+                docker_contextual_level("low", context),
+                "A Compose file appears to publish a database or cache service port on the host.",
+                f"{port}:{port}",
+                "Confirm the service should be exposed outside the Compose network.",
+                file_path=path,
+                context=context,
+            )
+    for evidence in docker_real_env_file_references(active_text):
+        add_docker_finding(
+            analysis,
+            "docker_env_file_real_reference",
+            "Compose file references a real env file",
+            docker_contextual_level("low", context),
+            "A Compose file references an .env file that appears to be a real environment file. Inspectra records the reference but does not read that file.",
+            evidence,
+            "Keep real env files out of shared archives and use sample/template files for review packages.",
+            file_path=path,
+            context=context,
+        )
+    for line in active_text.splitlines():
+        if docker_line_contains_sensitive_env_name(line):
+            add_docker_finding(
+                analysis,
+                "docker_sensitive_env_name",
+                "Compose file contains a sensitive-looking environment name",
+                docker_contextual_level("low", context),
+                "A Compose environment entry uses a secret-like name. Inspectra redacts the value and reports this as a review indicator.",
+                docker_contextual_evidence("environment", redact_docker_secret_text(line.strip()), context),
+                "Prefer runtime secret injection and avoid committing real secret values.",
+                file_path=path,
+                context=context,
+            )
+
+
+def docker_compose_service_names(text: str) -> list[str]:
+    names: list[str] = []
+    in_services = False
+    services_indent = 0
+    for line in text.splitlines():
+        if re.match(r"^\s*services\s*:\s*$", line):
+            in_services = True
+            services_indent = len(line) - len(line.lstrip())
+            continue
+        if not in_services:
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent <= services_indent:
+            break
+        if indent == services_indent + 2 and stripped.endswith(":"):
+            name = stripped[:-1].strip().strip("\"'")
+            if name and name not in names:
+                names.append(name[:120])
+    return names
+
+
+def docker_real_env_file_references(text: str) -> list[str]:
+    references: list[str] = []
+    capture = False
+    env_indent = 0
+    for line in text.splitlines():
+        if re.match(r"^\s*env_file\s*:", line):
+            capture = True
+            env_indent = len(line) - len(line.lstrip())
+            _, value = line.split(":", 1)
+            maybe = value.strip().strip("\"'")
+            if is_docker_real_env_reference(maybe):
+                references.append(f"env_file: {maybe}")
+            continue
+        if not capture:
+            continue
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if not stripped:
+            continue
+        if indent <= env_indent:
+            capture = False
+            continue
+        if stripped.startswith("-"):
+            maybe = stripped[1:].strip().strip("\"'")
+            if is_docker_real_env_reference(maybe):
+                references.append(f"env_file: {maybe}")
+    return sorted(set(references))
+
+
+def is_docker_real_env_reference(value: str) -> bool:
+    basename = value.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if not basename.startswith(".env"):
+        return False
+    return not any(marker in basename for marker in ("example", "sample", "template"))
+
+
+def docker_line_contains_sensitive_env_name(line: str) -> bool:
+    return bool(re.search(r"(?i)\b(PASSWORD|PASS|TOKEN|API_KEY|SECRET|DATABASE_URL|REDIS_URL|PRIVATE_KEY)\b", line))
+
+
+def redact_docker_secret_text(text: str) -> str:
+    redacted, _count = redact_django_secret_text(text)
+    redacted = re.sub(
+        r"(?i)\b([a-z][a-z0-9+.-]*://)([^:\s/@]+):([^@\s]+)@",
+        r"\1\2:[REDACTED]@",
+        redacted,
+    )
+    return redacted
+
+
+def docker_contextual_evidence(name: str, value: str, context: str) -> str:
+    evidence = safe_setting_evidence(name, value)
+    if context:
+        return f"{evidence} (context: {context})"
+    return evidence
+
+
+def add_docker_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str | None = None,
+    context: str | None = None,
+) -> None:
+    finding = make_finding(finding_id, title, level, description, redact_docker_secret_text(evidence), recommendation)
+    if file_path:
+        finding["file_path"] = file_path
+    if context:
+        finding["context"] = context
+    analysis["findings"].append(finding)
+
+
+def finalize_docker_config_analysis(analysis: dict[str, Any]) -> None:
+    if analysis["summary"]["secrets_redacted_count"]:
+        analysis["redaction_notes"] = [
+            "Secret-like values in Docker/Compose evidence are redacted on a best-effort basis.",
+        ]
     analysis["findings"] = dedupe_findings(analysis["findings"])
     analysis["summary"]["findings_count"] = len(analysis["findings"])
 
