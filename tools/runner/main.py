@@ -198,6 +198,9 @@ K8S_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_K8S_CONFIG_MAX_TOT
 TERRAFORM_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_TERRAFORM_CONFIG_MAX_FILES", 100)
 TERRAFORM_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_TERRAFORM_CONFIG_MAX_FILE_BYTES", 524_288)
 TERRAFORM_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_TERRAFORM_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
+NGINX_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_NGINX_CONFIG_MAX_FILES", 100)
+NGINX_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_NGINX_CONFIG_MAX_FILE_BYTES", 524_288)
+NGINX_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_NGINX_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
 WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
@@ -718,6 +721,35 @@ async def analyze_terraform_config(request: ArchiveAnalysisRequest) -> dict[str,
         analysis = empty_terraform_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
 
     return build_terraform_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
+
+
+@app.post("/analyze/nginx-config")
+async def analyze_nginx_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = nginx_config_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_nginx_config_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_nginx_config_analysis(
+                errors=["Unsupported or corrupt archive. Inspectra did not run Nginx, resolve includes, contact servers, or perform network calls."]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_nginx_config_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        analysis = empty_nginx_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+
+    return build_nginx_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/web-basic")
@@ -10461,6 +10493,1506 @@ def add_terraform_config_finding(
         finding["block_type"] = block_type
     if field_path:
         finding["field_path"] = field_path
+    analysis["findings"].append(finding)
+
+
+def nginx_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = NGINX_CONFIG_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = NGINX_CONFIG_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = NGINX_CONFIG_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nginx config analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_nginx_config_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_nginx_config_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            analysis["summary"]["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"nginx_config_{scoped['id']}"
+            analysis["findings"].append(scoped)
+            finalize_nginx_config_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_nginx_config_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_nginx_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda entry_info=info: archive.open(entry_info),
+                )
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_nginx_config_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_nginx_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda tar_member=member: archive.extractfile(tar_member),
+                )
+
+    finalize_nginx_config_analysis(analysis)
+    return analysis
+
+
+def empty_nginx_config_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "files_considered": 0,
+            "files_reviewed": 0,
+            "nginx_files_detected": 0,
+            "server_blocks_detected": 0,
+            "location_blocks_detected": 0,
+            "upstream_blocks_detected": 0,
+            "includes_detected": 0,
+            "tls_servers_detected": 0,
+            "findings_count": 0,
+            "redacted_values_count": 0,
+            "truncated": False,
+        },
+        "files_detected": [],
+        "files_reviewed": [],
+        "servers": [],
+        "locations": [],
+        "upstreams": [],
+        "includes": [],
+        "directives": [],
+        "findings": [],
+        "redaction_notes": [],
+        "errors": errors or [],
+        "_server_states": [],
+        "_location_states": [],
+    }
+
+
+def build_nginx_config_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "nginx_config_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "files_detected": analysis.get("files_detected", []),
+        "files_reviewed": analysis.get("files_reviewed", []),
+        "servers": analysis.get("servers", []),
+        "locations": analysis.get("locations", []),
+        "upstreams": analysis.get("upstreams", []),
+        "includes": analysis.get("includes", []),
+        "directives": analysis.get("directives", []),
+        "findings": findings,
+        "redaction_notes": analysis.get("redaction_notes", []),
+        "errors": analysis.get("errors", []),
+        "truncated": bool(summary.get("truncated")),
+    }
+
+
+def should_stop_nginx_config_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    if index > ARCHIVE_MAX_ENTRIES:
+        analysis["summary"]["truncated"] = True
+        add_nginx_config_finding(
+            analysis,
+            "nginx_config_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "high",
+            "limit",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    return False
+
+
+def process_nginx_config_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_nginx_config_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    summary["nginx_files_detected"] += 1
+
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    context = nginx_config_file_context(path, category)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "context": context,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = nginx_config_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["files_detected"].append(record)
+        add_nginx_config_skip_finding(analysis, path, skip_reason, size_bytes, context)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["files_detected"].append(record)
+        add_nginx_config_finding(
+            analysis,
+            "nginx_config_file_read_error",
+            "Nginx config candidate could not be read safely",
+            "low",
+            "medium",
+            "archive",
+            "A Nginx-related candidate file could not be read from the archive within Inspectra limits.",
+            f"{path}: {exc}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+            context=context,
+        )
+        return
+
+    state["total_bytes_read"] += len(raw_bytes)
+    if b"\x00" in raw_bytes:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_nginx_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_nginx_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    state["files_read"] += 1
+    summary["files_reviewed"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["files_detected"].append(record)
+    analysis["files_reviewed"].append(
+        {"path": path, "category": category, "context": context, "size_bytes": size_bytes, "bytes_read": len(raw_bytes)}
+    )
+    analyze_nginx_config_text(analysis, path, category, context, text)
+
+
+def classify_nginx_config_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    lower = normalized.lower()
+    basename = lower.rsplit("/", 1)[-1]
+    parts = [part for part in lower.split("/") if part]
+    if basename == "nginx.conf" or basename.endswith(".conf"):
+        return "nginx_config"
+    if any(segment in parts for segment in {"sites-available", "sites-enabled"}):
+        return "nginx_config"
+    return None
+
+
+def nginx_config_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_nginx_config_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int, context: str) -> None:
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit"}:
+        analysis["summary"]["truncated"] = True
+    titles = {
+        "path_traversal": "Nginx config path uses traversal",
+        "absolute_path": "Nginx config path is absolute",
+        "entry_name_too_long": "Nginx config entry name is unusually long",
+        "file_too_large": "Nginx config file omitted because it exceeds the size limit",
+        "too_many_files": "Nginx config file limit reached",
+        "total_bytes_limit": "Total Nginx config byte limit reached",
+        "binary_or_non_text": "Nginx config candidate is not UTF-8 text",
+    }
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    evidence = f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    if reason.startswith("not_regular_file"):
+        title = "Nginx config candidate omitted because it is not a regular file"
+        evidence = f"{path}: {reason}"
+        level = "low"
+    else:
+        title = titles.get(reason, "Nginx config candidate skipped by defensive limit")
+    add_nginx_config_finding(
+        analysis,
+        f"nginx_config_{reason.split(':', 1)[0]}",
+        title,
+        nginx_contextual_level(level, context),
+        nginx_contextual_confidence("high" if reason in {"path_traversal", "absolute_path"} else "medium", context),
+        "archive",
+        "Inspectra detected a Nginx-related file but did not read it because of a defensive limit, unsupported format, or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+        context=context,
+    )
+
+
+LOWER_CONFIDENCE_NGINX_CONTEXTS = {"development", "test", "local", "example"}
+NGINX_SECRET_KEY_RE = re.compile(
+    r"(?i)(authorization|cookie|session|secret|token|api[_-]?key|client[_-]?secret|password|passwd|private[_-]?key|credential|auth)"
+)
+NGINX_HIDDEN_LOCATION_RE = re.compile(r"(?i)(?:^|/)(?:\.git|\.svn|\.hg|\.env)(?:$|/)")
+NGINX_SENSITIVE_LOCATION_RE = re.compile(r"(?i)(?:^|/)(?:wp-config\.php|config\.php|adminer\.php|phpinfo\.php|server-status|status)(?:$|/)")
+NGINX_BACKUP_LOCATION_RE = re.compile(r"(?i)(?:~|\.bak$|\.backup$|\.old$|\.orig$|\.save$|\.swp$|\.sql$|\.zip$|\.tar$|\.gz$)")
+
+
+def nginx_config_file_context(path: str, category: str = "") -> str:
+    normalized = normalize_archive_entry_path(path).lower()
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    directories = set(parts[:-1])
+    name_tokens = set(re.split(r"[^a-z0-9]+", basename))
+    all_tokens = set(parts[:-1]) | name_tokens
+
+    if directories.intersection({"docs", "doc", "examples", "example", "samples", "sample"}) or all_tokens.intersection(
+        {"example", "examples", "sample", "samples", "template", "templates", "sandbox"}
+    ):
+        return "example"
+    if all_tokens.intersection({"test", "tests", "testing"}):
+        return "test"
+    if all_tokens.intersection({"dev", "development"}):
+        return "development"
+    if "local" in all_tokens:
+        return "local"
+    if (
+        all_tokens.intersection({"prod", "production", "live", "release", "deploy", "edge", "gateway"})
+        or directories.intersection({"sites-enabled", "conf.d", "reverse-proxy"})
+        or "deploy" in directories
+    ):
+        return "production"
+    if basename == "nginx.conf":
+        return "shared"
+    return "ambiguous"
+
+
+def nginx_contextual_level(level: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_NGINX_CONTEXTS:
+        return level
+    if level == "medium":
+        return "low"
+    if level == "low":
+        return "info"
+    return level
+
+
+def nginx_contextual_confidence(confidence: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_NGINX_CONTEXTS:
+        return confidence
+    if confidence == "high":
+        return "medium"
+    if confidence == "medium":
+        return "low"
+    return confidence
+
+
+def strip_nginx_comment(line: str) -> str:
+    quote: str | None = None
+    escaped = False
+    result: list[str] = []
+    for char in line:
+        if escaped:
+            result.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            result.append(char)
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            result.append(char)
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            result.append(char)
+            continue
+        if char == "#":
+            break
+        result.append(char)
+    return "".join(result)
+
+
+def split_nginx_tokens(statement: str) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for char in statement.strip():
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            else:
+                current.append(char)
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+            continue
+        current.append(char)
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def redact_nginx_secret_text(text: str | None) -> tuple[str, int]:
+    if text is None:
+        return "", 0
+    redacted, count = redact_terraform_secret_text(str(text))
+
+    def apply(pattern: str, replacement: str, flags: int = re.IGNORECASE) -> None:
+        nonlocal redacted, count
+        redacted, replacements = re.subn(pattern, replacement, redacted, flags=flags)
+        count += replacements
+
+    apply(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", "[REDACTED]", re.IGNORECASE)
+    apply(r"\b(https?://)([^/\s:@;\"']+):([^@\s/;\"']+)@([^\s;\"']+)", r"\1[REDACTED]@\4")
+    apply(r"\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "Authorization: [REDACTED]")
+    apply(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "[REDACTED]")
+    apply(r"\b(?:proxy_set_header|add_header|set)\s+([A-Za-z0-9_$-]*(?:token|secret|password|api[_-]?key|authorization|cookie)[A-Za-z0-9_$-]*)\s+[^;\n]+", r"\1 [REDACTED]")
+    apply(r"(\b(?:password|token|secret|api[_-]?key|client[_-]?secret|authorization|cookie|session)\b\s*[:=]\s*)[^;\s,\"']+", r"\1[REDACTED]")
+    apply(r"(\bAuthorization\s+)(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]")
+    redacted = redacted.replace("[REDACTED PRIVATE KEY]", "[REDACTED]").replace("PRIVATE_KEY_BLOCK_REDACTED", "[REDACTED]")
+    return redacted, count
+
+
+def nginx_args_evidence(args: list[str]) -> str:
+    if any(NGINX_SECRET_KEY_RE.search(arg) for arg in args):
+        if args and NGINX_SECRET_KEY_RE.search(args[0]) and len(args) > 1:
+            return f"{args[0]} [REDACTED]"
+        return "[REDACTED]"
+    safe, _ = redact_nginx_secret_text(" ".join(args))
+    return safe[:240]
+
+
+def current_nginx_frame(stack: list[dict[str, Any]], block_type: str | None = None) -> dict[str, Any] | None:
+    for frame in reversed(stack):
+        if block_type is None or frame.get("block_type") == block_type:
+            return frame
+    return None
+
+
+def current_nginx_server_state(analysis: dict[str, Any], stack: list[dict[str, Any]]) -> dict[str, Any] | None:
+    frame = current_nginx_frame(stack, "server")
+    if not frame:
+        return None
+    index = frame.get("server_index")
+    states = analysis.get("_server_states", [])
+    if isinstance(index, int) and 0 <= index < len(states):
+        return states[index]
+    return None
+
+
+def current_nginx_location_state(analysis: dict[str, Any], stack: list[dict[str, Any]]) -> dict[str, Any] | None:
+    frame = current_nginx_frame(stack, "location")
+    if not frame:
+        return None
+    index = frame.get("location_index")
+    states = analysis.get("_location_states", [])
+    if isinstance(index, int) and 0 <= index < len(states):
+        return states[index]
+    return None
+
+
+def analyze_nginx_config_text(analysis: dict[str, Any], path: str, category: str, context: str, text: str) -> None:
+    if PRIVATE_KEY_BLOCK_RE.search(text):
+        add_nginx_config_finding(
+            analysis,
+            "nginx_variable_secret_like_value",
+            "Nginx config contains private key-like material",
+            nginx_contextual_level("medium", context),
+            nginx_contextual_confidence("high", context),
+            "secrets",
+            "Private key-like material appeared in a Nginx config candidate. Inspectra redacted the value.",
+            "private_key=[REDACTED]",
+            "Do not commit private key material in Nginx configuration archives.",
+            file_path=path,
+            context=context,
+            redacted=True,
+        )
+
+    stack: list[dict[str, Any]] = []
+    pending = ""
+    pending_line = 0
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = strip_nginx_comment(raw_line).strip()
+        if not line:
+            continue
+
+        while "{" in line:
+            before, after = line.split("{", 1)
+            before = before.strip()
+            if before:
+                start_nginx_block(analysis, stack, path, context, before, line_number)
+            line = after.strip()
+
+        close_count = line.count("}")
+        if close_count:
+            line = line.replace("}", " ").strip()
+
+        if line:
+            parts = line.split(";")
+            for index, part in enumerate(parts):
+                fragment = part.strip()
+                if fragment:
+                    if not pending:
+                        pending_line = line_number
+                    pending = f"{pending} {fragment}".strip()
+                if index < len(parts) - 1 and pending:
+                    process_nginx_directive(analysis, stack, path, context, pending, pending_line or line_number)
+                    pending = ""
+                    pending_line = 0
+
+        for _ in range(close_count):
+            if stack:
+                stack.pop()
+    if pending:
+        safe_pending, redactions = redact_nginx_secret_text(pending)
+        analysis["summary"]["redacted_values_count"] += redactions
+        analysis["errors"].append(f"{path}: unterminated directive near line {pending_line or 'unknown'}: {safe_pending[:120]}")
+
+
+def start_nginx_block(
+    analysis: dict[str, Any],
+    stack: list[dict[str, Any]],
+    path: str,
+    context: str,
+    statement: str,
+    line_number: int,
+) -> None:
+    tokens = split_nginx_tokens(statement)
+    if not tokens:
+        return
+    block_type = tokens[0].lower()
+    args = tokens[1:]
+    frame: dict[str, Any] = {"block_type": block_type, "args": args, "line": line_number}
+
+    if block_type == "server":
+        server = {
+            "path": path,
+            "context": context,
+            "line": line_number,
+            "server_name": None,
+            "listen": [],
+            "tls": False,
+        }
+        state = {
+            **server,
+            "headers": set(),
+            "hsts_seen": False,
+            "hsts_max_age": None,
+            "ssl_protocols_seen": False,
+            "https_redirect": False,
+            "default_server": False,
+            "cors_origin_wildcard": False,
+            "cors_credentials": False,
+        }
+        analysis["servers"].append(server)
+        analysis["_server_states"].append(state)
+        frame["server_index"] = len(analysis["_server_states"]) - 1
+    elif block_type == "location":
+        location_path = " ".join(args) or "unknown"
+        server_state = current_nginx_server_state(analysis, stack)
+        location = {
+            "path": path,
+            "context": context,
+            "line": line_number,
+            "location": location_path,
+            "server_name": server_state.get("server_name") if server_state else None,
+        }
+        state = {
+            **location,
+            "proxy_pass": None,
+            "proxy_headers": set(),
+            "cors_origin_wildcard": False,
+            "cors_credentials": False,
+        }
+        analysis["locations"].append(location)
+        analysis["_location_states"].append(state)
+        frame["location_index"] = len(analysis["_location_states"]) - 1
+        if NGINX_HIDDEN_LOCATION_RE.search(location_path):
+            add_nginx_config_finding(
+                analysis,
+                "nginx_hidden_files_exposed",
+                "Nginx location may expose hidden or sensitive files",
+                nginx_contextual_level("medium", context),
+                nginx_contextual_confidence("high", context),
+                "exposure",
+                "A location path targets hidden or sensitive-looking files. Inspectra does not contact the server.",
+                f"location={location_path}",
+                "Confirm the location is denied or protected in the effective Nginx configuration.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                block_type="location",
+                location=location_path,
+            )
+        if NGINX_BACKUP_LOCATION_RE.search(location_path):
+            add_nginx_config_finding(
+                analysis,
+                "nginx_backup_files_exposed",
+                "Nginx location may expose backup files",
+                nginx_contextual_level("medium", context),
+                nginx_contextual_confidence("medium", context),
+                "exposure",
+                "A location path appears to match backup/archive file patterns.",
+                f"location={location_path}",
+                "Deny access to backup and temporary files at the edge.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                block_type="location",
+                location=location_path,
+            )
+        if NGINX_SENSITIVE_LOCATION_RE.search(location_path):
+            add_nginx_config_finding(
+                analysis,
+                "nginx_sensitive_location_exposed",
+                "Nginx location may expose sensitive application paths",
+                nginx_contextual_level("medium", context),
+                nginx_contextual_confidence("medium", context),
+                "exposure",
+                "A location path targets sensitive-looking application or status paths. Inspectra does not contact the server.",
+                f"location={location_path}",
+                "Confirm sensitive paths are denied, removed, or protected in the effective Nginx configuration.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                block_type="location",
+                location=location_path,
+            )
+    elif block_type == "upstream":
+        upstream = {
+            "path": path,
+            "context": context,
+            "line": line_number,
+            "name": args[0] if args else "unknown",
+        }
+        analysis["upstreams"].append(upstream)
+        frame["upstream"] = upstream["name"]
+
+    stack.append(frame)
+
+
+def process_nginx_directive(
+    analysis: dict[str, Any],
+    stack: list[dict[str, Any]],
+    path: str,
+    context: str,
+    statement: str,
+    line_number: int,
+) -> None:
+    tokens = split_nginx_tokens(statement)
+    if not tokens:
+        return
+    directive = tokens[0].lower()
+    args = tokens[1:]
+    block = current_nginx_frame(stack)
+    block_type = str(block.get("block_type")) if block else "global"
+    server_state = current_nginx_server_state(analysis, stack)
+    location_state = current_nginx_location_state(analysis, stack)
+    server_name = server_state.get("server_name") if server_state else None
+    location_path = location_state.get("location") if location_state else None
+    upstream_frame = current_nginx_frame(stack, "upstream")
+    upstream_name = upstream_frame.get("upstream") if upstream_frame else None
+    safe_args = nginx_args_evidence(args)
+    analysis["directives"].append(
+        {
+            "path": path,
+            "context": context,
+            "line": line_number,
+            "directive": directive,
+            "arguments": safe_args,
+            "block_type": block_type,
+            "server_name": server_name,
+            "location": location_path,
+            "upstream": upstream_name,
+        }
+    )
+
+    is_cors_header = directive == "add_header" and bool(args) and args[0].lower().startswith("access-control-allow-")
+    if not is_cors_header and (NGINX_SECRET_KEY_RE.search(directive) or (args and NGINX_SECRET_KEY_RE.search(" ".join(args)))):
+        if directive in {"add_header", "proxy_set_header"} or directive.startswith("$") or directive == "set":
+            add_nginx_config_finding(
+                analysis,
+                "nginx_header_secret_like_value" if directive in {"add_header", "proxy_set_header"} else "nginx_variable_secret_like_value",
+                "Nginx directive contains secret-like material",
+                nginx_contextual_level("medium", context),
+                nginx_contextual_confidence("medium", context),
+                "secrets",
+                "A Nginx directive contains a secret-like key or value. Inspectra redacted the evidence.",
+                f"directive={directive}; value=[REDACTED]",
+                "Move credentials and sensitive tokens out of committed Nginx config.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                block_type=block_type,
+                server_name=server_name,
+                location=location_path,
+                directive=directive,
+                redacted=True,
+            )
+    if directive == "include":
+        analyze_nginx_include(analysis, path, context, args, line_number, block_type)
+    elif directive == "listen" and server_state is not None:
+        listen_value = " ".join(args)
+        server_state["listen"].append(listen_value)
+        server_record = analysis["servers"][analysis["_server_states"].index(server_state)]
+        server_record["listen"] = list(server_state["listen"])
+        if "ssl" in listen_value.lower() or re.search(r"(?<!\d)443(?!\d)", listen_value):
+            server_state["tls"] = True
+            server_record["tls"] = True
+        if "default_server" in listen_value.lower():
+            server_state["default_server"] = True
+            add_nginx_config_finding(
+                analysis,
+                "nginx_default_server_public_hint",
+                "Nginx default_server is present",
+                nginx_contextual_level("medium", context),
+                nginx_contextual_confidence("medium", context),
+                "exposure",
+                "A default_server listener was observed. Inspectra does not validate whether it is externally reachable.",
+                f"listen={nginx_args_evidence(args)}",
+                "Confirm default virtual hosts expose only intended responses in production.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                block_type="server",
+                directive=directive,
+                server_name=server_name,
+            )
+    elif directive == "server_name" and server_state is not None:
+        server_name_value = " ".join(args)
+        server_state["server_name"] = server_name_value
+        server_record = analysis["servers"][analysis["_server_states"].index(server_state)]
+        server_record["server_name"] = server_name_value
+    elif directive in {"ssl_certificate", "ssl_certificate_key"} and server_state is not None:
+        server_state["tls"] = True
+        server_record = analysis["servers"][analysis["_server_states"].index(server_state)]
+        server_record["tls"] = True
+        if directive == "ssl_certificate_key":
+            add_nginx_config_finding(
+                analysis,
+                "nginx_ssl_certificate_key_path_present",
+                "Nginx TLS private key path is present",
+                "info",
+                nginx_contextual_confidence("medium", context),
+                "tls",
+                "A ssl_certificate_key directive was observed. Inspectra records the path as context and does not read certificate files.",
+                f"directive=ssl_certificate_key; path={safe_args}",
+                "Confirm private key files are stored outside committed archives and protected by deployment controls.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                block_type=block_type,
+                directive=directive,
+                server_name=server_name,
+            )
+    elif directive == "ssl_protocols" and server_state is not None:
+        server_state["ssl_protocols_seen"] = True
+        protocol_text = " ".join(args).lower()
+        if any(protocol in protocol_text for protocol in ("sslv2", "sslv3", "tlsv1 ", "tlsv1;", "tlsv1.0", "tlsv1.1")) or "tlsv1.1" in protocol_text:
+            add_nginx_config_finding(
+                analysis,
+                "nginx_ssl_protocol_legacy_enabled",
+                "Legacy TLS protocol appears enabled",
+                nginx_contextual_level("medium", context),
+                nginx_contextual_confidence("high", context),
+                "tls",
+                "The ssl_protocols directive includes legacy protocol names.",
+                f"ssl_protocols={safe_args}",
+                "Prefer modern TLS protocol versions for production listeners.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                block_type=block_type,
+                directive=directive,
+                server_name=server_name,
+            )
+    elif directive == "add_header":
+        analyze_nginx_add_header(analysis, path, context, args, line_number, block_type, server_state, location_state, server_name, location_path)
+    elif directive == "return" and server_state is not None:
+        if any("https://" in arg.lower() for arg in args):
+            server_state["https_redirect"] = True
+    elif directive == "server_tokens" and args and args[0].lower() == "on":
+        add_nginx_config_finding(
+            analysis,
+            "nginx_server_tokens_on",
+            "Nginx server_tokens is enabled",
+            nginx_contextual_level("medium", context),
+            nginx_contextual_confidence("high", context),
+            "exposure",
+            "The server_tokens directive is set to on.",
+            "server_tokens on",
+            "Disable server_tokens for production edge configurations unless explicitly required.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive=directive,
+            server_name=server_name,
+            location=location_path,
+        )
+    elif directive == "autoindex" and args and args[0].lower() == "on":
+        add_nginx_config_finding(
+            analysis,
+            "nginx_autoindex_on",
+            "Nginx autoindex is enabled",
+            nginx_contextual_level("medium", context),
+            nginx_contextual_confidence("high", context),
+            "exposure",
+            "The autoindex directive is enabled in a Nginx context.",
+            "autoindex on",
+            "Disable directory listings unless the listing is intentional and access controlled.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive=directive,
+            server_name=server_name,
+            location=location_path,
+        )
+    elif directive == "stub_status":
+        add_nginx_config_finding(
+            analysis,
+            "nginx_stub_status_public_hint",
+            "Nginx stub_status endpoint is present",
+            nginx_contextual_level("medium", context),
+            nginx_contextual_confidence("medium", context),
+            "exposure",
+            "A stub_status directive was observed. Inspectra does not validate access control or network reachability.",
+            f"location={location_path or 'unknown'}; stub_status",
+            "Restrict stub_status endpoints to trusted networks or remove them from public virtual hosts.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive=directive,
+            server_name=server_name,
+            location=location_path,
+        )
+    elif directive == "proxy_pass":
+        analyze_nginx_proxy_pass(analysis, path, context, args, line_number, block_type, location_state, server_name, location_path)
+    elif directive == "proxy_ssl_verify" and args and args[0].lower() == "off":
+        add_nginx_config_finding(
+            analysis,
+            "nginx_proxy_ssl_verify_off",
+            "Nginx proxy SSL verification is disabled",
+            nginx_contextual_level("medium", context),
+            nginx_contextual_confidence("high", context),
+            "proxy",
+            "The proxy_ssl_verify directive is set to off.",
+            "proxy_ssl_verify off",
+            "Enable upstream TLS verification where HTTPS upstreams are used.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive=directive,
+            server_name=server_name,
+            location=location_path,
+        )
+    elif directive == "proxy_set_header" and location_state is not None:
+        header_name = args[0].lower() if args else ""
+        if header_name in {"host", "x-forwarded-proto", "x-forwarded-for"}:
+            location_state["proxy_headers"].add(header_name)
+    elif directive == "client_max_body_size":
+        analyze_nginx_body_size(analysis, path, context, args, line_number, block_type, server_name, location_path)
+    elif directive in {"proxy_read_timeout", "proxy_connect_timeout", "keepalive_timeout"}:
+        analyze_nginx_timeout(analysis, path, context, directive, args, line_number, block_type, server_name, location_path)
+    elif directive == "access_log" and args and args[0].lower() == "off":
+        add_nginx_config_finding(
+            analysis,
+            "nginx_access_log_off",
+            "Nginx access logging is disabled",
+            nginx_contextual_level("low", context),
+            nginx_contextual_confidence("high", context),
+            "logging",
+            "The access_log directive is set to off.",
+            "access_log off",
+            "Confirm request logging expectations for this edge path.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive=directive,
+        )
+    elif directive == "error_log" and any(arg.lower() == "debug" for arg in args):
+        add_nginx_config_finding(
+            analysis,
+            "nginx_error_log_debug",
+            "Nginx error_log is configured at debug level",
+            nginx_contextual_level("medium", context),
+            nginx_contextual_confidence("high", context),
+            "logging",
+            "The error_log directive includes debug level logging.",
+            f"error_log={safe_args}",
+            "Avoid debug logging in production edge configs unless temporarily needed.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive=directive,
+        )
+    elif directive == "auth_basic" and args and args[0].lower() != "off" and NGINX_SECRET_KEY_RE.search(" ".join(args)):
+        add_nginx_config_finding(
+            analysis,
+            "nginx_basic_auth_inline_secret_hint",
+            "Nginx auth_basic contains secret-like inline text",
+            nginx_contextual_level("medium", context),
+            nginx_contextual_confidence("medium", context),
+            "secrets",
+            "An auth_basic directive contains secret-like inline text. Inspectra redacted the evidence.",
+            "auth_basic=[REDACTED]",
+            "Use auth_basic_user_file or an external identity layer; do not commit inline secrets.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive=directive,
+            redacted=True,
+        )
+
+
+def analyze_nginx_include(analysis: dict[str, Any], path: str, context: str, args: list[str], line_number: int, block_type: str) -> None:
+    target = args[0] if args else ""
+    safe_target, redactions = redact_nginx_secret_text(target)
+    analysis["summary"]["redacted_values_count"] += redactions
+    include = {
+        "path": path,
+        "context": context,
+        "line": line_number,
+        "target": safe_target,
+        "absolute": target.startswith("/"),
+        "glob": any(char in target for char in "*?["),
+        "resolved": False,
+    }
+    analysis["includes"].append(include)
+    if target.startswith("/"):
+        add_nginx_config_finding(
+            analysis,
+            "nginx_include_absolute_path",
+            "Nginx include uses an absolute path",
+            "info",
+            nginx_contextual_confidence("high", context),
+            "include",
+            "An include directive references an absolute path. Inspectra records it as context but does not read host paths.",
+            f"include={safe_target}",
+            "Confirm included files are present and reviewed in the deployment environment.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive="include",
+        )
+    if any(char in target for char in "*?["):
+        add_nginx_config_finding(
+            analysis,
+            "nginx_include_glob_detected",
+            "Nginx include uses a glob pattern",
+            "info",
+            nginx_contextual_confidence("high", context),
+            "include",
+            "An include directive uses a glob. Inspectra does not expand include patterns.",
+            f"include={safe_target}",
+            "Review the effective include set in the target deployment workflow.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive="include",
+        )
+    add_nginx_config_finding(
+        analysis,
+        "nginx_include_not_resolved",
+        "Nginx include was detected but not resolved",
+        nginx_contextual_level("low", context),
+        nginx_contextual_confidence("high", context),
+        "include",
+        "Inspectra detected an include directive and intentionally did not resolve it in v1.",
+        f"include={safe_target}",
+        "Ensure referenced include files are included in review archives or reviewed separately.",
+        file_path=path,
+        context=context,
+        line=line_number,
+        block_type=block_type,
+        directive="include",
+    )
+
+
+def analyze_nginx_add_header(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    args: list[str],
+    line_number: int,
+    block_type: str,
+    server_state: dict[str, Any] | None,
+    location_state: dict[str, Any] | None,
+    server_name: str | None,
+    location_path: str | None,
+) -> None:
+    if not args:
+        return
+    header_name = args[0].lower()
+    header_value = " ".join(args[1:])
+    target = location_state or server_state
+    if target is not None:
+        target.setdefault("headers", set()).add(header_name)
+    if header_name == "strict-transport-security":
+        if target is not None:
+            target["hsts_seen"] = True
+            max_age = nginx_hsts_max_age(header_value)
+            target["hsts_max_age"] = max_age
+        max_age = nginx_hsts_max_age(header_value)
+        if max_age is not None and max_age < 15_552_000:
+            add_nginx_config_finding(
+                analysis,
+                "nginx_hsts_low_max_age",
+                "Nginx HSTS max-age appears low",
+                nginx_contextual_level("low", context),
+                nginx_contextual_confidence("medium", context),
+                "tls",
+                "Strict-Transport-Security is present with a low max-age value.",
+                f"max-age={max_age}",
+                "Review HSTS policy and max-age for production HTTPS services.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                block_type=block_type,
+                directive="add_header",
+                server_name=server_name,
+                location=location_path,
+            )
+    if header_name == "access-control-allow-origin" and "*" in header_value:
+        if target is not None:
+            target["cors_origin_wildcard"] = True
+        add_nginx_config_finding(
+            analysis,
+            "nginx_cors_wildcard_origin",
+            "Nginx CORS allows wildcard origin",
+            nginx_contextual_level("low", context),
+            nginx_contextual_confidence("high", context),
+            "cors",
+            "Access-Control-Allow-Origin is configured with a wildcard.",
+            "Access-Control-Allow-Origin=*",
+            "Confirm wildcard CORS is intended and does not combine with credentialed requests.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive="add_header",
+            server_name=server_name,
+            location=location_path,
+        )
+    if header_name == "access-control-allow-credentials" and "true" in header_value.lower():
+        if target is not None:
+            target["cors_credentials"] = True
+    if target and target.get("cors_origin_wildcard") and target.get("cors_credentials"):
+        add_nginx_config_finding(
+            analysis,
+            "nginx_cors_credentials_with_wildcard",
+            "Nginx CORS credentials are combined with wildcard origin",
+            nginx_contextual_level("medium", context),
+            nginx_contextual_confidence("high", context),
+            "cors",
+            "CORS appears to allow credentials while also allowing wildcard origins.",
+            "Access-Control-Allow-Origin=*; Access-Control-Allow-Credentials=true",
+            "Avoid combining credentialed CORS with wildcard origins.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive="add_header",
+            server_name=server_name,
+            location=location_path,
+        )
+
+
+def nginx_hsts_max_age(value: str) -> int | None:
+    match = re.search(r"max-age\s*=\s*(\d+)", value, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def analyze_nginx_proxy_pass(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    args: list[str],
+    line_number: int,
+    block_type: str,
+    location_state: dict[str, Any] | None,
+    server_name: str | None,
+    location_path: str | None,
+) -> None:
+    if not args:
+        return
+    target = args[0]
+    safe_target, redactions = redact_nginx_secret_text(target)
+    analysis["summary"]["redacted_values_count"] += redactions
+    if location_state is not None:
+        location_state["proxy_pass"] = safe_target
+    if re.match(r"(?i)^http://", target):
+        add_nginx_config_finding(
+            analysis,
+            "nginx_proxy_pass_http_upstream",
+            "Nginx proxies to an HTTP upstream",
+            nginx_contextual_level("low", context),
+            nginx_contextual_confidence("high", context),
+            "proxy",
+            "A proxy_pass target uses http://. Inspectra does not contact the upstream.",
+            f"proxy_pass={safe_target}",
+            "Confirm whether plaintext upstream transport is acceptable for this deployment path.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive="proxy_pass",
+            server_name=server_name,
+            location=location_path,
+        )
+    if re.match(r"(?i)^https?://[^/\s:@;\"']+:[^@\s/;\"']+@", target):
+        add_nginx_config_finding(
+            analysis,
+            "nginx_proxy_pass_credentials_hint",
+            "Nginx proxy_pass URL contains credentials",
+            nginx_contextual_level("medium", context),
+            nginx_contextual_confidence("high", context),
+            "secrets",
+            "A proxy_pass URL contains userinfo credentials. Inspectra redacted the credential material.",
+            "proxy_pass=[REDACTED]",
+            "Move upstream credentials out of committed proxy URLs and into approved secret handling.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive="proxy_pass",
+            server_name=server_name,
+            location=location_path,
+            redacted=True,
+        )
+
+
+def parse_nginx_size_bytes(value: str) -> int | None:
+    match = re.match(r"(?i)^\s*(\d+)([kmg])?\s*$", value)
+    if not match:
+        return None
+    number = int(match.group(1))
+    unit = (match.group(2) or "").lower()
+    multiplier = {"k": 1024, "m": 1024 * 1024, "g": 1024 * 1024 * 1024}.get(unit, 1)
+    return number * multiplier
+
+
+def analyze_nginx_body_size(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    args: list[str],
+    line_number: int,
+    block_type: str,
+    server_name: str | None,
+    location_path: str | None,
+) -> None:
+    if not args:
+        return
+    value = args[0].lower()
+    size = parse_nginx_size_bytes(value)
+    if value == "0" or (size is not None and size > 100 * 1024 * 1024):
+        add_nginx_config_finding(
+            analysis,
+            "nginx_client_max_body_size_unlimited_or_large",
+            "Nginx client_max_body_size appears unlimited or large",
+            nginx_contextual_level("low", context),
+            nginx_contextual_confidence("high", context),
+            "limits",
+            "client_max_body_size is configured as unlimited or larger than the conservative review threshold.",
+            f"client_max_body_size={value}",
+            "Confirm upload/body size limits match the service's expected abuse controls.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type=block_type,
+            directive="client_max_body_size",
+            server_name=server_name,
+            location=location_path,
+        )
+
+
+def parse_nginx_duration_seconds(value: str) -> int | None:
+    match = re.match(r"(?i)^\s*(\d+)(ms|s|m|h)?\s*$", value)
+    if not match:
+        return None
+    number = int(match.group(1))
+    unit = (match.group(2) or "s").lower()
+    if unit == "ms":
+        return max(1, number // 1000)
+    return number * {"s": 1, "m": 60, "h": 3600}.get(unit, 1)
+
+
+def analyze_nginx_timeout(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    directive: str,
+    args: list[str],
+    line_number: int,
+    block_type: str,
+    server_name: str | None,
+    location_path: str | None,
+) -> None:
+    if not args:
+        return
+    seconds = parse_nginx_duration_seconds(args[0])
+    if seconds is None or seconds <= 300:
+        return
+    finding_id = "nginx_proxy_read_timeout_high" if directive == "proxy_read_timeout" else "nginx_proxy_connect_timeout_high"
+    title = "Nginx proxy timeout appears high"
+    add_nginx_config_finding(
+        analysis,
+        finding_id,
+        title,
+        nginx_contextual_level("low", context),
+        nginx_contextual_confidence("medium", context),
+        "limits",
+        "A proxy timeout is above the conservative review threshold.",
+        f"{directive}={args[0]}",
+        "Confirm timeout values match expected service behavior and resource protection.",
+        file_path=path,
+        context=context,
+        line=line_number,
+        block_type=block_type,
+        directive=directive,
+        server_name=server_name,
+        location=location_path,
+    )
+
+
+def finalize_nginx_config_analysis(analysis: dict[str, Any]) -> None:
+    for server in analysis.get("_server_states", []):
+        finalize_nginx_server_state(analysis, server)
+    for location in analysis.get("_location_states", []):
+        finalize_nginx_location_state(analysis, location)
+    analysis["summary"]["server_blocks_detected"] = len(analysis.get("servers", []))
+    analysis["summary"]["location_blocks_detected"] = len(analysis.get("locations", []))
+    analysis["summary"]["upstream_blocks_detected"] = len(analysis.get("upstreams", []))
+    analysis["summary"]["includes_detected"] = len(analysis.get("includes", []))
+    analysis["summary"]["tls_servers_detected"] = len([server for server in analysis.get("_server_states", []) if server.get("tls")])
+    analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+    if analysis["summary"]["redacted_values_count"]:
+        analysis["redaction_notes"] = [
+            "Secret-like Nginx/reverse-proxy values are redacted before storage on a best-effort basis.",
+            "Nginx include directives are detected but not resolved by this analyzer.",
+        ]
+    analysis.pop("_server_states", None)
+    analysis.pop("_location_states", None)
+
+
+def finalize_nginx_server_state(analysis: dict[str, Any], server: dict[str, Any]) -> None:
+    path = str(server.get("path") or "")
+    context = str(server.get("context") or "ambiguous")
+    server_name = server.get("server_name")
+    line = int(server.get("line") or 0) or None
+    headers = {str(header).lower() for header in server.get("headers", set())}
+    if server.get("tls"):
+        if not server.get("ssl_protocols_seen"):
+            add_nginx_config_finding(
+                analysis,
+                "nginx_ssl_protocols_missing",
+                "Nginx TLS server lacks an explicit ssl_protocols directive",
+                nginx_contextual_level("low", context),
+                nginx_contextual_confidence("medium", context),
+                "tls",
+                "A TLS-looking server block does not include an obvious ssl_protocols directive in the reviewed file.",
+                f"server_name={server_name or 'unknown'}; ssl_protocols missing",
+                "Confirm effective TLS protocol configuration in reviewed Nginx config.",
+                file_path=path,
+                context=context,
+                line=line,
+                block_type="server",
+                server_name=server_name,
+            )
+        if not server.get("hsts_seen"):
+            add_nginx_config_finding(
+                analysis,
+                "nginx_hsts_missing",
+                "Nginx TLS server lacks an obvious HSTS header",
+                nginx_contextual_level("low", context),
+                nginx_contextual_confidence("medium", context),
+                "tls",
+                "A TLS-looking server block does not include a Strict-Transport-Security header in the reviewed file.",
+                f"server_name={server_name or 'unknown'}; HSTS missing",
+                "Confirm HSTS policy for HTTPS production services.",
+                file_path=path,
+                context=context,
+                line=line,
+                block_type="server",
+                server_name=server_name,
+            )
+    listens = " ".join(str(item) for item in server.get("listen", []))
+    if re.search(r"(?<!\d)80(?!\d)", listens) and not server.get("tls") and not server.get("https_redirect"):
+        add_nginx_config_finding(
+            analysis,
+            "nginx_https_redirect_missing",
+            "Nginx HTTP listener lacks an obvious HTTPS redirect",
+            nginx_contextual_level("low", context),
+            nginx_contextual_confidence("low", context),
+            "tls",
+            "A port 80 listener was observed without an obvious return to HTTPS in the same server block.",
+            f"server_name={server_name or 'unknown'}; listen={listens or 'unknown'}",
+            "Confirm HTTP-to-HTTPS redirect behavior in the effective config if HTTPS is expected.",
+            file_path=path,
+            context=context,
+            line=line,
+            block_type="server",
+            server_name=server_name,
+        )
+
+    required_headers = {
+        "x-frame-options": "nginx_x_frame_options_missing",
+        "content-security-policy": "nginx_content_security_policy_missing",
+        "x-content-type-options": "nginx_x_content_type_options_missing",
+        "referrer-policy": "nginx_referrer_policy_missing",
+    }
+    missing = [(header, finding_id) for header, finding_id in required_headers.items() if header not in headers]
+    for header, finding_id in missing:
+        add_nginx_config_finding(
+            analysis,
+            finding_id,
+            f"Nginx {header} header was not observed",
+            nginx_contextual_level("low", context),
+            nginx_contextual_confidence("low", context),
+            "headers",
+            "A common security header was not observed in the reviewed server block. Includes and inheritance are not resolved in v1.",
+            f"server_name={server_name or 'unknown'}; missing={header}",
+            "Review effective edge headers and add this header where appropriate.",
+            file_path=path,
+            context=context,
+            line=line,
+            block_type="server",
+            server_name=server_name,
+        )
+    if missing:
+        add_nginx_config_finding(
+            analysis,
+            "nginx_security_headers_missing",
+            "Nginx common security headers are missing",
+            nginx_contextual_level("low", context),
+            nginx_contextual_confidence("low", context),
+            "headers",
+            "One or more common security headers were not observed in the reviewed server block.",
+            f"server_name={server_name or 'unknown'}; missing_headers={','.join(header for header, _ in missing)}",
+            "Review effective response headers for this virtual host.",
+            file_path=path,
+            context=context,
+            line=line,
+            block_type="server",
+            server_name=server_name,
+        )
+
+
+def finalize_nginx_location_state(analysis: dict[str, Any], location: dict[str, Any]) -> None:
+    if not location.get("proxy_pass"):
+        return
+    path = str(location.get("path") or "")
+    context = str(location.get("context") or "ambiguous")
+    line = int(location.get("line") or 0) or None
+    headers = {str(header).lower() for header in location.get("proxy_headers", set())}
+    checks = {
+        "host": "nginx_proxy_set_header_host_missing",
+        "x-forwarded-proto": "nginx_proxy_set_header_x_forwarded_proto_missing",
+        "x-forwarded-for": "nginx_proxy_set_header_x_forwarded_for_missing",
+    }
+    for header, finding_id in checks.items():
+        if header in headers:
+            continue
+        add_nginx_config_finding(
+            analysis,
+            finding_id,
+            f"Nginx proxy header {header} was not observed",
+            nginx_contextual_level("low", context),
+            nginx_contextual_confidence("low", context),
+            "proxy",
+            "A proxy_pass location lacks an obvious forwarding header in the reviewed file.",
+            f"location={location.get('location') or 'unknown'}; missing={header}",
+            "Confirm upstream applications receive the intended proxy headers.",
+            file_path=path,
+            context=context,
+            line=line,
+            block_type="location",
+            location=str(location.get("location") or ""),
+            server_name=location.get("server_name"),
+        )
+
+
+def add_nginx_config_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    confidence: str,
+    category: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str | None = None,
+    context: str | None = None,
+    line: int | None = None,
+    block_type: str | None = None,
+    server_name: str | None = None,
+    location: str | None = None,
+    upstream: str | None = None,
+    directive: str | None = None,
+    redacted: bool = False,
+) -> None:
+    safe_description, description_redactions = redact_nginx_secret_text(description)
+    safe_evidence, evidence_redactions = redact_nginx_secret_text(evidence)
+    safe_recommendation, recommendation_redactions = redact_nginx_secret_text(recommendation)
+    redaction_count = description_redactions + evidence_redactions + recommendation_redactions
+    if redacted and redaction_count == 0:
+        redaction_count = 1
+    analysis["summary"]["redacted_values_count"] += redaction_count
+
+    finding = make_finding(finding_id, title, level, safe_description, safe_evidence, safe_recommendation)
+    finding["confidence"] = confidence
+    finding["category"] = category
+    if file_path:
+        finding["file_path"] = file_path
+    if context:
+        finding["context"] = context
+    if line is not None:
+        finding["line"] = line
+    if block_type:
+        finding["block_type"] = block_type
+    if server_name:
+        finding["server_name"] = server_name
+    if location:
+        finding["location"] = location
+    if upstream:
+        finding["upstream"] = upstream
+    if directive:
+        finding["directive"] = directive
     analysis["findings"].append(finding)
 
 

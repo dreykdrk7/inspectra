@@ -2379,6 +2379,229 @@ async def test_analyze_terraform_config_respects_file_and_byte_limits(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_analyze_nginx_config_reports_findings_includes_and_redacts_secrets(monkeypatch, tmp_path):
+    nginx_conf = b'''
+# server_tokens on;
+server {
+  listen 80 default_server;
+  server_name example.com;
+  server_tokens on;
+  autoindex on;
+  ssl_certificate /etc/ssl/certs/site.crt;
+  ssl_certificate_key /etc/ssl/private/site.key;
+  ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+  add_header Strict-Transport-Security "max-age=60";
+  add_header Access-Control-Allow-Origin *;
+  add_header Access-Control-Allow-Credentials true;
+  proxy_ssl_verify off;
+  client_max_body_size 0;
+  access_log off;
+  error_log /var/log/nginx/error.log debug;
+  include /etc/nginx/secrets.conf;
+  include conf.d/*.conf;
+
+  location /.git {
+    proxy_pass http://user:pass@example.com;
+    proxy_set_header Authorization "Bearer token_should_never_render";
+    stub_status;
+  }
+
+  location /phpinfo.php {
+    deny all;
+  }
+
+  location /backup.sql {
+    deny all;
+  }
+
+  location /api {
+    proxy_pass http://internal:8080;
+    proxy_read_timeout 600s;
+    proxy_connect_timeout 600s;
+    set $api_key raw-api-key-123456;
+    set $registry_user registry-user:registry-pass;
+    auth_basic "super-secret-password";
+  }
+}
+
+-----BEGIN PRIVATE KEY-----
+token_should_never_render
+-----END PRIVATE KEY-----
+'''
+    archive_path = write_zip_archive(tmp_path, {"sites-enabled/default.conf": nginx_conf})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/nginx-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["analyzer"] == "nginx_config_basic"
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["server_blocks_detected"] == 1
+    assert payload["summary"]["location_blocks_detected"] == 4
+    assert payload["summary"]["includes_detected"] == 2
+    assert payload["summary"]["tls_servers_detected"] == 1
+    assert "nginx_server_tokens_on" in finding_ids
+    assert "nginx_autoindex_on" in finding_ids
+    assert "nginx_ssl_protocol_legacy_enabled" in finding_ids
+    assert "nginx_hsts_low_max_age" in finding_ids
+    assert "nginx_x_frame_options_missing" in finding_ids
+    assert "nginx_content_security_policy_missing" in finding_ids
+    assert "nginx_x_content_type_options_missing" in finding_ids
+    assert "nginx_referrer_policy_missing" in finding_ids
+    assert "nginx_security_headers_missing" in finding_ids
+    assert "nginx_cors_wildcard_origin" in finding_ids
+    assert "nginx_cors_credentials_with_wildcard" in finding_ids
+    assert "nginx_proxy_ssl_verify_off" in finding_ids
+    assert "nginx_proxy_pass_credentials_hint" in finding_ids
+    assert "nginx_proxy_pass_http_upstream" in finding_ids
+    assert "nginx_proxy_set_header_host_missing" in finding_ids
+    assert "nginx_proxy_set_header_x_forwarded_proto_missing" in finding_ids
+    assert "nginx_proxy_set_header_x_forwarded_for_missing" in finding_ids
+    assert "nginx_client_max_body_size_unlimited_or_large" in finding_ids
+    assert "nginx_proxy_read_timeout_high" in finding_ids
+    assert "nginx_proxy_connect_timeout_high" in finding_ids
+    assert "nginx_access_log_off" in finding_ids
+    assert "nginx_error_log_debug" in finding_ids
+    assert "nginx_hidden_files_exposed" in finding_ids
+    assert "nginx_sensitive_location_exposed" in finding_ids
+    assert "nginx_backup_files_exposed" in finding_ids
+    assert "nginx_stub_status_public_hint" in finding_ids
+    assert "nginx_include_absolute_path" in finding_ids
+    assert "nginx_include_glob_detected" in finding_ids
+    assert "nginx_include_not_resolved" in finding_ids
+    assert "nginx_basic_auth_inline_secret_hint" in finding_ids
+    assert "nginx_header_secret_like_value" in finding_ids
+    assert "nginx_variable_secret_like_value" in finding_ids
+    assert "nginx_ssl_certificate_key_path_present" in finding_ids
+    assert "[REDACTED]" in serialized
+    for secret in (
+        "super-secret-password",
+        "raw-api-key-123456",
+        "token_should_never_render",
+        "Authorization: Bearer token_should_never_render",
+        "http://user:pass@example.com",
+        "registry-user:registry-pass",
+        "PRIVATE KEY",
+    ):
+        assert secret not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_nginx_config_comments_missing_tls_and_context(monkeypatch, tmp_path):
+    nginx_conf = b'''
+# server_tokens on;
+# autoindex on;
+server {
+  listen 443 ssl;
+  server_name example.test;
+}
+'''
+    archive_path = write_zip_archive(tmp_path, {"examples/nginx.conf": nginx_conf})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/nginx-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    ssl_finding = next(finding for finding in payload["findings"] if finding["id"] == "nginx_ssl_protocols_missing")
+    assert response.status_code == 200
+    assert "nginx_server_tokens_on" not in finding_ids
+    assert "nginx_autoindex_on" not in finding_ids
+    assert "nginx_ssl_protocols_missing" in finding_ids
+    assert "nginx_hsts_missing" in finding_ids
+    assert ssl_finding["context"] == "example"
+    assert ssl_finding["level"] == "info"
+
+
+@pytest.mark.anyio
+async def test_analyze_nginx_config_skips_unsafe_archive_entries(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        traversal_content = b'set $password super-secret-password;\n'
+        traversal_info = tarfile.TarInfo("../nginx/secrets.conf")
+        traversal_info.size = len(traversal_content)
+        archive.addfile(traversal_info, io.BytesIO(traversal_content))
+
+        link_info = tarfile.TarInfo("nginx/main.conf")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real-main.conf"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo("nginx/site.conf")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real-site.conf"
+        archive.addfile(hardlink_info)
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/nginx-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    reasons = {item["skip_reason"] for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "path_traversal" in reasons
+    assert "not_regular_file:symlink" in reasons
+    assert "not_regular_file:hardlink" in reasons
+    assert "nginx_config_path_traversal" in {finding["id"] for finding in payload["findings"]}
+    assert "nginx_config_not_regular_file" in {finding["id"] for finding in payload["findings"]}
+    assert "super-secret-password" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_nginx_config_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "NGINX_CONFIG_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "NGINX_CONFIG_MAX_FILE_BYTES", 80)
+    monkeypatch.setattr(runner, "NGINX_CONFIG_MAX_TOTAL_BYTES", 120)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "nginx/main.conf": b"server {\n  listen 80;\n}\n",
+            "nginx/secret.conf": b"set $password " + b"x" * 100 + b";\n",
+            "nginx/extra.conf": b"server {\n  server_tokens on;\n}\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/nginx-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "file_too_large" in reasons
+    assert "too_many_files" in reasons
+    assert "xxxxxxxxxxxxxxxxxxxxxxxx" not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
     server = start_test_http_server()
     transport = ASGITransport(app=runner.app)
