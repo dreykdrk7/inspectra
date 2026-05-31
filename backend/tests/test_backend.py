@@ -1114,7 +1114,7 @@ async def test_terraform_config_service_calls_runner_endpoint(monkeypatch, tmp_p
                             "evidence": "password=super-secret-password",
                         }
                     ],
-                    "errors": ["API_KEY=raw-api-key-123456"],
+                    "errors": ["API_KEY=raw-api-key-123456", "registry-user:registry-pass"],
                 }
             )
 
@@ -1127,7 +1127,7 @@ async def test_terraform_config_service_calls_runner_endpoint(monkeypatch, tmp_p
     assert updated.status == "completed"
     assert updated.result["analyzer"] == "terraform_config_basic"
     assert "[REDACTED]" in serialized_result
-    for secret in ("super-secret-password", "raw-api-key-123456"):
+    for secret in ("super-secret-password", "raw-api-key-123456", "registry-user:registry-pass"):
         assert secret not in serialized_result
     assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/terraform-config"
     assert calls[0]["json"]["file_id"] == archive.id
@@ -3583,7 +3583,7 @@ async def test_export_terraform_config_redacts_legacy_secret_values(monkeypatch,
                 {
                     "resource_type": "aws_instance",
                     "resource_name": "app",
-                    "user_data": "TOKEN=token_should_never_render\npostgres://user:pass@example.com/db",
+                    "user_data": "TOKEN=token_should_never_render\npostgres://user:pass@example.com/db\nregistry-user:registry-pass",
                 }
             ],
             "variables": [{"name": "db_password", "default": "db_password_plaintext"}],
@@ -3617,6 +3617,7 @@ async def test_export_terraform_config_redacts_legacy_secret_values(monkeypatch,
                 "API_KEY=raw-api-key-123456",
                 "AWS_SECRET_ACCESS_KEY=aws_secret_access_key_should_not_render",
                 "postgres://user:pass@example.com/db",
+                "registry-user:registry-pass",
             ],
             "redaction_notes": ["TOKEN=token_should_never_render"],
         },
@@ -3637,6 +3638,7 @@ async def test_export_terraform_config_redacts_legacy_secret_values(monkeypatch,
         b"AKIAIOSFODNN7EXAMPLE",
         b"aws_secret_access_key_should_not_render",
         b"postgres://user:pass@example.com/db",
+        b"registry-user:registry-pass",
     )
     transport = ASGITransport(app=app)
 

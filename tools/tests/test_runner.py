@@ -2200,12 +2200,14 @@ api_key = "raw-api-key-123456"
 database_url = "postgres://user:pass@example.com/db"
 '''
     tfstate = b'{"outputs":{"db_password":{"value":"db_password_plaintext"}},"private":"token_should_never_render"}'
+    tfstate_backup = b'{"resources":[{"instances":[{"attributes":{"api_key":"raw-api-key-123456","password":"super-secret-password"}}]}]}'
     archive_path = write_zip_archive(
         tmp_path,
         {
             "environments/prod/main.tf": main_tf,
             "environments/prod/terraform.tfvars": tfvars,
             "environments/prod/terraform.tfstate": tfstate,
+            "environments/prod/prod.tfstate.backup": tfstate_backup,
         },
     )
     monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
@@ -2224,7 +2226,7 @@ database_url = "postgres://user:pass@example.com/db"
     assert payload["analyzer"] == "terraform_config_basic"
     assert payload["summary"]["files_reviewed"] == 2
     assert payload["summary"]["tfvars_files_detected"] == 1
-    assert payload["summary"]["state_files_detected"] == 1
+    assert payload["summary"]["state_files_detected"] == 2
     assert payload["summary"]["providers_detected"] == 1
     assert payload["summary"]["backends_detected"] == 1
     assert payload["summary"]["modules_detected"] == 1
@@ -2248,6 +2250,7 @@ database_url = "postgres://user:pass@example.com/db"
     assert "aws_iam_policy_wildcard_resource" in finding_ids
     assert "aws_s3_bucket_public_access_risk" in finding_ids
     assert payload["state_files"][0]["read"] is False
+    assert all(state_file["read"] is False for state_file in payload["state_files"])
     assert "[REDACTED]" in serialized
     for secret in (
         "super-secret-password",

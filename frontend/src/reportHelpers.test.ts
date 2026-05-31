@@ -1217,7 +1217,7 @@ describe("report helpers", () => {
         providers: [{ name: "aws", access_key: "AKIAIOSFODNN7EXAMPLE", secret_key: "aws_secret_access_key_should_not_render" }],
         backends: [{ type: "s3", config: { secret_key: "aws_secret_access_key_should_not_render", password: "super-secret-password" } }],
         modules: [{ name: "db", source: "postgres://user:pass@example.com/db" }],
-        resources: [{ resource_type: "aws_instance", resource_name: "web", user_data: "TOKEN=token_should_never_render" }],
+        resources: [{ resource_type: "aws_instance", resource_name: "web", user_data: "TOKEN=token_should_never_render\nregistry-user:registry-pass" }],
         variables: [{ name: "db_password", default: "db_password_plaintext" }],
         outputs: [{ name: "api_key", value: "raw-api-key-123456", sensitive: false }],
         state_files: [{ path: "terraform.tfstate", read: false, content: "super-secret-password raw-api-key-123456" }],
@@ -1230,7 +1230,7 @@ describe("report helpers", () => {
             recommendation: "-----BEGIN PRIVATE KEY----- PRIVATE KEY db_password_plaintext -----END PRIVATE KEY-----"
           }
         ],
-        errors: ["API_KEY=raw-api-key-123456", "AWS_SECRET_ACCESS_KEY=aws_secret_access_key_should_not_render", "postgres://user:pass@example.com/db"]
+        errors: ["API_KEY=raw-api-key-123456", "AWS_SECRET_ACCESS_KEY=aws_secret_access_key_should_not_render", "postgres://user:pass@example.com/db", "registry-user:registry-pass"]
       }
     });
     const serializedReport = JSON.stringify(report);
@@ -1249,7 +1249,8 @@ describe("report helpers", () => {
       "db_password_plaintext",
       "AKIAIOSFODNN7EXAMPLE",
       "aws_secret_access_key_should_not_render",
-      "postgres://user:pass@example.com/db"
+      "postgres://user:pass@example.com/db",
+      "registry-user:registry-pass"
     ]) {
       expect(serializedReport).not.toContain(secret);
       expect(redactedRaw).not.toContain(secret);
