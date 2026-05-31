@@ -195,6 +195,9 @@ CI_CD_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_CI_CD_CONFIG_MAX
 K8S_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_K8S_CONFIG_MAX_FILES", 100)
 K8S_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_K8S_CONFIG_MAX_FILE_BYTES", 524_288)
 K8S_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_K8S_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
+TERRAFORM_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_TERRAFORM_CONFIG_MAX_FILES", 100)
+TERRAFORM_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_TERRAFORM_CONFIG_MAX_FILE_BYTES", 524_288)
+TERRAFORM_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_TERRAFORM_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
 WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
@@ -686,6 +689,35 @@ async def analyze_k8s_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
         analysis = empty_k8s_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
 
     return build_k8s_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
+
+
+@app.post("/analyze/terraform-config")
+async def analyze_terraform_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = terraform_config_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_terraform_config_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_terraform_config_analysis(
+                errors=["Unsupported or corrupt archive. Inspectra did not run Terraform, OpenTofu, Terragrunt, providers, modules, or cloud calls."]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_terraform_config_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        analysis = empty_terraform_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+
+    return build_terraform_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/web-basic")
@@ -9314,6 +9346,1119 @@ def add_k8s_config_finding(
         finding["namespace"] = namespace
     if container:
         finding["container"] = container
+    if field_path:
+        finding["field_path"] = field_path
+    analysis["findings"].append(finding)
+
+
+def terraform_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = TERRAFORM_CONFIG_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = TERRAFORM_CONFIG_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = TERRAFORM_CONFIG_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Terraform config analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_terraform_config_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_terraform_config_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            analysis["summary"]["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"terraform_config_{scoped['id']}"
+            analysis["findings"].append(scoped)
+            finalize_terraform_config_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_terraform_config_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_terraform_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda entry_info=info: archive.open(entry_info),
+                )
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_terraform_config_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_terraform_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda tar_member=member: archive.extractfile(tar_member),
+                )
+
+    finalize_terraform_config_analysis(analysis)
+    return analysis
+
+
+def empty_terraform_config_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "files_considered": 0,
+            "files_reviewed": 0,
+            "terraform_files_detected": 0,
+            "tfvars_files_detected": 0,
+            "state_files_detected": 0,
+            "providers_detected": 0,
+            "backends_detected": 0,
+            "modules_detected": 0,
+            "resources_detected": 0,
+            "findings_count": 0,
+            "redacted_values_count": 0,
+            "truncated": False,
+        },
+        "files_detected": [],
+        "files_reviewed": [],
+        "providers": [],
+        "backends": [],
+        "modules": [],
+        "resources": [],
+        "variables": [],
+        "outputs": [],
+        "state_files": [],
+        "findings": [],
+        "redaction_notes": [],
+        "errors": errors or [],
+        "_required_version_observed": False,
+        "_lockfile_observed": False,
+        "_terraform_contexts": [],
+        "_terraform_hcl_files_reviewed": 0,
+    }
+
+
+def build_terraform_config_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "terraform_config_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "files_detected": analysis.get("files_detected", []),
+        "files_reviewed": analysis.get("files_reviewed", []),
+        "providers": analysis.get("providers", []),
+        "backends": analysis.get("backends", []),
+        "modules": analysis.get("modules", []),
+        "resources": analysis.get("resources", []),
+        "variables": analysis.get("variables", []),
+        "outputs": analysis.get("outputs", []),
+        "state_files": analysis.get("state_files", []),
+        "findings": findings,
+        "redaction_notes": analysis.get("redaction_notes", []),
+        "errors": analysis.get("errors", []),
+        "truncated": bool(summary.get("truncated")),
+    }
+
+
+def should_stop_terraform_config_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    if index > ARCHIVE_MAX_ENTRIES:
+        analysis["summary"]["truncated"] = True
+        add_terraform_config_finding(
+            analysis,
+            "terraform_config_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "high",
+            "limit",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    return False
+
+
+def process_terraform_config_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_terraform_config_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    if category == "state_file":
+        summary["state_files_detected"] += 1
+    elif category == "tfvars":
+        summary["tfvars_files_detected"] += 1
+    else:
+        summary["terraform_files_detected"] += 1
+
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    context = terraform_config_file_context(path, category)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "context": context,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = terraform_config_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["files_detected"].append(record)
+        if skip_reason == "terraform_state_file_not_read":
+            add_terraform_state_file(analysis, record)
+        else:
+            add_terraform_config_skip_finding(analysis, path, skip_reason, size_bytes, context)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["files_detected"].append(record)
+        add_terraform_config_finding(
+            analysis,
+            "terraform_config_file_read_error",
+            "Terraform config candidate could not be read safely",
+            "low",
+            "medium",
+            "archive",
+            "A Terraform-related candidate file could not be read from the archive within Inspectra limits.",
+            f"{path}: {exc}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+            context=context,
+        )
+        return
+
+    state["total_bytes_read"] += len(raw_bytes)
+    if b"\x00" in raw_bytes:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_terraform_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_terraform_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    state["files_read"] += 1
+    summary["files_reviewed"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["files_detected"].append(record)
+    analysis["files_reviewed"].append(
+        {"path": path, "category": category, "context": context, "size_bytes": size_bytes, "bytes_read": len(raw_bytes)}
+    )
+    if category in {"terraform", "terragrunt"}:
+        analysis["_terraform_contexts"].append(context)
+        analysis["_terraform_hcl_files_reviewed"] += 1
+    analyze_terraform_config_text(analysis, path, category, context, text)
+
+
+def classify_terraform_config_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    lower = normalized.lower()
+    basename = lower.rsplit("/", 1)[-1]
+    if basename == "terraform.tfstate" or basename.endswith(".tfstate") or basename.endswith(".tfstate.backup"):
+        return "state_file"
+    if basename == ".terraform.lock.hcl":
+        return "lockfile"
+    if basename == "terragrunt.hcl" or (basename.startswith("terragrunt") and basename.endswith(".hcl")):
+        return "terragrunt"
+    if lower.endswith((".auto.tfvars.json", ".tfvars.json", ".auto.tfvars", ".tfvars")):
+        return "tfvars"
+    if lower.endswith((".tf.json", ".tf")):
+        return "terraform"
+    return None
+
+
+def terraform_config_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if record.get("category") == "state_file":
+        return "terraform_state_file_not_read"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_terraform_state_file(analysis: dict[str, Any], record: dict[str, Any]) -> None:
+    state_file = {
+        "path": record["path"],
+        "category": "state_file",
+        "context": record.get("context"),
+        "read": False,
+        "skip_reason": "terraform_state_file_not_read",
+        "size_bytes": record.get("size_bytes"),
+        "warning": "Terraform state files can contain secrets and are detected but not read in v1.",
+    }
+    analysis["state_files"].append(state_file)
+    add_terraform_config_finding(
+        analysis,
+        "terraform_state_file_present",
+        "Terraform state file detected but not read",
+        terraform_contextual_level("medium", str(record.get("context") or "")),
+        terraform_contextual_confidence("high", str(record.get("context") or "")),
+        "state",
+        "A Terraform state file was present in the archive. Inspectra records its presence but does not read or store its content.",
+        f"{record['path']}: state file not read",
+        "Avoid sharing Terraform state files in review archives; keep state in an approved backend with appropriate access controls.",
+        file_path=str(record["path"]),
+        context=str(record.get("context") or ""),
+    )
+
+
+def add_terraform_config_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int, context: str) -> None:
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit"}:
+        analysis["summary"]["truncated"] = True
+    titles = {
+        "path_traversal": "Terraform config path uses traversal",
+        "absolute_path": "Terraform config path is absolute",
+        "entry_name_too_long": "Terraform config entry name is unusually long",
+        "file_too_large": "Terraform config file omitted because it exceeds the size limit",
+        "too_many_files": "Terraform config file limit reached",
+        "total_bytes_limit": "Total Terraform config byte limit reached",
+        "binary_or_non_text": "Terraform config candidate is not UTF-8 text",
+    }
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    evidence = f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    if reason.startswith("not_regular_file"):
+        title = "Terraform config candidate omitted because it is not a regular file"
+        evidence = f"{path}: {reason}"
+        level = "low"
+    else:
+        title = titles.get(reason, "Terraform config candidate skipped by defensive limit")
+    add_terraform_config_finding(
+        analysis,
+        f"terraform_config_{reason.split(':', 1)[0]}",
+        title,
+        terraform_contextual_level(level, context),
+        terraform_contextual_confidence("high" if reason in {"path_traversal", "absolute_path"} else "medium", context),
+        "archive",
+        "Inspectra detected a Terraform-related file but did not read it because of a defensive limit, unsupported format, or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+        context=context,
+    )
+
+
+LOWER_CONFIDENCE_TERRAFORM_CONTEXTS = {"development", "test", "local", "example"}
+TERRAFORM_SECRET_KEY_RE = re.compile(
+    r"(?i)(SECRET_KEY|CLIENT_SECRET|PRIVATE_KEY|DATABASE_URL|REDIS_URL|API_KEY|PASSWORD|TOKEN|SECRET|PASS|ACCESS_KEY|SECRET_ACCESS_KEY|SESSION_TOKEN|CONNECTION_STRING|CERTIFICATE|CREDENTIAL)"
+)
+
+
+def terraform_config_file_context(path: str, category: str = "") -> str:
+    normalized = normalize_archive_entry_path(path).lower()
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    directories = set(parts[:-1])
+    name_tokens = set(re.split(r"[^a-z0-9]+", basename))
+    all_tokens = set(parts[:-1]) | name_tokens
+
+    if directories.intersection({"docs", "doc", "examples", "example", "samples", "sample"}) or all_tokens.intersection(
+        {"example", "examples", "sample", "samples", "template", "templates", "sandbox"}
+    ):
+        return "example"
+    if all_tokens.intersection({"test", "tests", "testing"}):
+        return "test"
+    if all_tokens.intersection({"dev", "development"}):
+        return "development"
+    if "local" in all_tokens:
+        return "local"
+    if all_tokens.intersection({"prod", "production", "live", "release", "deploy"}) or "deploy" in directories:
+        return "production"
+    if category in {"terraform", "tfvars", "lockfile"} and len(parts) <= 2:
+        return "shared"
+    return "ambiguous"
+
+
+def terraform_contextual_level(level: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_TERRAFORM_CONTEXTS:
+        return level
+    if level == "medium":
+        return "low"
+    if level == "low":
+        return "info"
+    return level
+
+
+def terraform_contextual_confidence(confidence: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_TERRAFORM_CONTEXTS:
+        return confidence
+    if confidence == "high":
+        return "medium"
+    if confidence == "medium":
+        return "low"
+    return confidence
+
+
+def active_terraform_lines(text: str) -> list[tuple[int, str]]:
+    active: list[tuple[int, str]] = []
+    in_block_comment = False
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        current = line
+        if in_block_comment:
+            if "*/" in current:
+                current = current.split("*/", 1)[1]
+                in_block_comment = False
+            else:
+                continue
+        while "/*" in current:
+            before, after = current.split("/*", 1)
+            if "*/" in after:
+                current = before + after.split("*/", 1)[1]
+                continue
+            current = before
+            in_block_comment = True
+            break
+        stripped = current.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("//"):
+            continue
+        active.append((line_number, current))
+    return active
+
+
+def strip_terraform_inline_comment(value: str) -> str:
+    for marker in (" #", " //"):
+        if marker in value:
+            value = value.split(marker, 1)[0]
+    return value.strip().rstrip(",").strip()
+
+
+def normalize_terraform_value(value: str) -> str:
+    return strip_terraform_inline_comment(value).strip().strip("\"'").strip()
+
+
+def terraform_secret_like_key(key: str) -> bool:
+    return bool(TERRAFORM_SECRET_KEY_RE.search(key.replace("-", "_")))
+
+
+def terraform_blocks(lines: list[tuple[int, str]]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    index = 0
+    block_re = re.compile(r"^\s*(resource|provider|terraform|backend|module|variable|output|locals|data)\b(.*?)\{", re.IGNORECASE)
+    while index < len(lines):
+        line_number, line = lines[index]
+        match = block_re.match(line)
+        if not match:
+            index += 1
+            continue
+        start_index = index
+        block_type = match.group(1).lower()
+        labels = re.findall(r"['\"]([^'\"]+)['\"]", match.group(2))
+        body: list[tuple[int, str]] = [(line_number, line)]
+        depth = line.count("{") - line.count("}")
+        index += 1
+        while depth > 0 and index < len(lines):
+            next_line_number, next_line = lines[index]
+            body.append((next_line_number, next_line))
+            depth += next_line.count("{") - next_line.count("}")
+            index += 1
+        blocks.append({"type": block_type, "labels": labels, "line": line_number, "lines": body})
+        index = start_index + 1
+    return blocks
+
+
+def terraform_block_text(block: dict[str, Any]) -> str:
+    return "\n".join(str(line) for _line_number, line in block.get("lines", []))
+
+
+def terraform_block_attr(block: dict[str, Any], key: str) -> tuple[int, str] | None:
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=\s*(.+?)\s*$", re.IGNORECASE)
+    for line_number, line in block.get("lines", []):
+        match = pattern.match(str(line))
+        if match:
+            return int(line_number), normalize_terraform_value(match.group(1))
+        inline = re.search(rf"\b{re.escape(key)}\s*=\s*(.+?)(?:\s+[A-Za-z0-9_.-]+\s*=|\s*\}}|$)", str(line), flags=re.IGNORECASE)
+        if inline:
+            return int(line_number), normalize_terraform_value(inline.group(1))
+    return None
+
+
+def terraform_block_secret_attrs(block: dict[str, Any]) -> list[tuple[int, str]]:
+    attrs: list[tuple[int, str]] = []
+    for line_number, line in block.get("lines", []):
+        for match in re.finditer(r"\b([A-Za-z0-9_.-]+)\s*=\s*([^{}\n]+)", str(line)):
+            key = match.group(1)
+            value = normalize_terraform_value(match.group(2))
+            if value and terraform_secret_like_key(key):
+                attrs.append((int(line_number), key))
+    return attrs
+
+
+def analyze_terraform_config_text(analysis: dict[str, Any], path: str, category: str, context: str, text: str) -> None:
+    lines = active_terraform_lines(text)
+    active_text = "\n".join(line for _line_number, line in lines)
+
+    if category == "lockfile":
+        analysis["_lockfile_observed"] = True
+        return
+    if category == "tfvars":
+        analyze_terraform_tfvars(analysis, path, context, lines)
+        return
+
+    blocks = terraform_blocks(lines)
+    if re.search(r"(?i)\brequired_version\s*=", active_text):
+        analysis["_required_version_observed"] = True
+    analyze_terraform_required_providers(analysis, path, context, lines, active_text)
+
+    if PRIVATE_KEY_BLOCK_RE.search(active_text):
+        add_terraform_config_finding(
+            analysis,
+            "terraform_plaintext_private_key_hint",
+            "Plaintext private key material observed",
+            terraform_contextual_level("medium", context),
+            terraform_contextual_confidence("high", context),
+            "secrets",
+            "A private-key-like block was observed in Terraform-related text. Inspectra redacted the material and did not validate it.",
+            "private_key=[REDACTED]",
+            "Remove private key material from Terraform archives and rotate it if this archive was shared outside trusted storage.",
+            file_path=path,
+            context=context,
+            redacted=True,
+        )
+
+    for block in blocks:
+        block_type = str(block["type"])
+        labels = [str(label) for label in block.get("labels", [])]
+        if block_type == "provider":
+            analyze_terraform_provider_block(analysis, path, context, block, labels)
+        elif block_type == "backend":
+            analyze_terraform_backend_block(analysis, path, context, block, labels)
+        elif block_type == "module":
+            analyze_terraform_module_block(analysis, path, context, block, labels)
+        elif block_type == "resource":
+            analyze_terraform_resource_block(analysis, path, context, block, labels)
+        elif block_type == "variable":
+            analyze_terraform_variable_block(analysis, path, context, block, labels)
+        elif block_type == "output":
+            analyze_terraform_output_block(analysis, path, context, block, labels)
+
+
+def analyze_terraform_tfvars(analysis: dict[str, Any], path: str, context: str, lines: list[tuple[int, str]]) -> None:
+    for line_number, line in lines:
+        match = re.match(r"\s*['\"]?([A-Za-z0-9_.-]+)['\"]?\s*[:=]\s*(.+?)\s*$", line)
+        if not match:
+            continue
+        key = match.group(1)
+        value = normalize_terraform_value(match.group(2))
+        if value and terraform_secret_like_key(key):
+            add_terraform_config_finding(
+                analysis,
+                "terraform_tfvars_secret_like_key",
+                "tfvars contains a secret-like key",
+                terraform_contextual_level("medium", context),
+                terraform_contextual_confidence("high", context),
+                "secrets",
+                "A Terraform variable values file contains a secret-like key with an inline value. Inspectra redacted the value.",
+                f"{key}=[REDACTED]",
+                "Avoid committing real secret values in tfvars files; inject them through an approved secret workflow.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                block_type="tfvars",
+                field_path=key,
+                redacted=True,
+            )
+
+
+def analyze_terraform_provider_block(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    block: dict[str, Any],
+    labels: list[str],
+) -> None:
+    provider = labels[0] if labels else "unknown"
+    analysis["providers"].append({"path": path, "context": context, "provider": provider, "line": block.get("line")})
+    analysis["summary"]["providers_detected"] = len(analysis["providers"])
+    for line_number, key in terraform_block_secret_attrs(block):
+        add_terraform_config_finding(
+            analysis,
+            "terraform_provider_credentials_hint",
+            "Provider block contains credential-like configuration",
+            terraform_contextual_level("medium", context),
+            terraform_contextual_confidence("high", context),
+            "secrets",
+            "A provider block contains an attribute with a credential-like name. Inspectra redacted the value and did not contact the provider.",
+            f"provider={provider}; {key}=[REDACTED]",
+            "Use environment-based or managed identity credentials outside shared archives where possible.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            provider=provider,
+            block_type="provider",
+            field_path=key,
+            redacted=True,
+        )
+
+
+def analyze_terraform_backend_block(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    block: dict[str, Any],
+    labels: list[str],
+) -> None:
+    backend_type = labels[0] if labels else "unknown"
+    analysis["backends"].append({"path": path, "context": context, "type": backend_type, "line": block.get("line")})
+    analysis["summary"]["backends_detected"] = len(analysis["backends"])
+    for line_number, key in terraform_block_secret_attrs(block):
+        finding_id = "terraform_backend_credentials_hint" if re.search(r"(?i)(access|secret|token|password|key)", key) else "terraform_backend_config_secret_like"
+        add_terraform_config_finding(
+            analysis,
+            finding_id,
+            "Backend block contains secret-like configuration",
+            terraform_contextual_level("medium", context),
+            terraform_contextual_confidence("high", context),
+            "secrets",
+            "A Terraform backend block contains an attribute with a secret-like name. Inspectra redacted the value and did not access remote state.",
+            f"backend={backend_type}; {key}=[REDACTED]",
+            "Keep backend credentials out of shared archives and use approved backend authentication mechanisms.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            block_type="backend",
+            field_path=key,
+            redacted=True,
+        )
+
+
+def analyze_terraform_module_block(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    block: dict[str, Any],
+    labels: list[str],
+) -> None:
+    module_name = labels[0] if labels else "unknown"
+    source_attr = terraform_block_attr(block, "source")
+    version_attr = terraform_block_attr(block, "version")
+    source = source_attr[1] if source_attr else None
+    safe_source = redact_terraform_secret_text(source)[0][:240] if source else None
+    analysis["modules"].append({"path": path, "context": context, "name": module_name, "source": safe_source, "line": block.get("line")})
+    analysis["summary"]["modules_detected"] = len(analysis["modules"])
+    if source and terraform_module_source_needs_pin(source, bool(version_attr)):
+        add_terraform_config_finding(
+            analysis,
+            "terraform_module_source_unpinned",
+            "Module source appears unpinned",
+            terraform_contextual_level("low", context),
+            terraform_contextual_confidence("medium", context),
+            "module",
+            "A Terraform module source appears to reference a remote or registry source without an obvious immutable ref or version.",
+            f"module={module_name}; source={safe_source or '[REDACTED]'}",
+            "Pin remote modules to reviewed versions or immutable references where repeatability matters.",
+            file_path=path,
+            context=context,
+            line=source_attr[0] if source_attr else None,
+            block_type="module",
+            field_path="source",
+        )
+
+
+def terraform_module_source_needs_pin(source: str, has_version: bool) -> bool:
+    normalized = normalize_terraform_value(source).lower()
+    if normalized.startswith(("./", "../")):
+        return False
+    if has_version:
+        return False
+    if "?" in normalized and "ref=" in normalized:
+        return False
+    return any(marker in normalized for marker in ("git::", "github.com", "gitlab.com", "http://", "https://", "terraform-"))
+
+
+def analyze_terraform_variable_block(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    block: dict[str, Any],
+    labels: list[str],
+) -> None:
+    variable_name = labels[0] if labels else "unknown"
+    analysis["variables"].append({"path": path, "context": context, "name": variable_name, "line": block.get("line")})
+    default_attr = terraform_block_attr(block, "default")
+    if default_attr and terraform_secret_like_key(variable_name) and normalize_terraform_value(default_attr[1]).lower() not in {"", "null"}:
+        add_terraform_config_finding(
+            analysis,
+            "terraform_variable_default_secret_like",
+            "Terraform variable default contains a secret-like value",
+            terraform_contextual_level("medium", context),
+            terraform_contextual_confidence("high", context),
+            "secrets",
+            "A Terraform variable with a secret-like name declares a default value. Inspectra redacted the value.",
+            f"variable={variable_name}; default=[REDACTED]",
+            "Avoid committing real secret defaults; inject sensitive values through a secure workflow.",
+            file_path=path,
+            context=context,
+            line=default_attr[0],
+            block_type="variable",
+            field_path=f"variable.{variable_name}.default",
+            redacted=True,
+        )
+
+
+def analyze_terraform_output_block(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    block: dict[str, Any],
+    labels: list[str],
+) -> None:
+    output_name = labels[0] if labels else "unknown"
+    sensitive_attr = terraform_block_attr(block, "sensitive")
+    sensitive_value = normalize_terraform_value(sensitive_attr[1]).lower() if sensitive_attr else ""
+    analysis["outputs"].append(
+        {
+            "path": path,
+            "context": context,
+            "name": output_name,
+            "sensitive": sensitive_value == "true" if sensitive_attr else None,
+            "line": block.get("line"),
+        }
+    )
+    value_attr = terraform_block_attr(block, "value")
+    if value_attr and terraform_secret_like_key(output_name) and sensitive_value != "true":
+        add_terraform_config_finding(
+            analysis,
+            "terraform_output_sensitive_false_secret_like",
+            "Secret-like Terraform output is not marked sensitive",
+            terraform_contextual_level("medium", context),
+            terraform_contextual_confidence("high", context),
+            "secrets",
+            "A Terraform output with a secret-like name is not marked sensitive. Inspectra redacted the output value.",
+            f"output={output_name}; value=[REDACTED]; sensitive={sensitive_value or 'missing'}",
+            "Mark secret-like outputs as sensitive and avoid exposing raw credential material.",
+            file_path=path,
+            context=context,
+            line=value_attr[0],
+            block_type="output",
+            field_path=f"output.{output_name}.value",
+            redacted=True,
+        )
+
+
+def analyze_terraform_resource_block(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    block: dict[str, Any],
+    labels: list[str],
+) -> None:
+    resource_type = labels[0] if labels else "unknown"
+    resource_name = labels[1] if len(labels) > 1 else "unknown"
+    provider = resource_type.split("_", 1)[0] if "_" in resource_type else None
+    analysis["resources"].append(
+        {
+            "path": path,
+            "context": context,
+            "provider": provider,
+            "resource_type": resource_type,
+            "resource_name": resource_name,
+            "line": block.get("line"),
+        }
+    )
+    analysis["summary"]["resources_detected"] = len(analysis["resources"])
+    block_text = terraform_block_text(block)
+    analyze_terraform_resource_secret_hints(analysis, path, context, block, resource_type, resource_name, provider, block_text)
+    analyze_terraform_aws_resource_hints(analysis, path, context, block, resource_type, resource_name, provider, block_text)
+
+
+def analyze_terraform_resource_secret_hints(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    block: dict[str, Any],
+    resource_type: str,
+    resource_name: str,
+    provider: str | None,
+    block_text: str,
+) -> None:
+    if PRIVATE_KEY_BLOCK_RE.search(block_text) or re.search(r"(?im)^\s*private_key\s*=", block_text):
+        add_terraform_resource_finding(
+            analysis,
+            "terraform_plaintext_private_key_hint",
+            "Plaintext private key material observed",
+            "medium",
+            "secrets",
+            path,
+            context,
+            resource_type,
+            resource_name,
+            "private_key",
+            provider=provider,
+            line=int(block.get("line") or 0) or None,
+            evidence_extra="private_key=[REDACTED]",
+            redacted=True,
+        )
+    if re.search(r"(?ims)^\s*(?:user_data|metadata_startup_script)\s*=", block_text) and (
+        TERRAFORM_SECRET_KEY_RE.search(block_text) or PRIVATE_KEY_BLOCK_RE.search(block_text)
+    ):
+        add_terraform_resource_finding(
+            analysis,
+            "terraform_secret_in_user_data_hint",
+            "user_data or startup script contains secret-like material",
+            "medium",
+            "secrets",
+            path,
+            context,
+            resource_type,
+            resource_name,
+            "user_data",
+            provider=provider,
+            line=int(block.get("line") or 0) or None,
+            evidence_extra="user_data=[REDACTED]",
+            redacted=True,
+        )
+
+
+def analyze_terraform_aws_resource_hints(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    block: dict[str, Any],
+    resource_type: str,
+    resource_name: str,
+    provider: str | None,
+    block_text: str,
+) -> None:
+    if resource_type in {"aws_security_group", "aws_security_group_rule"}:
+        has_ipv4_world = "0.0.0.0/0" in block_text
+        has_ipv6_world = "::/0" in block_text
+        if has_ipv4_world:
+            add_terraform_resource_finding(analysis, "aws_security_group_ingress_any_ipv4", "AWS security group allows ingress from any IPv4 address", "medium", "network", path, context, resource_type, resource_name, "ingress.cidr_blocks", provider=provider, line=int(block.get("line") or 0) or None)
+        if has_ipv6_world:
+            add_terraform_resource_finding(analysis, "aws_security_group_ingress_any_ipv6", "AWS security group allows ingress from any IPv6 address", "medium", "network", path, context, resource_type, resource_name, "ingress.ipv6_cidr_blocks", provider=provider, line=int(block.get("line") or 0) or None)
+        if (has_ipv4_world or has_ipv6_world) and re.search(r"(?im)(?:from_port|to_port|port)\s*=\s*22\b", block_text):
+            add_terraform_resource_finding(analysis, "aws_security_group_ssh_open_world", "AWS security group exposes SSH to the world", "medium", "network", path, context, resource_type, resource_name, "ingress.22", provider=provider, line=int(block.get("line") or 0) or None)
+        if (has_ipv4_world or has_ipv6_world) and re.search(r"(?im)(?:from_port|to_port|port)\s*=\s*3389\b", block_text):
+            add_terraform_resource_finding(analysis, "aws_security_group_rdp_open_world", "AWS security group exposes RDP to the world", "medium", "network", path, context, resource_type, resource_name, "ingress.3389", provider=provider, line=int(block.get("line") or 0) or None)
+    if resource_type.startswith("aws_iam_"):
+        if re.search(r"(?is)(?:actions?|Action)\"?\s*[:=]\s*(?:\[)?\s*[\"']\*[\"']", block_text):
+            add_terraform_resource_finding(analysis, "aws_iam_policy_wildcard_action", "AWS IAM policy uses wildcard action", "medium", "iam", path, context, resource_type, resource_name, "policy.Action", provider=provider, line=int(block.get("line") or 0) or None)
+        if re.search(r"(?is)(?:resources?|Resource)\"?\s*[:=]\s*(?:\[)?\s*[\"']\*[\"']", block_text):
+            add_terraform_resource_finding(analysis, "aws_iam_policy_wildcard_resource", "AWS IAM policy uses wildcard resource", "medium", "iam", path, context, resource_type, resource_name, "policy.Resource", provider=provider, line=int(block.get("line") or 0) or None)
+    if resource_type in {"aws_s3_bucket_acl", "aws_s3_bucket_policy", "aws_s3_bucket_public_access_block"}:
+        if re.search(r"(?i)public-read|public-read-write|principal\s*=\s*['\"]?\*|block_public_(?:acls|policy)\s*=\s*false|restrict_public_buckets\s*=\s*false", block_text):
+            add_terraform_resource_finding(analysis, "aws_s3_bucket_public_access_risk", "AWS S3 configuration has a public-access review indicator", "medium", "storage", path, context, resource_type, resource_name, "s3.public_access", provider=provider, line=int(block.get("line") or 0) or None)
+
+
+def analyze_terraform_required_providers(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    lines: list[tuple[int, str]],
+    active_text: str,
+) -> None:
+    if "required_providers" not in active_text:
+        return
+    provider_names = set(re.findall(r"(?im)^\s*([A-Za-z0-9_-]+)\s*=\s*\{", active_text))
+    versions = re.findall(r"(?im)^\s*version\s*=\s*['\"]([^'\"]+)['\"]", active_text)
+    if not versions and provider_names:
+        add_terraform_config_finding(
+            analysis,
+            "terraform_provider_version_unpinned",
+            "Required provider version was not observed",
+            terraform_contextual_level("low", context),
+            terraform_contextual_confidence("medium", context),
+            "provider",
+            "A required_providers block was observed without an obvious version constraint. Inspectra did not initialize providers.",
+            f"{path}: required_providers without version",
+            "Pin provider versions with reviewed constraints and commit the lockfile for repeatability.",
+            file_path=path,
+            context=context,
+            block_type="required_providers",
+        )
+        return
+    for line_number, line in lines:
+        match = re.match(r"\s*version\s*=\s*['\"]([^'\"]+)['\"]", line)
+        if not match:
+            continue
+        version = match.group(1).strip()
+        if not re.fullmatch(r"=?\s*\d+(?:\.\d+){1,3}", version):
+            add_terraform_config_finding(
+                analysis,
+                "terraform_provider_version_unpinned",
+                "Required provider version appears broad",
+                terraform_contextual_level("low", context),
+                terraform_contextual_confidence("medium", context),
+                "provider",
+                "A provider version constraint appears broad or floating. Inspectra did not initialize or download providers.",
+                f"version={version}",
+                "Use reviewed provider version constraints and lockfiles for repeatable runs.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                block_type="required_providers",
+                field_path="version",
+            )
+
+
+def add_terraform_resource_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    category: str,
+    path: str,
+    context: str,
+    resource_type: str,
+    resource_name: str,
+    field_path: str,
+    *,
+    provider: str | None = None,
+    line: int | None = None,
+    evidence_extra: str | None = None,
+    redacted: bool = False,
+) -> None:
+    parts = [f"resource_type={resource_type}", f"resource_name={resource_name}", f"field={field_path}"]
+    if provider:
+        parts.append(f"provider={provider}")
+    if evidence_extra:
+        parts.append(evidence_extra)
+    add_terraform_config_finding(
+        analysis,
+        finding_id,
+        title,
+        terraform_contextual_level(level, context),
+        terraform_contextual_confidence("high" if level == "medium" else "medium", context),
+        category,
+        "A Terraform static review indicator was observed. Inspectra does not run Terraform, evaluate plans, or contact cloud providers.",
+        "; ".join(parts),
+        "Review the configuration in the intended environment and apply least-privilege or hardening controls where appropriate.",
+        file_path=path,
+        context=context,
+        line=line,
+        provider=provider,
+        resource_type=resource_type,
+        resource_name=resource_name,
+        block_type="resource",
+        field_path=field_path,
+        redacted=redacted,
+    )
+
+
+def redact_terraform_secret_text(text: str | None) -> tuple[str, int]:
+    if text is None:
+        return "", 0
+    redacted, count = redact_k8s_secret_text(str(text))
+    redacted = redacted.replace("[REDACTED PRIVATE KEY]", "[REDACTED]").replace("PRIVATE_KEY_BLOCK_REDACTED", "[REDACTED]")
+
+    def apply(pattern: str, replacement: str) -> None:
+        nonlocal redacted, count
+        redacted, replacements = re.subn(pattern, replacement, redacted, flags=re.IGNORECASE)
+        count += replacements
+
+    apply(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", "[REDACTED]")
+    apply(r"\bAKIA[0-9A-Z]{16}\b", "[REDACTED]")
+    apply(r"\b(?:[a-z0-9._-]*user|username|login):(?:[a-z0-9._-]*(?:pass|password|secret|token|key)[a-z0-9._-]*)\b", "[REDACTED]")
+    apply(
+        r"(\b(?:access_key|secret_key|secret_access_key|session_token|client_secret|password|token|api_key|apikey|private_key|connection_string|certificate|credential)\b\s*[:=]\s*)(['\"]?)[^\s,'\"}\]]+",
+        r"\1\2[REDACTED]",
+    )
+    return redacted, count
+
+
+def finalize_terraform_config_analysis(analysis: dict[str, Any]) -> None:
+    contexts = [str(context) for context in analysis.get("_terraform_contexts", []) if isinstance(context, str)]
+    has_terraform_files = bool(analysis.get("_terraform_hcl_files_reviewed"))
+    if has_terraform_files and not analysis.get("_required_version_observed"):
+        context = "production" if "production" in contexts else "shared"
+        add_terraform_config_finding(
+            analysis,
+            "terraform_required_version_missing",
+            "Terraform required_version was not observed",
+            terraform_contextual_level("low", context),
+            terraform_contextual_confidence("medium", context),
+            "versioning",
+            "No Terraform required_version constraint was observed in reviewed Terraform files. Inspectra did not run Terraform.",
+            "terraform.required_version missing",
+            "Declare reviewed Terraform/OpenTofu version constraints where repeatability matters.",
+            context=context,
+            block_type="terraform",
+        )
+    if has_terraform_files and not analysis.get("_lockfile_observed"):
+        context = "production" if "production" in contexts else "shared"
+        add_terraform_config_finding(
+            analysis,
+            "terraform_lockfile_missing",
+            "Terraform lockfile was not observed",
+            terraform_contextual_level("low", context),
+            terraform_contextual_confidence("medium", context),
+            "versioning",
+            "No .terraform.lock.hcl file was observed in the archive. Inspectra did not initialize providers.",
+            ".terraform.lock.hcl missing",
+            "Commit and review lockfiles for workflows that require reproducible provider selections.",
+            context=context,
+        )
+    if has_terraform_files and not analysis["backends"] and "production" in contexts:
+        add_terraform_config_finding(
+            analysis,
+            "terraform_remote_backend_missing",
+            "Remote backend was not observed in production-like Terraform paths",
+            "low",
+            "backend",
+            "Production-like Terraform files were observed without an obvious backend block. Inspectra did not access state.",
+            "terraform.backend missing",
+            "Confirm state is stored and protected through the intended backend for production environments.",
+            context="production",
+            block_type="backend",
+        )
+    analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+    if analysis["summary"]["redacted_values_count"]:
+        analysis["redaction_notes"] = [
+            "Secret-like Terraform/OpenTofu/Terragrunt values are redacted before storage on a best-effort basis.",
+            "Terraform state files are detected but not read in this analyzer.",
+        ]
+    analysis.pop("_required_version_observed", None)
+    analysis.pop("_lockfile_observed", None)
+    analysis.pop("_terraform_contexts", None)
+    analysis.pop("_terraform_hcl_files_reviewed", None)
+
+
+def add_terraform_config_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    confidence: str,
+    category: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str | None = None,
+    context: str | None = None,
+    line: int | None = None,
+    provider: str | None = None,
+    resource_type: str | None = None,
+    resource_name: str | None = None,
+    block_type: str | None = None,
+    field_path: str | None = None,
+    redacted: bool = False,
+) -> None:
+    safe_description, description_redactions = redact_terraform_secret_text(description)
+    safe_evidence, evidence_redactions = redact_terraform_secret_text(evidence)
+    safe_recommendation, recommendation_redactions = redact_terraform_secret_text(recommendation)
+    redaction_count = description_redactions + evidence_redactions + recommendation_redactions
+    if redacted and redaction_count == 0:
+        redaction_count = 1
+    analysis["summary"]["redacted_values_count"] += redaction_count
+
+    finding = make_finding(finding_id, title, level, safe_description, safe_evidence, safe_recommendation)
+    finding["confidence"] = confidence
+    finding["category"] = category
+    if file_path:
+        finding["file_path"] = file_path
+    if context:
+        finding["context"] = context
+    if line is not None:
+        finding["line"] = line
+    if provider:
+        finding["provider"] = provider
+    if resource_type:
+        finding["resource_type"] = resource_type
+    if resource_name:
+        finding["resource_name"] = resource_name
+    if block_type:
+        finding["block_type"] = block_type
     if field_path:
         finding["field_path"] = field_path
     analysis["findings"].append(finding)

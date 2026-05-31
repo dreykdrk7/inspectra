@@ -2115,6 +2115,267 @@ async def test_analyze_k8s_config_respects_file_and_byte_limits(monkeypatch, tmp
 
 
 @pytest.mark.anyio
+async def test_analyze_terraform_config_reports_findings_and_redacts_secrets(monkeypatch, tmp_path):
+    main_tf = b'''
+terraform {
+  required_providers {
+    aws = {
+      source = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+  }
+  backend "s3" {
+    bucket = "tf-state"
+    access_key = "AKIAIOSFODNN7EXAMPLE"
+    secret_key = "aws_secret_access_key_should_not_render"
+  }
+}
+
+provider "aws" {
+  region = "us-east-1"
+  access_key = "AKIAIOSFODNN7EXAMPLE"
+  secret_key = "aws_secret_access_key_should_not_render"
+}
+
+module "vpc" {
+  source = "git::https://example.com/org/vpc.git"
+}
+
+variable "password" {
+  default = "super-secret-password"
+}
+
+output "api_key" {
+  value = "raw-api-key-123456"
+  sensitive = false
+}
+
+resource "aws_security_group" "ssh" {
+  ingress {
+    from_port = 22
+    to_port = 22
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "rdp" {
+  ingress {
+    from_port = 3389
+    to_port = 3389
+    ipv6_cidr_blocks = ["::/0"]
+  }
+}
+
+resource "aws_iam_policy" "wild" {
+  policy = <<POLICY
+{
+  "Statement": [
+    {
+      "Action": "*",
+      "Resource": "*"
+    }
+  ]
+}
+POLICY
+}
+
+resource "aws_s3_bucket_acl" "public" {
+  bucket = "example"
+  acl = "public-read"
+}
+
+resource "aws_instance" "web" {
+  user_data = <<EOF
+PASSWORD=super-secret-password
+TOKEN=token_should_never_render
+-----BEGIN PRIVATE KEY-----
+token_should_never_render
+-----END PRIVATE KEY-----
+EOF
+}
+'''
+    tfvars = b'''
+db_password = "super-secret-password"
+api_key = "raw-api-key-123456"
+database_url = "postgres://user:pass@example.com/db"
+'''
+    tfstate = b'{"outputs":{"db_password":{"value":"db_password_plaintext"}},"private":"token_should_never_render"}'
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "environments/prod/main.tf": main_tf,
+            "environments/prod/terraform.tfvars": tfvars,
+            "environments/prod/terraform.tfstate": tfstate,
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/terraform-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["analyzer"] == "terraform_config_basic"
+    assert payload["summary"]["files_reviewed"] == 2
+    assert payload["summary"]["tfvars_files_detected"] == 1
+    assert payload["summary"]["state_files_detected"] == 1
+    assert payload["summary"]["providers_detected"] == 1
+    assert payload["summary"]["backends_detected"] == 1
+    assert payload["summary"]["modules_detected"] == 1
+    assert payload["summary"]["resources_detected"] >= 5
+    assert "terraform_tfvars_secret_like_key" in finding_ids
+    assert "terraform_variable_default_secret_like" in finding_ids
+    assert "terraform_output_sensitive_false_secret_like" in finding_ids
+    assert "terraform_state_file_present" in finding_ids
+    assert "terraform_backend_credentials_hint" in finding_ids
+    assert "terraform_provider_credentials_hint" in finding_ids
+    assert "terraform_plaintext_private_key_hint" in finding_ids
+    assert "terraform_secret_in_user_data_hint" in finding_ids
+    assert "terraform_provider_version_unpinned" in finding_ids
+    assert "terraform_module_source_unpinned" in finding_ids
+    assert "terraform_lockfile_missing" in finding_ids
+    assert "aws_security_group_ingress_any_ipv4" in finding_ids
+    assert "aws_security_group_ingress_any_ipv6" in finding_ids
+    assert "aws_security_group_ssh_open_world" in finding_ids
+    assert "aws_security_group_rdp_open_world" in finding_ids
+    assert "aws_iam_policy_wildcard_action" in finding_ids
+    assert "aws_iam_policy_wildcard_resource" in finding_ids
+    assert "aws_s3_bucket_public_access_risk" in finding_ids
+    assert payload["state_files"][0]["read"] is False
+    assert "[REDACTED]" in serialized
+    for secret in (
+        "super-secret-password",
+        "raw-api-key-123456",
+        "token_should_never_render",
+        "PRIVATE KEY",
+        "db_password_plaintext",
+        "AKIAIOSFODNN7EXAMPLE",
+        "aws_secret_access_key_should_not_render",
+        "postgres://user:pass@example.com/db",
+    ):
+        assert secret not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_terraform_config_comments_context_and_required_version(monkeypatch, tmp_path):
+    main_tf = b'''
+terraform {
+  required_version = ">= 1.6"
+}
+
+# resource "aws_security_group" "commented" {
+#   ingress {
+#     from_port = 22
+#     cidr_blocks = ["0.0.0.0/0"]
+#   }
+# }
+
+variable "password" { default = "super-secret-password" }
+'''
+    archive_path = write_zip_archive(tmp_path, {"examples/main.tf": main_tf})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/terraform-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    variable_finding = next(finding for finding in payload["findings"] if finding["id"] == "terraform_variable_default_secret_like")
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "aws_security_group_ssh_open_world" not in finding_ids
+    assert "terraform_required_version_missing" not in finding_ids
+    assert variable_finding["context"] == "example"
+    assert variable_finding["level"] == "low"
+    assert "super-secret-password" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_terraform_config_skips_unsafe_archive_entries(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        traversal_content = b'db_password = "super-secret-password"\n'
+        traversal_info = tarfile.TarInfo("../terraform/secrets.tfvars")
+        traversal_info.size = len(traversal_content)
+        archive.addfile(traversal_info, io.BytesIO(traversal_content))
+
+        link_info = tarfile.TarInfo("terraform/main.tf")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real-main.tf"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo("terraform/vars.tfvars")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real-vars.tfvars"
+        archive.addfile(hardlink_info)
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/terraform-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    reasons = {item["skip_reason"] for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "path_traversal" in reasons
+    assert "not_regular_file:symlink" in reasons
+    assert "not_regular_file:hardlink" in reasons
+    assert "terraform_config_path_traversal" in {finding["id"] for finding in payload["findings"]}
+    assert "terraform_config_not_regular_file" in {finding["id"] for finding in payload["findings"]}
+    assert "super-secret-password" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_terraform_config_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "TERRAFORM_CONFIG_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "TERRAFORM_CONFIG_MAX_FILE_BYTES", 80)
+    monkeypatch.setattr(runner, "TERRAFORM_CONFIG_MAX_TOTAL_BYTES", 120)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "terraform/main.tf": b'terraform { required_version = ">= 1.6" }\n',
+            "terraform/secret.tfvars": b'db_password = "' + b"x" * 100 + b'"\n',
+            "terraform/extra.tf": b'provider "aws" { region = "us-east-1" }\n',
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/terraform-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "file_too_large" in reasons
+    assert "too_many_files" in reasons
+    assert "xxxxxxxxxxxxxxxxxxxxxxxx" not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
     server = start_test_http_server()
     transport = ASGITransport(app=runner.app)
