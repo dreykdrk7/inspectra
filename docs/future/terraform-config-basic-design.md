@@ -1,6 +1,6 @@
 # terraform_config_basic Design
 
-Status: proposed docs-first design. No runtime endpoint, runner analyzer, backend job, frontend UI, or exports are implemented by this document.
+Status: historical docs-first design reference. `terraform_config_basic` v1 is implemented and closed as of commits `4dc957d`, `4d8bc48`, `3c87132`, `39a35e9`, and `6b1a9c9`; see `docs/future/terraform-config-basic-closeout.md` for the runtime closeout and smoke checklist.
 
 ## 1. Module Objective
 
