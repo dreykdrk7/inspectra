@@ -101,5 +101,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "ci_cd_config_basic") {
     return "ci_cd_config_basic";
   }
+  if (auditType === "k8s_config_basic") {
+    return "k8s_config_basic";
+  }
   return auditType;
 }

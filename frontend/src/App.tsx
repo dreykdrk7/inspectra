@@ -19,6 +19,7 @@ import { DjangoConfigJobReport } from "./DjangoConfigJobReport";
 import { DomainJobReport } from "./DomainJobReport";
 import { DockerConfigJobReport } from "./DockerConfigJobReport";
 import { ImageJobReport } from "./ImageJobReport";
+import { K8sConfigJobReport } from "./K8sConfigJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
 import { NodePackageConfigJobReport } from "./NodePackageConfigJobReport";
 import { PdfJobReport } from "./PdfJobReport";
@@ -243,6 +244,17 @@ export function App() {
     setActionError(null);
     try {
       const job = await api.launchCiCdConfigAudit(file.id);
+      setSelectedJob(job);
+      await refreshJobs();
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  async function launchK8sConfigAudit(file: FileRecord) {
+    setActionError(null);
+    try {
+      const job = await api.launchK8sConfigAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -583,6 +595,12 @@ export function App() {
                               Analyze CI/CD config
                             </button>
                           ) : null}
+                          {file.kind === "archive" ? (
+                            <button onClick={() => void launchK8sConfigAudit(file)}>
+                              <Play size={15} aria-hidden="true" />
+                              Analyze Kubernetes config
+                            </button>
+                          ) : null}
                           <button className="danger-button" onClick={() => void deleteFile(file.id)}>
                             <Trash2 size={15} aria-hidden="true" />
                             Delete
@@ -624,7 +642,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic", "ci_cd_config_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic", "ci_cd_config_basic", "k8s_config_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -706,6 +724,8 @@ export function App() {
               <NodePackageConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "ci_cd_config_basic" ? (
               <CiCdConfigJobReport job={selectedJob} file={selectedJobFile} />
+            ) : selectedJob.audit_type === "k8s_config_basic" ? (
+              <K8sConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : (
               <WebJobReport job={selectedJob} />
             )}
@@ -951,6 +971,12 @@ function summarizeJob(job: JobListItem): string {
     const workflowsDetected = typeof job.summary.workflow_files_detected === "number" ? job.summary.workflow_files_detected : 0;
     const jobsDetected = typeof job.summary.jobs_detected === "number" ? job.summary.jobs_detected : 0;
     return `${filesReviewed} files reviewed, ${workflowsDetected} workflows, ${jobsDetected} jobs, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "k8s_config_basic") {
+    const filesReviewed = typeof job.summary.files_reviewed === "number" ? job.summary.files_reviewed : 0;
+    const resourcesDetected = typeof job.summary.resources_detected === "number" ? job.summary.resources_detected : 0;
+    const workloadsDetected = typeof job.summary.workloads_detected === "number" ? job.summary.workloads_detected : 0;
+    return `${filesReviewed} files reviewed, ${resourcesDetected} resources, ${workloadsDetected} workloads, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

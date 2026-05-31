@@ -6,6 +6,7 @@ import { buildDjangoConfigAuditReport, redactDjangoConfigValue } from "./djangoC
 import { buildDomainAuditReport } from "./domainReport";
 import { buildDockerConfigAuditReport, redactDockerConfigValue } from "./dockerConfigReport";
 import { buildImageAuditReport } from "./imageReport";
+import { buildK8sConfigAuditReport, redactK8sConfigValue } from "./k8sConfigReport";
 import { buildManifestAuditReport } from "./manifestReport";
 import { buildNodePackageConfigAuditReport, redactNodePackageConfigValue } from "./nodePackageConfigReport";
 import { buildPdfAuditReport } from "./pdfReport";
@@ -1004,5 +1005,126 @@ describe("report helpers", () => {
     expect(report.overview).toContainEqual({ label: "Workflows", value: "2" });
     expect(report.actions[0]).toMatchObject({ action: "actions/checkout", ref: "main" });
     expect(report.findings[0]).toMatchObject({ id: "github_permissions_missing", level: "unknown", confidence: null });
+  });
+
+  it("normalizes Kubernetes config resources, findings, context, and runner field names", () => {
+    const report = buildK8sConfigAuditReport({
+      ...baseJob,
+      audit_type: "k8s_config_basic",
+      result: {
+        analyzer: "k8s_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_considered: 5,
+          files_reviewed: 4,
+          manifest_files_detected: 4,
+          resources_detected: 4,
+          workloads_detected: 1,
+          services_detected: 1,
+          secrets_detected: 1,
+          rbac_resources_detected: 1,
+          findings_count: 2,
+          redacted_values_count: 1,
+          truncated: false
+        },
+        files_detected: [
+          { path: "deploy/production/app.yaml", category: "k8s_manifest", read: true, context: "production" },
+          { path: ".env.production", category: "env_sensitive", read: false, skip_reason: "real_env_file_not_read", context: "production" }
+        ],
+        resources: [{ path: "deploy/production/app.yaml", kind: "Deployment", name: "web", namespace: "prod", context: "production" }],
+        workloads: [{ path: "deploy/production/app.yaml", kind: "Deployment", name: "web", namespace: "prod", context: "production" }],
+        containers: [{ path: "deploy/production/app.yaml", kind: "Deployment", resource_name: "web", container: "app", image: "nginx:latest", context: "production" }],
+        services: [{ path: "deploy/production/app.yaml", kind: "Service", name: "web", type: "LoadBalancer", context: "production" }],
+        ingress: [{ path: "deploy/production/app.yaml", kind: "Ingress", name: "web", context: "production" }],
+        rbac: [{ path: "deploy/production/app.yaml", kind: "ClusterRole", name: "broad", context: "production" }],
+        secrets: [{ path: "deploy/production/app.yaml", kind: "Secret", name: "app-secret", namespace: "prod", context: "production" }],
+        helm_kustomize_signals: [{ path: "charts/app/templates/deployment.yaml", category: "helm_template", rendered: false, context: "example" }],
+        findings: [
+          {
+            id: "privileged_container",
+            title: "Container is configured as privileged",
+            level: "medium",
+            confidence: "high",
+            category: "pod_security",
+            kind: "Deployment",
+            resource_name: "web",
+            namespace: "prod",
+            container: "app",
+            field_path: "securityContext.privileged",
+            file_path: "deploy/production/app.yaml",
+            context: "production",
+            line: "22",
+            evidence: "kind=Deployment; metadata.name=web; field=securityContext.privileged"
+          },
+          { code: "image_latest_tag", message: "image latest", severity: "low" }
+        ],
+        redaction_notes: ["Kubernetes values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isK8sConfigAudit).toBe(true);
+    expect(report.overview).toContainEqual({ label: "Resources", value: "4" });
+    expect(report.detectedFiles[0]).toMatchObject({ path: "deploy/production/app.yaml", context: "production" });
+    expect(report.resources[0]).toMatchObject({ kind: "Deployment", name: "web", namespace: "prod" });
+    expect(report.containers[0]).toMatchObject({ resourceName: "web", container: "app", image: "nginx:latest" });
+    expect(report.services[0]).toMatchObject({ type: "LoadBalancer" });
+    expect(report.helmKustomizeSignals[0]).toMatchObject({ category: "helm_template", rendered: false });
+    expect(report.findings[0]).toMatchObject({ id: "privileged_container", fieldPath: "securityContext.privileged", line: 22 });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["medium", "low"]);
+    expect(report.redactionNotes).toEqual(["Kubernetes values were redacted."]);
+  });
+
+  it("redacts legacy Kubernetes config payloads defensively", () => {
+    const report = buildK8sConfigAuditReport({
+      ...baseJob,
+      audit_type: "k8s_config_basic",
+      error: "SECRET_KEY=fixture-secret",
+      result: {
+        analyzer: "k8s_config_basic",
+        summary: { redacted_values_count: 0 },
+        resources: [{ kind: "Secret", name: "app-secret", stringData: { password: "fixture-password" }, data: { token: "fixture-token" } }],
+        containers: [
+          {
+            container: "app",
+            env: [{ name: "API_KEY", value: "fixture-key" }],
+            image: "https://user:fixture-password@registry.example.test/app"
+          }
+        ],
+        secrets: [{ kind: "Secret", name: "app-secret", stringData: "TOKEN=fixture-token", data: "password=fixture-password" }],
+        findings: [
+          {
+            id: "legacy_k8s_secret",
+            title: "Legacy Kubernetes secret",
+            evidence: "PASSWORD=fixture-password",
+            description: "CLIENT_SECRET=fixture-secret",
+            recommendation: "-----BEGIN PRIVATE KEY----- fixture material -----END PRIVATE KEY-----"
+          }
+        ],
+        errors: ["API_KEY=fixture-key"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(
+      redactK8sConfigValue({
+        error: "SECRET_KEY=fixture-secret",
+        result: report
+      })
+    );
+
+    for (const secret of [
+      "fixture-token",
+      "fixture-password",
+      "fixture-key",
+      "fixture-secret",
+      "fixture material",
+      "https://user:fixture-password@registry.example.test/app"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.findings[0].evidence).toContain("[REDACTED]");
+    expect(report.containers[0].image).toContain("[REDACTED]");
   });
 });

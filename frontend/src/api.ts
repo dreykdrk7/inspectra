@@ -145,6 +145,13 @@ export async function launchCiCdConfigAudit(fileId: string): Promise<JobRecord> 
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function launchK8sConfigAudit(fileId: string): Promise<JobRecord> {
+  const response = await fetch(`${API_BASE_URL}/audits/k8s-config/${fileId}`, {
+    method: 'POST',
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function launchWebBasicAudit(url: string, authorizationConfirmed: boolean): Promise<JobRecord> {
   const response = await fetch(`${API_BASE_URL}/audits/web/basic`, {
     method: 'POST',
@@ -209,6 +216,7 @@ export const api = {
   launchSecretsReviewAudit,
   launchNodePackageConfigAudit,
   launchCiCdConfigAudit,
+  launchK8sConfigAudit,
   launchWebBasicAudit,
   launchDomainBasicAudit,
   launchSubdomainInventoryAudit,
