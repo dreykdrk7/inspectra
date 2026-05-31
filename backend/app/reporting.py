@@ -214,6 +214,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_node_package_config_sections(result))
     elif job.audit_type == "ci_cd_config_basic":
         sections.extend(build_ci_cd_config_sections(result))
+    elif job.audit_type == "k8s_config_basic":
+        sections.extend(build_k8s_config_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -431,6 +433,29 @@ def build_ci_cd_config_sections(result: dict[str, Any]) -> list[ReportSection]:
     ]
 
 
+def build_k8s_config_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "Kubernetes Config Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("Kubernetes Config Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Kubernetes Config Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Resource Overview", flatten_list(result.get("resources"))),
+        ReportSection("Workloads", flatten_list(result.get("workloads"))),
+        ReportSection("Containers", flatten_list(result.get("containers"))),
+        ReportSection("Services", flatten_list(result.get("services"))),
+        ReportSection("Ingress", flatten_list(result.get("ingress"))),
+        ReportSection("RBAC", flatten_list(result.get("rbac"))),
+        ReportSection("Secrets", flatten_list(result.get("secrets"))),
+        ReportSection("Helm / Kustomize Signals", flatten_list(result.get("helm_kustomize_signals"))),
+        ReportSection("Files Detected", flatten_django_detected_files(result.get("files_detected"))),
+        ReportSection("Files Reviewed", flatten_list(result.get("files_reviewed"))),
+        ReportSection("Findings", flatten_k8s_findings(result.get("findings"))),
+        ReportSection("Redaction Notes", flatten_list(result.get("redaction_notes"))),
+    ]
+
+
 def flatten_django_detected_files(value: Any) -> list[tuple[str, str]]:
     if not isinstance(value, list):
         return []
@@ -524,6 +549,37 @@ def flatten_ci_cd_findings(value: Any) -> list[tuple[str, str]]:
         ("File path", "file_path"),
         ("Job", "job"),
         ("Step", "step"),
+        ("Line", "line"),
+        ("Description", "description"),
+        ("Evidence", "evidence"),
+        ("Recommendation", "recommendation"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Finding {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"Finding {index}", record, preferred_keys)
+    return rows
+
+
+def flatten_k8s_findings(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("ID", "id"),
+        ("Title", "title"),
+        ("Level", "level"),
+        ("Confidence", "confidence"),
+        ("Category", "category"),
+        ("Context", "context"),
+        ("Kind", "kind"),
+        ("Resource name", "resource_name"),
+        ("Namespace", "namespace"),
+        ("Container", "container"),
+        ("Field path", "field_path"),
+        ("File path", "file_path"),
         ("Line", "line"),
         ("Description", "description"),
         ("Evidence", "evidence"),
@@ -676,6 +732,20 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
         data["errors_count"] = len(result.get("errors") or [])
+    elif job.audit_type == "k8s_config_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["files_considered"] = summary.get("files_considered", "N/A")
+        data["files_reviewed"] = summary.get("files_reviewed", "N/A")
+        data["manifest_files_detected"] = summary.get("manifest_files_detected", "N/A")
+        data["resources_detected"] = summary.get("resources_detected", "N/A")
+        data["workloads_detected"] = summary.get("workloads_detected", "N/A")
+        data["services_detected"] = summary.get("services_detected", "N/A")
+        data["secrets_detected"] = summary.get("secrets_detected", "N/A")
+        data["rbac_resources_detected"] = summary.get("rbac_resources_detected", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
+        data["errors_count"] = len(result.get("errors") or [])
     return data
 
 
@@ -715,6 +785,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_node_package_config_value(result))
     if job.audit_type == "ci_cd_config_basic":
         return as_dict(redact_ci_cd_config_value(result))
+    if job.audit_type == "k8s_config_basic":
+        return as_dict(redact_k8s_config_value(result))
     return result
 
 
@@ -733,6 +805,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_node_package_secret_text(job.error)
     if job.audit_type == "ci_cd_config_basic":
         return redact_ci_cd_secret_text(job.error)
+    if job.audit_type == "k8s_config_basic":
+        return redact_k8s_secret_text(job.error)
     return job.error
 
 
@@ -894,6 +968,62 @@ def is_ci_cd_secret_mapping_key(key: str) -> bool:
 
 def redact_ci_cd_secret_text(value: str) -> str:
     return redact_node_package_secret_text(value)
+
+
+def redact_k8s_config_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_k8s_secret_text(value)
+    if isinstance(value, list):
+        return [redact_k8s_config_value(item) for item in value]
+    if isinstance(value, dict):
+        secret_named_value = k8s_record_has_secret_name(value)
+        return {
+            key: "[REDACTED]"
+            if is_k8s_secret_mapping_key(str(key))
+            or (secret_named_value and str(key).lower() in {"value", "raw_value", "default", "data", "stringdata", "string_data"})
+            else redact_k8s_config_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def k8s_record_has_secret_name(record: dict[str, Any]) -> bool:
+    for marker in ("key", "name", "setting", "variable", "env", "field_path"):
+        candidate = record.get(marker)
+        if candidate is not None and is_k8s_secret_mapping_key(str(candidate)):
+            return True
+    return False
+
+
+def is_k8s_secret_mapping_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if "redacted" in normalized or normalized.endswith("_count"):
+        return False
+    if normalized in {"secret", "secrets"}:
+        return False
+    if normalized in {"data", "stringdata", "string_data"}:
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "auth_token",
+            "client_secret",
+            "private_key",
+            "api_key",
+            "apikey",
+            "password",
+            "passwd",
+            "token",
+            "secret",
+        )
+    )
+
+
+def redact_k8s_secret_text(value: str) -> str:
+    return redact_ci_cd_secret_text(value)
 
 
 def collect_errors(job: JobRecord) -> dict[str, Any]:

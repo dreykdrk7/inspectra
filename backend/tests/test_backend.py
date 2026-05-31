@@ -23,6 +23,7 @@ from app.services import (
     DomainAuditService,
     DockerConfigAuditService,
     ImageAuditService,
+    K8sConfigAuditService,
     ManifestAuditService,
     NodePackageConfigAuditService,
     PdfAuditService,
@@ -73,6 +74,9 @@ class NoopAuditService:
         return None
 
     async def run_ci_cd_config_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_k8s_config_analysis(self, job_id: str) -> None:
         return None
 
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
@@ -133,6 +137,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.secrets_review_audits = SecretsReviewAuditService(settings, file_store, job_store)
     app.state.node_package_config_audits = NodePackageConfigAuditService(settings, file_store, job_store)
     app.state.ci_cd_config_audits = CiCdConfigAuditService(settings, file_store, job_store)
+    app.state.k8s_config_audits = K8sConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -930,6 +935,96 @@ async def test_ci_cd_config_service_calls_runner_endpoint(monkeypatch, tmp_path)
 
 
 @pytest.mark.anyio
+async def test_k8s_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.k8s_config_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("k8s.zip", make_zip_bytes({"k8s/deployment.yaml": b"apiVersion: apps/v1\nkind: Deployment\n"}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        k8s_response = await client.post(f"/audits/k8s-config/{archive_file['id']}")
+        pdf_as_k8s_response = await client.post(f"/audits/k8s-config/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/k8s-config/not-a-file-id")
+
+    assert k8s_response.status_code == 202
+    assert k8s_response.json()["audit_type"] == "k8s_config_basic"
+    assert pdf_as_k8s_response.status_code == 400
+    assert pdf_as_k8s_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_k8s_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("k8s.zip", make_zip_bytes({"k8s/deployment.yaml": b"apiVersion: apps/v1\nkind: Deployment\n"}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_k8s_config_job(archive.id)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "k8s_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 1,
+                        "files_reviewed": 1,
+                        "manifest_files_detected": 1,
+                        "resources_detected": 1,
+                        "workloads_detected": 1,
+                        "services_detected": 0,
+                        "secrets_detected": 0,
+                        "rbac_resources_detected": 0,
+                        "findings_count": 1,
+                        "redacted_values_count": 0,
+                        "truncated": False,
+                    },
+                    "resources": [{"kind": "Deployment", "name": "app", "path": "k8s/deployment.yaml"}],
+                    "findings": [{"id": "resource_limits_missing", "title": "resources missing", "level": "low"}],
+                    "errors": [],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+
+    await app.state.k8s_config_audits.run_k8s_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    assert updated.status == "completed"
+    assert updated.result["analyzer"] == "k8s_config_basic"
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/k8s-config"
+    assert calls[0]["json"]["file_id"] == archive.id
+    assert calls[0]["json"]["original_filename"] == "k8s.zip"
+    assert calls[0]["json"]["max_files"] == app.state.settings.k8s_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.k8s_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.k8s_config_max_total_bytes
+
+
+@pytest.mark.anyio
 async def test_web_basic_audit_requires_authorization(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     app.state.web_audits = NoopAuditService()
@@ -1673,6 +1768,75 @@ async def test_list_jobs_includes_ci_cd_config_summary(monkeypatch, tmp_path):
     assert summary["findings_count"] == 4
     assert summary["redacted_values_count"] == 1
     assert summary["errors_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_list_jobs_includes_k8s_config_summary_and_sparse_payload(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    app.state.jobs.save(
+        JobRecord(
+            id="e" * 31 + "1",
+            audit_type="k8s_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={
+                "analyzer": "k8s_config_basic",
+                "archive_type": "zip",
+                "summary": {
+                    "files_considered": 4,
+                    "files_reviewed": 3,
+                    "manifest_files_detected": 3,
+                    "resources_detected": 6,
+                    "workloads_detected": 2,
+                    "services_detected": 1,
+                    "secrets_detected": 1,
+                    "rbac_resources_detected": 1,
+                    "findings_count": 5,
+                    "redacted_values_count": 2,
+                    "truncated": False,
+                },
+                "errors": ["one controlled warning"],
+            },
+        )
+    )
+    app.state.jobs.save(
+        JobRecord(
+            id="e" * 31 + "2",
+            audit_type="k8s_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "k8s_config_basic", "summary": "unexpected"},
+        )
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    summaries = {item["id"]: item["summary"] for item in response.json()}
+    summary = summaries["e" * 31 + "1"]
+    assert summary["archive_type"] == "zip"
+    assert summary["files_considered"] == 4
+    assert summary["files_reviewed"] == 3
+    assert summary["manifest_files_detected"] == 3
+    assert summary["resources_detected"] == 6
+    assert summary["workloads_detected"] == 2
+    assert summary["services_detected"] == 1
+    assert summary["secrets_detected"] == 1
+    assert summary["rbac_resources_detected"] == 1
+    assert summary["findings_count"] == 5
+    assert summary["redacted_values_count"] == 2
+    assert summary["errors_count"] == 1
+    sparse_summary = summaries["e" * 31 + "2"]
+    assert sparse_summary["analyzer"] == "k8s_config_basic"
+    assert sparse_summary["files_reviewed"] is None
+    assert sparse_summary["errors_count"] == 0
 
 
 @pytest.mark.anyio
@@ -2939,6 +3103,207 @@ async def test_export_ci_cd_config_jobs_with_sparse_and_incomplete_results(monke
 
 
 @pytest.mark.anyio
+async def test_k8s_config_job_summary_and_export_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_k8s_config_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    summary = list_response.json()[0]["summary"]
+    assert summary["analyzer"] == "k8s_config_basic"
+    assert summary["files_considered"] == 4
+    assert summary["files_reviewed"] == 3
+    assert summary["manifest_files_detected"] == 3
+    assert summary["resources_detected"] == 4
+    assert summary["workloads_detected"] == 1
+    assert summary["services_detected"] == 1
+    assert summary["secrets_detected"] == 1
+    assert summary["rbac_resources_detected"] == 1
+    assert summary["findings_count"] == 2
+    assert summary["redacted_values_count"] == 2
+    assert summary["truncated"] is False
+    assert summary["errors_count"] == 0
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "k8s_config_basic" in responses["markdown"].text
+    assert "Kubernetes Config Metrics" in responses["html"].text
+    assert "Resource Overview" in responses["markdown"].text
+    assert "Helm / Kustomize Signals" in responses["markdown"].text
+    assert "Finding 1 Kind" in responses["markdown"].text
+    assert "Finding 1 Resource name" in responses["markdown"].text
+    assert "Finding 1 Field path" in responses["markdown"].text
+    assert "deploy/production/app.yaml" in responses["markdown"].text
+    assert "privileged_container" in responses["markdown"].text
+    assert "production" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "k8s_config_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_export_k8s_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="e" * 31 + "8",
+        audit_type="k8s_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="SECRET_KEY=fixture-secret",
+        result={
+            "analyzer": "k8s_config_basic",
+            "archive_type": "zip",
+            "summary": {"files_reviewed": 1, "findings_count": 1, "redacted_values_count": 0},
+            "resources": [
+                {
+                    "kind": "Secret",
+                    "name": "app-secret",
+                    "namespace": "production",
+                    "stringData": {"password": "fixture-password"},
+                    "data": {"token": "fixture-token"},
+                }
+            ],
+            "containers": [
+                {
+                    "container": "app",
+                    "env": [{"name": "API_KEY", "value": "fixture-key"}],
+                    "registry": "https://user:fixture-password@registry.example.test/app",
+                }
+            ],
+            "secrets": [
+                {
+                    "kind": "Secret",
+                    "name": "app-secret",
+                    "data": "password=fixture-password",
+                    "stringData": "TOKEN=fixture-token",
+                }
+            ],
+            "findings": [
+                {
+                    "id": "legacy_k8s_secret",
+                    "title": "Legacy raw secret",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets",
+                    "description": "CLIENT_SECRET=fixture-secret",
+                    "evidence": "PASSWORD=fixture-password",
+                    "recommendation": "-----BEGIN PRIVATE KEY----- fixture-private-key-material -----END PRIVATE KEY-----",
+                    "file_path": "deploy/app.yaml",
+                    "context": "production<script>secret=fixture-secret</script>",
+                    "kind": "Secret",
+                    "resource_name": "app-secret",
+                    "namespace": "production",
+                    "field_path": "stringData.password",
+                }
+            ],
+            "errors": ["API_KEY=fixture-key"],
+            "redaction_notes": ["TOKEN=fixture-token"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = (
+        b"fixture-token",
+        b"fixture-password",
+        b"fixture-key",
+        b"fixture-secret",
+        b"fixture-private-key-material",
+        b"BEGIN PRIVATE KEY",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
+
+
+@pytest.mark.anyio
+async def test_export_k8s_config_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="e" * 31 + "9", audit_type="k8s_config_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="f" * 31 + "1", audit_type="k8s_config_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="f" * 31 + "2",
+            audit_type="k8s_config_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="Kubernetes config runner failed safely.",
+        ),
+        JobRecord(
+            id="f" * 31 + "3",
+            audit_type="k8s_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "k8s_config_basic", "summary": {}, "findings": [{"id": "sparse"}], "errors": []},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "k8s_config_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "k8s_config_basic" in response.text
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -3188,6 +3553,7 @@ async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
         "secrets_review_basic",
         "node_package_config_basic",
         "ci_cd_config_basic",
+        "k8s_config_basic",
     )
     job_ids: list[str] = []
     for index, audit_type in enumerate(audit_types, start=1):
@@ -4429,6 +4795,115 @@ def save_ci_cd_config_export_fixture_job() -> JobRecord:
                 },
             ],
             "redaction_notes": ["CI/CD secret-like evidence is redacted on a best-effort basis."],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_k8s_config_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="e" * 31 + "7",
+        audit_type="k8s_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "k8s_config_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 4096, "original_filename": "k8s.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 4,
+                "files_reviewed": 3,
+                "manifest_files_detected": 3,
+                "resources_detected": 4,
+                "workloads_detected": 1,
+                "services_detected": 1,
+                "secrets_detected": 1,
+                "rbac_resources_detected": 1,
+                "findings_count": 2,
+                "redacted_values_count": 2,
+                "truncated": False,
+            },
+            "files_detected": [
+                {"path": "deploy/production/app.yaml", "category": "k8s_manifest", "read": True, "size_bytes": 2048, "context": "production"},
+                {"path": "charts/app/templates/deployment.yaml", "category": "helm_template", "read": True, "size_bytes": 512, "context": "example"},
+                {"path": "kustomization.yaml", "category": "kustomize_config", "read": True, "size_bytes": 128, "context": "shared"},
+                {"path": ".env.production", "category": "env_sensitive", "read": False, "skip_reason": "real_env_file_not_read", "context": "production"},
+            ],
+            "files_reviewed": [
+                {"path": "deploy/production/app.yaml", "category": "k8s_manifest", "context": "production", "bytes_read": 2048},
+                {"path": "charts/app/templates/deployment.yaml", "category": "helm_template", "context": "example", "bytes_read": 512},
+                {"path": "kustomization.yaml", "category": "kustomize_config", "context": "shared", "bytes_read": 128},
+            ],
+            "resources": [
+                {"path": "deploy/production/app.yaml", "kind": "Deployment", "name": "web", "namespace": "production", "context": "production"},
+                {"path": "deploy/production/app.yaml", "kind": "Secret", "name": "app-secret", "namespace": "production", "context": "production"},
+            ],
+            "workloads": [{"path": "deploy/production/app.yaml", "kind": "Deployment", "name": "web", "namespace": "production", "context": "production"}],
+            "containers": [
+                {
+                    "path": "deploy/production/app.yaml",
+                    "kind": "Deployment",
+                    "resource_name": "web",
+                    "namespace": "production",
+                    "container": "app",
+                    "image": "nginx:latest",
+                    "context": "production",
+                }
+            ],
+            "services": [{"path": "deploy/production/app.yaml", "kind": "Service", "name": "web", "type": "LoadBalancer", "context": "production"}],
+            "ingress": [{"path": "deploy/production/app.yaml", "kind": "Ingress", "name": "web", "context": "production"}],
+            "rbac": [{"path": "deploy/production/app.yaml", "kind": "ClusterRole", "name": "broad", "context": "production"}],
+            "secrets": [{"path": "deploy/production/app.yaml", "kind": "Secret", "name": "app-secret", "namespace": "production", "context": "production"}],
+            "helm_kustomize_signals": [
+                {"path": "charts/app/templates/deployment.yaml", "category": "helm_template", "rendered": False, "context": "example"},
+                {"path": "kustomization.yaml", "category": "kustomize_config", "built": False, "context": "shared"},
+            ],
+            "findings": [
+                {
+                    "id": "privileged_container",
+                    "title": "Container is configured as privileged",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "pod_security",
+                    "context": "production",
+                    "kind": "Deployment",
+                    "resource_name": "web",
+                    "namespace": "production",
+                    "container": "app",
+                    "field_path": "securityContext.privileged",
+                    "file_path": "deploy/production/app.yaml",
+                    "line": "22",
+                    "description": "A Kubernetes manifest review indicator was observed.",
+                    "evidence": "kind=Deployment; metadata.name=web; container=app; field=securityContext.privileged",
+                    "recommendation": "Review the manifest in the intended deployment context.",
+                },
+                {
+                    "id": "k8s_secret_stringdata_present",
+                    "title": "Kubernetes Secret stringData contains plaintext values",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets",
+                    "context": "production",
+                    "kind": "Secret",
+                    "resource_name": "app-secret",
+                    "namespace": "production",
+                    "field_path": "stringData.password",
+                    "file_path": "deploy/production/app.yaml",
+                    "line": "8",
+                    "description": "A Kubernetes Secret contains secret material.",
+                    "evidence": "kind=Secret; metadata.name=app-secret; key password=[REDACTED]",
+                    "recommendation": "Avoid sharing plaintext secret material in archives.",
+                },
+            ],
+            "redaction_notes": ["Secret-like Kubernetes manifest values are redacted on a best-effort basis."],
             "errors": [],
         },
     )

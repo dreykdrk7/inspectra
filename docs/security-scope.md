@@ -24,6 +24,7 @@ Allowed in this phase:
 - Reading bounded candidate text from archives in memory for redaction-first `secrets_review_basic`, while detecting real `.env`, `.env.*`, and `.envrc` files without reading their content.
 - Reading bounded Node package/config text from archives in memory for `node_package_config_basic`, while detecting real `.env`, `.env.*`, and `.envrc` files without reading their content.
 - Reading bounded CI/CD workflow/config text from archives in memory for `ci_cd_config_basic`, while detecting real `.env`, `.env.*`, and `.envrc` files without reading their content.
+- Reading bounded Kubernetes manifest/config text from archives in memory for `k8s_config_basic`, while detecting real `.env`, `.env.*`, and `.envrc` files without reading their content.
 - Extracting declared dependencies, scripts, engines, and basic project metadata from supported manifests.
 - Recording informational dependency indicators such as lifecycle scripts, unpinned requirements, broad ranges, and URL/VCS/local dependency references.
 - Recording informational archive indicators such as path traversal entries, absolute paths, symlinks, hardlinks, executable bits, nested archives, sensitive-looking filenames, manifest filenames, large estimated uncompressed size, high compression ratio, and truncated analysis.
@@ -105,6 +106,7 @@ The MVP does not include:
 - Running npm, pnpm, yarn, bun, npx, Node lifecycle scripts, JavaScript, TypeScript, or package config files for Node package config review.
 - Downloading Node packages, querying registries, running `npm audit`, querying advisories/CVEs, resolving transitive dependencies, or making malicious-package verdicts for Node package config review.
 - Executing workflows, emulating CI/CD runners, evaluating provider expressions dynamically, calling provider APIs, validating tokens, downloading actions/images, resolving remote reusable workflows/includes, querying advisories/CVEs, or claiming pipeline exploitability for CI/CD config review.
+- Running `kubectl`, connecting to clusters, validating manifests against API servers, applying manifests, rendering Helm, building Kustomize overlays, resolving remote bases/charts/includes/CRDs, downloading images, querying registries/CVEs/advisories, or claiming exploitability for Kubernetes config review.
 - Extracting uploaded archives broadly to the filesystem.
 - Executing files, scripts, binaries, symlinks, or hardlinks from uploaded archives.
 - Installing or resolving dependencies discovered inside archives.
@@ -186,6 +188,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Secrets review analysis limits through `INSPECTRA_SECRETS_REVIEW_MAX_FILES`, `INSPECTRA_SECRETS_REVIEW_MAX_FILE_BYTES`, and `INSPECTRA_SECRETS_REVIEW_MAX_TOTAL_BYTES`.
 - Node package config analysis limits through `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILES`, `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES`.
 - CI/CD config analysis limits through `INSPECTRA_CI_CD_CONFIG_MAX_FILES`, `INSPECTRA_CI_CD_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_CI_CD_CONFIG_MAX_TOTAL_BYTES`.
+- Kubernetes config analysis limits through `INSPECTRA_K8S_CONFIG_MAX_FILES`, `INSPECTRA_K8S_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_K8S_CONFIG_MAX_TOTAL_BYTES`.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.
 
 ## Operational Guidance

@@ -19,6 +19,7 @@ AuditType = Literal[
     "secrets_review_basic",
     "node_package_config_basic",
     "ci_cd_config_basic",
+    "k8s_config_basic",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 

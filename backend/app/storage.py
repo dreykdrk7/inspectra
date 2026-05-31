@@ -300,6 +300,9 @@ class JobStore:
     def create_ci_cd_config_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "ci_cd_config_basic")
 
+    def create_k8s_config_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "k8s_config_basic")
+
     def create_web_job(self, target_url: str) -> JobRecord:
         return self._create_job(None, "web_basic", target_url=target_url)
 
@@ -511,6 +514,12 @@ def _job_summary(record: JobRecord) -> dict | None:
         validation = record.result.get("validation", {})
         hashes = record.result.get("hashes", {})
         manifest_summary = record.result.get("summary", {})
+        if not isinstance(validation, dict):
+            validation = {}
+        if not isinstance(hashes, dict):
+            hashes = {}
+        if not isinstance(manifest_summary, dict):
+            manifest_summary = {}
         summary = {
             "analyzer": record.result.get("analyzer"),
             "completed_at": record.result.get("completed_at"),
@@ -612,6 +621,20 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["jobs_detected"] = manifest_summary.get("jobs_detected")
             summary["steps_detected"] = manifest_summary.get("steps_detected")
             summary["triggers_detected"] = manifest_summary.get("triggers_detected")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
+            summary["truncated"] = manifest_summary.get("truncated")
+            summary["errors_count"] = len(record.result.get("errors") or [])
+        if record.audit_type == "k8s_config_basic":
+            summary["archive_type"] = record.result.get("archive_type")
+            summary["files_considered"] = manifest_summary.get("files_considered")
+            summary["files_reviewed"] = manifest_summary.get("files_reviewed")
+            summary["manifest_files_detected"] = manifest_summary.get("manifest_files_detected")
+            summary["resources_detected"] = manifest_summary.get("resources_detected")
+            summary["workloads_detected"] = manifest_summary.get("workloads_detected")
+            summary["services_detected"] = manifest_summary.get("services_detected")
+            summary["secrets_detected"] = manifest_summary.get("secrets_detected")
+            summary["rbac_resources_detected"] = manifest_summary.get("rbac_resources_detected")
             summary["findings_count"] = manifest_summary.get("findings_count")
             summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
             summary["truncated"] = manifest_summary.get("truncated")

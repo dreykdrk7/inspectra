@@ -19,6 +19,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts passive secrets exposure review jobs for archive uploads.
 - Starts passive Node package configuration analysis jobs for archive uploads.
 - Starts passive CI/CD configuration analysis jobs for archive uploads.
+- Starts passive Kubernetes manifest configuration analysis jobs for archive uploads.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -123,6 +124,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_CI_CD_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum CI/CD config candidate files read from one archive. |
 | `INSPECTRA_CI_CD_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one CI/CD config candidate file. |
 | `INSPECTRA_CI_CD_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one CI/CD config audit. |
+| `INSPECTRA_K8S_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Kubernetes manifest/config candidate files read from one archive. |
+| `INSPECTRA_K8S_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Kubernetes config candidate file. |
+| `INSPECTRA_K8S_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Kubernetes config audit. |
 | `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
 | `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
@@ -323,6 +327,18 @@ The source file must be `kind: "archive"`. This creates a `ci_cd_config_basic` j
 The analysis is heuristic and local. It looks for review indicators such as broad or privileged triggers, missing or broad GitHub permissions, unpinned actions or mutable Docker image tags, inline secret-like CI environment values, secret store references, curl-pipe-shell patterns, publish/deploy commands, self-hosted runner usage, artifact/cache usage, and service container hints. Findings are indicators for manual review, not confirmed vulnerabilities or proof of pipeline compromise.
 
 Inspectra does not execute workflows, emulate GitHub/GitLab/Bitbucket/Azure/CircleCI/Jenkins runners, evaluate dynamic expressions, call provider APIs, validate tokens, execute scripts, install dependencies, resolve remote actions or reusable workflows, download actions/images, query registries, query CVEs/advisories, extract the project broadly, follow symlinks or hardlinks, or call the internet. Secret-like CI values, URLs with credentials, sensitive query parameters, provider-token-like strings, and private key blocks are redacted best-effort in results and exports.
+
+## Launch a Kubernetes Config Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/k8s-config/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `k8s_config_basic` job that opens the archive with Python standard library parsers and reads only bounded text from Kubernetes manifest, Helm context, and Kustomize context candidates. Real `.env`, `.env.*`, and `.envrc` files are detected as sensitive but not read.
+
+The analysis is heuristic and local. It looks for review indicators such as plaintext Kubernetes Secret data/stringData, secret-like ConfigMap/env values, privileged containers, host namespaces, hostPath/Docker socket usage, mutable or unpinned images, missing resources/probes, LoadBalancer/NodePort services, Ingress without TLS, wildcard ClusterRole rules, namespace defaults, and Helm/Kustomize files that were detected but not rendered or built. Findings are indicators for manual review, not confirmed vulnerabilities or proof of exploitability.
+
+Inspectra does not run `kubectl`, access clusters, validate manifests against an API server, apply manifests, render Helm, build Kustomize overlays, resolve remote bases/charts/includes, download images, query registries, query CVEs/advisories, extract the project broadly, follow symlinks or hardlinks, or call the internet. Kubernetes Secret values, secret-like env/config values, credential-bearing URLs, and private key blocks are redacted best-effort in results and exports.
 
 ## Launch a Web Baseline Audit
 

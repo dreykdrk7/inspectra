@@ -29,6 +29,9 @@ DEFAULT_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_CI_CD_CONFIG_MAX_FILES = 100
 DEFAULT_CI_CD_CONFIG_MAX_FILE_BYTES = 524_288
 DEFAULT_CI_CD_CONFIG_MAX_TOTAL_BYTES = 2_097_152
+DEFAULT_K8S_CONFIG_MAX_FILES = 100
+DEFAULT_K8S_CONFIG_MAX_FILE_BYTES = 524_288
+DEFAULT_K8S_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,9 @@ class Settings:
     ci_cd_config_max_files: int = DEFAULT_CI_CD_CONFIG_MAX_FILES
     ci_cd_config_max_file_bytes: int = DEFAULT_CI_CD_CONFIG_MAX_FILE_BYTES
     ci_cd_config_max_total_bytes: int = DEFAULT_CI_CD_CONFIG_MAX_TOTAL_BYTES
+    k8s_config_max_files: int = DEFAULT_K8S_CONFIG_MAX_FILES
+    k8s_config_max_file_bytes: int = DEFAULT_K8S_CONFIG_MAX_FILE_BYTES
+    k8s_config_max_total_bytes: int = DEFAULT_K8S_CONFIG_MAX_TOTAL_BYTES
 
     @property
     def upload_dir(self) -> Path:
@@ -165,6 +171,18 @@ def load_settings() -> Settings:
         "INSPECTRA_CI_CD_CONFIG_MAX_TOTAL_BYTES",
         DEFAULT_CI_CD_CONFIG_MAX_TOTAL_BYTES,
     )
+    k8s_config_max_files = _positive_int_from_env(
+        "INSPECTRA_K8S_CONFIG_MAX_FILES",
+        DEFAULT_K8S_CONFIG_MAX_FILES,
+    )
+    k8s_config_max_file_bytes = _positive_int_from_env(
+        "INSPECTRA_K8S_CONFIG_MAX_FILE_BYTES",
+        DEFAULT_K8S_CONFIG_MAX_FILE_BYTES,
+    )
+    k8s_config_max_total_bytes = _positive_int_from_env(
+        "INSPECTRA_K8S_CONFIG_MAX_TOTAL_BYTES",
+        DEFAULT_K8S_CONFIG_MAX_TOTAL_BYTES,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -194,6 +212,9 @@ def load_settings() -> Settings:
         ci_cd_config_max_files=ci_cd_config_max_files,
         ci_cd_config_max_file_bytes=ci_cd_config_max_file_bytes,
         ci_cd_config_max_total_bytes=ci_cd_config_max_total_bytes,
+        k8s_config_max_files=k8s_config_max_files,
+        k8s_config_max_file_bytes=k8s_config_max_file_bytes,
+        k8s_config_max_total_bytes=k8s_config_max_total_bytes,
     )
 
 
