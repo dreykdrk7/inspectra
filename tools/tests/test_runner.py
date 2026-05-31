@@ -1063,6 +1063,231 @@ async def test_analyze_docker_config_respects_file_and_byte_limits(monkeypatch, 
 
 
 @pytest.mark.anyio
+async def test_analyze_secrets_review_detects_real_env_files_without_reading(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            ".env": b"SECRET_KEY=root-env-secret-123\n",
+            ".env.production": b"DATABASE_URL=postgres://user:prod-pass@db/app\n",
+            "config/.env.local": b"TOKEN=local-token-secret-123\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/secrets-review",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["analyzer"] == "secrets_review_basic"
+    assert payload["summary"]["sensitive_files_detected"] == 3
+    assert {item["skip_reason"] for item in payload["sensitive_files"]} == {"real_env_file_not_read"}
+    assert all(item["read"] is False for item in payload["sensitive_files"])
+    assert "real_env_file_present_not_read" in {finding["id"] for finding in payload["findings"]}
+    assert "root-env-secret-123" not in serialized
+    assert "prod-pass" not in serialized
+    assert "local-token-secret-123" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_secrets_review_reads_env_templates_with_redacted_evidence(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            ".env.example": b"SECRET_KEY=env-example-secret-value-123\n",
+            ".env.template": b"PASSWORD=changeme\n",
+            "env.sample": b"API_KEY=example\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/secrets-review",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    findings = {finding["id"]: finding for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 3
+    assert "secret_like_assignment" in findings
+    assert "weak_placeholder_secret" in findings
+    assert "SECRET_KEY=[REDACTED]" in serialized
+    assert "env-example-secret-value-123" not in serialized
+    assert "changeme" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_secrets_review_redacts_urls_tokens_private_keys_and_comments(monkeypatch, tmp_path):
+    private_key = b"""-----BEGIN PRIVATE KEY-----
+MIIEvprivate-key-material-that-must-not-appear
+-----END PRIVATE KEY-----
+"""
+    settings_text = (
+        b"# SECRET_KEY=comment-only-secret\n"
+        b"DATABASE_URL=postgres://user:db-pass-secret@db/app\n"
+        b"REDIS_URL=redis://:redis-pass-secret@redis:6379/0\n"
+        b"CALLBACK_URL=https://api-user:web-pass-secret@example.com/path\n"
+        b"JWT_TOKEN=aaaaaaaaaa.bbbbbbbbbb.cccccccccc\n"
+    ) + private_key
+    archive_path = write_zip_archive(tmp_path, {"settings.py": settings_text})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/secrets-review",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "database_url_with_credentials" in finding_ids
+    assert "redis_url_with_credentials" in finding_ids
+    assert "basic_auth_url" in finding_ids
+    assert "jwt_like_value" in finding_ids
+    assert "private_key_block_detected" in finding_ids
+    assert "PRIVATE_KEY_BLOCK_REDACTED" in serialized
+    assert "comment-only-secret" not in serialized
+    assert "db-pass-secret" not in serialized
+    assert "redis-pass-secret" not in serialized
+    assert "web-pass-secret" not in serialized
+    assert "private-key-material-that-must-not-appear" not in serialized
+    assert "aaaaaaaaaa.bbbbbbbbbb.cccccccccc" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_secrets_review_contextual_findings_are_redacted(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            ".github/workflows/deploy.yml": b"env:\n  TOKEN: ci-token-secret-123\n",
+            "docker-compose.yml": b"services:\n  web:\n    environment:\n      PASSWORD: compose-pass-secret-123\n",
+            "Dockerfile": b"FROM python:3.12\nARG SECRET_KEY=docker-secret-value-123\n",
+            "k8s/secret.yaml": b"apiVersion: v1\nkind: Secret\nstringData:\n  password: k8s-pass-secret-123\n",
+            "infra/main.tf": b'variable "db_password" {\n  default = "terraform-pass-secret-123"\n}\n',
+            "examples/config.py": b"EXAMPLE_ONLY_API_KEY=example-context-secret-123\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/secrets-review",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    example_finding = next(
+        finding for finding in payload["findings"] if finding.get("file_path") == "examples/config.py" and finding["id"] == "secret_like_assignment"
+    )
+    assert response.status_code == 200
+    assert "ci_secret_exposed_inline" in finding_ids
+    assert "secret_in_compose_environment" in finding_ids
+    assert "secret_in_docker_build_arg" in finding_ids
+    assert "secret_in_k8s_manifest_plaintext" in finding_ids
+    assert "secret_in_terraform_variable_default" in finding_ids
+    assert example_finding["context"] == "example"
+    assert example_finding["level"] == "low"
+    assert example_finding["confidence"] == "low"
+    assert "ci-token-secret-123" not in serialized
+    assert "compose-pass-secret-123" not in serialized
+    assert "docker-secret-value-123" not in serialized
+    assert "k8s-pass-secret-123" not in serialized
+    assert "terraform-pass-secret-123" not in serialized
+    assert "example-context-secret-123" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_secrets_review_skips_unsafe_archive_entries_without_reading(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        traversal_content = b"SECRET_KEY=traversal-secret-123\n"
+        traversal_info = tarfile.TarInfo("../settings.py")
+        traversal_info.size = len(traversal_content)
+        archive.addfile(traversal_info, io.BytesIO(traversal_content))
+
+        link_info = tarfile.TarInfo("settings.py")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real-settings.py"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo("config.py")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real-config.py"
+        archive.addfile(hardlink_info)
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/secrets-review",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    reasons = {item["skip_reason"] for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "path_traversal" in reasons
+    assert "not_regular_file:symlink" in reasons
+    assert "not_regular_file:hardlink" in reasons
+    assert "secrets_review_path_traversal" in {finding["id"] for finding in payload["findings"]}
+    assert "secrets_review_not_regular_file" in {finding["id"] for finding in payload["findings"]}
+    assert "traversal-secret-123" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_secrets_review_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "SECRETS_REVIEW_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "SECRETS_REVIEW_MAX_FILE_BYTES", 40)
+    monkeypatch.setattr(runner, "SECRETS_REVIEW_MAX_TOTAL_BYTES", 80)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            ".env.example": b"SECRET_KEY=first-secret-value-123\n",
+            "settings.py": b"SECRET_KEY=" + b"x" * 80 + b"\n",
+            "config.py": b"TOKEN=third-secret-value-123\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/secrets-review",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "file_too_large" in reasons
+    assert "too_many_files" in reasons
+    assert "first-secret-value-123" not in serialized
+    assert "third-secret-value-123" not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
     server = start_test_http_server()
     transport = ASGITransport(app=runner.app)

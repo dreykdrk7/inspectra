@@ -183,6 +183,9 @@ DJANGO_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_DJANGO_CONFIG_M
 DOCKER_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_DOCKER_CONFIG_MAX_FILES", 100)
 DOCKER_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_DOCKER_CONFIG_MAX_FILE_BYTES", 524_288)
 DOCKER_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_DOCKER_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
+SECRETS_REVIEW_MAX_FILES = positive_int_from_env("INSPECTRA_SECRETS_REVIEW_MAX_FILES", 100)
+SECRETS_REVIEW_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_SECRETS_REVIEW_MAX_FILE_BYTES", 524_288)
+SECRETS_REVIEW_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_SECRETS_REVIEW_MAX_TOTAL_BYTES", 2_097_152)
 WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
@@ -558,6 +561,35 @@ async def analyze_docker_config(request: ArchiveAnalysisRequest) -> dict[str, An
         analysis = empty_docker_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
 
     return build_docker_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
+
+
+@app.post("/analyze/secrets-review")
+async def analyze_secrets_review(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = secrets_review_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_secrets_review_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_secrets_review_analysis(
+                errors=["Unsupported or corrupt archive. Inspectra did not extract, validate secrets, install, or execute any content."]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_secrets_review_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        analysis = empty_secrets_review_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+
+    return build_secrets_review_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/web-basic")
@@ -4949,6 +4981,832 @@ def finalize_docker_config_analysis(analysis: dict[str, Any]) -> None:
     analysis["findings"] = dedupe_findings(analysis["findings"])
     analysis["summary"]["services_detected"] = len(analysis["compose_services"])
     analysis["summary"]["findings_count"] = len(analysis["findings"])
+
+
+def secrets_review_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = SECRETS_REVIEW_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = SECRETS_REVIEW_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = SECRETS_REVIEW_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Secrets review analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_secrets_review_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_secrets_review_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            analysis["summary"]["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"secrets_review_{scoped['id']}"
+            analysis["findings"].append(scoped)
+            finalize_secrets_review_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_secrets_review_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_secrets_review_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda entry_info=info: archive.open(entry_info),
+                )
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_secrets_review_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_secrets_review_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda tar_member=member: archive.extractfile(tar_member),
+                )
+
+    finalize_secrets_review_analysis(analysis)
+    return analysis
+
+
+def empty_secrets_review_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "files_considered": 0,
+            "files_reviewed": 0,
+            "sensitive_files_detected": 0,
+            "findings_count": 0,
+            "high_confidence_count": 0,
+            "redacted_values_count": 0,
+            "truncated": False,
+        },
+        "files_detected": [],
+        "files_reviewed": [],
+        "sensitive_files": [],
+        "findings": [],
+        "redaction_notes": [],
+        "errors": errors or [],
+    }
+
+
+def build_secrets_review_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "secrets_review_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "files_detected": analysis.get("files_detected", []),
+        "files_reviewed": analysis.get("files_reviewed", []),
+        "sensitive_files": analysis.get("sensitive_files", []),
+        "findings": findings,
+        "redaction_notes": analysis.get("redaction_notes", []),
+        "errors": analysis.get("errors", []),
+        "truncated": bool(summary.get("truncated")),
+    }
+
+
+def should_stop_secrets_review_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    if index > ARCHIVE_MAX_ENTRIES:
+        analysis["summary"]["truncated"] = True
+        add_secrets_review_finding(
+            analysis,
+            "secrets_review_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "high",
+            "limit",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+            redacted=False,
+        )
+        return True
+    return False
+
+
+def process_secrets_review_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_secrets_review_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    context = secrets_review_file_context(path, category)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "context": context,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = secrets_review_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["files_detected"].append(record)
+        if skip_reason == "real_env_file_not_read":
+            add_secrets_review_sensitive_file(analysis, record)
+        else:
+            add_secrets_review_skip_finding(analysis, path, skip_reason, size_bytes, context)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["files_detected"].append(record)
+        add_secrets_review_finding(
+            analysis,
+            "secrets_review_file_read_error",
+            "Candidate file could not be read safely",
+            "low",
+            "medium",
+            "archive",
+            "A candidate secrets-review file could not be read from the archive within Inspectra limits.",
+            f"{path}: {exc}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+            context=context,
+            redacted=False,
+        )
+        return
+
+    state["total_bytes_read"] += len(raw_bytes)
+    if b"\x00" in raw_bytes:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_secrets_review_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_secrets_review_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    state["files_read"] += 1
+    summary["files_reviewed"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["files_detected"].append(record)
+    analysis["files_reviewed"].append(
+        {"path": path, "category": category, "context": context, "size_bytes": size_bytes, "bytes_read": len(raw_bytes)}
+    )
+    analyze_secrets_review_text(analysis, path, category, context, text)
+
+
+def classify_secrets_review_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    basename = normalized.rsplit("/", 1)[-1]
+    basename_lower = basename.lower()
+    parts = [part.lower() for part in normalized.split("/") if part]
+
+    if is_secrets_env_template_name(basename_lower):
+        return "env_template"
+    if is_secrets_sensitive_env_name(basename_lower):
+        return "env_sensitive"
+    if is_secrets_ci_candidate(normalized, basename_lower):
+        return "ci_config"
+    if is_secrets_infra_candidate(normalized, basename_lower):
+        return "infra_config"
+    if basename == "Dockerfile" or basename_lower.startswith("dockerfile.") or is_docker_compose_filename(basename_lower):
+        return "docker_config"
+    if basename_lower in {
+        "settings.py",
+        "config.py",
+        "appsettings.json",
+        "application.yml",
+        "application.yaml",
+        "config.yml",
+        "config.yaml",
+        "package.json",
+        "pyproject.toml",
+    }:
+        return "app_config"
+    if basename_lower.endswith(".py") and len(parts) >= 2 and parts[-2] in {"config", "settings"}:
+        return "app_config"
+    return None
+
+
+def is_secrets_env_template_name(basename: str) -> bool:
+    if basename in {"env.example", "env.template", "env.sample", "sample.env"}:
+        return True
+    return basename.startswith(".env") and any(marker in basename for marker in ("example", "sample", "template"))
+
+
+def is_secrets_sensitive_env_name(basename: str) -> bool:
+    return basename == ".env" or basename == ".envrc" or basename.startswith(".env.")
+
+
+def is_secrets_ci_candidate(normalized: str, basename: str) -> bool:
+    lower = normalized.lower()
+    if lower.startswith(".github/workflows/") and basename.endswith((".yml", ".yaml")):
+        return True
+    return basename in {".gitlab-ci.yml", "bitbucket-pipelines.yml", "azure-pipelines.yml"}
+
+
+def is_secrets_infra_candidate(normalized: str, basename: str) -> bool:
+    lower = normalized.lower()
+    if basename.endswith(".tf"):
+        return True
+    if basename == "values.yaml" or (basename.startswith("values") and basename.endswith((".yml", ".yaml"))):
+        return True
+    if basename in {"deployment.yaml", "deployment.yml", "secret.yaml", "secret.yml", "configmap.yaml", "configmap.yml"}:
+        return True
+    return lower.endswith(".k8s.yaml") or lower.endswith(".k8s.yml")
+
+
+def secrets_review_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if record.get("category") == "env_sensitive":
+        return "real_env_file_not_read"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_secrets_review_sensitive_file(analysis: dict[str, Any], record: dict[str, Any]) -> None:
+    analysis["summary"]["sensitive_files_detected"] += 1
+    sensitive = {
+        "path": record["path"],
+        "category": record["category"],
+        "context": record.get("context"),
+        "read": False,
+        "skip_reason": "real_env_file_not_read",
+        "size_bytes": record.get("size_bytes"),
+    }
+    analysis["sensitive_files"].append(sensitive)
+    add_secrets_review_finding(
+        analysis,
+        "real_env_file_present_not_read",
+        "Real environment file detected but not read",
+        contextual_secret_level("low", str(record.get("context") or "")),
+        "high",
+        "sensitive_file",
+        "A real .env-style file was present in the archive. Inspectra records its presence but does not read or store its content.",
+        str(record["path"])[:240],
+        "Remove real environment files from shared archives and use sample/template files for review packages.",
+        file_path=str(record["path"]),
+        context=str(record.get("context") or ""),
+        redacted=False,
+    )
+
+
+def add_secrets_review_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int, context: str) -> None:
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit"}:
+        analysis["summary"]["truncated"] = True
+    titles = {
+        "path_traversal": "Secrets review path uses traversal",
+        "absolute_path": "Secrets review path is absolute",
+        "entry_name_too_long": "Secrets review entry name is unusually long",
+        "file_too_large": "Secrets review file omitted because it exceeds the size limit",
+        "too_many_files": "Secrets review file limit reached",
+        "total_bytes_limit": "Total secrets review byte limit reached",
+        "binary_or_non_text": "Secrets review candidate is not UTF-8 text",
+    }
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    evidence = f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    if reason.startswith("not_regular_file"):
+        title = "Secrets review candidate omitted because it is not a regular file"
+        evidence = f"{path}: {reason}"
+        level = "low"
+    else:
+        title = titles.get(reason, "Secrets review candidate skipped by defensive limit")
+    add_secrets_review_finding(
+        analysis,
+        f"secrets_review_{reason.split(':', 1)[0]}",
+        title,
+        level,
+        "medium",
+        "archive",
+        "Inspectra detected a secrets-review candidate but did not read it because of a defensive limit or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+        context=context,
+        redacted=False,
+    )
+
+
+LOWER_CONFIDENCE_SECRET_CONTEXTS = {"development", "test", "local", "example"}
+PLACEHOLDER_SECRET_VALUES = {
+    "changeme",
+    "change-me",
+    "change_me",
+    "password",
+    "example",
+    "secret",
+    "dummy",
+    "todo",
+    "replace-me",
+    "replace_me",
+    "replace",
+    "your-secret",
+    "your_secret",
+}
+SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)^\s*(?:-\s*)?(?:export\s+)?(?:ARG\s+|ENV\s+)?([A-Z0-9_.-]*(?:SECRET_KEY|DJANGO_SECRET_KEY|CLIENT_SECRET|PRIVATE_KEY|DATABASE_URL|REDIS_URL|API_KEY|PASSWORD|TOKEN|SECRET|PASS)[A-Z0-9_.-]*)\s*[:=]\s*(.+?)\s*$"
+)
+DATABASE_URL_RE = re.compile(r"(?i)\b((?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?)://[^\s'\"<>]+)")
+REDIS_URL_RE = re.compile(r"(?i)\b(redis://[^\s'\"<>]+)")
+BASIC_AUTH_URL_RE = re.compile(r"(?i)\b(https?://[^\s'\"<>/@:]+:[^\s'\"<>/@]+@[^\s'\"<>]+)")
+JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+PRIVATE_KEY_BLOCK_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", re.IGNORECASE)
+
+
+def secrets_review_file_context(path: str, category: str = "") -> str:
+    normalized = normalize_archive_entry_path(path).lower()
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    directories = set(parts[:-1])
+    name_tokens = set(re.split(r"[^a-z0-9]+", basename))
+    all_tokens = set(parts[:-1]) | name_tokens
+
+    if directories.intersection({"docs", "doc", "examples", "example", "samples", "sample"}) or all_tokens.intersection(
+        {"example", "examples", "sample", "samples", "template"}
+    ):
+        return "example"
+    if all_tokens.intersection({"test", "tests", "testing"}):
+        return "test"
+    if all_tokens.intersection({"dev", "development"}):
+        return "development"
+    if "local" in all_tokens:
+        return "local"
+    if all_tokens.intersection({"prod", "production"}) or "deploy" in directories:
+        return "production"
+    if category in {"env_template", "env_sensitive"}:
+        return "example" if category == "env_template" else "ambiguous"
+    if len(parts) == 1:
+        return "shared"
+    return "ambiguous"
+
+
+def active_secret_lines(text: str) -> list[tuple[int, str]]:
+    lines: list[tuple[int, str]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("//"):
+            continue
+        lines.append((line_number, line))
+    return lines
+
+
+def strip_inline_secret_comment(value: str) -> str:
+    for marker in (" #", " //"):
+        if marker in value:
+            value = value.split(marker, 1)[0]
+    return value.strip().strip(",").strip()
+
+
+def normalize_secret_value(value: str) -> str:
+    return strip_inline_secret_comment(value).strip().strip("\"'").strip()
+
+
+def is_placeholder_secret_value(value: str) -> bool:
+    normalized = normalize_secret_value(value).lower()
+    normalized = re.sub(r"[^a-z0-9_-]+", "", normalized)
+    return normalized in PLACEHOLDER_SECRET_VALUES or normalized.startswith(("your", "replace"))
+
+
+def contextual_secret_level(level: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_SECRET_CONTEXTS:
+        return level
+    if level == "medium":
+        return "low"
+    if level == "low":
+        return "info"
+    return level
+
+
+def contextual_secret_confidence(confidence: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_SECRET_CONTEXTS:
+        return confidence
+    if confidence == "high":
+        return "medium"
+    if confidence == "medium":
+        return "low"
+    return confidence
+
+
+def analyze_secrets_review_text(analysis: dict[str, Any], path: str, category: str, context: str, text: str) -> None:
+    active_lines = active_secret_lines(text)
+    active_text = "\n".join(line for _line_number, line in active_lines)
+
+    if PRIVATE_KEY_BLOCK_RE.search(active_text):
+        add_secrets_review_finding(
+            analysis,
+            "private_key_block_detected",
+            "Private key block detected",
+            contextual_secret_level("medium", context),
+            contextual_secret_confidence("high", context),
+            "private_key",
+            "A PEM-style private key block was observed in a text candidate. Inspectra redacted the key material and did not validate it.",
+            "PRIVATE_KEY_BLOCK_REDACTED",
+            "Remove private keys from archives and rotate them if this archive left trusted storage.",
+            file_path=path,
+            context=context,
+        )
+
+    for line_number, line in active_lines:
+        analyze_secret_assignment_line(analysis, path, category, context, line_number, line)
+
+    for match in DATABASE_URL_RE.finditer(active_text):
+        if url_contains_userinfo(match.group(1)):
+            add_url_secret_finding(
+                analysis,
+                "database_url_with_credentials",
+                "Database URL with credentials observed",
+                "credential_url",
+                match.group(1),
+                path,
+                context,
+            )
+    for match in REDIS_URL_RE.finditer(active_text):
+        if url_contains_userinfo(match.group(1)):
+            add_url_secret_finding(
+                analysis,
+                "redis_url_with_credentials",
+                "Redis URL with credentials observed",
+                "credential_url",
+                match.group(1),
+                path,
+                context,
+            )
+    for match in BASIC_AUTH_URL_RE.finditer(active_text):
+        add_url_secret_finding(
+            analysis,
+            "basic_auth_url",
+            "URL with embedded credentials observed",
+            "credential_url",
+            match.group(1),
+            path,
+            context,
+        )
+    for _match in JWT_RE.finditer(active_text):
+        add_secrets_review_finding(
+            analysis,
+            "jwt_like_value",
+            "JWT-like value observed",
+            contextual_secret_level("medium", context),
+            contextual_secret_confidence("high", context),
+            "token",
+            "A three-segment JWT-like value was observed. Inspectra redacted the value and did not validate it.",
+            "JWT-like value=[REDACTED]",
+            "Avoid storing real tokens in archives and rotate the value if this package was shared outside trusted storage.",
+            file_path=path,
+            context=context,
+        )
+
+    if category == "infra_config" and path.lower().endswith(".tf"):
+        analyze_terraform_secret_defaults(analysis, path, context, active_text)
+
+
+def analyze_secret_assignment_line(
+    analysis: dict[str, Any],
+    path: str,
+    category: str,
+    context: str,
+    line_number: int,
+    line: str,
+) -> None:
+    match = SECRET_ASSIGNMENT_RE.match(line)
+    if not match:
+        return
+    key = match.group(1).strip().strip("\"'")
+    value = normalize_secret_value(match.group(2))
+    if not value:
+        return
+
+    placeholder = is_placeholder_secret_value(value)
+    finding_id = "weak_placeholder_secret" if placeholder else "secret_like_assignment"
+    level = "info" if placeholder else "medium"
+    confidence = "low" if placeholder else "medium"
+    title = "Placeholder secret-like value observed" if placeholder else "Secret-like assignment observed"
+    description = (
+        "A secret-like key uses a placeholder value. This is usually expected in examples but should not be copied into production."
+        if placeholder
+        else "A secret-like key appears to have an inline value. Inspectra redacted the value and did not validate it."
+    )
+    evidence = f"{key}=[REDACTED]"
+    recommendation = (
+        "Keep placeholders clearly marked and ensure production values are injected through an approved secret mechanism."
+        if placeholder
+        else "Move real secret values to an approved runtime secret mechanism and rotate if this archive was shared outside trusted storage."
+    )
+    add_secrets_review_finding(
+        analysis,
+        finding_id,
+        title,
+        contextual_secret_level(level, context),
+        contextual_secret_confidence(confidence, context),
+        "secret_assignment",
+        description,
+        evidence,
+        recommendation,
+        file_path=path,
+        context=context,
+        line=line_number,
+    )
+
+    if category == "ci_config" and not placeholder:
+        add_secrets_review_finding(
+            analysis,
+            "ci_secret_exposed_inline",
+            "CI configuration contains an inline secret-like value",
+            contextual_secret_level("medium", context),
+            contextual_secret_confidence("high", context),
+            "ci",
+            "A CI/CD configuration appears to define a secret-like value inline. Inspectra redacted the value and did not validate it.",
+            evidence,
+            "Use the CI provider's secret store instead of inline values.",
+            file_path=path,
+            context=context,
+            line=line_number,
+        )
+    if category == "docker_config" and not placeholder:
+        lower_path = normalize_archive_entry_path(path).lower()
+        if lower_path.rsplit("/", 1)[-1].startswith("dockerfile") or line.lstrip().upper().startswith(("ARG ", "ENV ")):
+            add_secrets_review_finding(
+                analysis,
+                "secret_in_docker_build_arg",
+                "Dockerfile contains a secret-like build argument or environment value",
+                contextual_secret_level("medium", context),
+                contextual_secret_confidence("medium", context),
+                "docker",
+                "A Dockerfile line appears to define a secret-like value. Inspectra redacted the value and did not validate it.",
+                evidence,
+                "Avoid baking secrets into images or build args; use runtime secret injection where possible.",
+                file_path=path,
+                context=context,
+                line=line_number,
+            )
+        elif "compose" in lower_path:
+            add_secrets_review_finding(
+                analysis,
+                "secret_in_compose_environment",
+                "Compose environment contains a secret-like value",
+                contextual_secret_level("medium", context),
+                contextual_secret_confidence("medium", context),
+                "compose",
+                "A Compose environment entry appears to define a secret-like value. Inspectra redacted the value and did not validate it.",
+                evidence,
+                "Use runtime secret injection or env files kept out of shared archives.",
+                file_path=path,
+                context=context,
+                line=line_number,
+            )
+    if category == "infra_config" and not placeholder and is_kubernetes_secret_context(path, line):
+        add_secrets_review_finding(
+            analysis,
+            "secret_in_k8s_manifest_plaintext",
+            "Kubernetes manifest contains plaintext secret-like data",
+            contextual_secret_level("medium", context),
+            contextual_secret_confidence("high", context),
+            "kubernetes",
+            "A Kubernetes-related manifest appears to include plaintext secret-like data. Inspectra redacted the value and did not validate it.",
+            evidence,
+            "Use Kubernetes Secret handling carefully and avoid sharing plaintext secret values in archives.",
+            file_path=path,
+            context=context,
+            line=line_number,
+        )
+
+
+def analyze_terraform_secret_defaults(analysis: dict[str, Any], path: str, context: str, text: str) -> None:
+    pattern = re.compile(
+        r"(?is)variable\s+['\"]([^'\"]*(?:secret|password|token|key)[^'\"]*)['\"]\s*\{(?:(?!\n\}).)*?default\s*=\s*(['\"])(.*?)\2"
+    )
+    for match in pattern.finditer(text):
+        name = match.group(1)
+        value = normalize_secret_value(match.group(3))
+        if not value or is_placeholder_secret_value(value):
+            continue
+        add_secrets_review_finding(
+            analysis,
+            "secret_in_terraform_variable_default",
+            "Terraform variable default contains a secret-like value",
+            contextual_secret_level("medium", context),
+            contextual_secret_confidence("high", context),
+            "terraform",
+            "A Terraform variable with a secret-like name appears to define a default value. Inspectra redacted the value and did not validate it.",
+            f"variable {name} default=[REDACTED]",
+            "Avoid committing real secret defaults in Terraform variables; inject values through a secure workflow.",
+            file_path=path,
+            context=context,
+        )
+
+
+def is_kubernetes_secret_context(path: str, line: str) -> bool:
+    lower_path = normalize_archive_entry_path(path).lower()
+    stripped = line.strip().lower()
+    return lower_path.endswith((".k8s.yaml", ".k8s.yml")) or lower_path.rsplit("/", 1)[-1] in {"secret.yaml", "secret.yml"} or stripped.startswith(("stringdata:", "data:"))
+
+
+def url_contains_userinfo(value: str) -> bool:
+    parsed = urlsplit(value)
+    return bool(parsed.username or parsed.password or ("@" in parsed.netloc and parsed.netloc.split("@", 1)[0]))
+
+
+def add_url_secret_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    category: str,
+    url: str,
+    path: str,
+    context: str,
+) -> None:
+    add_secrets_review_finding(
+        analysis,
+        finding_id,
+        title,
+        contextual_secret_level("medium", context),
+        contextual_secret_confidence("high", context),
+        category,
+        "A URL appears to include embedded credentials. Inspectra redacted the credential value and did not validate it.",
+        safe_secret_url_evidence(url),
+        "Move credentials out of URLs and rotate them if this archive was shared outside trusted storage.",
+        file_path=path,
+        context=context,
+    )
+
+
+def safe_secret_url_evidence(value: str) -> str:
+    parsed = urlsplit(value)
+    host = parsed.hostname or "host"
+    try:
+        port_value = parsed.port
+    except ValueError:
+        port_value = None
+    port = f":{port_value}" if port_value else ""
+    path = parsed.path or ""
+    return f"{parsed.scheme}://[REDACTED]@{host}{port}{path}"
+
+
+def redact_secrets_review_text(text: str) -> str:
+    redacted = PRIVATE_KEY_BLOCK_RE.sub("PRIVATE_KEY_BLOCK_REDACTED", text)
+    redacted = re.sub(
+        r"(?i)\b([a-z][a-z0-9+.-]*://)([^:\s/@]+):([^@\s]+)@",
+        r"\1[REDACTED]@",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b([a-z][a-z0-9+.-]*://):([^@\s]+)@",
+        r"\1[REDACTED]@",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b([A-Z0-9_.-]*(?:SECRET_KEY|DJANGO_SECRET_KEY|CLIENT_SECRET|PRIVATE_KEY|DATABASE_URL|REDIS_URL|API_KEY|PASSWORD|TOKEN|SECRET|PASS)[A-Z0-9_.-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\"}\]]+",
+        r"\1\2\3[REDACTED]",
+        redacted,
+    )
+    redacted = JWT_RE.sub("JWT-like value=[REDACTED]", redacted)
+    return redacted
+
+
+def add_secrets_review_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    confidence: str,
+    category: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str | None = None,
+    context: str | None = None,
+    line: int | None = None,
+    redacted: bool = True,
+) -> None:
+    finding = make_finding(
+        finding_id,
+        title,
+        level,
+        redact_secrets_review_text(description),
+        redact_secrets_review_text(evidence),
+        redact_secrets_review_text(recommendation),
+    )
+    finding["confidence"] = confidence
+    finding["category"] = category
+    if file_path:
+        finding["file_path"] = file_path
+    if context:
+        finding["context"] = context
+    if line is not None:
+        finding["line"] = str(line)
+    if redacted:
+        analysis["summary"]["redacted_values_count"] += 1
+    analysis["findings"].append(finding)
+
+
+def finalize_secrets_review_analysis(analysis: dict[str, Any]) -> None:
+    analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+    analysis["summary"]["high_confidence_count"] = sum(1 for finding in analysis["findings"] if finding.get("confidence") == "high")
+    if analysis["summary"]["redacted_values_count"]:
+        analysis["redaction_notes"] = [
+            "Secret-like values are redacted before storage and export on a best-effort basis.",
+        ]
 
 
 def parse_manifest_text_by_type(manifest_type: str, raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
