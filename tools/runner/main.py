@@ -186,6 +186,9 @@ DOCKER_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_DOCKER_CONFIG_M
 SECRETS_REVIEW_MAX_FILES = positive_int_from_env("INSPECTRA_SECRETS_REVIEW_MAX_FILES", 100)
 SECRETS_REVIEW_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_SECRETS_REVIEW_MAX_FILE_BYTES", 524_288)
 SECRETS_REVIEW_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_SECRETS_REVIEW_MAX_TOTAL_BYTES", 2_097_152)
+NODE_PACKAGE_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILES", 100)
+NODE_PACKAGE_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES", 524_288)
+NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
 WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
@@ -590,6 +593,35 @@ async def analyze_secrets_review(request: ArchiveAnalysisRequest) -> dict[str, A
         analysis = empty_secrets_review_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
 
     return build_secrets_review_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
+
+
+@app.post("/analyze/node-package-config")
+async def analyze_node_package_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = node_package_config_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_node_package_config_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_node_package_config_analysis(
+                errors=["Unsupported or corrupt archive. Inspectra did not install packages, execute scripts, or contact registries."]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_node_package_config_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        analysis = empty_node_package_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+
+    return build_node_package_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/web-basic")
@@ -5807,6 +5839,1229 @@ def finalize_secrets_review_analysis(analysis: dict[str, Any]) -> None:
         analysis["redaction_notes"] = [
             "Secret-like values are redacted before storage and export on a best-effort basis.",
         ]
+
+
+def node_package_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = NODE_PACKAGE_CONFIG_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = NODE_PACKAGE_CONFIG_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Node package config analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_node_package_config_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_node_package_config_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            analysis["summary"]["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"node_package_config_{scoped['id']}"
+            analysis["findings"].append(scoped)
+            finalize_node_package_config_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_node_package_config_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_node_package_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda entry_info=info: archive.open(entry_info),
+                )
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_node_package_config_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_node_package_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda tar_member=member: archive.extractfile(tar_member),
+                )
+
+    finalize_node_package_config_analysis(analysis)
+    return analysis
+
+
+def empty_node_package_config_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "files_considered": 0,
+            "files_reviewed": 0,
+            "package_manifests_detected": 0,
+            "lockfiles_detected": 0,
+            "package_manager_configs_detected": 0,
+            "packages_detected": 0,
+            "scripts_detected": 0,
+            "findings_count": 0,
+            "redacted_values_count": 0,
+            "truncated": False,
+        },
+        "files_detected": [],
+        "files_reviewed": [],
+        "packages": [],
+        "scripts": [],
+        "dependency_groups": [],
+        "package_manager_config_signals": [],
+        "lockfile_signals": [],
+        "findings": [],
+        "redaction_notes": [],
+        "errors": errors or [],
+    }
+
+
+def build_node_package_config_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "node_package_config_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "files_detected": analysis.get("files_detected", []),
+        "files_reviewed": analysis.get("files_reviewed", []),
+        "packages": analysis.get("packages", []),
+        "scripts": analysis.get("scripts", []),
+        "dependency_groups": analysis.get("dependency_groups", []),
+        "package_manager_config_signals": analysis.get("package_manager_config_signals", []),
+        "lockfile_signals": analysis.get("lockfile_signals", []),
+        "findings": findings,
+        "redaction_notes": analysis.get("redaction_notes", []),
+        "errors": analysis.get("errors", []),
+        "truncated": bool(summary.get("truncated")),
+    }
+
+
+def should_stop_node_package_config_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    if index > ARCHIVE_MAX_ENTRIES:
+        analysis["summary"]["truncated"] = True
+        add_node_package_config_finding(
+            analysis,
+            "node_package_config_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "high",
+            "limit",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    return False
+
+
+def process_node_package_config_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_node_package_config_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    increment_node_package_config_category_counts(summary, category)
+
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    context = node_package_config_file_context(path, category)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "context": context,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = node_package_config_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["files_detected"].append(record)
+        add_node_package_config_skip_finding(analysis, path, skip_reason, size_bytes, context)
+        if category in {"lockfile", "lockfile_binary"} and skip_reason in {
+            "binary_lockfile_not_read",
+            "file_too_large",
+            "total_bytes_limit",
+        }:
+            note_node_lockfile(analysis, path, category, context, read=False, skip_reason=skip_reason)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["files_detected"].append(record)
+        add_node_package_config_finding(
+            analysis,
+            "node_package_config_file_read_error",
+            "Node package config file could not be read safely",
+            "low",
+            "medium",
+            "archive",
+            "A candidate Node package configuration file could not be read from the archive within Inspectra limits.",
+            f"{path}: {exc}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+            context=context,
+        )
+        return
+
+    state["total_bytes_read"] += len(raw_bytes)
+    if b"\x00" in raw_bytes:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_node_package_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_node_package_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    state["files_read"] += 1
+    summary["files_reviewed"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["files_detected"].append(record)
+    analysis["files_reviewed"].append(
+        {"path": path, "category": category, "context": context, "size_bytes": size_bytes, "bytes_read": len(raw_bytes)}
+    )
+    analyze_node_package_config_text(analysis, path, category, context, text)
+
+
+def classify_node_package_config_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    basename = normalized.rsplit("/", 1)[-1]
+    basename_lower = basename.lower()
+    lower = normalized.lower()
+
+    if is_secrets_env_template_name(basename_lower):
+        return "env_template"
+    if is_secrets_sensitive_env_name(basename_lower):
+        return "env_sensitive"
+    if basename_lower == "package.json":
+        return "package_manifest"
+    if basename_lower in {"package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock"}:
+        return "lockfile"
+    if basename_lower == "bun.lockb":
+        return "lockfile_binary"
+    if basename_lower in {".npmrc", ".yarnrc", ".yarnrc.yml", "pnpm-workspace.yaml", "lerna.json", "turbo.json", "nx.json", "rush.json"}:
+        return "package_manager_config"
+    if is_node_js_ts_config_candidate(lower, basename_lower):
+        return "js_ts_config"
+    if is_node_ci_candidate(lower, basename_lower):
+        return "ci_config"
+    if basename_lower in {".releaserc", ".releaserc.json"} or basename_lower.startswith("release.config."):
+        return "publishing_config"
+    if lower.endswith(".changeset/config.json"):
+        return "publishing_config"
+    return None
+
+
+def is_node_js_ts_config_candidate(normalized: str, basename: str) -> bool:
+    if basename == "tsconfig.json" or (basename.startswith("tsconfig.") and basename.endswith(".json")):
+        return True
+    if basename.startswith((".eslintrc", "eslint.config.", "vite.config.", "webpack.config.", "rollup.config.", "next.config.", "nuxt.config.", "jest.config.", "vitest.config.")):
+        return True
+    return False
+
+
+def is_node_ci_candidate(normalized: str, basename: str) -> bool:
+    if normalized.startswith(".github/workflows/") and basename.endswith((".yml", ".yaml")):
+        return True
+    return basename == ".gitlab-ci.yml"
+
+
+def increment_node_package_config_category_counts(summary: dict[str, Any], category: str) -> None:
+    if category == "package_manifest":
+        summary["package_manifests_detected"] += 1
+    elif category in {"lockfile", "lockfile_binary"}:
+        summary["lockfiles_detected"] += 1
+    elif category == "package_manager_config":
+        summary["package_manager_configs_detected"] += 1
+
+
+def node_package_config_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if record.get("category") == "env_sensitive":
+        return "real_env_file_not_read"
+    if record.get("category") == "lockfile_binary":
+        return "binary_lockfile_not_read"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_node_package_config_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int, context: str) -> None:
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit", "binary_lockfile_not_read"}:
+        analysis["summary"]["truncated"] = True if reason in {"file_too_large", "too_many_files", "total_bytes_limit"} else analysis["summary"]["truncated"]
+    titles = {
+        "path_traversal": "Node package config path uses traversal",
+        "absolute_path": "Node package config path is absolute",
+        "entry_name_too_long": "Node package config entry name is unusually long",
+        "file_too_large": "Node package config file omitted because it exceeds the size limit",
+        "too_many_files": "Node package config file limit reached",
+        "total_bytes_limit": "Total Node package config byte limit reached",
+        "binary_or_non_text": "Node package config candidate is not UTF-8 text",
+        "binary_lockfile_not_read": "Binary Node lockfile detected but not read",
+        "real_env_file_not_read": "Real environment file detected but not read",
+    }
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    if reason in {"real_env_file_not_read", "binary_lockfile_not_read", "binary_or_non_text"}:
+        level = "info"
+    evidence = f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    if reason.startswith("not_regular_file"):
+        title = "Node package config candidate omitted because it is not a regular file"
+        evidence = f"{path}: {reason}"
+        level = "low"
+    else:
+        title = titles.get(reason, "Node package config candidate skipped by defensive limit")
+    add_node_package_config_finding(
+        analysis,
+        f"node_package_config_{reason.split(':', 1)[0]}",
+        title,
+        node_contextual_level(level, context),
+        node_contextual_confidence("high" if reason in {"path_traversal", "absolute_path", "real_env_file_not_read"} else "medium", context),
+        "archive",
+        "Inspectra detected a Node-related file but did not read it because of a defensive limit, unsupported binary format, or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+        context=context,
+    )
+
+
+LOWER_CONFIDENCE_NODE_CONTEXTS = {"development", "test", "local", "example"}
+NODE_LIFECYCLE_SCRIPTS = {"preinstall", "install", "postinstall", "prepare", "prepublish", "prepack", "postpack"}
+NODE_DEPENDENCY_GROUPS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+NODE_SECRET_NAME_RE = re.compile(
+    r"(?i)(SECRET_KEY|CLIENT_SECRET|PRIVATE_KEY|DATABASE_URL|REDIS_URL|API_KEY|PASSWORD|TOKEN|SECRET|PASS|AUTH|[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY|KEY)[A-Z0-9_]*)"
+)
+
+
+def node_package_config_file_context(path: str, category: str = "") -> str:
+    normalized = normalize_archive_entry_path(path).lower()
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    directories = set(parts[:-1])
+    name_tokens = set(re.split(r"[^a-z0-9]+", basename))
+    all_tokens = set(parts[:-1]) | name_tokens
+
+    if directories.intersection({"docs", "doc", "examples", "example", "samples", "sample"}) or all_tokens.intersection(
+        {"example", "examples", "sample", "samples", "template"}
+    ):
+        return "example"
+    if all_tokens.intersection({"test", "tests", "testing", "jest", "vitest"}):
+        return "test"
+    if all_tokens.intersection({"dev", "development", "override"}):
+        return "development"
+    if "local" in all_tokens:
+        return "local"
+    if all_tokens.intersection({"prod", "production", "release", "publish"}) or "deploy" in directories:
+        return "production"
+    if len(parts) == 1 and category in {"package_manifest", "lockfile", "package_manager_config"}:
+        return "shared"
+    if category == "env_template":
+        return "example"
+    return "ambiguous"
+
+
+def node_contextual_level(level: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_NODE_CONTEXTS:
+        return level
+    if level == "medium":
+        return "low"
+    if level == "low":
+        return "info"
+    return level
+
+
+def node_contextual_confidence(confidence: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_NODE_CONTEXTS:
+        return confidence
+    if confidence == "high":
+        return "medium"
+    if confidence == "medium":
+        return "low"
+    return confidence
+
+
+def active_node_config_lines(text: str) -> list[tuple[int, str]]:
+    lines: list[tuple[int, str]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("//") or stripped.startswith(";"):
+            continue
+        lines.append((line_number, line))
+    return lines
+
+
+def active_node_npmrc_lines(text: str) -> list[tuple[int, str]]:
+    lines: list[tuple[int, str]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith(";"):
+            continue
+        lines.append((line_number, line))
+    return lines
+
+
+def analyze_node_package_config_text(analysis: dict[str, Any], path: str, category: str, context: str, text: str) -> None:
+    basename = normalize_archive_entry_path(path).rsplit("/", 1)[-1].lower()
+    if category == "package_manifest":
+        analyze_node_package_json(analysis, path, context, text)
+    elif category == "lockfile":
+        note_node_lockfile(analysis, path, category, context, read=True)
+    elif category == "package_manager_config" and basename == ".npmrc":
+        analyze_node_npmrc(analysis, path, context, text)
+    elif category == "js_ts_config":
+        analyze_node_js_ts_config_text(analysis, path, context, text)
+    elif category in {"env_template", "ci_config", "publishing_config", "package_manager_config"}:
+        analyze_node_text_for_script_like_patterns(analysis, path, category, context, text)
+
+
+def analyze_node_package_json(analysis: dict[str, Any], path: str, context: str, text: str) -> None:
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        add_node_package_config_finding(
+            analysis,
+            "node_package_json_parse_error",
+            "package.json could not be parsed",
+            "low",
+            "medium",
+            "package_manifest",
+            "A package.json candidate could not be parsed as strict JSON. Inspectra did not execute or install anything.",
+            f"{path}: {exc.msg}",
+            "Review this manifest manually if it is expected to be valid JSON.",
+            file_path=path,
+            context=context,
+        )
+        return
+    if not isinstance(parsed, dict):
+        add_node_package_config_finding(
+            analysis,
+            "node_package_json_not_object",
+            "package.json root is not an object",
+            "low",
+            "medium",
+            "package_manifest",
+            "A package.json candidate did not contain a JSON object at the root.",
+            path,
+            "Review the manifest manually if it is expected.",
+            file_path=path,
+            context=context,
+        )
+        return
+
+    package_name = str(parsed.get("name") or "")
+    package_record = {
+        "path": path,
+        "context": context,
+        "name": package_name or None,
+        "version": parsed.get("version") if isinstance(parsed.get("version"), str) else None,
+        "private": parsed.get("private") if isinstance(parsed.get("private"), bool) else None,
+        "package_manager": parsed.get("packageManager") if isinstance(parsed.get("packageManager"), str) else None,
+    }
+    analysis["packages"].append(package_record)
+    analysis["summary"]["packages_detected"] = len(analysis["packages"])
+    if package_record["package_manager"]:
+        analysis.setdefault("_package_manager_hints", []).append({"path": path, "manager": str(package_record["package_manager"]).split("@", 1)[0].lower()})
+
+    analyze_node_package_metadata(analysis, path, context, parsed)
+    analyze_node_package_scripts(analysis, path, context, parsed.get("scripts"))
+    analyze_node_package_dependencies(analysis, path, context, parsed)
+
+
+def analyze_node_package_metadata(analysis: dict[str, Any], path: str, context: str, parsed: dict[str, Any]) -> None:
+    if parsed.get("private") is not True:
+        add_node_package_config_finding(
+            analysis,
+            "package_private_false_or_missing",
+            "Package is not clearly private",
+            node_contextual_level("info", context),
+            node_contextual_confidence("medium", context),
+            "package_metadata",
+            "The package manifest does not set private: true. This is a publication-safety review indicator, not a finding by itself.",
+            "private=true not observed",
+            "If this package should never be published, set private: true.",
+            file_path=path,
+            context=context,
+        )
+    if not isinstance(parsed.get("packageManager"), str):
+        add_node_package_config_finding(
+            analysis,
+            "package_manager_missing",
+            "Package manager hint is missing",
+            "info",
+            node_contextual_confidence("medium", context),
+            "package_metadata",
+            "The package manifest does not declare a packageManager field.",
+            "packageManager not observed",
+            "Consider declaring packageManager to reduce package-manager ambiguity.",
+            file_path=path,
+            context=context,
+        )
+    if not isinstance(parsed.get("engines"), dict):
+        add_node_package_config_finding(
+            analysis,
+            "engines_missing",
+            "Node engines field is missing",
+            "info",
+            node_contextual_confidence("low", context),
+            "package_metadata",
+            "The package manifest does not declare runtime engine constraints.",
+            "engines not observed",
+            "Consider documenting supported Node.js versions if deployment reproducibility matters.",
+            file_path=path,
+            context=context,
+        )
+    if not parsed.get("license"):
+        add_node_package_config_finding(
+            analysis,
+            "license_missing",
+            "Package license metadata is missing",
+            "info",
+            node_contextual_confidence("low", context),
+            "package_metadata",
+            "The package manifest does not declare a license field.",
+            "license not observed",
+            "Add clear license metadata where appropriate.",
+            file_path=path,
+            context=context,
+        )
+    if not parsed.get("repository"):
+        add_node_package_config_finding(
+            analysis,
+            "repository_missing",
+            "Package repository metadata is missing",
+            "info",
+            node_contextual_confidence("low", context),
+            "package_metadata",
+            "The package manifest does not declare repository metadata.",
+            "repository not observed",
+            "Add repository metadata where useful for maintenance and provenance review.",
+            file_path=path,
+            context=context,
+        )
+    publish_config = parsed.get("publishConfig")
+    if isinstance(publish_config, dict) and isinstance(publish_config.get("registry"), str):
+        registry = safe_node_registry_evidence(str(publish_config["registry"]))
+        add_node_package_config_finding(
+            analysis,
+            "publish_config_registry_present",
+            "Package declares publish registry",
+            node_contextual_level("info", context),
+            node_contextual_confidence("medium", context),
+            "package_metadata",
+            "The package manifest declares publishConfig.registry.",
+            f"publishConfig.registry={registry}",
+            "Confirm the publish registry is intentional before publishing.",
+            file_path=path,
+            context=context,
+        )
+
+
+def analyze_node_package_scripts(analysis: dict[str, Any], path: str, context: str, scripts: Any) -> None:
+    if not isinstance(scripts, dict):
+        return
+    for raw_name, raw_value in scripts.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_value, str):
+            continue
+        script_name = raw_name[:120]
+        excerpt = safe_node_script_excerpt(raw_value)
+        analysis["scripts"].append({"path": path, "context": context, "name": script_name, "excerpt": excerpt})
+        analysis["summary"]["scripts_detected"] = len(analysis["scripts"])
+        if script_name in NODE_LIFECYCLE_SCRIPTS:
+            add_node_package_config_finding(
+                analysis,
+                "lifecycle_script_present",
+                "Package lifecycle script is present",
+                node_contextual_level("low", context),
+                node_contextual_confidence("medium", context),
+                "script",
+                "The package manifest defines a lifecycle script. Inspectra does not execute scripts; this is a review indicator.",
+                f"{script_name}: {excerpt}",
+                "Review lifecycle scripts before running package managers in this project.",
+                file_path=path,
+                context=context,
+            )
+        if script_name == "postinstall":
+            add_node_package_config_finding(
+                analysis,
+                "postinstall_script_present",
+                "postinstall script is present",
+                node_contextual_level("low", context),
+                node_contextual_confidence("medium", context),
+                "script",
+                "The package manifest defines a postinstall script. Inspectra does not execute it.",
+                f"postinstall: {excerpt}",
+                "Review postinstall behavior before installing dependencies.",
+                file_path=path,
+                context=context,
+            )
+        if script_name == "prepare":
+            add_node_package_config_finding(
+                analysis,
+                "prepare_script_present",
+                "prepare script is present",
+                node_contextual_level("low", context),
+                node_contextual_confidence("medium", context),
+                "script",
+                "The package manifest defines a prepare script. Prepare can run during package workflows.",
+                f"prepare: {excerpt}",
+                "Review prepare behavior before publishing or installing from Git sources.",
+                file_path=path,
+                context=context,
+            )
+        if script_name in {"preinstall", "install"}:
+            add_node_package_config_finding(
+                analysis,
+                "install_script_present",
+                "install-time script is present",
+                node_contextual_level("low", context),
+                node_contextual_confidence("medium", context),
+                "script",
+                "The package manifest defines an install-time script. Inspectra does not execute it.",
+                f"{script_name}: {excerpt}",
+                "Review install-time behavior before running package managers.",
+                file_path=path,
+                context=context,
+            )
+        if node_script_uses_curl_pipe_shell(raw_value):
+            add_node_package_config_finding(
+                analysis,
+                "script_uses_shell_curl_pipe",
+                "Script pipes downloaded content to a shell",
+                node_contextual_level("medium", context),
+                node_contextual_confidence("high", context),
+                "script",
+                "A package script appears to pipe curl or wget output to sh/bash. Inspectra reports this as a review indicator.",
+                f"{script_name}: curl/wget | sh/bash",
+                "Prefer verified downloads and explicit checksums before executing installer scripts.",
+                file_path=path,
+                context=context,
+            )
+        if NODE_SECRET_NAME_RE.search(raw_value):
+            add_node_package_config_finding(
+                analysis,
+                "script_references_env_secret_name",
+                "Script references a sensitive-looking environment name",
+                node_contextual_level("low", context),
+                node_contextual_confidence("medium", context),
+                "script",
+                "A package script references a secret-like name. Inspectra redacts sensitive values and does not execute the script.",
+                f"{script_name}: {safe_node_script_excerpt(raw_value)}",
+                "Review script secret handling and avoid committing inline secrets.",
+                file_path=path,
+                context=context,
+            )
+
+
+def analyze_node_package_dependencies(analysis: dict[str, Any], path: str, context: str, parsed: dict[str, Any]) -> None:
+    for group_name in NODE_DEPENDENCY_GROUPS:
+        group = parsed.get(group_name)
+        if not isinstance(group, dict):
+            continue
+        entries: list[dict[str, Any]] = []
+        for raw_name, raw_spec in group.items():
+            if not isinstance(raw_name, str):
+                continue
+            specifier = str(raw_spec)
+            redacted_spec, count = redact_node_secret_text(specifier)
+            analysis["summary"]["redacted_values_count"] += count
+            entries.append({"name": raw_name[:180], "specifier": redacted_spec[:240], "source_type": classify_node_dependency_source(specifier)})
+            add_node_dependency_findings(analysis, path, context, group_name, raw_name, specifier)
+        if entries:
+            analysis["dependency_groups"].append({"path": path, "context": context, "group": group_name, "dependencies": entries})
+            if group_name == "optionalDependencies":
+                add_node_package_config_finding(
+                    analysis,
+                    "optional_dependencies_present",
+                    "optionalDependencies are present",
+                    node_contextual_level("info", context),
+                    node_contextual_confidence("low", context),
+                    "dependency",
+                    "The package declares optional dependencies. This is informational and may affect install-time behavior.",
+                    f"optionalDependencies count={len(entries)}",
+                    "Review optional dependencies if reproducibility or platform-specific installs matter.",
+                    file_path=path,
+                    context=context,
+                )
+
+
+def add_node_dependency_findings(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    group_name: str,
+    dependency_name: str,
+    specifier: str,
+) -> None:
+    source_type = classify_node_dependency_source(specifier)
+    evidence = safe_node_dependency_evidence(group_name, dependency_name, specifier)
+    if specifier.strip() == "*":
+        add_node_package_config_finding(
+            analysis,
+            "wildcard_dependency_version",
+            "Dependency uses wildcard version",
+            node_contextual_level("low", context),
+            node_contextual_confidence("medium", context),
+            "dependency",
+            "A dependency is declared with a wildcard version.",
+            evidence,
+            "Use a narrower version policy where reproducibility matters.",
+            file_path=path,
+            context=context,
+        )
+    if node_dependency_is_broad_range(specifier):
+        add_node_package_config_finding(
+            analysis,
+            "broad_dependency_range",
+            "Dependency uses a broad version range",
+            node_contextual_level("low", context),
+            node_contextual_confidence("medium", context),
+            "dependency",
+            "A dependency uses a broad or floating version declaration.",
+            evidence,
+            "Review whether this range is intentional for the project.",
+            file_path=path,
+            context=context,
+        )
+    elif node_dependency_is_unpinned_range(specifier):
+        add_node_package_config_finding(
+            analysis,
+            "unpinned_dependency_range",
+            "Dependency uses an unpinned version range",
+            node_contextual_level("low", context),
+            node_contextual_confidence("medium", context),
+            "dependency",
+            "A dependency uses a non-exact semver range.",
+            evidence,
+            "Use lockfiles and review whether the version policy matches the deployment workflow.",
+            file_path=path,
+            context=context,
+        )
+
+    source_findings = {
+        "git": ("git_dependency_reference", "Dependency references a Git source"),
+        "url": ("url_dependency_reference", "Dependency references a URL source"),
+        "file": ("file_dependency_reference", "Dependency references a local file source"),
+        "workspace": ("workspace_dependency_reference", "Dependency uses a workspace reference"),
+        "alias": ("alias_dependency_reference", "Dependency uses npm alias syntax"),
+    }
+    if source_type in source_findings:
+        finding_id, title = source_findings[source_type]
+        add_node_package_config_finding(
+            analysis,
+            finding_id,
+            title,
+            node_contextual_level("low", context),
+            node_contextual_confidence("medium", context),
+            "dependency",
+            "The dependency source is not a plain registry semver declaration. This is a review indicator, not a malicious-package verdict.",
+            evidence,
+            "Review non-registry or indirect dependency references before installing in trusted environments.",
+            file_path=path,
+            context=context,
+        )
+
+
+def classify_node_dependency_source(specifier: str) -> str:
+    value = specifier.strip().lower()
+    if value.startswith("workspace:"):
+        return "workspace"
+    if value.startswith("npm:"):
+        return "alias"
+    if value.startswith("file:") or value.startswith(("../", "./", "/")):
+        return "file"
+    if value.startswith(("git+", "git://", "github:", "gitlab:", "bitbucket:")) or "github.com/" in value:
+        return "git"
+    if value.startswith(("http://", "https://")):
+        return "url"
+    return "registry"
+
+
+def node_dependency_is_broad_range(specifier: str) -> bool:
+    value = specifier.strip().lower()
+    return value in {"", "*", "x", "latest"} or value.startswith((">=", ">", "<=", "<")) or "||" in value
+
+
+def node_dependency_is_unpinned_range(specifier: str) -> bool:
+    value = specifier.strip()
+    if not value or classify_node_dependency_source(value) != "registry":
+        return False
+    if value.startswith(("^", "~")):
+        return True
+    return bool(re.search(r"[<>=*xX|]", value))
+
+
+def safe_node_dependency_evidence(group_name: str, dependency_name: str, specifier: str) -> str:
+    redacted, _count = redact_node_secret_text(specifier)
+    return f"{group_name}.{dependency_name}={redacted[:220]}"
+
+
+def analyze_node_npmrc(analysis: dict[str, Any], path: str, context: str, text: str) -> None:
+    for line_number, line in active_node_npmrc_lines(text):
+        stripped = line.strip()
+        if "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        lower_key = key.lower()
+        if node_npmrc_key_is_auth_like(lower_key):
+            analysis["package_manager_config_signals"].append(
+                {"path": path, "context": context, "key": key[:160], "value": "[REDACTED]", "line": line_number}
+            )
+            add_node_package_config_finding(
+                analysis,
+                "npmrc_token_reference_detected",
+                ".npmrc contains an auth-like value",
+                node_contextual_level("medium", context),
+                node_contextual_confidence("high", context),
+                "package_manager_config",
+                ".npmrc includes token/auth-like configuration. Inspectra redacted the value and did not validate it.",
+                f"{key}=[REDACTED]",
+                "Use scoped package-manager auth carefully and avoid sharing real tokens in archives.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                redacted=True,
+            )
+        if lower_key.endswith("registry") or lower_key == "registry":
+            registry = safe_node_registry_evidence(value)
+            analysis["package_manager_config_signals"].append(
+                {"path": path, "context": context, "key": key[:160], "value": registry, "line": line_number}
+            )
+            add_node_package_config_finding(
+                analysis,
+                "npmrc_registry_override",
+                ".npmrc overrides a registry",
+                node_contextual_level("low", context),
+                node_contextual_confidence("medium", context),
+                "package_manager_config",
+                ".npmrc appears to override a package registry.",
+                f"{key}={registry}",
+                "Confirm the registry override is intentional before installing or publishing packages.",
+                file_path=path,
+                context=context,
+                line=line_number,
+            )
+        if lower_key == "strict-ssl" and value.lower() == "false":
+            add_node_package_config_finding(
+                analysis,
+                "npmrc_strict_ssl_disabled",
+                ".npmrc disables strict SSL",
+                node_contextual_level("medium", context),
+                node_contextual_confidence("high", context),
+                "package_manager_config",
+                ".npmrc sets strict-ssl=false.",
+                "strict-ssl=false",
+                "Avoid disabling TLS verification for package-manager operations.",
+                file_path=path,
+                context=context,
+                line=line_number,
+            )
+        if lower_key == "ignore-scripts":
+            add_node_package_config_finding(
+                analysis,
+                "npmrc_ignore_scripts_configured",
+                ".npmrc configures ignore-scripts",
+                "info",
+                node_contextual_confidence("medium", context),
+                "package_manager_config",
+                ".npmrc configures ignore-scripts. This affects install-time behavior and should be understood.",
+                f"ignore-scripts={value[:80]}",
+                "Confirm the setting matches the intended dependency workflow.",
+                file_path=path,
+                context=context,
+                line=line_number,
+            )
+        if lower_key == "unsafe-perm" and value.lower() == "true":
+            add_node_package_config_finding(
+                analysis,
+                "npmrc_unsafe_perm_enabled",
+                ".npmrc enables unsafe-perm",
+                node_contextual_level("medium", context),
+                node_contextual_confidence("high", context),
+                "package_manager_config",
+                ".npmrc sets unsafe-perm=true.",
+                "unsafe-perm=true",
+                "Review whether elevated install script permissions are required.",
+                file_path=path,
+                context=context,
+                line=line_number,
+            )
+
+
+def node_npmrc_key_is_auth_like(lower_key: str) -> bool:
+    return any(token in lower_key for token in ("_authtoken", "_auth", "_password", "password", "token", "secret", "api_key", "apikey"))
+
+
+def analyze_node_js_ts_config_text(analysis: dict[str, Any], path: str, context: str, text: str) -> None:
+    active_text = "\n".join(line for _line_number, line in active_node_config_lines(text))
+    basename = normalize_archive_entry_path(path).rsplit("/", 1)[-1].lower()
+    if basename.startswith("tsconfig") and re.search(r"(?i)[\"']?skipLibCheck[\"']?\s*:\s*true\b", active_text):
+        add_node_package_config_finding(
+            analysis,
+            "tsconfig_skip_lib_check_hint",
+            "tsconfig enables skipLibCheck",
+            "info",
+            node_contextual_confidence("low", context),
+            "typescript_config",
+            "A TypeScript config appears to set skipLibCheck=true. This is an informational build-hygiene signal.",
+            "skipLibCheck=true",
+            "Confirm the tradeoff is intentional for this project.",
+            file_path=path,
+            context=context,
+        )
+    if basename.startswith("vite.config") and re.search(r"(?is)\bhost\s*:\s*['\"](?:0\.0\.0\.0|::)['\"]", active_text):
+        add_node_package_config_finding(
+            analysis,
+            "vite_dev_host_exposed_hint",
+            "Vite dev server host appears broadly exposed",
+            node_contextual_level("low", context),
+            node_contextual_confidence("medium", context),
+            "dev_server_config",
+            "A Vite config appears to set dev server host to a broad bind address.",
+            "server.host=0.0.0.0",
+            "Confirm this is only used in authorized local or containerized development environments.",
+            file_path=path,
+            context=context,
+        )
+    if basename.startswith("webpack.config") and re.search(r"(?is)\bhost\s*:\s*['\"](?:0\.0\.0\.0|::)['\"]", active_text):
+        add_node_package_config_finding(
+            analysis,
+            "webpack_dev_server_exposed_hint",
+            "webpack dev server host appears broadly exposed",
+            node_contextual_level("low", context),
+            node_contextual_confidence("medium", context),
+            "dev_server_config",
+            "A webpack config appears to set dev server host to a broad bind address.",
+            "devServer.host=0.0.0.0",
+            "Confirm this is only used in authorized local or containerized development environments.",
+            file_path=path,
+            context=context,
+        )
+    if re.search(r"(?i)\b(?:sourcemap|sourceMap|devtool)\s*[:=]\s*['\"]?(?:true|source-map|inline-source-map)", active_text):
+        add_node_package_config_finding(
+            analysis,
+            "source_maps_enabled_hint",
+            "Source maps appear enabled in config",
+            "info",
+            node_contextual_confidence("low", context),
+            "build_config",
+            "A JavaScript build config appears to enable source maps.",
+            "source maps enabled hint",
+            "Confirm source map behavior matches the deployment context.",
+            file_path=path,
+            context=context,
+        )
+
+
+def analyze_node_text_for_script_like_patterns(analysis: dict[str, Any], path: str, category: str, context: str, text: str) -> None:
+    active_text = "\n".join(line for _line_number, line in active_node_config_lines(text))
+    if node_script_uses_curl_pipe_shell(active_text):
+        add_node_package_config_finding(
+            analysis,
+            "script_uses_shell_curl_pipe",
+            "Config text pipes downloaded content to a shell",
+            node_contextual_level("medium", context),
+            node_contextual_confidence("medium", context),
+            "script",
+            "A candidate config file appears to pipe curl or wget output to sh/bash.",
+            "curl/wget | sh/bash",
+            "Prefer verified downloads and explicit checksums before executing installer scripts.",
+            file_path=path,
+            context=context,
+        )
+
+
+def node_script_uses_curl_pipe_shell(value: str) -> bool:
+    return bool(re.search(r"(?is)\b(?:curl|wget)\b[^\n|]*\|[^\n]*(?:sh|bash)\b", value))
+
+
+def note_node_lockfile(
+    analysis: dict[str, Any],
+    path: str,
+    category: str,
+    context: str,
+    *,
+    read: bool,
+    skip_reason: str | None = None,
+) -> None:
+    basename = normalize_archive_entry_path(path).rsplit("/", 1)[-1].lower()
+    manager = node_lockfile_manager(basename)
+    signal = {"path": path, "context": context, "lockfile": basename, "manager": manager, "read": read}
+    if skip_reason:
+        signal["skip_reason"] = skip_reason
+    analysis["lockfile_signals"].append(signal)
+    analysis.setdefault("_lockfile_managers", []).append({"path": path, "manager": manager})
+    if basename in {"package-lock.json", "npm-shrinkwrap.json"}:
+        add_node_package_config_finding(
+            analysis,
+            "package_lock_present",
+            "npm package lockfile detected",
+            "info",
+            node_contextual_confidence("low", context),
+            "lockfile",
+            "An npm package lockfile is present. This is informational for package-manager consistency review.",
+            basename,
+            "Confirm the lockfile matches the package manager used by the project.",
+            file_path=path,
+            context=context,
+        )
+    if skip_reason in {"file_too_large", "total_bytes_limit", "binary_lockfile_not_read"}:
+        add_node_package_config_finding(
+            analysis,
+            "lockfile_large_or_truncated",
+            "Lockfile was not fully reviewed",
+            node_contextual_level("low", context),
+            node_contextual_confidence("medium", context),
+            "lockfile",
+            "A lockfile was skipped or truncated because of format or size limits.",
+            f"{basename}: {skip_reason}",
+            "Review this lockfile manually if lockfile consistency matters.",
+            file_path=path,
+            context=context,
+        )
+
+
+def node_lockfile_manager(basename: str) -> str:
+    if basename in {"package-lock.json", "npm-shrinkwrap.json"}:
+        return "npm"
+    if basename == "pnpm-lock.yaml":
+        return "pnpm"
+    if basename == "yarn.lock":
+        return "yarn"
+    if basename in {"bun.lock", "bun.lockb"}:
+        return "bun"
+    return "unknown"
+
+
+def finalize_node_package_config_analysis(analysis: dict[str, Any]) -> None:
+    lockfile_managers = {item.get("manager") for item in analysis.get("_lockfile_managers", []) if item.get("manager")}
+    if len(lockfile_managers) > 1:
+        add_node_package_config_finding(
+            analysis,
+            "multiple_lockfiles_present",
+            "Multiple package-manager lockfiles detected",
+            "low",
+            "medium",
+            "lockfile",
+            "The archive contains lockfiles for more than one package manager.",
+            ", ".join(sorted(lockfile_managers)),
+            "Confirm the intended package manager and remove stale lockfiles if they are not used.",
+        )
+    for hint in analysis.get("_package_manager_hints", []):
+        manager = hint.get("manager")
+        if manager and lockfile_managers and manager not in lockfile_managers:
+            add_node_package_config_finding(
+                analysis,
+                "package_manager_mismatch",
+                "Package manager hint does not match observed lockfiles",
+                "low",
+                "medium",
+                "lockfile",
+                "The packageManager field appears inconsistent with observed lockfiles.",
+                f"packageManager={manager}; lockfiles={', '.join(sorted(lockfile_managers))}",
+                "Confirm stale lockfiles are removed and the intended package manager is documented.",
+                file_path=hint.get("path") if isinstance(hint.get("path"), str) else None,
+            )
+    analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+    if analysis["summary"]["redacted_values_count"]:
+        analysis["redaction_notes"] = [
+            "Secret-like values in Node package configuration evidence are redacted before storage and export on a best-effort basis.",
+        ]
+
+
+def safe_node_script_excerpt(value: str) -> str:
+    redacted, _count = redact_node_secret_text(value)
+    collapsed = re.sub(r"\s+", " ", redacted).strip()
+    return collapsed[:220]
+
+
+def safe_node_registry_evidence(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        parsed = None
+    if parsed and parsed.scheme and parsed.hostname:
+        host = parsed.hostname
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if port:
+            host = f"{host}:{port}"
+        return f"{parsed.scheme}://{host}"
+    redacted, _count = redact_node_secret_text(value)
+    return redacted[:180]
+
+
+def redact_node_secret_text(text: str) -> tuple[str, int]:
+    redacted = text
+    count = 0
+
+    def apply(pattern: str, replacement: str, value: str, flags: int = 0) -> str:
+        nonlocal count
+        updated, replacements = re.subn(pattern, replacement, value, flags=flags)
+        count += replacements
+        return updated
+
+    redacted = redact_secrets_review_text(redacted)
+    if redacted != text:
+        count += 1
+    redacted = apply(
+        r"(?i)([_A-Z0-9.-]*(?:_authToken|_auth|_password|password|token|api_key|apikey|secret|key)[_A-Z0-9.-]*\s*[:=]\s*)(['\"]?)[^\s,'\"}\]]+",
+        r"\1\2[REDACTED]",
+        redacted,
+    )
+    redacted = apply(
+        r"(?i)\b([a-z][a-z0-9+.-]*://)([^:\s/@]+):([^@\s]+)@",
+        r"\1[REDACTED]@",
+        redacted,
+    )
+    redacted = apply(
+        r"(?i)([?&](?:token|api_key|apikey|key|secret|password|code|state)=)[^&\s'\"<>]+",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    return redacted, count
+
+
+def add_node_package_config_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    confidence: str,
+    category: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str | None = None,
+    context: str | None = None,
+    line: int | None = None,
+    redacted: bool = False,
+) -> None:
+    safe_description, description_redactions = redact_node_secret_text(description)
+    safe_evidence, evidence_redactions = redact_node_secret_text(evidence)
+    safe_recommendation, recommendation_redactions = redact_node_secret_text(recommendation)
+    redaction_count = description_redactions + evidence_redactions + recommendation_redactions
+    if redacted and redaction_count == 0:
+        redaction_count = 1
+    analysis["summary"]["redacted_values_count"] += redaction_count
+
+    finding = make_finding(finding_id, title, level, safe_description, safe_evidence, safe_recommendation)
+    finding["confidence"] = confidence
+    finding["category"] = category
+    if file_path:
+        finding["file_path"] = file_path
+    if context:
+        finding["context"] = context
+    if line is not None:
+        finding["line"] = line
+    analysis["findings"].append(finding)
 
 
 def parse_manifest_text_by_type(manifest_type: str, raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:

