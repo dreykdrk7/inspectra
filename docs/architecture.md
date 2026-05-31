@@ -215,4 +215,5 @@ Possible next modules:
 - Optional deeper project-in-archive workflows that explicitly extract into a constrained temporary workspace.
 - SPDX tag-value SBOM export if a text format becomes useful.
 - Optional richer manifest ecosystem support while keeping parsing offline.
+- Passive Nginx/reverse proxy config review for uploaded archives, keeping web-edge checks static and offline.
 - Job history filters and result-specific views in the frontend.
