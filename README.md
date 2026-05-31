@@ -21,6 +21,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts passive CI/CD configuration analysis jobs for archive uploads.
 - Starts passive Kubernetes manifest configuration analysis jobs for archive uploads.
 - Starts passive Terraform/OpenTofu/Terragrunt configuration analysis jobs for archive uploads through the API.
+- Starts passive Nginx/reverse-proxy configuration analysis jobs for archive uploads through the API.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -46,6 +47,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not execute npm, pnpm, yarn, bun, npx, lifecycle scripts, JS/TS configs, registry lookups, `npm audit`, or advisory/CVE queries for Node package config audits.
 - It does not execute workflows, emulate CI runners, call provider APIs, validate tokens, download actions/images, or query advisory/CVE data for CI/CD config audits.
 - It does not execute Terraform, OpenTofu, or Terragrunt, run init/validate/plan/apply, download providers/modules, access state remotely, call cloud APIs, or query advisory/CVE data for Terraform config audits.
+- It does not execute Nginx, run `nginx -t`, start containers, resolve includes, perform DNS/network checks, validate live servers/certificates, or query advisory/CVE data for Nginx config audits.
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
 - It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env`/`.env.*` files from archives.
@@ -132,6 +134,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_TERRAFORM_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Terraform/OpenTofu/Terragrunt candidate files read from one archive. |
 | `INSPECTRA_TERRAFORM_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Terraform config candidate file. |
 | `INSPECTRA_TERRAFORM_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Terraform config audit. |
+| `INSPECTRA_NGINX_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Nginx/reverse-proxy config candidate files read from one archive. |
+| `INSPECTRA_NGINX_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Nginx config candidate file. |
+| `INSPECTRA_NGINX_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Nginx config audit. |
 | `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
 | `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
@@ -357,6 +362,18 @@ The source file must be `kind: "archive"`. This creates a `terraform_config_basi
 The analysis is heuristic and local. It looks for review indicators such as secret-like tfvars/default/output/backend/provider values, Terraform state files in archives, missing version/backend/lockfile signals, unpinned providers/modules, AWS security group world ingress, IAM wildcard policy hints, and S3 public-access hints. Findings are indicators for manual review, not confirmed vulnerabilities or proof of exploitability.
 
 Inspectra does not execute Terraform, OpenTofu, or Terragrunt; run `init`, `validate`, `plan`, `apply`, or `destroy`; download providers or modules; resolve remote module sources; evaluate expressions or variables; access remote state; call cloud, Kubernetes, or provider APIs; query registries; query CVEs/advisories; extract the project broadly; follow symlinks or hardlinks; or call the internet. Secret-like Terraform values, credential-bearing URLs, private key blocks, state-content-like fields, errors, and exports are redacted best-effort.
+
+## Launch a Nginx Config Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/nginx-config/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `nginx_config_basic` job that opens the archive with Python standard library parsers and reads only bounded text from Nginx/reverse-proxy config candidates such as `nginx.conf`, `*.conf`, `conf.d/*.conf`, `sites-available/*`, `sites-enabled/*`, and Nginx config paths under deployment/infra/proxy directories. `include` directives are detected as context but not resolved.
+
+The analysis is heuristic and local. It looks for review indicators such as legacy TLS protocols, missing HTTPS/HSTS/security-header signals, `server_tokens on`, `autoindex on`, sensitive or backup locations, stub status exposure, HTTP upstream proxying, disabled proxy TLS verification, missing forwarding headers, wildcard CORS, large body limits, high proxy timeouts, disabled access logs, debug error logs, and secret-like proxy/header/variable values. Findings are indicators for manual review, not confirmed vulnerabilities or proof of exploitability.
+
+Inspectra does not execute Nginx, run `nginx -t`, start containers, resolve includes, read host absolute paths, perform DNS lookups, scan ports, validate live servers or certificates, query CVEs/advisories, extract the project broadly, follow symlinks or hardlinks, or call the internet. Inline basic auth, credential-bearing `proxy_pass` URLs, Authorization headers, cookies/session values, private key blocks, and secret-like variables are redacted best-effort in results and exports.
 
 ## Launch a Web Baseline Audit
 

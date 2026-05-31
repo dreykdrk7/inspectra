@@ -26,6 +26,7 @@ from app.services import (
     K8sConfigAuditService,
     ManifestAuditService,
     NodePackageConfigAuditService,
+    NginxConfigAuditService,
     PdfAuditService,
     ProjectArchiveAuditService,
     SecretsReviewAuditService,
@@ -81,6 +82,9 @@ class NoopAuditService:
         return None
 
     async def run_terraform_config_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_nginx_config_analysis(self, job_id: str) -> None:
         return None
 
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
@@ -143,6 +147,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.ci_cd_config_audits = CiCdConfigAuditService(settings, file_store, job_store)
     app.state.k8s_config_audits = K8sConfigAuditService(settings, file_store, job_store)
     app.state.terraform_config_audits = TerraformConfigAuditService(settings, file_store, job_store)
+    app.state.nginx_config_audits = NginxConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -1138,6 +1143,113 @@ async def test_terraform_config_service_calls_runner_endpoint(monkeypatch, tmp_p
 
 
 @pytest.mark.anyio
+async def test_nginx_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.nginx_config_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("nginx.zip", make_zip_bytes({"nginx/default.conf": b"server { listen 80; }\n"}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        nginx_response = await client.post(f"/audits/nginx-config/{archive_file['id']}")
+        pdf_as_nginx_response = await client.post(f"/audits/nginx-config/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/nginx-config/not-a-file-id")
+
+    assert nginx_response.status_code == 202
+    assert nginx_response.json()["audit_type"] == "nginx_config_basic"
+    assert pdf_as_nginx_response.status_code == 400
+    assert pdf_as_nginx_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_nginx_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("nginx.zip", make_zip_bytes({"nginx/default.conf": b"server { listen 80; }\n"}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_nginx_config_job(archive.id)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "nginx_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 1,
+                        "files_reviewed": 1,
+                        "nginx_files_detected": 1,
+                        "server_blocks_detected": 1,
+                        "location_blocks_detected": 1,
+                        "upstream_blocks_detected": 0,
+                        "includes_detected": 1,
+                        "tls_servers_detected": 0,
+                        "findings_count": 1,
+                        "redacted_values_count": 1,
+                        "truncated": False,
+                    },
+                    "includes": [{"target": "/etc/nginx/secrets.conf", "resolved": False}],
+                    "directives": [{"directive": "proxy_set_header", "arguments": "Authorization: Bearer token_should_never_render"}],
+                    "findings": [
+                        {
+                            "id": "nginx_proxy_pass_credentials_hint",
+                            "title": "proxy credentials",
+                            "level": "medium",
+                            "evidence": "proxy_pass http://user:pass@example.com",
+                        }
+                    ],
+                    "errors": ["API_KEY=raw-api-key-123456", "registry-user:registry-pass"],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+
+    await app.state.nginx_config_audits.run_nginx_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    serialized_result = json.dumps(updated.result)
+    assert updated.status == "completed"
+    assert updated.result["analyzer"] == "nginx_config_basic"
+    assert "[REDACTED]" in serialized_result
+    for secret in (
+        "raw-api-key-123456",
+        "token_should_never_render",
+        "http://user:pass@example.com",
+        "registry-user:registry-pass",
+    ):
+        assert secret not in serialized_result
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/nginx-config"
+    assert calls[0]["json"]["file_id"] == archive.id
+    assert calls[0]["json"]["original_filename"] == "nginx.zip"
+    assert calls[0]["json"]["max_files"] == app.state.settings.nginx_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.nginx_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.nginx_config_max_total_bytes
+
+
+@pytest.mark.anyio
 async def test_web_basic_audit_requires_authorization(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     app.state.web_audits = NoopAuditService()
@@ -2032,6 +2144,75 @@ async def test_list_jobs_includes_terraform_config_summary_and_sparse_payload(mo
     assert summary["errors_count"] == 1
     sparse_summary = summaries["a" * 31 + "2"]
     assert sparse_summary["analyzer"] == "terraform_config_basic"
+    assert sparse_summary["files_reviewed"] is None
+    assert sparse_summary["errors_count"] == 0
+
+
+@pytest.mark.anyio
+async def test_list_jobs_includes_nginx_config_summary_and_sparse_payload(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    app.state.jobs.save(
+        JobRecord(
+            id="9" * 31 + "1",
+            audit_type="nginx_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={
+                "analyzer": "nginx_config_basic",
+                "archive_type": "zip",
+                "summary": {
+                    "files_considered": 3,
+                    "files_reviewed": 2,
+                    "nginx_files_detected": 2,
+                    "server_blocks_detected": 2,
+                    "location_blocks_detected": 4,
+                    "upstream_blocks_detected": 1,
+                    "includes_detected": 2,
+                    "tls_servers_detected": 1,
+                    "findings_count": 5,
+                    "redacted_values_count": 2,
+                    "truncated": False,
+                },
+                "errors": ["one controlled warning"],
+            },
+        )
+    )
+    app.state.jobs.save(
+        JobRecord(
+            id="9" * 31 + "2",
+            audit_type="nginx_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "nginx_config_basic", "summary": "unexpected"},
+        )
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    summaries = {item["id"]: item["summary"] for item in response.json()}
+    summary = summaries["9" * 31 + "1"]
+    assert summary["archive_type"] == "zip"
+    assert summary["files_considered"] == 3
+    assert summary["files_reviewed"] == 2
+    assert summary["nginx_files_detected"] == 2
+    assert summary["server_blocks_detected"] == 2
+    assert summary["location_blocks_detected"] == 4
+    assert summary["upstream_blocks_detected"] == 1
+    assert summary["includes_detected"] == 2
+    assert summary["tls_servers_detected"] == 1
+    assert summary["findings_count"] == 5
+    assert summary["redacted_values_count"] == 2
+    assert summary["errors_count"] == 1
+    sparse_summary = summaries["9" * 31 + "2"]
+    assert sparse_summary["analyzer"] == "nginx_config_basic"
     assert sparse_summary["files_reviewed"] is None
     assert sparse_summary["errors_count"] == 0
 
@@ -3718,6 +3899,204 @@ async def test_export_terraform_config_jobs_with_sparse_and_incomplete_results(m
 
 
 @pytest.mark.anyio
+async def test_nginx_config_job_summary_and_export_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_nginx_config_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    summary = list_response.json()[0]["summary"]
+    assert summary["analyzer"] == "nginx_config_basic"
+    assert summary["files_considered"] == 2
+    assert summary["files_reviewed"] == 2
+    assert summary["nginx_files_detected"] == 2
+    assert summary["server_blocks_detected"] == 2
+    assert summary["location_blocks_detected"] == 3
+    assert summary["upstream_blocks_detected"] == 1
+    assert summary["includes_detected"] == 2
+    assert summary["tls_servers_detected"] == 1
+    assert summary["findings_count"] == 2
+    assert summary["redacted_values_count"] == 2
+    assert summary["truncated"] is False
+    assert summary["errors_count"] == 0
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "nginx_config_basic" in responses["markdown"].text
+    assert "Nginx Config Metrics" in responses["html"].text
+    assert "Server Blocks" in responses["markdown"].text
+    assert "Locations" in responses["markdown"].text
+    assert "Upstreams" in responses["markdown"].text
+    assert "Includes Detected But Not Resolved" in responses["markdown"].text
+    assert "Directives" in responses["markdown"].text
+    assert "Finding 1 Directive" in responses["markdown"].text
+    assert "Finding 1 Block type" in responses["markdown"].text
+    assert "deploy/nginx/default.conf" in responses["markdown"].text
+    assert "nginx_proxy_pass_credentials_hint" in responses["markdown"].text
+    assert "resolved: False" in responses["markdown"].text or "resolved`" in responses["markdown"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "nginx_config_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_export_nginx_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="9" * 31 + "8",
+        audit_type="nginx_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="Authorization: Bearer token_should_never_render",
+        result={
+            "analyzer": "nginx_config_basic",
+            "archive_type": "zip",
+            "summary": {"files_reviewed": 1, "findings_count": 1, "redacted_values_count": 0},
+            "servers": [{"server_name": "example.com", "password": "super-secret-password"}],
+            "locations": [{"location": "/api", "proxy_pass": "http://user:pass@example.com"}],
+            "upstreams": [{"name": "backend", "url": "http://registry-user:registry-pass@upstream.example.test"}],
+            "includes": [{"target": "/etc/nginx/secrets.conf", "content": "raw-api-key-123456", "resolved": False}],
+            "directives": [
+                {"directive": "proxy_set_header", "arguments": "Authorization: Bearer token_should_never_render"},
+                {"directive": "set", "arguments": "$api_key raw-api-key-123456"},
+            ],
+            "findings": [
+                {
+                    "id": "legacy_nginx_secret",
+                    "title": "Legacy raw secret",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets",
+                    "description": "PASSWORD=super-secret-password",
+                    "evidence": "proxy_pass http://user:pass@example.com Authorization: Bearer token_should_never_render",
+                    "recommendation": "-----BEGIN PRIVATE KEY----- PRIVATE KEY raw-api-key-123456 -----END PRIVATE KEY-----",
+                    "file_path": "deploy/nginx/default.conf",
+                    "context": "production<script>API_KEY=raw-api-key-123456</script>",
+                    "block_type": "location",
+                    "server_name": "example.com",
+                    "location": "/api",
+                    "directive": "proxy_pass",
+                }
+            ],
+            "errors": [
+                "API_KEY=raw-api-key-123456",
+                "Authorization: Bearer token_should_never_render",
+                "http://user:pass@example.com",
+                "registry-user:registry-pass",
+            ],
+            "redaction_notes": ["PASSWORD=super-secret-password"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = (
+        b"super-secret-password",
+        b"raw-api-key-123456",
+        b"token_should_never_render",
+        b"Authorization: Bearer token_should_never_render",
+        b"http://user:pass@example.com",
+        b"registry-user:registry-pass",
+        b"PRIVATE KEY",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    assert api_response.status_code == 200
+    assert b"REDACTED" in api_response.content
+    for secret in forbidden:
+        assert secret not in api_response.content
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
+
+
+@pytest.mark.anyio
+async def test_export_nginx_config_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="9" * 31 + "9", audit_type="nginx_config_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="8" * 31 + "1", audit_type="nginx_config_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="8" * 31 + "2",
+            audit_type="nginx_config_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="Nginx config runner failed safely.",
+        ),
+        JobRecord(
+            id="8" * 31 + "3",
+            audit_type="nginx_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "nginx_config_basic", "summary": {}, "findings": [{"id": "sparse"}], "errors": []},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "nginx_config_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "nginx_config_basic" in response.text
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -3969,6 +4348,7 @@ async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
         "ci_cd_config_basic",
         "k8s_config_basic",
         "terraform_config_basic",
+        "nginx_config_basic",
     )
     job_ids: list[str] = []
     for index, audit_type in enumerate(audit_types, start=1):
@@ -5432,6 +5812,130 @@ def save_terraform_config_export_fixture_job() -> JobRecord:
                 },
             ],
             "redaction_notes": ["Terraform secret-like values and state contents are redacted on a best-effort basis."],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_nginx_config_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="9" * 31 + "7",
+        audit_type="nginx_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "nginx_config_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 4096, "original_filename": "nginx.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 2,
+                "files_reviewed": 2,
+                "nginx_files_detected": 2,
+                "server_blocks_detected": 2,
+                "location_blocks_detected": 3,
+                "upstream_blocks_detected": 1,
+                "includes_detected": 2,
+                "tls_servers_detected": 1,
+                "findings_count": 2,
+                "redacted_values_count": 2,
+                "truncated": False,
+            },
+            "files_detected": [
+                {"path": "deploy/nginx/default.conf", "category": "nginx_config", "read": True, "size_bytes": 2048, "context": "production"},
+                {"path": "deploy/nginx/conf.d/app.conf", "category": "nginx_config", "read": True, "size_bytes": 512, "context": "production"},
+            ],
+            "files_reviewed": [
+                {"path": "deploy/nginx/default.conf", "category": "nginx_config", "context": "production", "bytes_read": 2048},
+                {"path": "deploy/nginx/conf.d/app.conf", "category": "nginx_config", "context": "production", "bytes_read": 512},
+            ],
+            "servers": [
+                {
+                    "path": "deploy/nginx/default.conf",
+                    "context": "production",
+                    "line": 1,
+                    "server_name": "example.com",
+                    "listen": ["80 default_server", "443 ssl"],
+                    "tls": True,
+                }
+            ],
+            "locations": [
+                {"path": "deploy/nginx/default.conf", "context": "production", "line": 20, "location": "/api", "server_name": "example.com"},
+                {"path": "deploy/nginx/default.conf", "context": "production", "line": 28, "location": "/.git", "server_name": "example.com"},
+                {"path": "deploy/nginx/conf.d/app.conf", "context": "production", "line": 4, "location": "/status", "server_name": "example.com"},
+            ],
+            "upstreams": [{"path": "deploy/nginx/default.conf", "context": "production", "line": 40, "name": "backend"}],
+            "includes": [
+                {"path": "deploy/nginx/default.conf", "context": "production", "line": 8, "target": "/etc/nginx/snippets/tls.conf", "absolute": True, "glob": False, "resolved": False},
+                {"path": "deploy/nginx/default.conf", "context": "production", "line": 9, "target": "conf.d/*.conf", "absolute": False, "glob": True, "resolved": False},
+            ],
+            "directives": [
+                {
+                    "path": "deploy/nginx/default.conf",
+                    "context": "production",
+                    "line": 22,
+                    "directive": "proxy_pass",
+                    "arguments": "http://[REDACTED]@example.com",
+                    "block_type": "location",
+                    "server_name": "example.com",
+                    "location": "/api",
+                },
+                {
+                    "path": "deploy/nginx/default.conf",
+                    "context": "production",
+                    "line": 23,
+                    "directive": "proxy_set_header",
+                    "arguments": "Host $host",
+                    "block_type": "location",
+                    "server_name": "example.com",
+                    "location": "/api",
+                },
+            ],
+            "findings": [
+                {
+                    "id": "nginx_proxy_pass_credentials_hint",
+                    "title": "Nginx proxy_pass URL contains credentials",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets",
+                    "context": "production",
+                    "block_type": "location",
+                    "server_name": "example.com",
+                    "location": "/api",
+                    "directive": "proxy_pass",
+                    "file_path": "deploy/nginx/default.conf",
+                    "line": "22",
+                    "description": "A Nginx static review indicator was observed.",
+                    "evidence": "proxy_pass=[REDACTED]",
+                    "recommendation": "Move upstream credentials out of committed proxy URLs.",
+                },
+                {
+                    "id": "nginx_include_not_resolved",
+                    "title": "Nginx include was detected but not resolved",
+                    "level": "low",
+                    "confidence": "high",
+                    "category": "include",
+                    "context": "production",
+                    "block_type": "server",
+                    "directive": "include",
+                    "file_path": "deploy/nginx/default.conf",
+                    "line": "8",
+                    "description": "Includes are detected but intentionally not resolved.",
+                    "evidence": "include=/etc/nginx/snippets/tls.conf",
+                    "recommendation": "Review referenced include files separately.",
+                },
+            ],
+            "redaction_notes": [
+                "Secret-like Nginx/reverse-proxy values are redacted before storage on a best-effort basis.",
+                "Nginx include directives are detected but not resolved by this analyzer.",
+            ],
             "errors": [],
         },
     )
