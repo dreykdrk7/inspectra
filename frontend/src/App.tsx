@@ -19,6 +19,7 @@ import { DomainJobReport } from "./DomainJobReport";
 import { DockerConfigJobReport } from "./DockerConfigJobReport";
 import { ImageJobReport } from "./ImageJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
+import { NodePackageConfigJobReport } from "./NodePackageConfigJobReport";
 import { PdfJobReport } from "./PdfJobReport";
 import { ProjectArchiveJobReport } from "./ProjectArchiveJobReport";
 import { SecretsReviewJobReport } from "./SecretsReviewJobReport";
@@ -219,6 +220,17 @@ export function App() {
     setActionError(null);
     try {
       const job = await api.launchSecretsReviewAudit(file.id);
+      setSelectedJob(job);
+      await refreshJobs();
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  async function launchNodePackageConfigAudit(file: FileRecord) {
+    setActionError(null);
+    try {
+      const job = await api.launchNodePackageConfigAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -547,6 +559,12 @@ export function App() {
                               Analyze secrets review
                             </button>
                           ) : null}
+                          {file.kind === "archive" ? (
+                            <button onClick={() => void launchNodePackageConfigAudit(file)}>
+                              <Play size={15} aria-hidden="true" />
+                              Analyze Node package config
+                            </button>
+                          ) : null}
                           <button className="danger-button" onClick={() => void deleteFile(file.id)}>
                             <Trash2 size={15} aria-hidden="true" />
                             Delete
@@ -588,7 +606,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -666,6 +684,8 @@ export function App() {
               <DockerConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "secrets_review_basic" ? (
               <SecretsReviewJobReport job={selectedJob} file={selectedJobFile} />
+            ) : selectedJob.audit_type === "node_package_config_basic" ? (
+              <NodePackageConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : (
               <WebJobReport job={selectedJob} />
             )}
@@ -899,6 +919,12 @@ function summarizeJob(job: JobListItem): string {
     const filesReviewed = typeof job.summary.files_reviewed === "number" ? job.summary.files_reviewed : 0;
     const sensitiveFiles = typeof job.summary.sensitive_files_detected === "number" ? job.summary.sensitive_files_detected : 0;
     return `${filesReviewed} files reviewed, ${sensitiveFiles} sensitive files, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "node_package_config_basic") {
+    const filesReviewed = typeof job.summary.files_reviewed === "number" ? job.summary.files_reviewed : 0;
+    const packagesDetected = typeof job.summary.packages_detected === "number" ? job.summary.packages_detected : 0;
+    const scriptsDetected = typeof job.summary.scripts_detected === "number" ? job.summary.scripts_detected : 0;
+    return `${filesReviewed} files reviewed, ${packagesDetected} packages, ${scriptsDetected} scripts, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

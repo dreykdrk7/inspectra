@@ -222,6 +222,26 @@ describe("App", () => {
             )
           );
         }
+        if (url.endsWith("/audits/node-package-config/file-archive-1")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-node-1",
+                audit_type: "node_package_config_basic",
+                file_id: "file-archive-1",
+                target_url: null,
+                target_domain: null,
+                status: "queued",
+                created_at: "2026-05-26T10:12:00Z",
+                updated_at: "2026-05-26T10:12:00Z",
+                source_file_deleted_at: null,
+                result: null,
+                error: null
+              },
+              202
+            )
+          );
+        }
         if (url.endsWith("/jobs")) {
           return Promise.resolve(
             jsonResponse([
@@ -475,6 +495,29 @@ describe("App", () => {
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
         "http://localhost:8000/audits/secrets-review/file-archive-1",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+  });
+
+  it("starts a Node package config audit from an archive action", async () => {
+    render(<App />);
+
+    await screen.findAllByText("django.zip");
+    const rows = Array.from(document.querySelectorAll("tr"));
+    const archiveRow = rows.find((row) => row.textContent?.includes("django.zip") && row.textContent.includes("Analyze Node package config"));
+    const pdfRow = rows.find((row) => row.textContent?.includes("sample.pdf") && row.textContent.includes("Analyze PDF"));
+    expect(archiveRow?.textContent).toContain("Analyze Node package config");
+    expect(pdfRow?.textContent).not.toContain("Analyze Node package config");
+    const button = Array.from(archiveRow?.querySelectorAll("button") ?? []).find((item) =>
+      item.textContent?.includes("Analyze Node package config")
+    );
+    expect(button).toBeDefined();
+    fireEvent.click(button as HTMLButtonElement);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/audits/node-package-config/file-archive-1",
         expect.objectContaining({ method: "POST" })
       );
     });

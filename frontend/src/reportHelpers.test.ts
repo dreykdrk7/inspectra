@@ -6,6 +6,7 @@ import { buildDomainAuditReport } from "./domainReport";
 import { buildDockerConfigAuditReport, redactDockerConfigValue } from "./dockerConfigReport";
 import { buildImageAuditReport } from "./imageReport";
 import { buildManifestAuditReport } from "./manifestReport";
+import { buildNodePackageConfigAuditReport, redactNodePackageConfigValue } from "./nodePackageConfigReport";
 import { buildPdfAuditReport } from "./pdfReport";
 import { buildProjectArchiveAuditReport } from "./projectArchiveReport";
 import { buildSecretsReviewAuditReport, redactSecretsReviewValue } from "./secretsReviewReport";
@@ -674,5 +675,147 @@ describe("report helpers", () => {
     expect(serializedReport).toContain("REDACTED");
     expect(report.findings[0].evidence).toContain("[REDACTED]");
     expect(report.sensitiveFiles[0].skipReason).toContain("[REDACTED]");
+  });
+
+  it("normalizes Node package config package, script, dependency, signal, lockfile, and finding data", () => {
+    const report = buildNodePackageConfigAuditReport({
+      ...baseJob,
+      audit_type: "node_package_config_basic",
+      result: {
+        analyzer: "node_package_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_considered: 5,
+          files_reviewed: 4,
+          package_manifests_detected: 1,
+          lockfiles_detected: 1,
+          package_manager_configs_detected: 1,
+          packages_detected: 1,
+          scripts_detected: 2,
+          findings_count: 2,
+          redacted_values_count: 1,
+          truncated: false
+        },
+        limits: { max_files: 100 },
+        files_detected: [
+          { path: "package.json", category: "package_manifest", read: true, bytes_read: 256, context: "shared" },
+          { path: ".npmrc", category: "package_manager_config", read: true, bytes_read: 64, context: "production" }
+        ],
+        files_reviewed: [{ path: "package.json", category: "package_manifest", read: true, bytes_read: 256, context: "shared" }],
+        packages: [
+          {
+            path: "package.json",
+            name: "demo",
+            version: "1.0.0",
+            private: false,
+            package_manager: "pnpm@9.0.0",
+            workspace: "packages/*",
+            context: "shared"
+          }
+        ],
+        scripts: [{ path: "package.json", name: "postinstall", excerpt: "node scripts/setup.js", context: "shared" }],
+        dependency_groups: [
+          {
+            path: "package.json",
+            group: "dependencies",
+            context: "shared",
+            dependencies: [{ name: "react", specifier: "^18.3.1", source_type: "registry", indicators: ["range"] }]
+          }
+        ],
+        package_manager_config_signals: [{ path: ".npmrc", key: "_authToken", value: "[REDACTED]", line: "2", context: "production" }],
+        lockfile_signals: [{ path: "pnpm-lock.yaml", lockfile: "pnpm-lock.yaml", manager: "pnpm", read: true, context: "shared" }],
+        findings: [
+          {
+            id: "postinstall_script_present",
+            title: "postinstall script is present",
+            level: "low",
+            confidence: "medium",
+            category: "script",
+            context: "shared",
+            file_path: "package.json",
+            line: "8",
+            evidence: "postinstall: node scripts/setup.js"
+          },
+          {
+            code: "npmrc_token_reference_detected",
+            message: "npm token",
+            severity: "medium",
+            confidence: "high",
+            category: "package_manager_config"
+          }
+        ],
+        redaction_notes: ["Values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isNodePackageConfigAudit).toBe(true);
+    expect(report.archiveType).toBe("zip");
+    expect(report.overview).toContainEqual({ label: "Packages", value: "1" });
+    expect(report.detectedFiles[0]).toMatchObject({ path: "package.json", read: true, context: "shared" });
+    expect(report.packages[0]).toMatchObject({ path: "package.json", name: "demo", packageManager: "pnpm@9.0.0" });
+    expect(report.scripts[0]).toMatchObject({ name: "postinstall", category: "lifecycle" });
+    expect(report.dependencyGroups[0].dependencies[0]).toMatchObject({ name: "react", sourceType: "registry" });
+    expect(report.packageManagerConfigSignals[0]).toMatchObject({ key: "_authToken", value: "[REDACTED]", line: 2 });
+    expect(report.lockfileSignals[0]).toMatchObject({ lockfile: "pnpm-lock.yaml", manager: "pnpm", read: true });
+    expect(report.findings[0]).toMatchObject({ id: "postinstall_script_present", level: "low", confidence: "medium", line: 8 });
+    expect(report.findings[1]).toMatchObject({ id: "npmrc_token_reference_detected", title: "npm token", level: "medium" });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["medium", "low"]);
+    expect(report.redactionNotes).toEqual(["Values were redacted."]);
+  });
+
+  it("redacts legacy Node package config payloads defensively", () => {
+    const report = buildNodePackageConfigAuditReport({
+      ...baseJob,
+      audit_type: "node_package_config_basic",
+      error: "_authToken=fixture-token",
+      result: {
+        analyzer: "node_package_config_basic",
+        summary: { redacted_values_count: 0 },
+        scripts: [{ path: "package.json", name: "build", excerpt: "API_KEY=fixture-key npm run build" }],
+        package_manager_config_signals: [
+          {
+            path: ".npmrc",
+            key: "_authToken",
+            value: "fixture-token",
+            registry: "https://user:fixture-password@registry.example.test/pkg"
+          }
+        ],
+        findings: [
+          {
+            id: "legacy_node_secret",
+            title: "Legacy node secret",
+            evidence: "_auth=fixture-auth",
+            description: "https://example.test/hook?token=fixture-token&key=fixture-key",
+            recommendation: "secret=fixture-secret"
+          }
+        ],
+        errors: ["password=fixture-password"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(
+      redactNodePackageConfigValue({
+        error: "_authToken=fixture-token",
+        result: report
+      })
+    );
+
+    for (const secret of [
+      "fixture-token",
+      "fixture-auth",
+      "fixture-password",
+      "fixture-key",
+      "fixture-secret",
+      "https://user:fixture-password@registry.example.test/pkg",
+      "https://example.test/hook?token=fixture-token&key=fixture-key",
+      "API_KEY=fixture-key npm run build"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.scripts[0].excerpt).toContain("[REDACTED]");
+    expect(report.packageManagerConfigSignals[0].value).toBe("[REDACTED]");
   });
 });

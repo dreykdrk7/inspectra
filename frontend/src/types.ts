@@ -26,7 +26,8 @@ export type AuditType =
   | 'subdomain_inventory_basic'
   | 'django_config_basic'
   | 'docker_config_basic'
-  | 'secrets_review_basic';
+  | 'secrets_review_basic'
+  | 'node_package_config_basic';
 export type ReportFormat = 'markdown' | 'html' | 'xml' | 'pdf';
 export type SbomFormat = 'cyclonedx-json' | 'spdx-json';
 

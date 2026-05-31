@@ -95,5 +95,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "secrets_review_basic") {
     return "secrets_review_basic";
   }
+  if (auditType === "node_package_config_basic") {
+    return "node_package_config_basic";
+  }
   return auditType;
 }
