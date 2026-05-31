@@ -32,6 +32,9 @@ SENSITIVE_QUERY_PARAM_RE = re.compile(
     r"(?i)([?&](?:access_token|refresh_token|id_token|api_key|apikey|key|token|secret|password|passwd|pwd|session|sid|auth|authorization|jwt|bearer|sig|signature|client_secret|code|state)=)[^&#\s]+"
 )
 SECRET_LIKE_MAPPING_TOKENS = (
+    "_auth",
+    "auth_token",
+    "authtoken",
     "secret_key",
     "django_secret_key",
     "client_secret",
@@ -42,8 +45,11 @@ SECRET_LIKE_MAPPING_TOKENS = (
     "apikey",
     "password",
     "passwd",
+    "_password",
     "token",
     "secret",
+    "auth",
+    "key",
 )
 
 
@@ -204,6 +210,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_docker_config_sections(result))
     elif job.audit_type == "secrets_review_basic":
         sections.extend(build_secrets_review_sections(result))
+    elif job.audit_type == "node_package_config_basic":
+        sections.extend(build_node_package_config_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -372,6 +380,26 @@ def build_secrets_review_sections(result: dict[str, Any]) -> list[ReportSection]
         ReportSection("Secrets Review Metrics", flatten_mapping(as_dict(result.get("summary")))),
         ReportSection("Secrets Review Limits", flatten_mapping(as_dict(result.get("limits")))),
         ReportSection("Sensitive Files Detected But Not Read", flatten_django_detected_files(result.get("sensitive_files"))),
+        ReportSection("Files Detected", flatten_django_detected_files(result.get("files_detected"))),
+        ReportSection("Files Reviewed", flatten_list(result.get("files_reviewed"))),
+        ReportSection("Findings", flatten_secrets_findings(result.get("findings"))),
+        ReportSection("Redaction Notes", flatten_list(result.get("redaction_notes"))),
+    ]
+
+
+def build_node_package_config_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "Node Package Config Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("Node Package Config Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Node Package Config Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Package Workspace Overview", flatten_list(result.get("packages"))),
+        ReportSection("Scripts", flatten_list(result.get("scripts"))),
+        ReportSection("Dependency Groups", flatten_list(result.get("dependency_groups"))),
+        ReportSection("Package Manager Config Signals", flatten_list(result.get("package_manager_config_signals"))),
+        ReportSection("Lockfile Signals", flatten_list(result.get("lockfile_signals"))),
         ReportSection("Files Detected", flatten_django_detected_files(result.get("files_detected"))),
         ReportSection("Files Reviewed", flatten_list(result.get("files_reviewed"))),
         ReportSection("Findings", flatten_secrets_findings(result.get("findings"))),
@@ -570,6 +598,19 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
         data["errors_count"] = len(result.get("errors") or [])
+    elif job.audit_type == "node_package_config_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["files_considered"] = summary.get("files_considered", "N/A")
+        data["files_reviewed"] = summary.get("files_reviewed", "N/A")
+        data["package_manifests_detected"] = summary.get("package_manifests_detected", "N/A")
+        data["lockfiles_detected"] = summary.get("lockfiles_detected", "N/A")
+        data["package_manager_configs_detected"] = summary.get("package_manager_configs_detected", "N/A")
+        data["packages_detected"] = summary.get("packages_detected", "N/A")
+        data["scripts_detected"] = summary.get("scripts_detected", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
+        data["errors_count"] = len(result.get("errors") or [])
     return data
 
 
@@ -605,6 +646,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_django_config_value(result))
     if job.audit_type == "secrets_review_basic":
         return as_dict(redact_django_config_value(result))
+    if job.audit_type == "node_package_config_basic":
+        return as_dict(redact_node_package_config_value(result))
     return result
 
 
@@ -619,6 +662,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_django_secret_text(job.error)
     if job.audit_type == "secrets_review_basic":
         return redact_django_secret_text(job.error)
+    if job.audit_type == "node_package_config_basic":
+        return redact_node_package_secret_text(job.error)
     return job.error
 
 
@@ -667,6 +712,45 @@ def redact_django_secret_text(value: str) -> str:
     redacted = quoted_pattern.sub(lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]{match.group(5)}", redacted)
     bare_pattern = re.compile(rf"(?i)\b({keywords})\b(\s*[:=]\s*)([^\s,}}\n]+)")
     return bare_pattern.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", redacted)
+
+
+def redact_node_package_config_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_node_package_secret_text(value)
+    if isinstance(value, list):
+        return [redact_node_package_config_value(item) for item in value]
+    if isinstance(value, dict):
+        secret_named_value = node_package_record_has_secret_name(value)
+        return {
+            key: "[REDACTED]"
+            if is_secret_like_mapping_key(str(key)) or (secret_named_value and str(key).lower() in {"value", "raw_value", "default"})
+            else redact_node_package_config_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def node_package_record_has_secret_name(record: dict[str, Any]) -> bool:
+    for marker in ("key", "name", "setting", "variable", "env"):
+        candidate = record.get(marker)
+        if candidate is not None and is_secret_like_mapping_key(str(candidate)):
+            return True
+    return False
+
+
+def redact_node_package_secret_text(value: str) -> str:
+    redacted = redact_django_secret_text(value)
+    redacted = re.sub(
+        r"(?i)\b([a-z][a-z0-9+.-]*://)([^:\s/@]+):([^@\s]+)@",
+        r"\1[REDACTED]@",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)(^|[\s,{])([A-Z0-9_.:/@-]*(?:_authToken|_auth|_password|password|token|api_key|apikey|secret|key)[A-Z0-9_.:/@-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\"}\]]+",
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}{match.group(4)}[REDACTED]",
+        redacted,
+    )
+    return redacted
 
 
 def collect_errors(job: JobRecord) -> dict[str, Any]:

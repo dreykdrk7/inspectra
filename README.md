@@ -17,6 +17,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts passive Django configuration analysis jobs for archive uploads.
 - Starts passive Docker/Compose configuration analysis jobs for archive uploads.
 - Starts passive secrets exposure review jobs for archive uploads.
+- Starts passive Node package configuration analysis jobs for archive uploads.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -39,6 +40,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not install audit tools on the host.
 - It does not install dependencies from uploaded manifests.
 - It does not execute package scripts or project code.
+- It does not execute npm, pnpm, yarn, bun, npx, lifecycle scripts, JS/TS configs, registry lookups, `npm audit`, or advisory/CVE queries for Node package config audits.
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
 - It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env`/`.env.*` files from archives.
@@ -113,6 +115,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_SECRETS_REVIEW_MAX_FILES` | backend, audit-tools | `100` | Maximum secrets-review candidate files read from one archive. |
 | `INSPECTRA_SECRETS_REVIEW_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one secrets-review candidate file. |
 | `INSPECTRA_SECRETS_REVIEW_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one secrets-review audit. |
+| `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Node package/config candidate files read from one archive. |
+| `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Node package/config candidate file. |
+| `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Node package/config audit. |
 | `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
 | `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
@@ -287,6 +292,18 @@ The source file must be `kind: "archive"`. This creates a `secrets_review_basic`
 The analysis is heuristic and local. It looks for indicators such as secret-like assignments, private key blocks, credential-bearing database/Redis/basic-auth URLs, JWT-like values, inline CI secrets, Docker/Compose secret-like environment values, Kubernetes plaintext secret-like data, and Terraform variable defaults. Findings are review indicators, not confirmation that a credential is valid, active, leaked, or compromised.
 
 Inspectra does not validate tokens, call provider APIs, scan Git history, run external scanners such as TruffleHog or Gitleaks, install dependencies, execute code, extract the project broadly, follow symlinks or hardlinks, query CVEs, or call the internet. Evidence and exports are redacted best-effort without storing prefixes, suffixes, or fingerprints of detected values. Uploaded archive bytes are still stored locally and may contain secrets, so avoid uploading real credentials unless that local storage risk is acceptable.
+
+## Launch a Node Package Config Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/node-package-config/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `node_package_config_basic` job that opens the archive with Python standard library parsers and reads only bounded text from Node package/config candidates such as `package.json`, lockfiles, `.npmrc`, workspace config, JS/TS tool config, CI/publishing hints, and environment templates. Real `.env`, `.env.*`, and `.envrc` files are detected as sensitive but not read.
+
+The analysis is heuristic and local. It looks for review indicators such as lifecycle scripts, curl-pipe-shell script patterns, broad or wildcard dependency ranges, Git/URL/file/workspace/alias dependency declarations, multiple or mismatched lockfiles, npm config token references, disabled npm TLS checks, unsafe-perm settings, and simple dev-server/config hints. Findings are indicators for manual review, not confirmed vulnerabilities or malicious-package verdicts.
+
+Inspectra does not execute npm, pnpm, yarn, bun, npx, lifecycle scripts, JavaScript, TypeScript, or config files; it does not install dependencies, resolve transitive dependencies, download packages, query registries, run `npm audit`, query CVEs/advisories, extract the project broadly, follow symlinks or hardlinks, or call the internet. Secret-like `.npmrc` values, URLs with credentials, sensitive query parameters, and script assignment fragments are redacted best-effort in results and exports.
 
 ## Launch a Web Baseline Audit
 

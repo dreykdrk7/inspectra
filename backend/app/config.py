@@ -23,6 +23,9 @@ DEFAULT_DOCKER_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_SECRETS_REVIEW_MAX_FILES = 100
 DEFAULT_SECRETS_REVIEW_MAX_FILE_BYTES = 524_288
 DEFAULT_SECRETS_REVIEW_MAX_TOTAL_BYTES = 2_097_152
+DEFAULT_NODE_PACKAGE_CONFIG_MAX_FILES = 100
+DEFAULT_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES = 524_288
+DEFAULT_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,9 @@ class Settings:
     secrets_review_max_files: int = DEFAULT_SECRETS_REVIEW_MAX_FILES
     secrets_review_max_file_bytes: int = DEFAULT_SECRETS_REVIEW_MAX_FILE_BYTES
     secrets_review_max_total_bytes: int = DEFAULT_SECRETS_REVIEW_MAX_TOTAL_BYTES
+    node_package_config_max_files: int = DEFAULT_NODE_PACKAGE_CONFIG_MAX_FILES
+    node_package_config_max_file_bytes: int = DEFAULT_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES
+    node_package_config_max_total_bytes: int = DEFAULT_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES
 
     @property
     def upload_dir(self) -> Path:
@@ -129,6 +135,18 @@ def load_settings() -> Settings:
         "INSPECTRA_SECRETS_REVIEW_MAX_TOTAL_BYTES",
         DEFAULT_SECRETS_REVIEW_MAX_TOTAL_BYTES,
     )
+    node_package_config_max_files = _positive_int_from_env(
+        "INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILES",
+        DEFAULT_NODE_PACKAGE_CONFIG_MAX_FILES,
+    )
+    node_package_config_max_file_bytes = _positive_int_from_env(
+        "INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES",
+        DEFAULT_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES,
+    )
+    node_package_config_max_total_bytes = _positive_int_from_env(
+        "INSPECTRA_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES",
+        DEFAULT_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -152,6 +170,9 @@ def load_settings() -> Settings:
         secrets_review_max_files=secrets_review_max_files,
         secrets_review_max_file_bytes=secrets_review_max_file_bytes,
         secrets_review_max_total_bytes=secrets_review_max_total_bytes,
+        node_package_config_max_files=node_package_config_max_files,
+        node_package_config_max_file_bytes=node_package_config_max_file_bytes,
+        node_package_config_max_total_bytes=node_package_config_max_total_bytes,
     )
 
 

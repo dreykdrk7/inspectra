@@ -29,6 +29,7 @@ from app.services import (
     DockerConfigAuditService,
     ImageAuditService,
     ManifestAuditService,
+    NodePackageConfigAuditService,
     PdfAuditService,
     ProjectArchiveAuditService,
     SecretsReviewAuditService,
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
     app.state.django_config_audits = DjangoConfigAuditService(settings, file_store, job_store)
     app.state.docker_config_audits = DockerConfigAuditService(settings, file_store, job_store)
     app.state.secrets_review_audits = SecretsReviewAuditService(settings, file_store, job_store)
+    app.state.node_package_config_audits = NodePackageConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -198,6 +200,16 @@ async def launch_secrets_review_audit(request: Request, file_id: str, background
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_secrets_review_job(file_id)
     background_tasks.add_task(request.app.state.secrets_review_audits.run_secrets_review_analysis, job.id)
+    return job
+
+
+@app.post("/audits/node-package-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_node_package_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
+    stored_file = request.app.state.files.get(file_id)
+    if stored_file.kind != "archive":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
+    job = request.app.state.jobs.create_node_package_config_job(file_id)
+    background_tasks.add_task(request.app.state.node_package_config_audits.run_node_package_config_analysis, job.id)
     return job
 
 

@@ -23,6 +23,7 @@ from app.services import (
     DockerConfigAuditService,
     ImageAuditService,
     ManifestAuditService,
+    NodePackageConfigAuditService,
     PdfAuditService,
     ProjectArchiveAuditService,
     SecretsReviewAuditService,
@@ -65,6 +66,9 @@ class NoopAuditService:
         return None
 
     async def run_secrets_review_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_node_package_config_analysis(self, job_id: str) -> None:
         return None
 
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
@@ -123,6 +127,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.django_config_audits = DjangoConfigAuditService(settings, file_store, job_store)
     app.state.docker_config_audits = DockerConfigAuditService(settings, file_store, job_store)
     app.state.secrets_review_audits = SecretsReviewAuditService(settings, file_store, job_store)
+    app.state.node_package_config_audits = NodePackageConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -745,6 +750,94 @@ async def test_secrets_review_service_calls_runner_endpoint(monkeypatch, tmp_pat
 
 
 @pytest.mark.anyio
+async def test_node_package_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.node_package_config_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("node.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        node_response = await client.post(f"/audits/node-package-config/{archive_file['id']}")
+        pdf_as_node_response = await client.post(f"/audits/node-package-config/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/node-package-config/not-a-file-id")
+
+    assert node_response.status_code == 202
+    assert node_response.json()["audit_type"] == "node_package_config_basic"
+    assert pdf_as_node_response.status_code == 400
+    assert pdf_as_node_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_node_package_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("node.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_node_package_config_job(archive.id)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "node_package_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 2,
+                        "files_reviewed": 2,
+                        "package_manifests_detected": 1,
+                        "lockfiles_detected": 1,
+                        "package_manager_configs_detected": 0,
+                        "packages_detected": 1,
+                        "scripts_detected": 1,
+                        "findings_count": 1,
+                        "redacted_values_count": 0,
+                        "truncated": False,
+                    },
+                    "findings": [{"id": "postinstall_script_present", "title": "postinstall", "level": "low"}],
+                    "errors": [],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+
+    await app.state.node_package_config_audits.run_node_package_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    assert updated.status == "completed"
+    assert updated.result["analyzer"] == "node_package_config_basic"
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/node-package-config"
+    assert calls[0]["json"]["file_id"] == archive.id
+    assert calls[0]["json"]["original_filename"] == "node.zip"
+    assert calls[0]["json"]["max_files"] == app.state.settings.node_package_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.node_package_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.node_package_config_max_total_bytes
+
+
+@pytest.mark.anyio
 async def test_web_basic_audit_requires_authorization(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     app.state.web_audits = NoopAuditService()
@@ -1234,6 +1327,19 @@ def test_docker_config_limits_config(monkeypatch, tmp_path):
     assert settings.docker_config_max_total_bytes == 4096
 
 
+def test_node_package_config_limits_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILES", "12")
+    monkeypatch.setenv("INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES", "1024")
+    monkeypatch.setenv("INSPECTRA_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES", "4096")
+
+    settings = load_settings()
+
+    assert settings.node_package_config_max_files == 12
+    assert settings.node_package_config_max_file_bytes == 1024
+    assert settings.node_package_config_max_total_bytes == 4096
+
+
 @pytest.mark.parametrize(
     ("raw_domain", "expected"),
     [
@@ -1361,6 +1467,57 @@ async def test_list_jobs_includes_docker_config_summary(monkeypatch, tmp_path):
     assert summary["compose_files_detected"] == 1
     assert summary["services_detected"] == 3
     assert summary["findings_count"] == 3
+    assert summary["errors_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_list_jobs_includes_node_package_config_summary(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    app.state.jobs.save(
+        JobRecord(
+            id="b" * 31 + "1",
+            audit_type="node_package_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={
+                "analyzer": "node_package_config_basic",
+                "archive_type": "zip",
+                "summary": {
+                    "files_considered": 4,
+                    "files_reviewed": 3,
+                    "package_manifests_detected": 1,
+                    "lockfiles_detected": 2,
+                    "package_manager_configs_detected": 1,
+                    "packages_detected": 1,
+                    "scripts_detected": 2,
+                    "findings_count": 5,
+                    "redacted_values_count": 1,
+                    "truncated": False,
+                },
+                "errors": ["one controlled warning"],
+            },
+        )
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    summary = response.json()[0]["summary"]
+    assert summary["archive_type"] == "zip"
+    assert summary["files_considered"] == 4
+    assert summary["files_reviewed"] == 3
+    assert summary["package_manifests_detected"] == 1
+    assert summary["lockfiles_detected"] == 2
+    assert summary["package_manager_configs_detected"] == 1
+    assert summary["packages_detected"] == 1
+    assert summary["scripts_detected"] == 2
+    assert summary["findings_count"] == 5
+    assert summary["redacted_values_count"] == 1
     assert summary["errors_count"] == 1
 
 
@@ -2244,6 +2401,186 @@ async def test_export_secrets_review_jobs_with_sparse_and_incomplete_results(mon
 
 
 @pytest.mark.anyio
+async def test_node_package_config_job_summary_and_export_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_node_package_config_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    summary = list_response.json()[0]["summary"]
+    assert summary["analyzer"] == "node_package_config_basic"
+    assert summary["files_considered"] == 5
+    assert summary["files_reviewed"] == 4
+    assert summary["package_manifests_detected"] == 1
+    assert summary["lockfiles_detected"] == 1
+    assert summary["package_manager_configs_detected"] == 1
+    assert summary["packages_detected"] == 1
+    assert summary["scripts_detected"] == 2
+    assert summary["findings_count"] == 2
+    assert summary["redacted_values_count"] == 1
+    assert summary["truncated"] is False
+    assert summary["errors_count"] == 0
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "node_package_config_basic" in responses["markdown"].text
+    assert "Node Package Config Metrics" in responses["html"].text
+    assert "Package Workspace Overview" in responses["markdown"].text
+    assert "Dependency Groups" in responses["markdown"].text
+    assert "Finding 1 Confidence" in responses["markdown"].text
+    assert "Finding 1 Category" in responses["markdown"].text
+    assert "project/package.json" in responses["markdown"].text
+    assert "postinstall_script_present" in responses["markdown"].text
+    assert "postinstall" in responses["markdown"].text
+    assert "shared" in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "node_package_config_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_export_node_package_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="b" * 31 + "2",
+        audit_type="node_package_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="_authToken=fixture-token",
+        result={
+            "analyzer": "node_package_config_basic",
+            "archive_type": "zip",
+            "summary": {"files_reviewed": 1, "findings_count": 1, "redacted_values_count": 0},
+            "package_manager_config_signals": [
+                {
+                    "path": ".npmrc",
+                    "key": "_authToken",
+                    "value": "fixture-token",
+                    "registry": "https://user:fixture-password@registry.example.test/pkg",
+                }
+            ],
+            "findings": [
+                {
+                    "id": "legacy_node_secret",
+                    "title": "Legacy raw token",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "package_manager_config",
+                    "description": "_auth=fixture-auth",
+                    "evidence": "https://example.test/hook?token=fixture-token&key=fixture-key",
+                    "recommendation": "API_KEY=fixture-key npm run build",
+                    "file_path": ".npmrc",
+                    "context": "shared<script>secret=fixture-secret</script>",
+                    "line": "3",
+                }
+            ],
+            "errors": ["password=fixture-password"],
+            "redaction_notes": ["token=fixture-token"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = (
+        b"fixture-token",
+        b"fixture-auth",
+        b"fixture-password",
+        b"fixture-key",
+        b"fixture-secret",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
+
+
+@pytest.mark.anyio
+async def test_export_node_package_config_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="b" * 31 + "3", audit_type="node_package_config_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="b" * 31 + "4", audit_type="node_package_config_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="b" * 31 + "5",
+            audit_type="node_package_config_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="Node package config runner failed safely.",
+        ),
+        JobRecord(
+            id="b" * 31 + "6",
+            audit_type="node_package_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "node_package_config_basic", "summary": {}, "findings": [], "errors": []},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "node_package_config_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "node_package_config_basic" in response.text
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -2491,6 +2828,7 @@ async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
         "django_config_basic",
         "docker_config_basic",
         "secrets_review_basic",
+        "node_package_config_basic",
     )
     job_ids: list[str] = []
     for index, audit_type in enumerate(audit_types, start=1):
@@ -3499,6 +3837,111 @@ def save_secrets_review_export_fixture_job() -> JobRecord:
                 },
             ],
             "redaction_notes": ["Secret-like values are redacted before storage and export on a best-effort basis."],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_node_package_config_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="b" * 31 + "7",
+        audit_type="node_package_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "node_package_config_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 4096, "original_filename": "node.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 5,
+                "files_reviewed": 4,
+                "package_manifests_detected": 1,
+                "lockfiles_detected": 1,
+                "package_manager_configs_detected": 1,
+                "packages_detected": 1,
+                "scripts_detected": 2,
+                "findings_count": 2,
+                "redacted_values_count": 1,
+                "truncated": False,
+            },
+            "files_detected": [
+                {"path": "project/package.json", "category": "package_manifest", "read": True, "size_bytes": 512, "context": "shared"},
+                {"path": "project/pnpm-lock.yaml", "category": "lockfile", "read": True, "size_bytes": 1024, "context": "shared"},
+                {"path": "project/.npmrc", "category": "package_manager_config", "read": True, "size_bytes": 128, "context": "shared"},
+                {"path": "project/vite.config.ts", "category": "js_ts_config", "read": True, "size_bytes": 256, "context": "development"},
+                {"path": "project/.env.production", "category": "env_sensitive", "read": False, "skip_reason": "real_env_file_not_read", "context": "production"},
+            ],
+            "files_reviewed": [
+                {"path": "project/package.json", "category": "package_manifest", "context": "shared", "bytes_read": 512},
+                {"path": "project/pnpm-lock.yaml", "category": "lockfile", "context": "shared", "bytes_read": 1024},
+                {"path": "project/.npmrc", "category": "package_manager_config", "context": "shared", "bytes_read": 128},
+                {"path": "project/vite.config.ts", "category": "js_ts_config", "context": "development", "bytes_read": 256},
+            ],
+            "packages": [
+                {
+                    "file_path": "project/package.json",
+                    "name": "inspectra-demo",
+                    "version": "1.0.0",
+                    "private": False,
+                    "package_manager": "pnpm@9.0.0",
+                    "context": "shared",
+                }
+            ],
+            "scripts": [
+                {"file_path": "project/package.json", "name": "postinstall", "command": "node scripts/setup.js", "context": "shared"},
+                {"file_path": "project/package.json", "name": "build", "command": "vite build", "context": "shared"},
+            ],
+            "dependency_groups": [
+                {
+                    "file_path": "project/package.json",
+                    "group": "dependencies",
+                    "dependencies": [{"name": "react", "specifier": "^18.3.1", "source_type": "registry"}],
+                    "context": "shared",
+                }
+            ],
+            "package_manager_config_signals": [
+                {"file_path": "project/.npmrc", "key": "_authToken", "value": "[REDACTED]", "line": "1", "context": "shared"}
+            ],
+            "lockfile_signals": [
+                {"file_path": "project/pnpm-lock.yaml", "lockfile": "pnpm-lock.yaml", "manager": "pnpm", "context": "shared"}
+            ],
+            "findings": [
+                {
+                    "id": "postinstall_script_present",
+                    "title": "Lifecycle script requires review",
+                    "level": "low",
+                    "confidence": "medium",
+                    "category": "scripts",
+                    "description": "A postinstall script is present in package.json.",
+                    "evidence": "postinstall: node scripts/setup.js",
+                    "recommendation": "Review lifecycle scripts before installing dependencies.",
+                    "file_path": "project/package.json",
+                    "context": "shared",
+                    "line": "8",
+                },
+                {
+                    "id": "npmrc_token_reference_detected",
+                    "title": "npm config references an auth token",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "package_manager_config",
+                    "description": "An npm auth token-like setting was observed.",
+                    "evidence": "_authToken=[REDACTED]",
+                    "recommendation": "Keep registry credentials out of shared archives.",
+                    "file_path": "project/.npmrc",
+                    "context": "shared",
+                    "line": "1",
+                },
+            ],
+            "redaction_notes": ["npm registry credentials and script secret-like assignments are redacted on a best-effort basis."],
             "errors": [],
         },
     )

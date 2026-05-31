@@ -2,7 +2,7 @@
 
 ## Intended Use
 
-Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-target web and domain baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, passive Docker/Django configuration review, redaction-first secrets review, passive HTTP/HTTPS configuration review, and bounded DNS baseline review.
+Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-target web and domain baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, passive Docker/Django/Node package configuration review, redaction-first secrets review, passive HTTP/HTTPS configuration review, and bounded DNS baseline review.
 
 Use Inspectra only on files, domains, systems, or services that you own or are explicitly authorized to assess.
 
@@ -22,6 +22,7 @@ Allowed in this phase:
 - Reading bounded Django-related configuration/deployment text from archives in memory for `django_config_basic`.
 - Reading bounded Dockerfile/Compose text from archives in memory for `docker_config_basic`.
 - Reading bounded candidate text from archives in memory for redaction-first `secrets_review_basic`, while detecting real `.env`, `.env.*`, and `.envrc` files without reading their content.
+- Reading bounded Node package/config text from archives in memory for `node_package_config_basic`, while detecting real `.env`, `.env.*`, and `.envrc` files without reading their content.
 - Extracting declared dependencies, scripts, engines, and basic project metadata from supported manifests.
 - Recording informational dependency indicators such as lifecycle scripts, unpinned requirements, broad ranges, and URL/VCS/local dependency references.
 - Recording informational archive indicators such as path traversal entries, absolute paths, symlinks, hardlinks, executable bits, nested archives, sensitive-looking filenames, manifest filenames, large estimated uncompressed size, high compression ratio, and truncated analysis.
@@ -39,7 +40,8 @@ Allowed in this phase:
 - Recording bounded `A`, `AAAA`, and `CNAME` answers plus candidate normalization, private/reserved IP indicators, external CNAME indicators, and wildcard-DNS heuristics for those explicit candidates.
 - Recording Django configuration indicators such as DEBUG, SECRET_KEY handling, ALLOWED_HOSTS, cookie/HTTPS/proxy settings, CORS, database hints, static/media hints, and deployment-file signals.
 - Recording Docker/Compose configuration indicators such as missing or root `USER`, mutable image tags, privileged services, host networking, Docker socket mounts, published database/cache ports, and sensitive-looking environment names.
-- Using the local web UI to perform the same API actions.
+- Recording Node package configuration indicators such as lifecycle scripts, broad or wildcard dependency declarations, Git/URL/file/workspace dependencies, npm config token references, lockfile consistency, and simple JS/TS config hints.
+- Using the local web UI to perform implemented UI actions for the same bounded audit families.
 
 Tools used in this phase:
 
@@ -61,6 +63,8 @@ For Django config audits, Inspectra reads only bounded text from Django-related 
 For Docker config audits, Inspectra reads only bounded text from Dockerfile, Docker Compose, and `.dockerignore` candidates inside uploaded archives and reports heuristic indicators for manual review. It does not execute Docker, invoke `docker compose`, build images, start containers, inspect or mount the Docker socket, download images, resolve image tags, scan ports, read real `.env` files, extract the project broadly, follow symlinks or hardlinks, query CVEs, or call the internet. Secret-like evidence is redacted best-effort.
 
 For secrets review audits, Inspectra reads only bounded text from candidate files inside uploaded archives and reports redacted heuristic indicators for manual review. It detects real `.env`, `.env.*`, and `.envrc` files but does not read their content. It does not validate credentials, call providers, scan Git history, run external secret scanners, compute secret fingerprints, execute code, extract the project broadly, follow symlinks or hardlinks, query CVEs, or call the internet.
+
+For Node package config audits, Inspectra reads only bounded text from Node package/config candidates inside uploaded archives and reports heuristic indicators for manual review. It detects real `.env`, `.env.*`, and `.envrc` files but does not read their content. It does not execute npm, pnpm, yarn, bun, npx, lifecycle scripts, JavaScript, TypeScript, or config files; install dependencies; resolve transitive dependencies; download packages; query package registries; run `npm audit`; query CVEs/advisories; or call the internet. Secret-like npm config values and credential-bearing URLs are redacted best-effort.
 
 For SBOM export, Inspectra uses only declared dependencies already present in completed `manifest_basic` or `project_archive_basic` job results. It does not execute package managers, install packages, resolve transitive dependencies, infer licenses, query CVEs, verify URL/VCS identities, or call package registries. Version ranges remain ranges unless the manifest declares an exact local pin that can be represented as such. Package URLs are generated only for dependencies that look like clear npm or PyPI registry packages; URL, VCS, local, editable, workspace, and alias declarations are preserved without inferred package URLs.
 
@@ -94,6 +98,8 @@ The MVP does not include:
 - Image rendering, conversion, detonation, or embedded-content execution.
 - Installing dependencies from uploaded manifests.
 - Running npm, pip, Poetry, pnpm, yarn, or package lifecycle scripts against uploaded manifests.
+- Running npm, pnpm, yarn, bun, npx, Node lifecycle scripts, JavaScript, TypeScript, or package config files for Node package config review.
+- Downloading Node packages, querying registries, running `npm audit`, querying advisories/CVEs, resolving transitive dependencies, or making malicious-package verdicts for Node package config review.
 - Extracting uploaded archives broadly to the filesystem.
 - Executing files, scripts, binaries, symlinks, or hardlinks from uploaded archives.
 - Installing or resolving dependencies discovered inside archives.
@@ -135,6 +141,8 @@ Docker config analysis may read bounded text from Dockerfile, Docker Compose, an
 
 Secrets review analysis may read bounded text from explicit candidate environment templates, app config, CI/CD config, Docker/Compose, Kubernetes, and Terraform-style files inside uploaded archives. It detects real `.env`, `.env.*`, and `.envrc` files as sensitive files present but does not read their content. Findings are heuristic indicators such as secret-like assignments, private key blocks, credential-bearing URLs, JWT-like values, and inline CI/Docker/Kubernetes/Terraform secret patterns. Inspectra does not validate tokens, call provider APIs, scan Git history, run external secret scanners, compute secret fingerprints, or claim that a credential is valid, leaked, active, or compromised. Evidence, exports, and errors are redacted best-effort without prefixes or suffixes, but uploaded archive bytes may still contain secrets and are stored locally.
 
+Node package config analysis may read bounded text from package manifests, lockfiles, package-manager config, workspace config, JS/TS tool config, CI/publishing hints, and environment templates inside uploaded archives. It detects real `.env`, `.env.*`, and `.envrc` files as sensitive files present but does not read their content. Findings are heuristic indicators such as lifecycle scripts, broad dependency ranges, Git/URL/file/workspace dependencies, npm config token references, lockfile consistency, and simple framework/config hints. Inspectra does not execute package managers, lifecycle scripts, JavaScript, TypeScript, or config files; install dependencies; resolve transitive dependencies; download packages; query registries; run `npm audit`; query CVEs/advisories; or claim that a package is malicious. Secret-like `.npmrc` values, credential-bearing URLs, sensitive query parameters, exports, and errors are redacted best-effort, but uploaded archive bytes may still contain secrets and are stored locally.
+
 Report exports are generated locally from existing job results. The generated HTML is static, self-contained, and does not include JavaScript or external CSS. Inspectra escapes dynamic content before writing HTML and XML reports, and Markdown reports render dynamic values as code spans or fenced code blocks to reduce misleading links, images, inline HTML, headings, tables, and blockquotes in external renderers. Exporting a report does not execute uploaded files, manifest scripts, or result content.
 
 SBOM exports are generated locally from existing completed dependency-analysis jobs. They may include package names, declared version ranges, manifest paths inside uploaded archives, and conservative package URLs for clear npm/PyPI registry dependencies. Ambiguous URL, VCS, local, editable, workspace, or alias dependencies keep the original declaration and an omitted-`purl` reason. They do not include vulnerability assertions.
@@ -169,6 +177,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Django config analysis limits through `INSPECTRA_DJANGO_CONFIG_MAX_FILES`, `INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES`.
 - Docker config analysis limits through `INSPECTRA_DOCKER_CONFIG_MAX_FILES`, `INSPECTRA_DOCKER_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_DOCKER_CONFIG_MAX_TOTAL_BYTES`.
 - Secrets review analysis limits through `INSPECTRA_SECRETS_REVIEW_MAX_FILES`, `INSPECTRA_SECRETS_REVIEW_MAX_FILE_BYTES`, and `INSPECTRA_SECRETS_REVIEW_MAX_TOTAL_BYTES`.
+- Node package config analysis limits through `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILES`, `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_NODE_PACKAGE_CONFIG_MAX_TOTAL_BYTES`.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.
 
 ## Operational Guidance

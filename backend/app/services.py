@@ -221,6 +221,35 @@ class SecretsReviewAuditService:
         self.jobs.update(job_id, status="completed", result=response.json())
 
 
+class NodePackageConfigAuditService:
+    def __init__(self, settings: Settings, files: FileStore, jobs: JobStore) -> None:
+        self.settings = settings
+        self.files = files
+        self.jobs = jobs
+
+    async def run_node_package_config_analysis(self, job_id: str) -> None:
+        job = self.jobs.update(job_id, status="running")
+        stored_file = self.files.get(job.file_id)
+        payload = {
+            "file_id": stored_file.id,
+            "relative_path": self.files.relative_upload_path(stored_file),
+            "original_filename": stored_file.original_filename,
+            "max_files": self.settings.node_package_config_max_files,
+            "max_file_bytes": self.settings.node_package_config_max_file_bytes,
+            "max_total_bytes": self.settings.node_package_config_max_total_bytes,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(f"{self.settings.tool_runner_url}/analyze/node-package-config", json=payload)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            self.jobs.update(job_id, status="failed", error=f"Tool runner request failed: {exc}")
+            return
+
+        self.jobs.update(job_id, status="completed", result=response.json())
+
+
 class WebAuditService:
     def __init__(self, settings: Settings, files: FileStore, jobs: JobStore) -> None:
         self.settings = settings
