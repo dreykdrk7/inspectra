@@ -9,6 +9,7 @@ export type DjangoConfigFinding = {
   evidence: string;
   recommendation: string;
   filePath: string | null;
+  context: string | null;
 };
 
 export type DjangoDetectedFile = {
@@ -17,37 +18,72 @@ export type DjangoDetectedFile = {
   read: boolean;
   skipReason: string | null;
   sizeBytes: number | null;
+  context: string | null;
+};
+
+export type DjangoFindingGroup = {
+  level: string;
+  findings: DjangoConfigFinding[];
 };
 
 export type DjangoConfigAuditReport = {
   isDjangoConfigAudit: boolean;
   analyzer: string | null;
   archiveType: string | null;
+  overview: MetadataEntry[];
   summary: MetadataEntry[];
   limits: MetadataEntry[];
   detectedFiles: DjangoDetectedFile[];
+  reviewedFiles: DjangoDetectedFile[];
+  sensitiveEnvFiles: DjangoDetectedFile[];
   signals: MetadataEntry[];
   findings: DjangoConfigFinding[];
+  findingGroups: DjangoFindingGroup[];
   errors: string[];
   truncated: boolean;
   secretsRedactedCount: number;
+  findingsCount: number;
+  filesReadCount: number;
+  envSensitiveCount: number;
 };
 
 export function buildDjangoConfigAuditReport(job: JobRecord): DjangoConfigAuditReport {
   const result = asRecord(redactDjangoConfigValue(job.result));
   const summary = asRecord(result?.summary);
+  const detectedFiles = detectedFilesFromValue(result?.detected_files);
+  const findings = findingsFromValue(result?.findings);
+  const reviewedFiles = detectedFiles.filter((item) => item.read);
+  const sensitiveEnvFiles = detectedFiles.filter((item) => item.category === "env_sensitive" && !item.read);
+  const findingsCount = asNumber(summary?.findings_count) ?? findings.length;
+  const filesReadCount = asNumber(summary?.files_read) ?? reviewedFiles.length;
+  const envSensitiveCount = sensitiveEnvFiles.length;
+  const truncated = Boolean(summary?.truncated);
+  const errors = asStringArray(result?.errors);
+  const reportStatus = truncated ? `${job.status} (truncated)` : errors.length > 0 ? `${job.status} with errors` : job.status;
   return {
     isDjangoConfigAudit: job.audit_type === "django_config_basic",
     analyzer: asString(result?.analyzer),
     archiveType: asString(result?.archive_type),
+    overview: [
+      { label: "Files reviewed", value: String(filesReadCount) },
+      { label: "Findings", value: String(findingsCount) },
+      { label: "Sensitive env files", value: String(envSensitiveCount) },
+      { label: "Status", value: reportStatus }
+    ],
     summary: entriesFromRecord(summary),
     limits: entriesFromRecord(asRecord(result?.limits)),
-    detectedFiles: detectedFilesFromValue(result?.detected_files),
+    detectedFiles,
+    reviewedFiles,
+    sensitiveEnvFiles,
     signals: entriesFromRecord(asRecord(result?.django_signals)),
-    findings: findingsFromValue(result?.findings),
-    errors: asStringArray(result?.errors),
-    truncated: Boolean(summary?.truncated),
-    secretsRedactedCount: asNumber(summary?.secrets_redacted_count) ?? 0
+    findings,
+    findingGroups: groupFindingsByLevel(findings),
+    errors,
+    truncated,
+    secretsRedactedCount: asNumber(summary?.secrets_redacted_count) ?? 0,
+    findingsCount,
+    filesReadCount,
+    envSensitiveCount
   };
 }
 
@@ -87,7 +123,8 @@ function detectedFilesFromValue(value: unknown): DjangoDetectedFile[] {
       category: asString(record?.category) ?? "unknown",
       read: Boolean(record?.read),
       skipReason: asString(record?.skip_reason),
-      sizeBytes: asNumber(record?.size_bytes)
+      sizeBytes: asNumber(record?.size_bytes),
+      context: asString(record?.context) ?? asString(record?.file_context)
     };
   });
 }
@@ -101,13 +138,34 @@ function findingsFromValue(value: unknown): DjangoConfigFinding[] {
     return {
       id: asString(record?.id) ?? "finding",
       title: asString(record?.title) ?? "Informational finding",
-      level: asString(record?.level) ?? asString(record?.severity) ?? "info",
+      level: normalizeFindingLevel(asString(record?.level) ?? asString(record?.severity)),
       description: asString(record?.description) ?? "",
       evidence: asString(record?.evidence) ?? "",
       recommendation: asString(record?.recommendation) ?? "",
-      filePath: asString(record?.file_path)
+      filePath: asString(record?.file_path),
+      context: asString(record?.context)
     };
   });
+}
+
+function groupFindingsByLevel(findings: DjangoConfigFinding[]): DjangoFindingGroup[] {
+  const order = ["critical", "high", "medium", "low", "info", "review", "unknown"];
+  const groups = new Map<string, DjangoConfigFinding[]>();
+  findings.forEach((finding) => {
+    const level = normalizeFindingLevel(finding.level);
+    const existing = groups.get(level) ?? [];
+    existing.push(finding);
+    groups.set(level, existing);
+  });
+  return order.filter((level) => groups.has(level)).map((level) => ({ level, findings: groups.get(level) ?? [] }));
+}
+
+function normalizeFindingLevel(value: string | null): string {
+  const normalized = value?.toLowerCase().trim();
+  if (normalized && ["critical", "high", "medium", "low", "info", "review"].includes(normalized)) {
+    return normalized;
+  }
+  return "unknown";
 }
 
 function entriesFromRecord(record: Record<string, unknown> | null, prefix = ""): MetadataEntry[] {

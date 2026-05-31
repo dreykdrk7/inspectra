@@ -450,6 +450,36 @@ pre {
   gap: 1rem;
 }
 
+.report-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.report-metric {
+  display: grid;
+  gap: 0.25rem;
+  border: 1px solid #d9e0ea;
+  border-radius: 6px;
+  padding: 0.75rem;
+  background: #fbfcfe;
+}
+
+.report-metric span {
+  color: #66768a;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.report-metric strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #172033;
+  font-size: 1.15rem;
+  line-height: 1.15;
+}
+
 .report-section {
   display: grid;
   gap: 0.75rem;
@@ -526,6 +556,25 @@ pre {
 .archive-entry-list {
   display: grid;
   gap: 0.75rem;
+}
+
+.finding-group {
+  display: grid;
+  gap: 0.65rem;
+  border-top: 1px solid #d9e0ea;
+  padding-top: 0.75rem;
+}
+
+.finding-group:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.finding-group h4 {
+  margin: 0;
+  color: #526070;
+  font-size: 0.82rem;
+  text-transform: uppercase;
 }
 
 .flag-row {
@@ -641,6 +690,48 @@ pre {
   color: #9a242d;
 }
 
+.finding-badge.high,
+.finding-badge.critical {
+  background: #ffd7d7;
+  color: #7d1d25;
+}
+
+.finding-badge.review,
+.finding-badge.unknown {
+  background: #e8edf4;
+  color: #425267;
+}
+
+.context-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.55rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  background: #e8edf4;
+  color: #425267;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.context-pill.production {
+  background: #ffe2e2;
+  color: #9a242d;
+}
+
+.context-pill.shared {
+  background: #ece7ff;
+  color: #4d3c8f;
+}
+
+.context-pill.development,
+.context-pill.test,
+.context-pill.local,
+.context-pill.example {
+  background: #dceeff;
+  color: #15507c;
+}
+
 .tool-output,
 .raw-json {
   display: grid;
@@ -668,6 +759,7 @@ pre {
   .dashboard-grid,
   .content-grid,
   .metrics-grid,
+  .report-summary-grid,
   .report-grid,
   .tool-list,
   .privacy-grid,
@@ -677,6 +769,7 @@ pre {
 
   .dashboard-grid,
   .content-grid,
+  .report-summary-grid,
   .report-grid,
   .tool-list,
   .privacy-grid,

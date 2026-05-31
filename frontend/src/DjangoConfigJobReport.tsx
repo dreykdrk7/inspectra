@@ -1,6 +1,12 @@
 import type { ReactNode } from "react";
 
-import { buildDjangoConfigAuditReport, redactDjangoConfigValue, type DjangoConfigFinding } from "./djangoConfigReport";
+import {
+  buildDjangoConfigAuditReport,
+  redactDjangoConfigValue,
+  type DjangoConfigFinding,
+  type DjangoDetectedFile,
+  type DjangoFindingGroup
+} from "./djangoConfigReport";
 import type { MetadataEntry } from "./pdfReport";
 import type { FileRecord, JobRecord, JobStatus } from "./types";
 
@@ -25,6 +31,14 @@ export function DjangoConfigJobReport({ job, file }: { job: JobRecord; file?: Fi
             <StatusBadge status={job.status} />
           </div>
         </div>
+        <div className="report-summary-grid">
+          {report.overview.map((entry) => (
+            <div className="report-metric" key={entry.label}>
+              <span>{entry.label}</span>
+              <strong>{entry.value}</strong>
+            </div>
+          ))}
+        </div>
         <dl className="summary-list">
           <MetadataRow label="Audit type" value={job.audit_type} />
           <MetadataRow label="Analyzer" value={report.analyzer ?? "Not available"} />
@@ -48,61 +62,37 @@ export function DjangoConfigJobReport({ job, file }: { job: JobRecord; file?: Fi
         </div>
       ) : null}
 
-      <div className="report-grid">
-        <ReportSection title="Summary">
-          <MetadataList entries={report.summary} empty="No Django config summary returned yet." />
-        </ReportSection>
-        <ReportSection title="Limits">
-          <MetadataList entries={report.limits} empty="No Django config limits returned yet." />
-        </ReportSection>
-      </div>
+      <ReportSection title="Summary">
+        <MetadataList entries={report.summary} empty="No Django config summary returned yet." />
+      </ReportSection>
 
-      <ReportSection title="Detected Files">
+      <ReportSection title="Findings">
+        <FindingGroups groups={report.findingGroups} />
+      </ReportSection>
+
+      <ReportSection title="Files Reviewed / Detected Files">
         {report.detectedFiles.length === 0 ? (
-          <p className="empty-state">No Django-related files detected.</p>
+          <p className="empty-state">No Django-related files detected or returned yet.</p>
         ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Path</th>
-                  <th>Category</th>
-                  <th>Read</th>
-                  <th>Reason</th>
-                  <th>Size</th>
-                </tr>
-              </thead>
-              <tbody>
-                {report.detectedFiles.map((item, index) => (
-                  <tr key={`${item.path}-${index}`}>
-                    <td className="mono">{item.path}</td>
-                    <td>{item.category}</td>
-                    <td>{item.read ? "yes" : "no"}</td>
-                    <td>{item.skipReason ?? "N/A"}</td>
-                    <td>{item.sizeBytes === null ? "N/A" : `${item.sizeBytes} B`}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DetectedFilesTable files={report.detectedFiles} />
         )}
       </ReportSection>
 
-      <ReportSection title="Django Signals">
+      <ReportSection title="Sensitive Env Files Detected But Not Read">
+        {report.sensitiveEnvFiles.length === 0 ? (
+          <p className="empty-state">No real .env files were reported as present.</p>
+        ) : (
+          <DetectedFilesTable files={report.sensitiveEnvFiles} compact />
+        )}
+      </ReportSection>
+
+      <ReportSection title="Settings Signals">
         <MetadataList entries={report.signals} empty="No Django signals returned yet." monoValues />
       </ReportSection>
 
       <div className="report-grid">
-        <ReportSection title="Findings">
-          {report.findings.length === 0 ? (
-            <p className="empty-state">No informational findings reported.</p>
-          ) : (
-            <div className="finding-list">
-              {report.findings.map((finding, index) => (
-                <FindingCard finding={finding} key={`${finding.id}-${index}`} />
-              ))}
-            </div>
-          )}
+        <ReportSection title="Limits / Truncation">
+          <MetadataList entries={report.limits} empty="No Django config limits returned yet." />
         </ReportSection>
         <ReportSection title="Errors">
           {job.error ? <p className="error-text">{job.error}</p> : null}
@@ -153,19 +143,82 @@ function MetadataList({
   );
 }
 
+function FindingGroups({ groups }: { groups: DjangoFindingGroup[] }) {
+  if (groups.length === 0) {
+    return <p className="empty-state">No heuristic findings reported.</p>;
+  }
+  return (
+    <div className="finding-list">
+      {groups.map((group) => (
+        <section className="finding-group" key={group.level}>
+          <div className="section-title-row">
+            <h4>{group.level}</h4>
+            <span className={`finding-badge ${group.level}`}>{group.findings.length}</span>
+          </div>
+          <div className="finding-list">
+            {group.findings.map((finding, index) => (
+              <FindingCard finding={finding} key={`${finding.id}-${index}`} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function FindingCard({ finding }: { finding: DjangoConfigFinding }) {
   return (
     <article className="tool-card">
       <div className="tool-card-header">
         <strong>{finding.title}</strong>
-        <span className={`finding-badge ${finding.level}`}>{finding.level}</span>
+        <div className="badge-row">
+          {finding.context ? <ContextBadge context={finding.context} /> : null}
+          <span className={`finding-badge ${finding.level}`}>{finding.level}</span>
+        </div>
       </div>
       {finding.filePath ? <p className="mono evidence-line">{finding.filePath}</p> : null}
+      <p className="subtle-id">{finding.id}</p>
       {finding.description ? <p>{finding.description}</p> : null}
       {finding.evidence ? <p className="mono evidence-line">{finding.evidence}</p> : null}
       {finding.recommendation ? <p className="muted">{finding.recommendation}</p> : null}
     </article>
   );
+}
+
+function DetectedFilesTable({ files, compact = false }: { files: DjangoDetectedFile[]; compact?: boolean }) {
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Category</th>
+            <th>Context</th>
+            <th>Read</th>
+            <th>Reason</th>
+            {compact ? null : <th>Size</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {files.map((item, index) => (
+            <tr key={`${item.path}-${index}`}>
+              <td className="mono">{item.path}</td>
+              <td>{item.category}</td>
+              <td>{item.context ? <ContextBadge context={item.context} /> : "N/A"}</td>
+              <td>{item.read ? "yes" : "no"}</td>
+              <td>{item.skipReason ?? "N/A"}</td>
+              {compact ? null : <td>{item.sizeBytes === null ? "N/A" : `${item.sizeBytes} B`}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ContextBadge({ context }: { context: string }) {
+  const contextClass = context.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  return <span className={`context-pill ${contextClass}`}>{context}</span>;
 }
 
 function MetadataRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {

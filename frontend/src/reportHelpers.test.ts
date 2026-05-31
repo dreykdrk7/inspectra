@@ -323,7 +323,8 @@ describe("report helpers", () => {
             title: "Django SECRET_KEY appears hardcoded",
             level: "medium",
             evidence: "SECRET_KEY = [REDACTED]",
-            file_path: "project/settings.py"
+            file_path: "project/settings.py",
+            context: "shared"
           },
           {
             id: "django_csrf_cookie_secure_not_true",
@@ -339,11 +340,19 @@ describe("report helpers", () => {
 
     expect(report.isDjangoConfigAudit).toBe(true);
     expect(report.archiveType).toBe("zip");
+    expect(report.overview).toContainEqual({ label: "Files reviewed", value: "1" });
+    expect(report.overview).toContainEqual({ label: "Sensitive env files", value: "1" });
+    expect(report.filesReadCount).toBe(1);
+    expect(report.findingsCount).toBe(2);
+    expect(report.envSensitiveCount).toBe(1);
     expect(report.detectedFiles[0]).toMatchObject({ path: "project/settings.py", read: true });
     expect(report.detectedFiles[1]).toMatchObject({ path: ".env", read: false, skipReason: "sensitive_env_not_read" });
+    expect(report.reviewedFiles[0]).toMatchObject({ path: "project/settings.py" });
+    expect(report.sensitiveEnvFiles[0]).toMatchObject({ path: ".env", category: "env_sensitive" });
     expect(report.signals).toContainEqual({ label: "debug.status", value: "enabled_or_default_true" });
-    expect(report.findings[0]).toMatchObject({ id: "django_secret_key_hardcoded", evidence: "SECRET_KEY = [REDACTED]" });
-    expect(report.findings[1]).toMatchObject({ id: "django_csrf_cookie_secure_not_true", filePath: null });
+    expect(report.findings[0]).toMatchObject({ id: "django_secret_key_hardcoded", evidence: "SECRET_KEY = [REDACTED]", context: "shared" });
+    expect(report.findings[1]).toMatchObject({ id: "django_csrf_cookie_secure_not_true", filePath: null, context: "grouped" });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["medium", "low"]);
   });
 
   it("tolerates sparse Django config results", () => {
