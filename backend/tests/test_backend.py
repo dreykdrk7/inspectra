@@ -1248,6 +1248,7 @@ async def test_list_jobs_includes_docker_config_summary(monkeypatch, tmp_path):
                     "files_reviewed": 2,
                     "dockerfiles_detected": 1,
                     "compose_files_detected": 1,
+                    "services_detected": 3,
                     "findings_count": 3,
                     "secrets_redacted_count": 1,
                     "truncated": False,
@@ -1268,7 +1269,7 @@ async def test_list_jobs_includes_docker_config_summary(monkeypatch, tmp_path):
     assert summary["files_reviewed"] == 2
     assert summary["dockerfiles_detected"] == 1
     assert summary["compose_files_detected"] == 1
-    assert summary["services_detected"] == 1
+    assert summary["services_detected"] == 3
     assert summary["findings_count"] == 3
     assert summary["errors_count"] == 1
 
@@ -3091,6 +3092,7 @@ def save_docker_config_export_fixture_job() -> JobRecord:
                 "dockerfiles_detected": 1,
                 "compose_files_detected": 1,
                 "dockerignore_files_detected": 0,
+                "services_detected": 1,
                 "findings_count": 2,
                 "secrets_redacted_count": 1,
                 "truncated": False,

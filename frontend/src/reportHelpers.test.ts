@@ -471,7 +471,6 @@ describe("report helpers", () => {
           {
             id: "docker_missing_healthcheck",
             title: "Healthcheck not observed",
-            level: "info",
             category: "compose",
             context: "production",
             service: "web",
@@ -491,8 +490,8 @@ describe("report helpers", () => {
     expect(report.stages[0]).toMatchObject({ filePath: "Dockerfile", baseImage: "python:latest", userObserved: false });
     expect(report.composeServices[0]).toMatchObject({ filePath: "docker-compose.yml", name: "web", ports: ["8000:8000"] });
     expect(report.findings[0]).toMatchObject({ id: "docker_latest_tag", level: "low", filePath: "Dockerfile" });
-    expect(report.findings[1]).toMatchObject({ id: "docker_missing_healthcheck", filePath: null, service: "web" });
-    expect(report.findingGroups.map((group) => group.level)).toEqual(["low", "info"]);
+    expect(report.findings[1]).toMatchObject({ id: "docker_missing_healthcheck", level: "unknown", filePath: null, service: "web" });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["low", "unknown"]);
     expect(report.redactionNotes).toEqual(["Sensitive environment values were redacted."]);
   });
 

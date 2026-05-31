@@ -491,7 +491,7 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["files_reviewed"] = summary.get("files_reviewed", "N/A")
         data["dockerfiles_detected"] = summary.get("dockerfiles_detected", "N/A")
         data["compose_files_detected"] = summary.get("compose_files_detected", "N/A")
-        data["services_detected"] = len(result.get("compose_services") or [])
+        data["services_detected"] = summary.get("services_detected", len(result.get("compose_services") or []))
         data["findings_count"] = summary.get("findings_count", "N/A")
         data["secrets_redacted_count"] = summary.get("secrets_redacted_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")

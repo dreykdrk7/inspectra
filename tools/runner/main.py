@@ -4347,6 +4347,7 @@ def empty_docker_config_analysis(errors: list[str] | None = None) -> dict[str, A
             "dockerfiles_detected": 0,
             "compose_files_detected": 0,
             "dockerignore_files_detected": 0,
+            "services_detected": 0,
             "findings_count": 0,
             "secrets_redacted_count": 0,
             "truncated": False,
@@ -4946,6 +4947,7 @@ def finalize_docker_config_analysis(analysis: dict[str, Any]) -> None:
             "Secret-like values in Docker/Compose evidence are redacted on a best-effort basis.",
         ]
     analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["services_detected"] = len(analysis["compose_services"])
     analysis["summary"]["findings_count"] = len(analysis["findings"])
 
 

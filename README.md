@@ -131,13 +131,13 @@ http://localhost:5173
 
 From the UI you can check backend health, upload PDFs, images, manifests, or archives, submit an authorized URL for baseline web audit, submit an authorized domain for DNS baseline audit, submit explicit authorized subdomain candidates for inventory, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
-For archive files, the file list shows three actions: `Analyze archive` for container structure and extraction-risk indicators, `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive, and `Analyze Django config` for passive Django configuration heuristics. Docker config analysis is available through the API in this phase; a dedicated UI action/report is planned next.
+For archive files, the file list shows four archive actions: `Analyze archive` for container structure and extraction-risk indicators, `Analyze project manifests` for bounded parsing of supported dependency manifests inside the archive, `Analyze Django config` for passive Django configuration heuristics, and `Analyze Docker config` for passive Dockerfile/Compose review indicators.
 
 The dashboard includes client-side counters, file filters by kind, job filters by status and audit type, quick search fields, manual refresh, and gentle auto-refresh while jobs are queued or running.
 
 From the upload panel, choose `PDF`, `Image`, `Manifest`, or `Archive`. Image uploads currently accept JPEG, PNG, and WebP. Manifest uploads currently accept `package.json`, `requirements.txt`, and `pyproject.toml`. Archive uploads currently accept `.zip`, `.tar`, `.tar.gz`, and `.tgz`. Inspectra does not render image previews or extract archives broadly in this phase.
 
-Completed PDF, image, manifest, archive, and project-archive jobs show readable reports with:
+Completed PDF, image, manifest, archive, project-archive, Django config, Docker config, web, domain, and subdomain jobs show readable reports with:
 
 - General job summary.
 - Hashes.

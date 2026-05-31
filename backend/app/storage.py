@@ -567,7 +567,7 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["files_reviewed"] = manifest_summary.get("files_reviewed")
             summary["dockerfiles_detected"] = manifest_summary.get("dockerfiles_detected")
             summary["compose_files_detected"] = manifest_summary.get("compose_files_detected")
-            summary["services_detected"] = len(record.result.get("compose_services") or [])
+            summary["services_detected"] = manifest_summary.get("services_detected", len(record.result.get("compose_services") or []))
             summary["findings_count"] = manifest_summary.get("findings_count")
             summary["secrets_redacted_count"] = manifest_summary.get("secrets_redacted_count")
             summary["truncated"] = manifest_summary.get("truncated")

@@ -35,9 +35,9 @@ The backend does not install or execute audit binaries directly.
   - Display backend health.
   - Upload PDFs, images, dependency manifests, and archives.
   - List and delete uploaded files.
-  - Launch PDF, image, manifest, archive, project-archive manifest, Django config, web baseline, domain baseline, and controlled subdomain inventory audits. Docker config audit launch is API-only in the current microphase.
+  - Launch PDF, image, manifest, archive, project-archive manifest, Django config, Docker config, web baseline, domain baseline, and controlled subdomain inventory audits.
   - List recent jobs.
-  - Fetch jobs and render readable PDF, image, manifest, archive, project-archive, Django config, web, domain, and subdomain inventory reports.
+  - Fetch jobs and render readable PDF, image, manifest, archive, project-archive, Django config, Docker config, web, domain, and subdomain inventory reports.
   - Provide export links for Markdown, HTML, XML, and PDF job reports.
   - Provide SBOM export links for completed manifest and project-archive manifest jobs.
   - Keep raw job JSON available for debugging.

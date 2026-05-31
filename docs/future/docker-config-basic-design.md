@@ -1,8 +1,10 @@
 # docker_config_basic Design
 
+Status: implemented in v1 across runner, backend, exports, and frontend. This document remains as the historical docs-first design reference for the passive Docker config audit.
+
 ## 1. Module Objective
 
-`docker_config_basic` is a future passive archive-based audit type for reviewing Docker and deployment configuration supplied by the user. It should help Inspectra users quickly identify configuration indicators that deserve manual review before deploying applications to a VPS, CI environment, or small production host.
+`docker_config_basic` is a passive archive-based audit type for reviewing Docker and deployment configuration supplied by the user. It should help Inspectra users quickly identify configuration indicators that deserve manual review before deploying applications to a VPS, CI environment, or small production host.
 
 The module should detect review signals such as containers that appear to run as root, broad host mounts, Docker socket exposure, privileged mode, sensitive environment names, unpinned or latest image references, development-oriented Compose files, and potentially risky deployment defaults.
 
@@ -280,4 +282,4 @@ When `docker_config_basic` is implemented, update:
   - explicitly keep Docker build/run/socket/scanner/CVE/image-registry actions out of scope;
   - document local storage sensitivity and best-effort redaction.
 
-No existing docs should claim that `docker_config_basic` exists until the runtime module is implemented. This design document is only a future-plan artifact.
+Runtime documentation now lives in `README.md`, `docs/architecture.md`, and `docs/security-scope.md`. This design document should not be treated as the source of truth for exact UI wording or implementation status.

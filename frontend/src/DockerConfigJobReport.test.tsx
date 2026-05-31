@@ -82,7 +82,6 @@ describe("DockerConfigJobReport", () => {
               {
                 id: "docker_sensitive_env_name",
                 title: "Sensitive environment name observed",
-                level: "info",
                 category: "compose",
                 context: "production",
                 evidence: "SECRET_KEY=[REDACTED]",

@@ -946,6 +946,7 @@ services:
     serialized = json.dumps(payload)
     assert response.status_code == 200
     assert payload["summary"]["compose_files_detected"] == 1
+    assert payload["summary"]["services_detected"] == 2
     assert "docker_privileged_container" in finding_ids
     assert "docker_host_network" in finding_ids
     assert "docker_host_pid_or_ipc" in finding_ids
