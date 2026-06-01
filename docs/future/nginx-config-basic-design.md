@@ -1,6 +1,6 @@
 # nginx_config_basic Design
 
-Status: proposed docs-first design. No runtime endpoint, runner analyzer, backend job, frontend UI, or exports are implemented by this document.
+Status: historical docs-first design. `nginx_config_basic` was implemented and closed as a v1 passive archive-based web-edge config audit. See `docs/future/nginx-config-basic-closeout.md` for the runtime scope, smoke checklist, residual risks, and product decision.
 
 ## 1. Module Objective
 
