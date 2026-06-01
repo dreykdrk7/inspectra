@@ -201,6 +201,9 @@ TERRAFORM_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_TERRAFORM_CO
 NGINX_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_NGINX_CONFIG_MAX_FILES", 100)
 NGINX_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_NGINX_CONFIG_MAX_FILE_BYTES", 524_288)
 NGINX_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_NGINX_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
+COMPOSE_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_COMPOSE_CONFIG_MAX_FILES", 100)
+COMPOSE_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_COMPOSE_CONFIG_MAX_FILE_BYTES", 524_288)
+COMPOSE_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_COMPOSE_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
 WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
@@ -750,6 +753,35 @@ async def analyze_nginx_config(request: ArchiveAnalysisRequest) -> dict[str, Any
         analysis = empty_nginx_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
 
     return build_nginx_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
+
+
+@app.post("/analyze/compose-config")
+async def analyze_compose_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = compose_config_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_compose_config_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_compose_config_analysis(
+                errors=["Unsupported or corrupt archive. Inspectra did not run Docker, Docker Compose, pull images, or read env/secret files."]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_compose_config_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        analysis = empty_compose_config_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+
+    return build_compose_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/web-basic")
@@ -11993,6 +12025,1625 @@ def add_nginx_config_finding(
         finding["upstream"] = upstream
     if directive:
         finding["directive"] = directive
+    analysis["findings"].append(finding)
+
+
+def compose_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = COMPOSE_CONFIG_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = COMPOSE_CONFIG_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = COMPOSE_CONFIG_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Compose config analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_compose_config_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_compose_config_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            analysis["summary"]["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"compose_config_{scoped['id']}"
+            analysis["findings"].append(scoped)
+            finalize_compose_config_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_compose_config_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_compose_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda entry_info=info: archive.open(entry_info),
+                )
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_compose_config_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_compose_config_entry(
+                    analysis,
+                    state,
+                    entry,
+                    lambda tar_member=member: archive.extractfile(tar_member),
+                )
+
+    finalize_compose_config_analysis(analysis)
+    return analysis
+
+
+def empty_compose_config_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "files_considered": 0,
+            "files_reviewed": 0,
+            "compose_files_detected": 0,
+            "services_detected": 0,
+            "networks_detected": 0,
+            "volumes_detected": 0,
+            "secrets_detected": 0,
+            "published_ports_detected": 0,
+            "env_files_detected": 0,
+            "findings_count": 0,
+            "redacted_values_count": 0,
+            "truncated": False,
+        },
+        "files_detected": [],
+        "files_reviewed": [],
+        "services": [],
+        "ports": [],
+        "volumes": [],
+        "networks": [],
+        "secrets": [],
+        "env_files": [],
+        "build_contexts": [],
+        "images": [],
+        "findings": [],
+        "redaction_notes": [],
+        "errors": errors or [],
+        "_compose_file_count": 0,
+        "_compose_contexts": [],
+        "_override_paths": [],
+        "_profiles": [],
+    }
+
+
+def build_compose_config_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "compose_config_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "files_detected": analysis.get("files_detected", []),
+        "files_reviewed": analysis.get("files_reviewed", []),
+        "services": analysis.get("services", []),
+        "ports": analysis.get("ports", []),
+        "volumes": analysis.get("volumes", []),
+        "networks": analysis.get("networks", []),
+        "secrets": analysis.get("secrets", []),
+        "env_files": analysis.get("env_files", []),
+        "build_contexts": analysis.get("build_contexts", []),
+        "images": analysis.get("images", []),
+        "findings": findings,
+        "redaction_notes": analysis.get("redaction_notes", []),
+        "errors": analysis.get("errors", []),
+        "truncated": bool(summary.get("truncated")),
+    }
+
+
+def should_stop_compose_config_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    if index > ARCHIVE_MAX_ENTRIES:
+        analysis["summary"]["truncated"] = True
+        add_compose_config_finding(
+            analysis,
+            "compose_config_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "high",
+            "limit",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    return False
+
+
+def process_compose_config_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_compose_config_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    if category == "compose":
+        summary["compose_files_detected"] += 1
+        analysis["_compose_file_count"] += 1
+
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    context = compose_config_file_context(path, category)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "context": context,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = compose_config_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["files_detected"].append(record)
+        if skip_reason == "real_env_file_not_read":
+            add_compose_env_file_sensitive(analysis, record)
+        else:
+            add_compose_config_skip_finding(analysis, path, skip_reason, size_bytes, context)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["files_detected"].append(record)
+        safe_error, redactions = redact_compose_secret_text(str(exc))
+        analysis["summary"]["redacted_values_count"] += redactions
+        add_compose_config_finding(
+            analysis,
+            "compose_config_file_read_error",
+            "Compose config candidate could not be read safely",
+            "low",
+            "medium",
+            "archive",
+            "A Compose-related candidate file could not be read from the archive within Inspectra limits.",
+            f"{path}: {safe_error}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+            context=context,
+        )
+        return
+
+    state["total_bytes_read"] += len(raw_bytes)
+    if b"\x00" in raw_bytes:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_compose_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_compose_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    state["files_read"] += 1
+    summary["files_reviewed"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["files_detected"].append(record)
+    analysis["files_reviewed"].append(
+        {"path": path, "category": category, "context": context, "size_bytes": size_bytes, "bytes_read": len(raw_bytes)}
+    )
+    analysis["_compose_contexts"].append(context)
+    if is_compose_override_path(path):
+        analysis["_override_paths"].append(path)
+    analyze_compose_config_text(analysis, path, category, context, text)
+
+
+def classify_compose_config_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    lower = normalized.lower()
+    basename = lower.rsplit("/", 1)[-1]
+    parts = [part for part in lower.split("/") if part]
+    if is_compose_sensitive_env_name(basename):
+        return "env_sensitive"
+    if is_compose_filename(basename):
+        return "compose"
+    if basename.endswith((".yml", ".yaml")):
+        parent = parts[-2] if len(parts) >= 2 else ""
+        grandparent = parts[-3] if len(parts) >= 3 else ""
+        if parent == "stacks":
+            return "compose"
+        if parent == "compose" and grandparent in {"deploy", "docker", "infra"}:
+            return "compose"
+    return None
+
+
+def is_compose_filename(basename: str) -> bool:
+    if basename in {"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}:
+        return True
+    return bool(re.match(r"^(?:docker-)?compose\.[a-z0-9_.-]+\.(?:ya?ml)$", basename))
+
+
+def is_compose_sensitive_env_name(basename: str) -> bool:
+    return basename == ".env" or basename == ".envrc" or basename.startswith(".env.")
+
+
+def compose_config_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if record.get("category") == "env_sensitive":
+        return "real_env_file_not_read"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_compose_config_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int, context: str) -> None:
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit"}:
+        analysis["summary"]["truncated"] = True
+    titles = {
+        "path_traversal": "Compose config path uses traversal",
+        "absolute_path": "Compose config path is absolute",
+        "entry_name_too_long": "Compose config entry name is unusually long",
+        "file_too_large": "Compose config file omitted because it exceeds the size limit",
+        "too_many_files": "Compose config file limit reached",
+        "total_bytes_limit": "Total Compose config byte limit reached",
+        "binary_or_non_text": "Compose config candidate is not UTF-8 text",
+    }
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    if reason == "binary_or_non_text":
+        level = "info"
+    evidence = f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    if reason.startswith("not_regular_file"):
+        title = "Compose config candidate omitted because it is not a regular file"
+        evidence = f"{path}: {reason}"
+        level = "low"
+    else:
+        title = titles.get(reason, "Compose config candidate skipped by defensive limit")
+    add_compose_config_finding(
+        analysis,
+        f"compose_config_{reason.split(':', 1)[0]}",
+        title,
+        compose_contextual_level(level, context),
+        compose_contextual_confidence("high" if reason in {"path_traversal", "absolute_path"} else "medium", context),
+        "archive",
+        "Inspectra detected a Compose-related file but did not read it because of a defensive limit, unsupported format, or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+        context=context,
+    )
+
+
+def add_compose_env_file_sensitive(analysis: dict[str, Any], record: dict[str, Any]) -> None:
+    env_file = {
+        "path": record["path"],
+        "context": record.get("context"),
+        "source": "archive",
+        "read": False,
+        "skip_reason": "real_env_file_not_read",
+        "size_bytes": record.get("size_bytes"),
+    }
+    analysis["env_files"].append(env_file)
+    add_compose_config_finding(
+        analysis,
+        "compose_env_file_sensitive_present",
+        "Real Compose environment file detected but not read",
+        compose_contextual_level("low", str(record.get("context") or "")),
+        "high",
+        "secrets",
+        "A .env-style file was present in the archive. Inspectra records its presence but does not read or store its content.",
+        str(record["path"])[:240],
+        "Keep real env files out of shared archives and use sample files for review packages.",
+        file_path=str(record["path"]),
+        context=str(record.get("context") or ""),
+    )
+
+
+LOWER_CONFIDENCE_COMPOSE_CONTEXTS = {"development", "test", "local", "example"}
+COMPOSE_SECRET_KEY_RE = re.compile(
+    r"(?i)(secret|token|api[_-]?key|apikey|password|passwd|client[_-]?secret|private[_-]?key|credential|database_url|redis_url|auth)"
+)
+COMPOSE_CREDENTIAL_URL_RE = re.compile(r"(?i)\b(?:[a-z][a-z0-9+.-]*://)[^\s'\"<>/@:]*:[^\s'\"<>/@]+@[^\s'\"<>]+")
+COMPOSE_DB_PORTS = {5432, 3306, 33060, 6379, 27017, 27018, 27019, 11211, 9200, 9300, 1433, 1521, 9042}
+COMPOSE_ADMIN_PORTS = {3000, 5601, 8000, 8001, 8080, 8081, 8088, 9000, 9090, 9091, 15672}
+COMPOSE_SENSITIVE_PORTS = {22, 2375, 2376, 3389, 5000, 6443, 8200, 9200, 9300}
+COMPOSE_SENSITIVE_HOST_PATHS = (
+    "/etc",
+    "/root",
+    "/root/.ssh",
+    "/home",
+    "/var/lib/docker",
+    "/var/run",
+    "/run/docker.sock",
+    "/var/run/docker.sock",
+)
+
+
+@dataclass
+class ComposeYamlLine:
+    number: int
+    indent: int
+    text: str
+
+
+def compose_config_file_context(path: str, category: str = "") -> str:
+    normalized = normalize_archive_entry_path(path).lower()
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    directories = set(parts[:-1])
+    name_tokens = set(re.split(r"[^a-z0-9]+", basename))
+    all_tokens = set(parts[:-1]) | name_tokens
+
+    if directories.intersection({"docs", "doc", "examples", "example", "samples", "sample"}) or all_tokens.intersection(
+        {"example", "examples", "sample", "samples", "template", "templates", "sandbox"}
+    ):
+        return "example"
+    if all_tokens.intersection({"test", "tests", "testing"}):
+        return "test"
+    if all_tokens.intersection({"dev", "development"}):
+        return "development"
+    if "local" in all_tokens or "override" in name_tokens:
+        return "local"
+    if all_tokens.intersection({"prod", "production", "live", "deploy", "release", "stacks", "server", "vps"}) or directories.intersection(
+        {"deploy", "stacks"}
+    ):
+        return "production"
+    if basename in {"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}:
+        return "shared"
+    if category == "env_sensitive":
+        return "ambiguous"
+    return "ambiguous"
+
+
+def compose_contextual_level(level: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_COMPOSE_CONTEXTS:
+        return level
+    if level == "medium":
+        return "low"
+    if level == "low":
+        return "info"
+    return level
+
+
+def compose_contextual_confidence(confidence: str, context: str) -> str:
+    if context not in LOWER_CONFIDENCE_COMPOSE_CONTEXTS:
+        return confidence
+    if confidence == "high":
+        return "medium"
+    if confidence == "medium":
+        return "low"
+    return confidence
+
+
+def is_compose_override_path(path: str) -> bool:
+    basename = normalize_archive_entry_path(path).lower().rsplit("/", 1)[-1]
+    return "override" in set(re.split(r"[^a-z0-9]+", basename))
+
+
+def strip_compose_comment(line: str) -> str:
+    quote: str | None = None
+    escaped = False
+    result: list[str] = []
+    for char in line:
+        if escaped:
+            result.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            result.append(char)
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            result.append(char)
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            result.append(char)
+            continue
+        if char == "#":
+            break
+        result.append(char)
+    return "".join(result).rstrip()
+
+
+def active_compose_lines(text: str) -> list[ComposeYamlLine]:
+    active: list[ComposeYamlLine] = []
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        cleaned = strip_compose_comment(raw_line)
+        if not cleaned.strip() or cleaned.lstrip() == "---":
+            continue
+        indent = len(cleaned) - len(cleaned.lstrip(" "))
+        active.append(ComposeYamlLine(line_number, indent, cleaned.strip()))
+    return active
+
+
+def compose_key_value(text: str) -> tuple[str, str] | None:
+    if text.startswith("-"):
+        return None
+    match = re.match(r"['\"]?([A-Za-z0-9_.-]+)['\"]?\s*:\s*(.*)$", text)
+    if not match:
+        return None
+    return match.group(1), match.group(2).strip()
+
+
+def compose_section(lines: list[ComposeYamlLine], section: str) -> tuple[ComposeYamlLine, list[ComposeYamlLine]] | None:
+    for index, line in enumerate(lines):
+        key_value = compose_key_value(line.text)
+        if not key_value or line.indent != 0 or key_value[0] != section:
+            continue
+        nested: list[ComposeYamlLine] = []
+        for next_line in lines[index + 1 :]:
+            if next_line.indent <= line.indent:
+                break
+            nested.append(next_line)
+        return line, nested
+    return None
+
+
+def compose_child_blocks(lines: list[ComposeYamlLine], parent_indent: int) -> list[dict[str, Any]]:
+    direct_candidates = [line for line in lines if line.indent > parent_indent and not line.text.startswith("-") and compose_key_value(line.text)]
+    if not direct_candidates:
+        return []
+    direct_indent = min(line.indent for line in direct_candidates)
+    direct_indices = [index for index, line in enumerate(lines) if line.indent == direct_indent and not line.text.startswith("-") and compose_key_value(line.text)]
+    blocks: list[dict[str, Any]] = []
+    for ordinal, index in enumerate(direct_indices):
+        line = lines[index]
+        key, value = compose_key_value(line.text) or ("", "")
+        next_index = direct_indices[ordinal + 1] if ordinal + 1 < len(direct_indices) else len(lines)
+        nested = [nested_line for nested_line in lines[index + 1 : next_index] if nested_line.indent > line.indent]
+        blocks.append({"key": key, "value": value, "line": line.number, "indent": line.indent, "lines": nested})
+    return blocks
+
+
+def compose_direct_fields(lines: list[ComposeYamlLine], parent_indent: int) -> list[dict[str, Any]]:
+    return compose_child_blocks(lines, parent_indent)
+
+
+def compose_find_field(fields: list[dict[str, Any]], key: str) -> dict[str, Any] | None:
+    for field in fields:
+        if field.get("key") == key:
+            return field
+    return None
+
+
+def compose_unquote(value: str) -> str:
+    stripped = value.strip().strip(",")
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
+
+
+def compose_split_inline_items(value: str) -> list[str]:
+    stripped = value.strip()
+    if not (stripped.startswith("[") and stripped.endswith("]")):
+        return []
+    inner = stripped[1:-1]
+    items: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for char in inner:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            current.append(char)
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            current.append(char)
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            current.append(char)
+            continue
+        if char == ",":
+            item = "".join(current).strip()
+            if item:
+                items.append(compose_unquote(item))
+            current = []
+            continue
+        current.append(char)
+    item = "".join(current).strip()
+    if item:
+        items.append(compose_unquote(item))
+    return items
+
+
+def compose_inline_map(value: str) -> dict[str, str]:
+    stripped = value.strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        return {}
+    mapping: dict[str, str] = {}
+    for item in compose_split_inline_items(f"[{stripped[1:-1]}]"):
+        separator = ":" if ":" in item else "=" if "=" in item else None
+        if not separator:
+            continue
+        key, raw_value = [part.strip() for part in item.split(separator, 1)]
+        mapping[compose_unquote(key)] = compose_unquote(raw_value)
+    return mapping
+
+
+def compose_sequence_blocks(lines: list[ComposeYamlLine]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    current_indent = 0
+    for line in lines:
+        if line.text.startswith("-"):
+            if current is not None:
+                blocks.append(current)
+            current_indent = line.indent
+            current = {"line": line.number, "indent": current_indent, "value": line.text[1:].strip(), "lines": []}
+            continue
+        if current is not None and line.indent > current_indent:
+            current["lines"].append(line)
+    if current is not None:
+        blocks.append(current)
+    return blocks
+
+
+def compose_sequence_value_is_mapping(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped or stripped[0] in {"'", '"'}:
+        return False
+    return compose_key_value(stripped) is not None
+
+
+def compose_mapping_from_sequence_block(block: dict[str, Any]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    value = str(block.get("value") or "").strip()
+    key_value = compose_key_value(value) if compose_sequence_value_is_mapping(value) else None
+    if key_value:
+        mapping[key_value[0]] = compose_unquote(key_value[1])
+    for line in block.get("lines", []):
+        if not isinstance(line, ComposeYamlLine):
+            continue
+        nested_key_value = compose_key_value(line.text)
+        if nested_key_value:
+            mapping[nested_key_value[0]] = compose_unquote(nested_key_value[1])
+    return mapping
+
+
+def compose_field_scalar_values(field: dict[str, Any] | None) -> list[tuple[int, str]]:
+    if not field:
+        return []
+    values: list[tuple[int, str]] = []
+    value = str(field.get("value") or "").strip()
+    if value:
+        inline_items = compose_split_inline_items(value)
+        if inline_items:
+            values.extend((int(field.get("line") or 0), item) for item in inline_items)
+        elif value not in {"[]", "{}"}:
+            values.append((int(field.get("line") or 0), compose_unquote(value)))
+    for block in compose_sequence_blocks(field.get("lines", [])):
+        item = str(block.get("value") or "").strip()
+        if item and not compose_sequence_value_is_mapping(item):
+            values.append((int(block.get("line") or 0), compose_unquote(item)))
+    return values
+
+
+def compose_bool(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    normalized = compose_unquote(value).strip().lower()
+    if normalized in {"true", "yes", "on", "1"}:
+        return True
+    if normalized in {"false", "no", "off", "0"}:
+        return False
+    return None
+
+
+def redact_compose_secret_text(text: str | None) -> tuple[str, int]:
+    if text is None:
+        return "", 0
+    redacted, count = redact_nginx_secret_text(str(text))
+
+    def apply(pattern: str, replacement: str, flags: int = re.IGNORECASE) -> None:
+        nonlocal redacted, count
+        redacted, replacements = re.subn(pattern, replacement, redacted, flags=flags)
+        count += replacements
+
+    apply(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", "[REDACTED]", re.IGNORECASE)
+    apply(r"\b([a-z][a-z0-9+.-]*://)([^/\s:@;\"']*):([^@\s/;\"']+)@([^\s;\"']+)", r"\1[REDACTED]@\4")
+    apply(
+        r"(\b[A-Z0-9_.-]*(?:SECRET|TOKEN|PASSWORD|PASS|API_KEY|APIKEY|CLIENT_SECRET|PRIVATE_KEY|DATABASE_URL|REDIS_URL|CREDENTIAL)[A-Z0-9_.-]*\b\s*[:=]\s*)(['\"]?)[^\s,'\"}\]]+",
+        r"\1\2[REDACTED]",
+    )
+    redacted = redacted.replace("[REDACTED PRIVATE KEY]", "[REDACTED]").replace("PRIVATE_KEY_BLOCK_REDACTED", "[REDACTED]")
+    return redacted, count
+
+
+def compose_safe_value(value: str | None) -> str:
+    safe, _ = redact_compose_secret_text(value or "")
+    return safe
+
+
+def compose_secret_value(value: str) -> bool:
+    if not value:
+        return False
+    stripped = compose_unquote(value).strip()
+    if not stripped or re.fullmatch(r"\$\{[^}]+\}", stripped):
+        return False
+    if COMPOSE_CREDENTIAL_URL_RE.search(stripped) or PRIVATE_KEY_BLOCK_RE.search(stripped):
+        return True
+    return not is_placeholder_secret_value(stripped)
+
+
+def analyze_compose_config_text(analysis: dict[str, Any], path: str, category: str, context: str, text: str) -> None:
+    active_lines = active_compose_lines(text)
+    active_text = "\n".join(line.text for line in active_lines)
+    if any(raw_line.startswith("\t") for raw_line in text.splitlines()):
+        analysis["errors"].append(f"{path}: tab indentation observed; Compose parsing is best-effort.")
+        add_compose_config_finding(
+            analysis,
+            "compose_unsupported_or_malformed_yaml",
+            "Compose YAML has unsupported or malformed-looking indentation",
+            "info",
+            "medium",
+            "structure",
+            "A Compose candidate contains tab indentation. Inspectra did not run docker compose config.",
+            f"{path}: tab indentation",
+            "Validate the file in a controlled workflow before relying on this static review.",
+            file_path=path,
+            context=context,
+        )
+    if PRIVATE_KEY_BLOCK_RE.search(active_text):
+        add_compose_config_finding(
+            analysis,
+            "compose_plaintext_private_key_hint",
+            "Compose file contains private key-like material",
+            compose_contextual_level("medium", context),
+            compose_contextual_confidence("high", context),
+            "secrets",
+            "Private key-like material appeared in a Compose candidate. Inspectra redacted the value.",
+            "private_key=[REDACTED]",
+            "Do not commit private key material in Compose configuration archives.",
+            file_path=path,
+            context=context,
+            redacted=True,
+        )
+    for match in COMPOSE_CREDENTIAL_URL_RE.finditer(active_text):
+        safe_url, redactions = redact_compose_secret_text(match.group(0))
+        analysis["summary"]["redacted_values_count"] += redactions
+        add_compose_config_finding(
+            analysis,
+            "compose_credential_url_hint",
+            "Compose file contains a credential-bearing URL",
+            compose_contextual_level("medium", context),
+            compose_contextual_confidence("high", context),
+            "secrets",
+            "A URL with embedded credentials was observed in Compose text. Inspectra redacted the credential material.",
+            f"url={safe_url}",
+            "Move credentials out of URLs and rotate them if this archive was shared outside trusted storage.",
+            file_path=path,
+            context=context,
+            redacted=True,
+        )
+
+    services_section = compose_section(active_lines, "services")
+    if not services_section:
+        analysis["errors"].append(f"{path}: services section was not observed; Compose parsing is best-effort.")
+        add_compose_config_finding(
+            analysis,
+            "compose_unsupported_or_malformed_yaml",
+            "Compose services section was not observed",
+            "info",
+            "low",
+            "structure",
+            "A Compose candidate did not include an obvious top-level services section.",
+            f"{path}: services missing",
+            "Confirm this is a Compose file or review it manually.",
+            file_path=path,
+            context=context,
+        )
+    else:
+        _section_line, service_lines = services_section
+        for service_block in compose_child_blocks(service_lines, 0):
+            analyze_compose_service(analysis, path, context, service_block)
+
+    analyze_compose_top_level_networks(analysis, path, context, active_lines)
+    analyze_compose_top_level_volumes(analysis, path, context, active_lines)
+    analyze_compose_top_level_secrets(analysis, path, context, active_lines)
+    if compose_section(active_lines, "profiles"):
+        analysis["_profiles"].append(path)
+
+
+def analyze_compose_service(analysis: dict[str, Any], path: str, context: str, service_block: dict[str, Any]) -> None:
+    service = str(service_block.get("key") or "unknown")
+    fields = compose_direct_fields(service_block.get("lines", []), int(service_block.get("indent") or 0))
+    field_names = {str(field.get("key")) for field in fields}
+    service_record = {
+        "path": path,
+        "context": context,
+        "line": service_block.get("line"),
+        "name": service,
+        "image": None,
+        "build": None,
+        "ports_count": 0,
+        "env_files_count": 0,
+    }
+    analysis["services"].append(service_record)
+
+    image_field = compose_find_field(fields, "image")
+    if image_field and str(image_field.get("value") or "").strip():
+        image = compose_unquote(str(image_field.get("value")))
+        safe_image = compose_safe_value(image)
+        service_record["image"] = safe_image
+        image_record = {"path": path, "context": context, "service": service, "image": safe_image, "line": image_field.get("line")}
+        analysis["images"].append(image_record)
+        analyze_compose_image(analysis, path, context, service, image, int(image_field.get("line") or 0))
+
+    build_field = compose_find_field(fields, "build")
+    if build_field:
+        analyze_compose_build(analysis, path, context, service, build_field)
+
+    analyze_compose_environment(analysis, path, context, service, compose_find_field(fields, "environment"))
+    env_count = analyze_compose_env_file(analysis, path, context, service, compose_find_field(fields, "env_file"))
+    service_record["env_files_count"] = env_count
+    analyze_compose_service_secrets(analysis, path, context, service, compose_find_field(fields, "secrets"))
+    ports_count = analyze_compose_ports(analysis, path, context, service, compose_find_field(fields, "ports"))
+    service_record["ports_count"] = ports_count
+    analyze_compose_volumes(analysis, path, context, service, compose_find_field(fields, "volumes"))
+    analyze_compose_service_networks(analysis, path, context, service, fields)
+
+    if compose_bool(str((compose_find_field(fields, "privileged") or {}).get("value") or "")):
+        add_compose_service_finding(analysis, "compose_privileged_true", "Compose service is privileged", "medium", "hardening", path, context, service, "privileged", line=(compose_find_field(fields, "privileged") or {}).get("line"))
+    if compose_find_field(fields, "cap_add"):
+        add_compose_service_finding(analysis, "compose_cap_add_present", "Compose service adds Linux capabilities", "medium", "hardening", path, context, service, "cap_add", line=compose_find_field(fields, "cap_add").get("line"))
+    security_opt = compose_find_field(fields, "security_opt")
+    security_opt_text = ""
+    if security_opt:
+        security_opt_text = "\n".join([str(security_opt.get("value") or ""), *(line.text for line in security_opt.get("lines", []) if isinstance(line, ComposeYamlLine))])
+    if security_opt and re.search(r"(?i)(unconfined|seccomp\s*:\s*unconfined|apparmor\s*:\s*unconfined|no-new-privileges\s*:\s*false)", security_opt_text):
+        add_compose_service_finding(analysis, "compose_security_opt_disabled_hint", "Compose service disables a security option", "medium", "hardening", path, context, service, "security_opt", line=security_opt.get("line"))
+    network_mode = compose_find_field(fields, "network_mode")
+    if network_mode and compose_unquote(str(network_mode.get("value") or "")).lower() == "host":
+        add_compose_service_finding(analysis, "compose_host_network_mode", "Compose service uses host networking", "medium", "network", path, context, service, "network_mode", line=network_mode.get("line"))
+    pid_field = compose_find_field(fields, "pid")
+    if pid_field and compose_unquote(str(pid_field.get("value") or "")).lower() == "host":
+        add_compose_service_finding(analysis, "compose_pid_host", "Compose service uses host PID namespace", "medium", "hardening", path, context, service, "pid", line=pid_field.get("line"))
+    ipc_field = compose_find_field(fields, "ipc")
+    if ipc_field and compose_unquote(str(ipc_field.get("value") or "")).lower() == "host":
+        add_compose_service_finding(analysis, "compose_ipc_host", "Compose service uses host IPC namespace", "medium", "hardening", path, context, service, "ipc", line=ipc_field.get("line"))
+    user_field = compose_find_field(fields, "user")
+    if not user_field or compose_unquote(str(user_field.get("value") or "")).lower() in {"", "0", "root", "0:0", "root:root"}:
+        add_compose_service_finding(analysis, "compose_user_root_or_missing", "Compose service user is root or missing", "low", "hardening", path, context, service, "user", line=(user_field or {}).get("line"))
+    read_only_field = compose_find_field(fields, "read_only")
+    if not read_only_field or compose_bool(str(read_only_field.get("value") or "")) is not True:
+        add_compose_service_finding(analysis, "compose_read_only_missing", "Compose service read_only was not observed", "low", "hardening", path, context, service, "read_only", line=(read_only_field or {}).get("line"))
+    if "healthcheck" not in field_names:
+        add_compose_service_finding(analysis, "compose_healthcheck_missing", "Compose service healthcheck was not observed", "low", "reliability", path, context, service, "healthcheck")
+    restart_field = compose_find_field(fields, "restart")
+    if not restart_field:
+        add_compose_service_finding(analysis, "compose_restart_policy_missing", "Compose service restart policy was not observed", "low", "reliability", path, context, service, "restart")
+    elif compose_unquote(str(restart_field.get("value") or "")).lower() == "always":
+        add_compose_service_finding(analysis, "compose_restart_always_hint", "Compose service uses restart always", "low", "reliability", path, context, service, "restart", line=restart_field.get("line"))
+    depends_on = compose_find_field(fields, "depends_on")
+    if depends_on and "condition: service_healthy" not in "\n".join(line.text for line in depends_on.get("lines", [])):
+        add_compose_service_finding(analysis, "compose_depends_on_without_health_condition", "Compose depends_on lacks an obvious health condition", "low", "reliability", path, context, service, "depends_on", line=depends_on.get("line"))
+    if not compose_service_has_resource_limits(fields):
+        add_compose_service_finding(analysis, "compose_resource_limits_missing", "Compose service resource limits were not observed", "low", "resources", path, context, service, "deploy.resources.limits")
+    if compose_find_field(fields, "links"):
+        add_compose_service_finding(analysis, "compose_links_legacy_present", "Compose service uses legacy links", "low", "network", path, context, service, "links", line=compose_find_field(fields, "links").get("line"))
+    if compose_find_field(fields, "profiles"):
+        analysis["_profiles"].append(path)
+
+
+def compose_service_has_resource_limits(fields: list[dict[str, Any]]) -> bool:
+    if compose_find_field(fields, "mem_limit") or compose_find_field(fields, "cpus"):
+        return True
+    deploy = compose_find_field(fields, "deploy")
+    if not deploy:
+        return False
+    nested = "\n".join(line.text for line in deploy.get("lines", []))
+    return "resources:" in nested and "limits:" in nested
+
+
+def analyze_compose_environment(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    service: str,
+    field: dict[str, Any] | None,
+) -> None:
+    if not field:
+        return
+    pairs: list[tuple[int, str, str]] = []
+    value = str(field.get("value") or "").strip()
+    for key, item_value in compose_inline_map(value).items():
+        pairs.append((int(field.get("line") or 0), key, item_value))
+    for line_number, item in compose_field_scalar_values(field):
+        if "=" in item:
+            key, item_value = item.split("=", 1)
+            pairs.append((line_number, key.strip(), item_value.strip()))
+    for nested_line in field.get("lines", []):
+        if not isinstance(nested_line, ComposeYamlLine) or nested_line.text.startswith("-"):
+            continue
+        key_value = compose_key_value(nested_line.text)
+        if key_value:
+            pairs.append((nested_line.number, key_value[0], compose_unquote(key_value[1])))
+
+    for line_number, key, raw_value in pairs:
+        key = compose_unquote(key)
+        raw_value = compose_unquote(raw_value)
+        key_is_secret = bool(COMPOSE_SECRET_KEY_RE.search(key))
+        value_is_secret = bool(COMPOSE_CREDENTIAL_URL_RE.search(raw_value) or PRIVATE_KEY_BLOCK_RE.search(raw_value))
+        if key_is_secret:
+            add_compose_config_finding(
+                analysis,
+                "compose_environment_secret_like_key",
+                "Compose environment contains a secret-like key",
+                compose_contextual_level("low", context),
+                compose_contextual_confidence("medium", context),
+                "secrets",
+                "A Compose environment key appears secret-like. Inspectra records only the key name and redacts values.",
+                f"service={service}; env key={key}",
+                "Prefer runtime secret injection or env files kept outside shared archives.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                service=service,
+                field_path=f"environment.{key}",
+            )
+        if (key_is_secret and compose_secret_value(raw_value)) or value_is_secret:
+            add_compose_config_finding(
+                analysis,
+                "compose_environment_secret_like_value",
+                "Compose environment contains a secret-like inline value",
+                compose_contextual_level("medium", context),
+                compose_contextual_confidence("medium", context),
+                "secrets",
+                "A Compose environment value appears secret-like. Inspectra redacted the value and did not validate it.",
+                f"service={service}; env {key}=[REDACTED]",
+                "Move real secret values to an approved runtime secret mechanism and rotate if this archive was shared outside trusted storage.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                service=service,
+                field_path=f"environment.{key}",
+                redacted=True,
+            )
+
+
+def analyze_compose_env_file(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    service: str,
+    field: dict[str, Any] | None,
+) -> int:
+    if not field:
+        return 0
+    count = 0
+    for line_number, reference in compose_field_scalar_values(field):
+        safe_reference = compose_safe_value(reference)
+        env_file = {
+            "path": safe_reference,
+            "source": "env_file_reference",
+            "service": service,
+            "file_path": path,
+            "context": context,
+            "line": line_number,
+            "read": False,
+            "resolved": False,
+        }
+        analysis["env_files"].append(env_file)
+        count += 1
+        add_compose_config_finding(
+            analysis,
+            "compose_env_file_reference",
+            "Compose service references an env_file",
+            compose_contextual_level("low", context),
+            compose_contextual_confidence("high", context),
+            "secrets",
+            "An env_file reference was observed. Inspectra records the reference but does not resolve or read it.",
+            f"service={service}; env_file={safe_reference}",
+            "Keep real env files out of shared archives and review runtime secret injection separately.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            service=service,
+            field_path="env_file",
+        )
+        if is_compose_sensitive_env_name(safe_reference.rsplit("/", 1)[-1].lower()):
+            add_compose_config_finding(
+                analysis,
+                "compose_env_file_sensitive_present",
+                "Compose env_file references a real env-style file",
+                compose_contextual_level("low", context),
+                compose_contextual_confidence("high", context),
+                "secrets",
+                "A Compose env_file reference points at a .env-style file. Inspectra does not read referenced env files.",
+                f"service={service}; env_file={safe_reference}",
+                "Avoid committing real env files and provide safe examples for review archives.",
+                file_path=path,
+                context=context,
+                line=line_number,
+                service=service,
+                field_path="env_file",
+            )
+    return count
+
+
+def analyze_compose_service_secrets(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    service: str,
+    field: dict[str, Any] | None,
+) -> None:
+    if not field:
+        return
+    for line_number, secret_name in compose_field_scalar_values(field):
+        analysis["secrets"].append(
+            {"path": path, "context": context, "service": service, "name": compose_safe_value(secret_name), "source": "service_reference", "line": line_number, "read": False}
+        )
+        add_compose_config_finding(
+            analysis,
+            "compose_secrets_defined",
+            "Compose service references a secret",
+            "info",
+            compose_contextual_confidence("medium", context),
+            "secrets",
+            "A Compose secret reference was observed. Inspectra does not read secret file contents.",
+            f"service={service}; secret={compose_safe_value(secret_name)}",
+            "Confirm secret source files are not included with real values in shared archives.",
+            file_path=path,
+            context=context,
+            line=line_number,
+            service=service,
+            field_path="secrets",
+        )
+    for block in compose_sequence_blocks(field.get("lines", [])):
+        mapping = compose_mapping_from_sequence_block(block)
+        secret_name = mapping.get("source") or mapping.get("target")
+        if secret_name:
+            analysis["secrets"].append(
+                {"path": path, "context": context, "service": service, "name": compose_safe_value(secret_name), "source": "service_reference", "line": block.get("line"), "read": False}
+            )
+
+
+def analyze_compose_ports(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    service: str,
+    field: dict[str, Any] | None,
+) -> int:
+    if not field:
+        return 0
+    count = 0
+    for line_number, port_value in compose_field_scalar_values(field):
+        port = parse_compose_port(port_value)
+        if not port:
+            continue
+        port["path"] = path
+        port["context"] = context
+        port["service"] = service
+        port["line"] = line_number
+        analysis["ports"].append(port)
+        count += 1
+        analyze_compose_port_findings(analysis, path, context, service, port, line_number)
+    for block in compose_sequence_blocks(field.get("lines", [])):
+        mapping = compose_mapping_from_sequence_block(block)
+        if not mapping:
+            continue
+        port = parse_compose_port_mapping(mapping)
+        if not port:
+            continue
+        port["path"] = path
+        port["context"] = context
+        port["service"] = service
+        port["line"] = block.get("line")
+        analysis["ports"].append(port)
+        count += 1
+        analyze_compose_port_findings(analysis, path, context, service, port, int(block.get("line") or 0))
+    return count
+
+
+def parse_compose_port(value: str) -> dict[str, Any] | None:
+    raw = compose_unquote(value)
+    if not raw:
+        return None
+    protocol = "tcp"
+    if "/" in raw:
+        raw, protocol = raw.rsplit("/", 1)
+    host_ip: str | None = None
+    published: str | None = None
+    target: str | None = None
+    if raw.startswith("[") and "]:" in raw:
+        host_ip, remainder = raw.split("]:", 1)
+        host_ip = host_ip.strip("[]")
+        parts = remainder.split(":")
+    else:
+        parts = raw.split(":")
+    if len(parts) >= 3:
+        host_ip = host_ip or parts[0]
+        published = parts[-2]
+        target = parts[-1]
+    elif len(parts) == 2:
+        published, target = parts
+    elif len(parts) == 1:
+        target = parts[0]
+    if not target:
+        return None
+    return {"host_ip": host_ip, "published": published, "target": target, "protocol": protocol, "raw": compose_safe_value(value)}
+
+
+def parse_compose_port_mapping(mapping: dict[str, str]) -> dict[str, Any] | None:
+    target = mapping.get("target")
+    if not target:
+        return None
+    return {
+        "host_ip": mapping.get("host_ip") or mapping.get("host_ip".replace("_", "-")),
+        "published": mapping.get("published"),
+        "target": target,
+        "protocol": mapping.get("protocol") or "tcp",
+        "raw": "mapping",
+    }
+
+
+def compose_port_numbers(value: str | None) -> set[int]:
+    if not value:
+        return set()
+    numbers: set[int] = set()
+    for match in re.finditer(r"\d+", str(value)):
+        try:
+            numbers.add(int(match.group(0)))
+        except ValueError:
+            continue
+    return numbers
+
+
+def analyze_compose_port_findings(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    service: str,
+    port: dict[str, Any],
+    line: int,
+) -> None:
+    host_ip = port.get("host_ip")
+    published = str(port.get("published") or "")
+    target = str(port.get("target") or "")
+    protocol = str(port.get("protocol") or "tcp")
+    port_label = f"{published}:{target}" if published else target
+    all_interfaces = published and (host_ip in {None, "", "0.0.0.0", "::"})
+    if all_interfaces:
+        add_compose_service_finding(
+            analysis,
+            "compose_port_published_all_interfaces",
+            "Compose service publishes a port on all interfaces",
+            "low",
+            "ports",
+            path,
+            context,
+            service,
+            "ports",
+            line=line,
+            port=port_label,
+            protocol=protocol,
+        )
+    numbers = compose_port_numbers(target) | compose_port_numbers(published)
+    if numbers.intersection(COMPOSE_DB_PORTS):
+        add_compose_service_finding(analysis, "compose_database_port_published", "Compose service publishes a database-like port", "medium", "ports", path, context, service, "ports", line=line, port=port_label, protocol=protocol)
+    if numbers.intersection(COMPOSE_ADMIN_PORTS):
+        add_compose_service_finding(analysis, "compose_admin_port_published", "Compose service publishes an admin/dashboard-like port", "medium", "ports", path, context, service, "ports", line=line, port=port_label, protocol=protocol)
+        add_compose_service_finding(analysis, "compose_dashboard_port_published", "Compose service publishes a dashboard-like port", "medium", "ports", path, context, service, "ports", line=line, port=port_label, protocol=protocol)
+    if numbers.intersection(COMPOSE_SENSITIVE_PORTS):
+        add_compose_service_finding(analysis, "compose_sensitive_port_published", "Compose service publishes a sensitive port", "medium", "ports", path, context, service, "ports", line=line, port=port_label, protocol=protocol)
+    if "-" in target or "-" in published:
+        add_compose_service_finding(analysis, "compose_port_range_published", "Compose service publishes a port range", "low", "ports", path, context, service, "ports", line=line, port=port_label, protocol=protocol)
+
+
+def analyze_compose_volumes(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    service: str,
+    field: dict[str, Any] | None,
+) -> None:
+    if not field:
+        return
+    for line_number, value in compose_field_scalar_values(field):
+        volume = parse_compose_volume(value)
+        if not volume:
+            continue
+        record = {"path": path, "context": context, "service": service, "line": line_number, **volume}
+        analysis["volumes"].append(record)
+        analyze_compose_volume_findings(analysis, path, context, service, record, line_number)
+    for block in compose_sequence_blocks(field.get("lines", [])):
+        mapping = compose_mapping_from_sequence_block(block)
+        if not mapping:
+            continue
+        volume = {
+            "source": compose_safe_value(mapping.get("source") or mapping.get("src") or ""),
+            "target": compose_safe_value(mapping.get("target") or mapping.get("dst") or ""),
+            "mode": compose_safe_value(mapping.get("mode") or ""),
+            "type": mapping.get("type") or "volume",
+        }
+        record = {"path": path, "context": context, "service": service, "line": block.get("line"), **volume}
+        analysis["volumes"].append(record)
+        analyze_compose_volume_findings(analysis, path, context, service, record, int(block.get("line") or 0))
+
+
+def parse_compose_volume(value: str) -> dict[str, str] | None:
+    raw = compose_unquote(value)
+    if not raw:
+        return None
+    parts = raw.split(":")
+    if len(parts) == 1:
+        return {"source": "", "target": compose_safe_value(parts[0]), "mode": "", "type": "volume"}
+    source = parts[0]
+    target = parts[1]
+    mode = parts[2] if len(parts) >= 3 else ""
+    volume_type = "bind" if is_compose_host_path(source) else "volume"
+    return {"source": compose_safe_value(source), "target": compose_safe_value(target), "mode": compose_safe_value(mode), "type": volume_type}
+
+
+def is_compose_host_path(path: str) -> bool:
+    return path.startswith(("/", "./", "../", "~"))
+
+
+def compose_path_writeable(mode: str | None) -> bool:
+    normalized = (mode or "").lower()
+    return "ro" not in {item.strip() for item in normalized.split(",") if item.strip()}
+
+
+def analyze_compose_volume_findings(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    service: str,
+    volume: dict[str, Any],
+    line: int,
+) -> None:
+    source = str(volume.get("source") or "")
+    target = str(volume.get("target") or "")
+    mode = str(volume.get("mode") or "")
+    if "/var/run/docker.sock" in {source, target} or source.endswith("/var/run/docker.sock") or target.endswith("/var/run/docker.sock"):
+        add_compose_service_finding(analysis, "compose_docker_socket_mounted", "Compose service mounts the Docker socket", "medium", "volumes", path, context, service, "volumes", line=line, host_path=source, container_path=target)
+    if source == "/" or target == "/":
+        add_compose_service_finding(analysis, "compose_root_host_path_mounted", "Compose service mounts a root path", "medium", "volumes", path, context, service, "volumes", line=line, host_path=source, container_path=target)
+    if ".ssh" in source or ".ssh" in target:
+        add_compose_service_finding(analysis, "compose_ssh_key_path_mounted", "Compose service mounts an SSH-related path", "medium", "volumes", path, context, service, "volumes", line=line, host_path=source, container_path=target)
+    if source.startswith("/var/run") or target.startswith("/var/run"):
+        add_compose_service_finding(analysis, "compose_var_run_mounted", "Compose service mounts a var/run path", "medium", "volumes", path, context, service, "volumes", line=line, host_path=source, container_path=target)
+    sensitive = source.startswith(COMPOSE_SENSITIVE_HOST_PATHS) or target.startswith(COMPOSE_SENSITIVE_HOST_PATHS)
+    if sensitive:
+        add_compose_service_finding(analysis, "compose_sensitive_host_path_mounted", "Compose service mounts a sensitive host path", "medium", "volumes", path, context, service, "volumes", line=line, host_path=source, container_path=target)
+        if compose_path_writeable(mode):
+            add_compose_service_finding(analysis, "compose_bind_mount_writeable_sensitive", "Compose service has a writable sensitive bind mount", "medium", "volumes", path, context, service, "volumes", line=line, host_path=source, container_path=target)
+    if volume.get("type") == "volume" and source:
+        add_compose_service_finding(analysis, "compose_named_volume_present", "Compose service uses a named volume", "info", "volumes", path, context, service, "volumes", line=line, host_path=source, container_path=target)
+
+
+def analyze_compose_image(analysis: dict[str, Any], path: str, context: str, service: str, image: str, line: int) -> None:
+    safe_image = compose_safe_value(image)
+    if image.lower().endswith(":latest"):
+        add_compose_service_finding(analysis, "compose_image_latest_tag", "Compose service image uses latest tag", "low", "image", path, context, service, "image", line=line, image=safe_image)
+    if "@sha256:" not in image.lower():
+        add_compose_service_finding(analysis, "compose_image_missing_digest", "Compose service image is not pinned by digest", "low", "image", path, context, service, "image", line=line, image=safe_image)
+        add_compose_service_finding(analysis, "compose_image_unpinned_tag", "Compose service image is not digest pinned", "low", "image", path, context, service, "image", line=line, image=safe_image)
+
+
+def analyze_compose_build(analysis: dict[str, Any], path: str, context: str, service: str, field: dict[str, Any]) -> None:
+    build_context = str(field.get("value") or "").strip()
+    if not build_context:
+        for line in field.get("lines", []):
+            if isinstance(line, ComposeYamlLine):
+                key_value = compose_key_value(line.text)
+                if key_value and key_value[0] == "context":
+                    build_context = key_value[1]
+                    break
+    safe_context = compose_safe_value(compose_unquote(build_context or "."))
+    analysis["build_contexts"].append({"path": path, "context": context, "service": service, "build_context": safe_context, "line": field.get("line")})
+    add_compose_service_finding(analysis, "compose_build_context_present", "Compose service has a build context", "info", "build", path, context, service, "build", line=field.get("line"))
+    if safe_context.startswith("../") or safe_context == "..":
+        add_compose_service_finding(analysis, "compose_build_context_parent_path_hint", "Compose build context references a parent path", "low", "build", path, context, service, "build.context", line=field.get("line"))
+
+
+def analyze_compose_service_networks(
+    analysis: dict[str, Any],
+    path: str,
+    context: str,
+    service: str,
+    fields: list[dict[str, Any]],
+) -> None:
+    network_mode = compose_find_field(fields, "network_mode")
+    if network_mode and compose_unquote(str(network_mode.get("value") or "")).lower() == "host":
+        analysis["networks"].append({"path": path, "context": context, "service": service, "network_mode": "host", "line": network_mode.get("line")})
+    networks_field = compose_find_field(fields, "networks")
+    for line_number, network in compose_field_scalar_values(networks_field):
+        analysis["networks"].append({"path": path, "context": context, "service": service, "name": compose_safe_value(network), "line": line_number})
+
+
+def analyze_compose_top_level_networks(analysis: dict[str, Any], path: str, context: str, lines: list[ComposeYamlLine]) -> None:
+    section = compose_section(lines, "networks")
+    if not section:
+        return
+    _section_line, network_lines = section
+    for block in compose_child_blocks(network_lines, 0):
+        name = str(block.get("key") or "")
+        nested_text = "\n".join(line.text for line in block.get("lines", []))
+        external = re.search(r"(?im)^external\s*:\s*true\s*$", nested_text) is not None
+        internal = re.search(r"(?im)^internal\s*:\s*true\s*$", nested_text) is not None
+        analysis["networks"].append({"path": path, "context": context, "name": name, "external": external, "internal": internal, "line": block.get("line")})
+        if external:
+            add_compose_config_finding(
+                analysis,
+                "compose_external_network_present",
+                "Compose external network is present",
+                compose_contextual_level("low", context),
+                compose_contextual_confidence("medium", context),
+                "network",
+                "A Compose top-level network is marked external. Inspectra does not validate Docker networks.",
+                f"network={name}; external=true",
+                "Confirm external network boundaries and consumers in the deployment environment.",
+                file_path=path,
+                context=context,
+                line=block.get("line"),
+                network=name,
+            )
+        if not internal:
+            add_compose_config_finding(
+                analysis,
+                "compose_network_internal_missing",
+                "Compose network is not marked internal",
+                compose_contextual_level("low", context),
+                compose_contextual_confidence("low", context),
+                "network",
+                "A Compose network does not set internal: true in the reviewed file.",
+                f"network={name}; internal missing",
+                "Review whether the network should be isolated from external connectivity.",
+                file_path=path,
+                context=context,
+                line=block.get("line"),
+                network=name,
+            )
+
+
+def analyze_compose_top_level_volumes(analysis: dict[str, Any], path: str, context: str, lines: list[ComposeYamlLine]) -> None:
+    section = compose_section(lines, "volumes")
+    if not section:
+        return
+    _section_line, volume_lines = section
+    for block in compose_child_blocks(volume_lines, 0):
+        name = str(block.get("key") or "")
+        analysis["volumes"].append({"path": path, "context": context, "name": name, "source": "top_level", "line": block.get("line")})
+        add_compose_config_finding(
+            analysis,
+            "compose_named_volume_present",
+            "Compose named volume is defined",
+            "info",
+            compose_contextual_confidence("medium", context),
+            "volumes",
+            "A top-level Compose named volume was observed.",
+            f"volume={name}",
+            "Review named volume persistence and backup expectations.",
+            file_path=path,
+            context=context,
+            line=block.get("line"),
+        )
+
+
+def analyze_compose_top_level_secrets(analysis: dict[str, Any], path: str, context: str, lines: list[ComposeYamlLine]) -> None:
+    section = compose_section(lines, "secrets")
+    if not section:
+        return
+    _section_line, secret_lines = section
+    for block in compose_child_blocks(secret_lines, 0):
+        name = str(block.get("key") or "")
+        nested_fields = compose_direct_fields(block.get("lines", []), int(block.get("indent") or 0))
+        file_field = compose_find_field(nested_fields, "file")
+        secret_record = {"path": path, "context": context, "name": name, "line": block.get("line"), "read": False}
+        if file_field:
+            secret_record["file"] = compose_safe_value(str(file_field.get("value") or ""))
+        analysis["secrets"].append(secret_record)
+        add_compose_config_finding(
+            analysis,
+            "compose_secrets_defined",
+            "Compose top-level secret is defined",
+            "info",
+            compose_contextual_confidence("medium", context),
+            "secrets",
+            "A Compose secret definition was observed. Inspectra does not read secret file contents.",
+            f"secret={name}",
+            "Confirm secret file sources are protected and not shared with real values.",
+            file_path=path,
+            context=context,
+            line=block.get("line"),
+            field_path=f"secrets.{name}",
+        )
+        if file_field:
+            add_compose_config_finding(
+                analysis,
+                "compose_secret_file_reference",
+                "Compose secret references a file",
+                compose_contextual_level("low", context),
+                compose_contextual_confidence("high", context),
+                "secrets",
+                "A Compose secret file reference was observed. Inspectra records the path but does not read the referenced file.",
+                f"secret={name}; file={compose_safe_value(str(file_field.get('value') or ''))}",
+                "Keep real secret files out of shared archives and inject secrets through runtime controls.",
+                file_path=path,
+                context=context,
+                line=file_field.get("line"),
+                field_path=f"secrets.{name}.file",
+            )
+
+
+def finalize_compose_config_analysis(analysis: dict[str, Any]) -> None:
+    contexts = [str(context) for context in analysis.get("_compose_contexts", []) if isinstance(context, str)]
+    if int(analysis.get("_compose_file_count") or 0) > 1:
+        context = "production" if "production" in contexts else "shared"
+        add_compose_config_finding(
+            analysis,
+            "compose_multiple_files_detected",
+            "Multiple Compose files were detected",
+            "info",
+            "high",
+            "structure",
+            "More than one Compose candidate file was detected. Inspectra does not merge Compose files into an effective config.",
+            f"compose_files={analysis.get('_compose_file_count')}",
+            "Review intended file ordering and overrides in the deployment workflow.",
+            context=context,
+        )
+    for path in analysis.get("_override_paths", []):
+        add_compose_config_finding(
+            analysis,
+            "compose_override_file_detected",
+            "Compose override file was detected",
+            "info",
+            "high",
+            "structure",
+            "A Compose override-like file was detected. Inspectra records it as context and does not merge files.",
+            str(path),
+            "Review override usage in the intended deployment workflow.",
+            file_path=str(path),
+            context=compose_config_file_context(str(path), "compose"),
+        )
+    if analysis.get("_profiles"):
+        add_compose_config_finding(
+            analysis,
+            "compose_profiles_present",
+            "Compose profiles were observed",
+            "info",
+            "medium",
+            "structure",
+            "Compose profiles were observed. Inspectra does not evaluate active profiles.",
+            "profiles present",
+            "Review profile activation in the intended deployment workflow.",
+            context="production" if "production" in contexts else "shared",
+        )
+
+    analysis["summary"]["services_detected"] = len(analysis.get("services", []))
+    analysis["summary"]["networks_detected"] = len(analysis.get("networks", []))
+    analysis["summary"]["volumes_detected"] = len(analysis.get("volumes", []))
+    analysis["summary"]["secrets_detected"] = len(analysis.get("secrets", []))
+    analysis["summary"]["published_ports_detected"] = len(analysis.get("ports", []))
+    analysis["summary"]["env_files_detected"] = len(analysis.get("env_files", []))
+    analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+    if analysis["summary"]["redacted_values_count"]:
+        analysis["redaction_notes"] = [
+            "Secret-like Docker Compose values are redacted before storage on a best-effort basis.",
+            ".env, env_file, and Compose secret file contents are detected as references but not read by this analyzer.",
+        ]
+    analysis.pop("_compose_file_count", None)
+    analysis.pop("_compose_contexts", None)
+    analysis.pop("_override_paths", None)
+    analysis.pop("_profiles", None)
+
+
+def add_compose_service_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    category: str,
+    path: str,
+    context: str,
+    service: str,
+    field_path: str,
+    *,
+    line: Any = None,
+    image: str | None = None,
+    port: str | None = None,
+    protocol: str | None = None,
+    host_path: str | None = None,
+    container_path: str | None = None,
+    network: str | None = None,
+) -> None:
+    parts = [f"service={service}", f"field={field_path}"]
+    if image:
+        parts.append(f"image={compose_safe_value(image)}")
+    if port:
+        parts.append(f"port={port}")
+    if protocol:
+        parts.append(f"protocol={protocol}")
+    if host_path:
+        parts.append(f"host_path={host_path}")
+    if container_path:
+        parts.append(f"container_path={container_path}")
+    if network:
+        parts.append(f"network={network}")
+    add_compose_config_finding(
+        analysis,
+        finding_id,
+        title,
+        compose_contextual_level(level, context),
+        compose_contextual_confidence("high" if level == "medium" else "medium", context),
+        category,
+        "A Docker Compose static review indicator was observed. Inspectra does not execute Docker Compose or validate runtime state.",
+        "; ".join(parts),
+        "Review the service in the intended deployment context and apply hardening where appropriate.",
+        file_path=path,
+        context=context,
+        line=int(line) if isinstance(line, int) else None,
+        service=service,
+        field_path=field_path,
+        image=image,
+        port=port,
+        protocol=protocol,
+        host_path=host_path,
+        container_path=container_path,
+        network=network,
+    )
+
+
+def add_compose_config_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    confidence: str,
+    category: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str | None = None,
+    context: str | None = None,
+    line: int | None = None,
+    service: str | None = None,
+    field_path: str | None = None,
+    image: str | None = None,
+    port: str | None = None,
+    protocol: str | None = None,
+    host_path: str | None = None,
+    container_path: str | None = None,
+    network: str | None = None,
+    redacted: bool = False,
+) -> None:
+    safe_description, description_redactions = redact_compose_secret_text(description)
+    safe_evidence, evidence_redactions = redact_compose_secret_text(evidence)
+    safe_recommendation, recommendation_redactions = redact_compose_secret_text(recommendation)
+    redaction_count = description_redactions + evidence_redactions + recommendation_redactions
+    if redacted and redaction_count == 0:
+        redaction_count = 1
+    analysis["summary"]["redacted_values_count"] += redaction_count
+
+    finding = make_finding(finding_id, title, level, safe_description, safe_evidence, safe_recommendation)
+    finding["confidence"] = confidence
+    finding["category"] = category
+    if file_path:
+        finding["file_path"] = file_path
+    if context:
+        finding["context"] = context
+    if line is not None:
+        finding["line"] = line
+    if service:
+        finding["service"] = service
+    if field_path:
+        finding["field_path"] = field_path
+    if image:
+        finding["image"] = compose_safe_value(image)
+    if port:
+        finding["port"] = port
+    if protocol:
+        finding["protocol"] = protocol
+    if host_path:
+        finding["host_path"] = compose_safe_value(host_path)
+    if container_path:
+        finding["container_path"] = compose_safe_value(container_path)
+    if network:
+        finding["network"] = compose_safe_value(network)
     analysis["findings"].append(finding)
 
 

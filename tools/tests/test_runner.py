@@ -2649,6 +2649,293 @@ async def test_analyze_nginx_config_respects_file_and_byte_limits(monkeypatch, t
 
 
 @pytest.mark.anyio
+async def test_analyze_compose_config_reports_findings_and_redacts_secrets(monkeypatch, tmp_path):
+    compose_file = b'''
+# privileged: true
+services:
+  web:
+    image: nginx:latest
+    build:
+      context: ../app
+    ports:
+      - "0.0.0.0:5432:5432"
+      - "8080:8080"
+      - "8000-8002:8000-8002"
+    environment:
+      POSTGRES_PASSWORD: super-secret-password
+      API_KEY: raw-api-key-123456
+      DATABASE_URL: postgres://user:pass@example.com/db
+      REDIS_URL: redis://:super-secret-password@redis:6379/0
+    env_file:
+      - .env.production
+    secrets:
+      - source: db_password
+        target: db_password
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.ssh:/keys
+      - /:/host
+      - app-data:/data
+    networks:
+      - public
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    network_mode: host
+    pid: host
+    ipc: host
+    depends_on:
+      db:
+        condition: service_started
+    links:
+      - db
+    profiles:
+      - prod
+    labels:
+      - "com.example.token=token_should_never_render"
+    command: "echo POSTGRES_PASSWORD=super-secret-password"
+  worker:
+    image: busybox
+    restart: always
+    ports:
+      - "127.0.0.1:2222:22"
+networks:
+  public:
+    external: true
+volumes:
+  app-data:
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+x-private-key: |
+  -----BEGIN PRIVATE KEY-----
+  token_should_never_render
+  -----END PRIVATE KEY-----
+'''
+    override_file = b'''
+services:
+  web:
+    image: app:dev
+'''
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "deploy/compose/docker-compose.yml": compose_file,
+            "deploy/compose/docker-compose.override.yml": override_file,
+            ".env.production": b"POSTGRES_PASSWORD=super-secret-password\n",
+            "secrets/db_password.txt": b"db_password_plaintext\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/compose-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["analyzer"] == "compose_config_basic"
+    assert payload["summary"]["files_reviewed"] == 2
+    assert payload["summary"]["compose_files_detected"] == 2
+    assert payload["summary"]["services_detected"] == 3
+    assert payload["summary"]["published_ports_detected"] >= 4
+    assert payload["summary"]["env_files_detected"] >= 2
+    assert "compose_environment_secret_like_value" in finding_ids
+    assert "compose_environment_secret_like_key" in finding_ids
+    assert "compose_env_file_reference" in finding_ids
+    assert "compose_env_file_sensitive_present" in finding_ids
+    assert "compose_secrets_defined" in finding_ids
+    assert "compose_secret_file_reference" in finding_ids
+    assert "compose_plaintext_private_key_hint" in finding_ids
+    assert "compose_credential_url_hint" in finding_ids
+    assert "compose_port_published_all_interfaces" in finding_ids
+    assert "compose_sensitive_port_published" in finding_ids
+    assert "compose_database_port_published" in finding_ids
+    assert "compose_admin_port_published" in finding_ids
+    assert "compose_dashboard_port_published" in finding_ids
+    assert "compose_port_range_published" in finding_ids
+    assert "compose_host_network_mode" in finding_ids
+    assert "compose_privileged_true" in finding_ids
+    assert "compose_cap_add_present" in finding_ids
+    assert "compose_security_opt_disabled_hint" in finding_ids
+    assert "compose_user_root_or_missing" in finding_ids
+    assert "compose_read_only_missing" in finding_ids
+    assert "compose_pid_host" in finding_ids
+    assert "compose_ipc_host" in finding_ids
+    assert "compose_docker_socket_mounted" in finding_ids
+    assert "compose_sensitive_host_path_mounted" in finding_ids
+    assert "compose_root_host_path_mounted" in finding_ids
+    assert "compose_ssh_key_path_mounted" in finding_ids
+    assert "compose_var_run_mounted" in finding_ids
+    assert "compose_bind_mount_writeable_sensitive" in finding_ids
+    assert "compose_named_volume_present" in finding_ids
+    assert "compose_image_latest_tag" in finding_ids
+    assert "compose_image_missing_digest" in finding_ids
+    assert "compose_image_unpinned_tag" in finding_ids
+    assert "compose_build_context_present" in finding_ids
+    assert "compose_build_context_parent_path_hint" in finding_ids
+    assert "compose_external_network_present" in finding_ids
+    assert "compose_network_internal_missing" in finding_ids
+    assert "compose_links_legacy_present" in finding_ids
+    assert "compose_healthcheck_missing" in finding_ids
+    assert "compose_restart_policy_missing" in finding_ids
+    assert "compose_restart_always_hint" in finding_ids
+    assert "compose_depends_on_without_health_condition" in finding_ids
+    assert "compose_resource_limits_missing" in finding_ids
+    assert "compose_multiple_files_detected" in finding_ids
+    assert "compose_override_file_detected" in finding_ids
+    assert "compose_profiles_present" in finding_ids
+    assert any(item["read"] is False and item["path"] == ".env.production" for item in payload["env_files"])
+    assert "[REDACTED]" in serialized
+    for secret in (
+        "super-secret-password",
+        "raw-api-key-123456",
+        "token_should_never_render",
+        "POSTGRES_PASSWORD=super-secret-password",
+        "postgres://user:pass@example.com/db",
+        "redis://:super-secret-password@redis:6379/0",
+        "registry-user:registry-pass",
+        "PRIVATE KEY",
+        "db_password_plaintext",
+    ):
+        assert secret not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_compose_config_comments_context_and_malformed(monkeypatch, tmp_path):
+    compose_file = b'''
+# services:
+#   app:
+#     privileged: true
+services:
+  app:
+    image: alpine:3.20
+    environment:
+      PASSWORD: ${PASSWORD}
+'''
+    malformed_file = b'''
+version: "3"
+networks:
+  public: {}
+'''
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "examples/compose.yml": compose_file,
+            "examples/compose.extra.yml": malformed_file,
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/compose-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    env_key_finding = next(finding for finding in payload["findings"] if finding["id"] == "compose_environment_secret_like_key")
+    assert response.status_code == 200
+    assert "compose_privileged_true" not in finding_ids
+    assert "compose_environment_secret_like_value" not in finding_ids
+    assert "compose_environment_secret_like_key" in finding_ids
+    assert "compose_unsupported_or_malformed_yaml" in finding_ids
+    assert env_key_finding["context"] == "example"
+    assert env_key_finding["level"] == "info"
+
+
+@pytest.mark.anyio
+async def test_analyze_compose_config_skips_unsafe_archive_entries(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        traversal_content = b'services:\n  app:\n    environment:\n      PASSWORD: super-secret-password\n'
+        traversal_info = tarfile.TarInfo("../docker-compose.yml")
+        traversal_info.size = len(traversal_content)
+        archive.addfile(traversal_info, io.BytesIO(traversal_content))
+
+        link_info = tarfile.TarInfo("compose.yml")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real-compose.yml"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo("docker-compose.yml")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real-compose.yml"
+        archive.addfile(hardlink_info)
+
+        env_content = b"POSTGRES_PASSWORD=super-secret-password\n"
+        env_info = tarfile.TarInfo(".env")
+        env_info.size = len(env_content)
+        archive.addfile(env_info, io.BytesIO(env_content))
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/compose-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    reasons = {item["skip_reason"] for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "path_traversal" in reasons
+    assert "not_regular_file:symlink" in reasons
+    assert "not_regular_file:hardlink" in reasons
+    assert "real_env_file_not_read" in reasons
+    assert "compose_config_path_traversal" in {finding["id"] for finding in payload["findings"]}
+    assert "compose_config_not_regular_file" in {finding["id"] for finding in payload["findings"]}
+    assert "compose_env_file_sensitive_present" in {finding["id"] for finding in payload["findings"]}
+    assert "super-secret-password" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_compose_config_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "COMPOSE_CONFIG_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "COMPOSE_CONFIG_MAX_FILE_BYTES", 120)
+    monkeypatch.setattr(runner, "COMPOSE_CONFIG_MAX_TOTAL_BYTES", 180)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "compose.yml": b"services:\n  app:\n    image: nginx:latest\n",
+            "docker-compose.prod.yml": b"services:\n  db:\n    environment:\n      PASSWORD: " + b"x" * 150 + b"\n",
+            "stacks/extra.yml": b"services:\n  cache:\n    image: redis:latest\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/compose-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "file_too_large" in reasons
+    assert "too_many_files" in reasons
+    assert "xxxxxxxxxxxxxxxxxxxxxxxx" not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
     server = start_test_http_server()
     transport = ASGITransport(app=runner.app)
