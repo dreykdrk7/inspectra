@@ -31,7 +31,8 @@ export type AuditType =
   | 'ci_cd_config_basic'
   | 'k8s_config_basic'
   | 'terraform_config_basic'
-  | 'nginx_config_basic';
+  | 'nginx_config_basic'
+  | 'compose_config_basic';
 export type ReportFormat = 'markdown' | 'html' | 'xml' | 'pdf';
 export type SbomFormat = 'cyclonedx-json' | 'spdx-json';
 

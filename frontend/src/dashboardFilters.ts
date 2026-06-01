@@ -110,5 +110,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "nginx_config_basic") {
     return "nginx_config_basic";
   }
+  if (auditType === "compose_config_basic") {
+    return "compose_config_basic";
+  }
   return auditType;
 }

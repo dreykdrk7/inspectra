@@ -15,6 +15,7 @@ import {
 } from "./dashboardFilters";
 import { ArchiveJobReport } from "./ArchiveJobReport";
 import { CiCdConfigJobReport } from "./CiCdConfigJobReport";
+import { ComposeConfigJobReport } from "./ComposeConfigJobReport";
 import { DjangoConfigJobReport } from "./DjangoConfigJobReport";
 import { DomainJobReport } from "./DomainJobReport";
 import { DockerConfigJobReport } from "./DockerConfigJobReport";
@@ -279,6 +280,17 @@ export function App() {
     setActionError(null);
     try {
       const job = await api.launchNginxConfigAudit(file.id);
+      setSelectedJob(job);
+      await refreshJobs();
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  async function launchComposeConfigAudit(file: FileRecord) {
+    setActionError(null);
+    try {
+      const job = await api.launchComposeConfigAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -637,6 +649,12 @@ export function App() {
                               Analyze Nginx config
                             </button>
                           ) : null}
+                          {file.kind === "archive" ? (
+                            <button onClick={() => void launchComposeConfigAudit(file)}>
+                              <Play size={15} aria-hidden="true" />
+                              Analyze Compose config
+                            </button>
+                          ) : null}
                           <button className="danger-button" onClick={() => void deleteFile(file.id)}>
                             <Trash2 size={15} aria-hidden="true" />
                             Delete
@@ -678,7 +696,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic", "ci_cd_config_basic", "k8s_config_basic", "terraform_config_basic", "nginx_config_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic", "ci_cd_config_basic", "k8s_config_basic", "terraform_config_basic", "nginx_config_basic", "compose_config_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -766,6 +784,8 @@ export function App() {
               <TerraformConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "nginx_config_basic" ? (
               <NginxConfigJobReport job={selectedJob} file={selectedJobFile} />
+            ) : selectedJob.audit_type === "compose_config_basic" ? (
+              <ComposeConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : (
               <WebJobReport job={selectedJob} />
             )}
@@ -1029,6 +1049,12 @@ function summarizeJob(job: JobListItem): string {
     const serverBlocksDetected = typeof job.summary.server_blocks_detected === "number" ? job.summary.server_blocks_detected : 0;
     const includesDetected = typeof job.summary.includes_detected === "number" ? job.summary.includes_detected : 0;
     return `${filesReviewed} files reviewed, ${serverBlocksDetected} servers, ${includesDetected} includes, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "compose_config_basic") {
+    const filesReviewed = typeof job.summary.files_reviewed === "number" ? job.summary.files_reviewed : 0;
+    const servicesDetected = typeof job.summary.services_detected === "number" ? job.summary.services_detected : 0;
+    const publishedPortsDetected = typeof job.summary.published_ports_detected === "number" ? job.summary.published_ports_detected : 0;
+    return `${filesReviewed} files reviewed, ${servicesDetected} services, ${publishedPortsDetected} ports, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

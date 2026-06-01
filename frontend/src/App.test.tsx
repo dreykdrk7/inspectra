@@ -322,6 +322,26 @@ describe("App", () => {
             )
           );
         }
+        if (url.endsWith("/audits/compose-config/file-archive-1")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-compose-1",
+                audit_type: "compose_config_basic",
+                file_id: "file-archive-1",
+                target_url: null,
+                target_domain: null,
+                status: "queued",
+                created_at: "2026-05-26T10:17:00Z",
+                updated_at: "2026-05-26T10:17:00Z",
+                source_file_deleted_at: null,
+                result: null,
+                error: null
+              },
+              202
+            )
+          );
+        }
         if (url.endsWith("/jobs")) {
           return Promise.resolve(
             jsonResponse([
@@ -690,6 +710,29 @@ describe("App", () => {
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
         "http://localhost:8000/audits/nginx-config/file-archive-1",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+  });
+
+  it("starts a Compose config audit from an archive action", async () => {
+    render(<App />);
+
+    await screen.findAllByText("django.zip");
+    const rows = Array.from(document.querySelectorAll("tr"));
+    const archiveRow = rows.find((row) => row.textContent?.includes("django.zip") && row.textContent.includes("Analyze Compose config"));
+    const pdfRow = rows.find((row) => row.textContent?.includes("sample.pdf") && row.textContent.includes("Analyze PDF"));
+    expect(archiveRow?.textContent).toContain("Analyze Compose config");
+    expect(pdfRow?.textContent).not.toContain("Analyze Compose config");
+    const button = Array.from(archiveRow?.querySelectorAll("button") ?? []).find((item) =>
+      item.textContent?.includes("Analyze Compose config")
+    );
+    expect(button).toBeDefined();
+    fireEvent.click(button as HTMLButtonElement);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/audits/compose-config/file-archive-1",
         expect.objectContaining({ method: "POST" })
       );
     });

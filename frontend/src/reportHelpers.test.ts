@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildArchiveAuditReport } from "./archiveReport";
 import { buildCiCdConfigAuditReport, redactCiCdConfigValue } from "./ciCdConfigReport";
+import { buildComposeConfigAuditReport, redactComposeConfigValue } from "./composeConfigReport";
 import { buildDjangoConfigAuditReport, redactDjangoConfigValue } from "./djangoConfigReport";
 import { buildDomainAuditReport } from "./domainReport";
 import { buildDockerConfigAuditReport, redactDockerConfigValue } from "./dockerConfigReport";
@@ -1377,5 +1378,142 @@ describe("report helpers", () => {
     expect(serializedReport).toContain("REDACTED");
     expect(report.findings[0].evidence).toContain("[REDACTED]");
     expect(report.includes[0]).toMatchObject({ resolved: false });
+  });
+
+  it("normalizes Compose config services, ports, volumes, env files, and findings", () => {
+    const report = buildComposeConfigAuditReport({
+      ...baseJob,
+      audit_type: "compose_config_basic",
+      result: {
+        analyzer: "compose_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_considered: 4,
+          files_reviewed: 2,
+          compose_files_detected: 2,
+          services_detected: 1,
+          networks_detected: 1,
+          volumes_detected: 1,
+          secrets_detected: 1,
+          published_ports_detected: 1,
+          env_files_detected: 1,
+          findings_count: 2,
+          redacted_values_count: 1,
+          truncated: false
+        },
+        files_detected: [{ path: "deploy/compose/docker-compose.yml", category: "compose", read: true, context: "production" }],
+        services: [
+          {
+            name: "web",
+            file_path: "deploy/compose/docker-compose.yml",
+            context: "production",
+            image: "nginx:latest",
+            build: "./web",
+            restart: "always",
+            healthcheck: false,
+            read_only: false,
+            privileged: false,
+            user: "root",
+            network_mode: "bridge"
+          }
+        ],
+        images: [{ service: "web", image: "nginx:latest", tag: "latest", file_path: "deploy/compose/docker-compose.yml", context: "production" }],
+        build_contexts: [{ service: "web", context_path: "./web", dockerfile: "Dockerfile", file_path: "deploy/compose/docker-compose.yml" }],
+        ports: [{ service: "web", host_ip: "0.0.0.0", published: "8080", target: "80", protocol: "tcp", file_path: "deploy/compose/docker-compose.yml" }],
+        volumes: [{ service: "web", host_path: "/var/run/docker.sock", target: "/var/run/docker.sock", read_only: false, type: "bind" }],
+        networks: [{ name: "edge", service: "web", external: true, internal: false }],
+        secrets: [{ name: "db_password", service: "web", file: "./secrets/db_password.txt", read: false, skip_reason: "not_read" }],
+        env_files: [{ service: "web", path: ".env.production", read: false, skip_reason: "sensitive_file_not_read" }],
+        findings: [
+          {
+            id: "compose_docker_socket_mounted",
+            title: "Docker socket mounted",
+            level: "medium",
+            confidence: "high",
+            category: "volumes",
+            context: "production",
+            service: "web",
+            host_path: "/var/run/docker.sock",
+            container_path: "/var/run/docker.sock",
+            file_path: "deploy/compose/docker-compose.yml",
+            evidence: "service=web host_path=/var/run/docker.sock",
+            recommendation: "Review whether this mount is needed."
+          },
+          { code: "compose_env_file_reference", message: "env_file reference detected", severity: "low" }
+        ],
+        redaction_notes: ["Compose values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isComposeConfigAudit).toBe(true);
+    expect(report.overview).toContainEqual({ label: "Services", value: "1" });
+    expect(report.detectedFiles[0]).toMatchObject({ path: "deploy/compose/docker-compose.yml", context: "production" });
+    expect(report.services[0]).toMatchObject({ name: "web", image: "nginx:latest", user: "root" });
+    expect(report.images[0]).toMatchObject({ service: "web", tag: "latest" });
+    expect(report.buildContexts[0]).toMatchObject({ contextPath: "./web", dockerfile: "Dockerfile" });
+    expect(report.ports[0]).toMatchObject({ hostIp: "0.0.0.0", published: "8080", target: "80" });
+    expect(report.volumes[0]).toMatchObject({ hostPath: "/var/run/docker.sock", target: "/var/run/docker.sock" });
+    expect(report.networks[0]).toMatchObject({ name: "edge", external: true });
+    expect(report.secrets[0]).toMatchObject({ name: "db_password", read: false });
+    expect(report.envFiles[0]).toMatchObject({ path: ".env.production", read: false });
+    expect(report.findings[0]).toMatchObject({ id: "compose_docker_socket_mounted", service: "web" });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["medium", "low"]);
+    expect(report.redactionNotes).toEqual(["Compose values were redacted."]);
+  });
+
+  it("redacts legacy Compose config payloads defensively", () => {
+    const report = buildComposeConfigAuditReport({
+      ...baseJob,
+      audit_type: "compose_config_basic",
+      error: "POSTGRES_PASSWORD=super-secret-password",
+      result: {
+        analyzer: "compose_config_basic",
+        summary: { redacted_values_count: 0 },
+        services: [{ name: "db", environment: "POSTGRES_PASSWORD=super-secret-password", command: "token_should_never_render" }],
+        images: [{ service: "app", image: "registry.example.test/app:latest", registry_auth: "registry-user:registry-pass" }],
+        build_contexts: [{ service: "app", content: "raw-api-key-123456" }],
+        ports: [{ service: "db", published: "5432", password: "super-secret-password" }],
+        volumes: [{ service: "app", source: "/root/.ssh", content: "-----BEGIN PRIVATE KEY----- PRIVATE KEY -----END PRIVATE KEY-----" }],
+        networks: [{ name: "edge", token: "token_should_never_render" }],
+        secrets: [{ name: "db_password", file: "./secret.txt", content: "super-secret-password", read: false }],
+        env_files: [{ service: "app", path: ".env", content: "DATABASE_URL=postgres://user:pass@example.com/db", read: false }],
+        findings: [
+          {
+            id: "legacy_compose_secret",
+            title: "Legacy Compose secret",
+            evidence: "DATABASE_URL=postgres://user:pass@example.com/db",
+            description: "redis://:super-secret-password@redis:6379/0",
+            recommendation: "raw-api-key-123456 token_should_never_render"
+          }
+        ],
+        errors: ["POSTGRES_PASSWORD=super-secret-password", "registry-user:registry-pass", "-----BEGIN PRIVATE KEY-----"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(
+      redactComposeConfigValue({
+        error: "POSTGRES_PASSWORD=super-secret-password",
+        result: report
+      })
+    );
+
+    for (const secret of [
+      "super-secret-password",
+      "raw-api-key-123456",
+      "token_should_never_render",
+      "POSTGRES_PASSWORD=super-secret-password",
+      "DATABASE_URL=postgres://user:pass@example.com/db",
+      "redis://:super-secret-password@redis:6379/0",
+      "registry-user:registry-pass",
+      "PRIVATE KEY"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.findings[0].evidence).toContain("[REDACTED]");
+    expect(report.secrets[0]).toMatchObject({ read: false });
+    expect(report.envFiles[0]).toMatchObject({ read: false });
   });
 });
