@@ -1337,7 +1337,8 @@ describe("report helpers", () => {
         directives: [
           { directive: "proxy_pass", arguments: "http://user:pass@example.com" },
           { directive: "proxy_set_header", arguments: "Authorization: Bearer token_should_never_render" },
-          { directive: "set", arguments: "$api_key raw-api-key-123456" }
+          { directive: "set", arguments: "$api_key raw-api-key-123456" },
+          { directive: "set", arguments: "$proxy_password proxy_password_should_not_render" }
         ],
         findings: [
           {
@@ -1348,7 +1349,7 @@ describe("report helpers", () => {
             recommendation: "-----BEGIN PRIVATE KEY----- PRIVATE KEY raw-api-key-123456 -----END PRIVATE KEY-----"
           }
         ],
-        errors: ["PASSWORD=super-secret-password", "registry-user:registry-pass"]
+        errors: ["PASSWORD=super-secret-password", "registry-user:registry-pass", "sessionid=secret-session-cookie"]
       }
     });
     const serializedReport = JSON.stringify(report);
@@ -1366,6 +1367,8 @@ describe("report helpers", () => {
       "Authorization: Bearer token_should_never_render",
       "http://user:pass@example.com",
       "registry-user:registry-pass",
+      "sessionid=secret-session-cookie",
+      "proxy_password_should_not_render",
       "PRIVATE KEY"
     ]) {
       expect(serializedReport).not.toContain(secret);

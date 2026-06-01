@@ -2393,6 +2393,7 @@ server {
   add_header Strict-Transport-Security "max-age=60";
   add_header Access-Control-Allow-Origin *;
   add_header Access-Control-Allow-Credentials true;
+  add_header Set-Cookie "sessionid=secret-session-cookie";
   proxy_ssl_verify off;
   client_max_body_size 0;
   access_log off;
@@ -2419,6 +2420,7 @@ server {
     proxy_read_timeout 600s;
     proxy_connect_timeout 600s;
     set $api_key raw-api-key-123456;
+    set $proxy_password proxy_password_should_not_render;
     set $registry_user registry-user:registry-pass;
     auth_basic "super-secret-password";
   }
@@ -2489,9 +2491,54 @@ token_should_never_render
         "Authorization: Bearer token_should_never_render",
         "http://user:pass@example.com",
         "registry-user:registry-pass",
+        "sessionid=secret-session-cookie",
+        "proxy_password_should_not_render",
         "PRIVATE KEY",
     ):
         assert secret not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_nginx_config_records_includes_without_resolving_candidate_snippet(monkeypatch, tmp_path):
+    main_conf = b'''
+server {
+  listen 80;
+  include conf.d/snippet.conf;
+}
+'''
+    snippet_conf = b'''
+server {
+  server_name snippet.example;
+  set $proxy_password proxy_password_should_not_render;
+}
+'''
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "nginx/main.conf": main_conf,
+            "conf.d/snippet.conf": snippet_conf,
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/nginx-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    serialized = json.dumps(payload)
+    reviewed_paths = {item["path"] for item in payload["files_reviewed"]}
+    include_targets = {item["target"]: item for item in payload["includes"]}
+    assert response.status_code == 200
+    assert reviewed_paths == {"nginx/main.conf", "conf.d/snippet.conf"}
+    assert include_targets["conf.d/snippet.conf"]["resolved"] is False
+    assert payload["summary"]["includes_detected"] == 1
+    assert "nginx_include_not_resolved" in {finding["id"] for finding in payload["findings"]}
+    assert "proxy_password_should_not_render" not in serialized
+    assert "[REDACTED]" in serialized
 
 
 @pytest.mark.anyio

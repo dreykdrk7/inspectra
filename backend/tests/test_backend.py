@@ -3975,6 +3975,7 @@ async def test_export_nginx_config_redacts_legacy_secret_values(monkeypatch, tmp
             "directives": [
                 {"directive": "proxy_set_header", "arguments": "Authorization: Bearer token_should_never_render"},
                 {"directive": "set", "arguments": "$api_key raw-api-key-123456"},
+                {"directive": "set", "arguments": "$proxy_password proxy_password_should_not_render"},
             ],
             "findings": [
                 {
@@ -3999,6 +4000,7 @@ async def test_export_nginx_config_redacts_legacy_secret_values(monkeypatch, tmp
                 "Authorization: Bearer token_should_never_render",
                 "http://user:pass@example.com",
                 "registry-user:registry-pass",
+                "sessionid=secret-session-cookie",
             ],
             "redaction_notes": ["PASSWORD=super-secret-password"],
         },
@@ -4017,6 +4019,8 @@ async def test_export_nginx_config_redacts_legacy_secret_values(monkeypatch, tmp
         b"Authorization: Bearer token_should_never_render",
         b"http://user:pass@example.com",
         b"registry-user:registry-pass",
+        b"sessionid=secret-session-cookie",
+        b"proxy_password_should_not_render",
         b"PRIVATE KEY",
     )
     transport = ASGITransport(app=app)
