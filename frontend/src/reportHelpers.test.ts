@@ -8,6 +8,7 @@ import { buildDockerConfigAuditReport, redactDockerConfigValue } from "./dockerC
 import { buildImageAuditReport } from "./imageReport";
 import { buildK8sConfigAuditReport, redactK8sConfigValue } from "./k8sConfigReport";
 import { buildManifestAuditReport } from "./manifestReport";
+import { buildNginxConfigAuditReport, redactNginxConfigValue } from "./nginxConfigReport";
 import { buildNodePackageConfigAuditReport, redactNodePackageConfigValue } from "./nodePackageConfigReport";
 import { buildPdfAuditReport } from "./pdfReport";
 import { buildProjectArchiveAuditReport } from "./projectArchiveReport";
@@ -1258,5 +1259,120 @@ describe("report helpers", () => {
     expect(serializedReport).toContain("REDACTED");
     expect(report.findings[0].evidence).toContain("[REDACTED]");
     expect(report.stateFiles[0]).toMatchObject({ read: false });
+  });
+
+  it("normalizes Nginx config servers, locations, includes, directives, and findings", () => {
+    const report = buildNginxConfigAuditReport({
+      ...baseJob,
+      audit_type: "nginx_config_basic",
+      result: {
+        analyzer: "nginx_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_considered: 3,
+          files_reviewed: 2,
+          nginx_files_detected: 2,
+          server_blocks_detected: 1,
+          location_blocks_detected: 1,
+          upstream_blocks_detected: 1,
+          includes_detected: 2,
+          tls_servers_detected: 1,
+          findings_count: 2,
+          redacted_values_count: 1,
+          truncated: false
+        },
+        files_detected: [{ path: "deploy/nginx/default.conf", category: "nginx_config", read: true, context: "production" }],
+        servers: [{ path: "deploy/nginx/default.conf", context: "production", line: "1", server_name: "example.com", listen: ["443 ssl"], tls: true }],
+        locations: [{ path: "deploy/nginx/default.conf", context: "production", line: "20", location: "/api", server_name: "example.com" }],
+        upstreams: [{ path: "deploy/nginx/default.conf", context: "production", line: "40", name: "backend" }],
+        includes: [{ path: "deploy/nginx/default.conf", context: "production", line: "8", target: "conf.d/*.conf", absolute: false, glob: true, resolved: false }],
+        directives: [{ path: "deploy/nginx/default.conf", context: "production", line: "22", directive: "proxy_pass", arguments: "http://internal:8080", block_type: "location", location: "/api" }],
+        findings: [
+          {
+            id: "nginx_proxy_pass_http_upstream",
+            title: "Nginx proxies to an HTTP upstream",
+            level: "low",
+            confidence: "high",
+            category: "proxy",
+            context: "production",
+            block_type: "location",
+            location: "/api",
+            directive: "proxy_pass",
+            file_path: "deploy/nginx/default.conf",
+            line: "22",
+            evidence: "proxy_pass=http://internal:8080"
+          },
+          { code: "nginx_include_not_resolved", message: "include not resolved", severity: "info" }
+        ],
+        redaction_notes: ["Nginx values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isNginxConfigAudit).toBe(true);
+    expect(report.overview).toContainEqual({ label: "Servers", value: "1" });
+    expect(report.detectedFiles[0]).toMatchObject({ path: "deploy/nginx/default.conf", context: "production" });
+    expect(report.servers[0]).toMatchObject({ serverName: "example.com", listen: ["443 ssl"], tls: true, line: 1 });
+    expect(report.locations[0]).toMatchObject({ location: "/api", serverName: "example.com" });
+    expect(report.upstreams[0]).toMatchObject({ name: "backend" });
+    expect(report.includes[0]).toMatchObject({ target: "conf.d/*.conf", glob: true, resolved: false });
+    expect(report.directives[0]).toMatchObject({ directive: "proxy_pass", arguments: "http://internal:8080" });
+    expect(report.findings[0]).toMatchObject({ id: "nginx_proxy_pass_http_upstream", directive: "proxy_pass", line: 22 });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["low", "info"]);
+    expect(report.redactionNotes).toEqual(["Nginx values were redacted."]);
+  });
+
+  it("redacts legacy Nginx config payloads defensively", () => {
+    const report = buildNginxConfigAuditReport({
+      ...baseJob,
+      audit_type: "nginx_config_basic",
+      error: "Authorization: Bearer token_should_never_render",
+      result: {
+        analyzer: "nginx_config_basic",
+        summary: { redacted_values_count: 0 },
+        servers: [{ server_name: "example.com", password: "super-secret-password" }],
+        locations: [{ location: "/api", proxy_pass: "http://user:pass@example.com" }],
+        upstreams: [{ name: "backend", url: "http://registry-user:registry-pass@upstream.example.test" }],
+        includes: [{ target: "/etc/nginx/secrets.conf", content: "raw-api-key-123456", resolved: false }],
+        directives: [
+          { directive: "proxy_pass", arguments: "http://user:pass@example.com" },
+          { directive: "proxy_set_header", arguments: "Authorization: Bearer token_should_never_render" },
+          { directive: "set", arguments: "$api_key raw-api-key-123456" }
+        ],
+        findings: [
+          {
+            id: "legacy_nginx_secret",
+            title: "Legacy Nginx secret",
+            evidence: "proxy_pass http://user:pass@example.com",
+            description: "Authorization: Bearer token_should_never_render",
+            recommendation: "-----BEGIN PRIVATE KEY----- PRIVATE KEY raw-api-key-123456 -----END PRIVATE KEY-----"
+          }
+        ],
+        errors: ["PASSWORD=super-secret-password", "registry-user:registry-pass"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(
+      redactNginxConfigValue({
+        error: "Authorization: Bearer token_should_never_render",
+        result: report
+      })
+    );
+
+    for (const secret of [
+      "super-secret-password",
+      "raw-api-key-123456",
+      "token_should_never_render",
+      "Authorization: Bearer token_should_never_render",
+      "http://user:pass@example.com",
+      "registry-user:registry-pass",
+      "PRIVATE KEY"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.findings[0].evidence).toContain("[REDACTED]");
+    expect(report.includes[0]).toMatchObject({ resolved: false });
   });
 });

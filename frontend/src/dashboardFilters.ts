@@ -107,5 +107,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "terraform_config_basic") {
     return "terraform_config_basic";
   }
+  if (auditType === "nginx_config_basic") {
+    return "nginx_config_basic";
+  }
   return auditType;
 }

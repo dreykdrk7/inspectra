@@ -1,0 +1,438 @@
+import type { ReactNode } from "react";
+
+import {
+  buildNginxConfigAuditReport,
+  redactNginxConfigValue,
+  type NginxDirective,
+  type NginxFile,
+  type NginxFinding,
+  type NginxFindingGroup,
+  type NginxInclude,
+  type NginxLocation,
+  type NginxServer,
+  type NginxUpstream
+} from "./nginxConfigReport";
+import type { MetadataEntry } from "./pdfReport";
+import type { FileRecord, JobRecord, JobStatus } from "./types";
+
+export function NginxConfigJobReport({ job, file }: { job: JobRecord; file?: FileRecord }) {
+  const report = buildNginxConfigAuditReport(job);
+
+  if (!report.isNginxConfigAudit) {
+    return (
+      <div className="result-layout">
+        <p className="muted">No readable report is available for this audit type yet.</p>
+        <RawJson job={job} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="report-layout">
+      <section className="report-section">
+        <div className="section-title-row">
+          <h3>General Summary</h3>
+          <div className="badge-row">
+            <StatusBadge status={job.status} />
+          </div>
+        </div>
+        <div className="report-summary-grid">
+          {report.overview.map((entry) => (
+            <div className="report-metric" key={entry.label}>
+              <span>{entry.label}</span>
+              <strong>{entry.value}</strong>
+            </div>
+          ))}
+        </div>
+        <dl className="summary-list">
+          <MetadataRow label="Audit type" value={job.audit_type} />
+          <MetadataRow label="Analyzer" value={report.analyzer ?? "Not available"} />
+          <MetadataRow label="Archive type" value={report.archiveType ?? "Not available"} />
+          <MetadataRow label="Job ID" value={job.id} mono />
+          <MetadataRow label="Source file" value={file?.original_filename ?? job.file_id ?? "Not available"} mono />
+          <MetadataRow label="Created" value={formatDate(job.created_at)} />
+          <MetadataRow label="Updated" value={formatDate(job.updated_at)} />
+        </dl>
+      </section>
+
+      <div className="alert" role="status">
+        Passive archive-only Nginx web-edge config review. Inspectra does not execute Nginx, run nginx -t, start containers, perform network/DNS/port checks, validate live servers or certificates, resolve includes, query CVEs, or confirm exploitability. Includes are detected but not resolved.
+      </div>
+
+      {report.truncated ? (
+        <div className="alert" role="status">
+          Analysis truncated by configured Nginx config limits. Review skipped files and rerun with a smaller archive if needed.
+        </div>
+      ) : null}
+
+      {report.redactedValuesCount > 0 ? (
+        <div className="query-warning" role="status">
+          Secret-like Nginx values were redacted. Inspectra does not display inline credentials, Authorization headers, bearer tokens, cookies, proxy_pass credentials, URL credentials, or private key material.
+        </div>
+      ) : null}
+
+      <ReportSection title="Summary">
+        <MetadataList entries={report.summary} empty="No Nginx config summary returned yet." />
+      </ReportSection>
+
+      <ReportSection title="Files Detected / Reviewed">
+        {report.detectedFiles.length === 0 ? (
+          <p className="empty-state">No Nginx config candidate files detected or returned yet.</p>
+        ) : (
+          <FilesTable files={report.detectedFiles} />
+        )}
+        {report.reviewedFiles.length > 0 ? (
+          <>
+            <h4>Reviewed files</h4>
+            <FilesTable files={report.reviewedFiles} />
+          </>
+        ) : null}
+      </ReportSection>
+
+      <ReportSection title="Server Blocks">
+        {report.servers.length === 0 ? <p className="empty-state">No Nginx server blocks returned yet.</p> : <ServersTable servers={report.servers} />}
+      </ReportSection>
+
+      <ReportSection title="Locations">
+        {report.locations.length === 0 ? <p className="empty-state">No Nginx locations returned yet.</p> : <LocationsTable locations={report.locations} />}
+      </ReportSection>
+
+      <ReportSection title="Upstreams / Proxy Targets">
+        {report.upstreams.length === 0 ? <p className="empty-state">No Nginx upstream blocks returned yet.</p> : <UpstreamsTable upstreams={report.upstreams} />}
+        {report.directives.filter((directive) => directive.directive === "proxy_pass").length > 0 ? (
+          <>
+            <h4>Proxy pass directives</h4>
+            <DirectivesTable directives={report.directives.filter((directive) => directive.directive === "proxy_pass")} />
+          </>
+        ) : (
+          <p className="empty-state">No Nginx proxy_pass directives returned yet.</p>
+        )}
+      </ReportSection>
+
+      <ReportSection title="Includes">
+        <p className="muted">Nginx include directives are detected as context and are not resolved by v1.</p>
+        {report.includes.length === 0 ? <p className="empty-state">No Nginx includes returned yet.</p> : <IncludesTable includes={report.includes} />}
+      </ReportSection>
+
+      <ReportSection title="Directives">
+        {report.directives.length === 0 ? (
+          <p className="empty-state">No Nginx directives returned yet.</p>
+        ) : (
+          <DirectivesTable directives={report.directives.slice(0, 50)} />
+        )}
+      </ReportSection>
+
+      <ReportSection title="Findings">
+        <FindingGroups groups={report.findingGroups} />
+      </ReportSection>
+
+      <ReportSection title="Redaction Notes">
+        {report.redactionNotes.length === 0 ? (
+          <p className="empty-state">No Nginx config redaction notes returned.</p>
+        ) : (
+          <ul className="warning-list">
+            {report.redactionNotes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        )}
+      </ReportSection>
+
+      <div className="report-grid">
+        <ReportSection title="Limits / Truncation">
+          <MetadataList entries={report.limits} empty="No Nginx config limits returned yet." />
+        </ReportSection>
+        <ReportSection title="Errors">
+          {job.error ? <p className="error-text">{String(redactNginxConfigValue(job.error))}</p> : null}
+          {report.errors.length > 0 ? (
+            <ul className="warning-list">
+              {report.errors.map((error) => (
+                <li key={error}>{error}</li>
+              ))}
+            </ul>
+          ) : job.error ? null : (
+            <p className="empty-state">No Nginx config errors reported.</p>
+          )}
+        </ReportSection>
+      </div>
+
+      <RawJson job={job} />
+    </div>
+  );
+}
+
+function ReportSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="report-section">
+      <h3>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function MetadataList({
+  entries,
+  empty,
+  monoValues = false
+}: {
+  entries: MetadataEntry[];
+  empty: string;
+  monoValues?: boolean;
+}) {
+  if (entries.length === 0) {
+    return <p className="empty-state">{empty}</p>;
+  }
+  return (
+    <dl className="summary-list">
+      {entries.map((entry) => (
+        <MetadataRow key={entry.label} label={entry.label} value={entry.value} mono={monoValues} />
+      ))}
+    </dl>
+  );
+}
+
+function FindingGroups({ groups }: { groups: NginxFindingGroup[] }) {
+  if (groups.length === 0) {
+    return <p className="empty-state">No heuristic Nginx config findings reported.</p>;
+  }
+  return (
+    <div className="finding-list">
+      {groups.map((group) => (
+        <section className="finding-group" key={group.level}>
+          <div className="section-title-row">
+            <h4>{group.level}</h4>
+            <span className={`finding-badge ${group.level}`}>{group.findings.length}</span>
+          </div>
+          <div className="finding-list">
+            {group.findings.map((finding, index) => (
+              <FindingCard finding={finding} key={`${finding.id}-${index}`} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function FindingCard({ finding }: { finding: NginxFinding }) {
+  return (
+    <article className="tool-card">
+      <div className="tool-card-header">
+        <strong>{finding.title}</strong>
+        <div className="badge-row">
+          {finding.context ? <ContextBadge context={finding.context} /> : null}
+          {finding.category ? <span className="status-pill">{finding.category}</span> : null}
+          {finding.confidence ? <span className="status-pill">confidence: {finding.confidence}</span> : null}
+          <span className={`finding-badge ${finding.level}`}>{finding.level}</span>
+        </div>
+      </div>
+      {finding.filePath ? (
+        <p className="mono evidence-line">
+          {finding.filePath}
+          {finding.line !== null ? `:${finding.line}` : ""}
+        </p>
+      ) : null}
+      {finding.blockType || finding.serverName || finding.location || finding.upstream || finding.directive ? (
+        <p className="muted">
+          {[
+            finding.blockType ? `block: ${finding.blockType}` : null,
+            finding.serverName ? `server: ${finding.serverName}` : null,
+            finding.location ? `location: ${finding.location}` : null,
+            finding.upstream ? `upstream: ${finding.upstream}` : null,
+            finding.directive ? `directive: ${finding.directive}` : null
+          ].filter(Boolean).join(" | ")}
+        </p>
+      ) : null}
+      <p className="subtle-id">{finding.id}</p>
+      {finding.description ? <p>{finding.description}</p> : null}
+      {finding.evidence ? <p className="mono evidence-line">{finding.evidence}</p> : null}
+      {finding.recommendation ? <p className="muted">{finding.recommendation}</p> : null}
+    </article>
+  );
+}
+
+function ServersTable({ servers }: { servers: NginxServer[] }) {
+  return (
+    <SimpleTable
+      columns={["File", "Server name", "Listen", "TLS", "Line", "Context"]}
+      rows={servers.map((server) => [
+        mono(server.path),
+        server.serverName ?? "N/A",
+        server.listen.length > 0 ? server.listen.join(", ") : "N/A",
+        formatBoolean(server.tls),
+        server.line === null ? "N/A" : String(server.line),
+        server.context ? <ContextBadge context={server.context} /> : "N/A"
+      ])}
+    />
+  );
+}
+
+function LocationsTable({ locations }: { locations: NginxLocation[] }) {
+  return (
+    <SimpleTable
+      columns={["File", "Location", "Server", "Line", "Context"]}
+      rows={locations.map((location) => [
+        mono(location.path),
+        location.location ?? "N/A",
+        location.serverName ?? "N/A",
+        location.line === null ? "N/A" : String(location.line),
+        location.context ? <ContextBadge context={location.context} /> : "N/A"
+      ])}
+    />
+  );
+}
+
+function UpstreamsTable({ upstreams }: { upstreams: NginxUpstream[] }) {
+  return (
+    <SimpleTable
+      columns={["File", "Upstream", "Line", "Context"]}
+      rows={upstreams.map((upstream) => [
+        mono(upstream.path),
+        upstream.name ?? "N/A",
+        upstream.line === null ? "N/A" : String(upstream.line),
+        upstream.context ? <ContextBadge context={upstream.context} /> : "N/A"
+      ])}
+    />
+  );
+}
+
+function IncludesTable({ includes }: { includes: NginxInclude[] }) {
+  return (
+    <SimpleTable
+      columns={["File", "Include", "Absolute", "Glob", "Resolved", "Line", "Context"]}
+      rows={includes.map((include) => [
+        mono(include.path),
+        mono(include.target ?? "N/A"),
+        formatBoolean(include.absolute),
+        formatBoolean(include.glob),
+        include.resolved === false ? "no (not resolved by v1)" : formatBoolean(include.resolved),
+        include.line === null ? "N/A" : String(include.line),
+        include.context ? <ContextBadge context={include.context} /> : "N/A"
+      ])}
+    />
+  );
+}
+
+function DirectivesTable({ directives }: { directives: NginxDirective[] }) {
+  return (
+    <SimpleTable
+      columns={["File", "Directive", "Arguments", "Block", "Server", "Location", "Upstream", "Line", "Context"]}
+      rows={directives.map((directive) => [
+        mono(directive.path),
+        directive.directive ?? "N/A",
+        mono(directive.arguments ?? "N/A"),
+        directive.blockType ?? "N/A",
+        directive.serverName ?? "N/A",
+        directive.location ?? "N/A",
+        directive.upstream ?? "N/A",
+        directive.line === null ? "N/A" : String(directive.line),
+        directive.context ? <ContextBadge context={directive.context} /> : "N/A"
+      ])}
+    />
+  );
+}
+
+function FilesTable({ files }: { files: NginxFile[] }) {
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Category</th>
+            <th>Context</th>
+            <th>Read</th>
+            <th>Reason</th>
+            <th>Size</th>
+            <th>Bytes read</th>
+          </tr>
+        </thead>
+        <tbody>
+          {files.map((item, index) => (
+            <tr key={`${item.path}-${index}`}>
+              <td className="mono">{item.path}</td>
+              <td>{item.category}</td>
+              <td>{item.context ? <ContextBadge context={item.context} /> : "N/A"}</td>
+              <td>{item.read ? "yes" : "no"}</td>
+              <td>{item.skipReason ?? "N/A"}</td>
+              <td>{item.sizeBytes === null ? "N/A" : `${item.sizeBytes} B`}</td>
+              <td>{item.bytesRead === null ? "N/A" : `${item.bytesRead} B`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SimpleTable({ columns, rows }: { columns: string[]; rows: ReactNode[][] }) {
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column}>{column}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => (
+                <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function mono(value: string): ReactNode {
+  return <span className="mono">{value}</span>;
+}
+
+function ContextBadge({ context }: { context: string }) {
+  const contextClass = context.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  return <span className={`context-pill ${contextClass}`}>{context}</span>;
+}
+
+function MetadataRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd className={mono ? "mono" : undefined}>{value}</dd>
+    </>
+  );
+}
+
+function StatusBadge({ status }: { status: JobStatus }) {
+  return <span className={`status-pill ${status}`}>{status}</span>;
+}
+
+function RawJson({ job }: { job: JobRecord }) {
+  const redactedJob = {
+    ...job,
+    error: typeof job.error === "string" ? redactNginxConfigValue(job.error) : job.error,
+    result: redactNginxConfigValue(job.result)
+  };
+  return (
+    <details className="raw-json">
+      <summary>Raw JSON (redacted)</summary>
+      <pre>{JSON.stringify(redactedJob, null, 2)}</pre>
+    </details>
+  );
+}
+
+function formatBoolean(value: boolean | null): string {
+  return value === null ? "N/A" : value ? "yes" : "no";
+}
+
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+}

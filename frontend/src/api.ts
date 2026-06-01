@@ -159,6 +159,13 @@ export async function launchTerraformConfigAudit(fileId: string): Promise<JobRec
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function launchNginxConfigAudit(fileId: string): Promise<JobRecord> {
+  const response = await fetch(`${API_BASE_URL}/audits/nginx-config/${fileId}`, {
+    method: 'POST',
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function launchWebBasicAudit(url: string, authorizationConfirmed: boolean): Promise<JobRecord> {
   const response = await fetch(`${API_BASE_URL}/audits/web/basic`, {
     method: 'POST',
@@ -225,6 +232,7 @@ export const api = {
   launchCiCdConfigAudit,
   launchK8sConfigAudit,
   launchTerraformConfigAudit,
+  launchNginxConfigAudit,
   launchWebBasicAudit,
   launchDomainBasicAudit,
   launchSubdomainInventoryAudit,

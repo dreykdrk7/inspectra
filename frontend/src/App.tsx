@@ -21,6 +21,7 @@ import { DockerConfigJobReport } from "./DockerConfigJobReport";
 import { ImageJobReport } from "./ImageJobReport";
 import { K8sConfigJobReport } from "./K8sConfigJobReport";
 import { ManifestJobReport } from "./ManifestJobReport";
+import { NginxConfigJobReport } from "./NginxConfigJobReport";
 import { NodePackageConfigJobReport } from "./NodePackageConfigJobReport";
 import { PdfJobReport } from "./PdfJobReport";
 import { ProjectArchiveJobReport } from "./ProjectArchiveJobReport";
@@ -267,6 +268,17 @@ export function App() {
     setActionError(null);
     try {
       const job = await api.launchTerraformConfigAudit(file.id);
+      setSelectedJob(job);
+      await refreshJobs();
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  async function launchNginxConfigAudit(file: FileRecord) {
+    setActionError(null);
+    try {
+      const job = await api.launchNginxConfigAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -619,6 +631,12 @@ export function App() {
                               Analyze Terraform config
                             </button>
                           ) : null}
+                          {file.kind === "archive" ? (
+                            <button onClick={() => void launchNginxConfigAudit(file)}>
+                              <Play size={15} aria-hidden="true" />
+                              Analyze Nginx config
+                            </button>
+                          ) : null}
                           <button className="danger-button" onClick={() => void deleteFile(file.id)}>
                             <Trash2 size={15} aria-hidden="true" />
                             Delete
@@ -660,7 +678,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic", "ci_cd_config_basic", "k8s_config_basic", "terraform_config_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic", "ci_cd_config_basic", "k8s_config_basic", "terraform_config_basic", "nginx_config_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -746,6 +764,8 @@ export function App() {
               <K8sConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "terraform_config_basic" ? (
               <TerraformConfigJobReport job={selectedJob} file={selectedJobFile} />
+            ) : selectedJob.audit_type === "nginx_config_basic" ? (
+              <NginxConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : (
               <WebJobReport job={selectedJob} />
             )}
@@ -1003,6 +1023,12 @@ function summarizeJob(job: JobListItem): string {
     const resourcesDetected = typeof job.summary.resources_detected === "number" ? job.summary.resources_detected : 0;
     const stateFilesDetected = typeof job.summary.state_files_detected === "number" ? job.summary.state_files_detected : 0;
     return `${filesReviewed} files reviewed, ${resourcesDetected} resources, ${stateFilesDetected} state files, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "nginx_config_basic") {
+    const filesReviewed = typeof job.summary.files_reviewed === "number" ? job.summary.files_reviewed : 0;
+    const serverBlocksDetected = typeof job.summary.server_blocks_detected === "number" ? job.summary.server_blocks_detected : 0;
+    const includesDetected = typeof job.summary.includes_detected === "number" ? job.summary.includes_detected : 0;
+    return `${filesReviewed} files reviewed, ${serverBlocksDetected} servers, ${includesDetected} includes, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

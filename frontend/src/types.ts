@@ -30,7 +30,8 @@ export type AuditType =
   | 'node_package_config_basic'
   | 'ci_cd_config_basic'
   | 'k8s_config_basic'
-  | 'terraform_config_basic';
+  | 'terraform_config_basic'
+  | 'nginx_config_basic';
 export type ReportFormat = 'markdown' | 'html' | 'xml' | 'pdf';
 export type SbomFormat = 'cyclonedx-json' | 'spdx-json';
 
