@@ -1325,7 +1325,8 @@ async def test_compose_config_service_calls_runner_endpoint(monkeypatch, tmp_pat
                         "truncated": False,
                     },
                     "services": [{"name": "db", "environment": {"POSTGRES_PASSWORD": "super-secret-password"}}],
-                    "env_files": [{"path": ".env", "read": False, "content": "POSTGRES_PASSWORD=super-secret-password"}],
+                    "env_files": [{"path": ".env", "read": False, "content": "POSTGRES_PASSWORD=super-secret-password compose_secret_file_should_not_render"}],
+                    "secrets": [{"name": "db_password", "file": "./secrets/db_password.txt", "content": "compose_secret_file_should_not_render"}],
                     "findings": [
                         {
                             "id": "compose_environment_secret_like_value",
@@ -1351,6 +1352,7 @@ async def test_compose_config_service_calls_runner_endpoint(monkeypatch, tmp_pat
         "super-secret-password",
         "postgres://user:pass@example.com/db",
         "registry-user:registry-pass",
+        "compose_secret_file_should_not_render",
     ):
         assert secret not in serialized_result
     assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/compose-config"
@@ -4376,8 +4378,8 @@ async def test_export_compose_config_redacts_legacy_secret_values(monkeypatch, t
             "ports": [{"service": "db", "published": "0.0.0.0:5432:5432", "password": "super-secret-password"}],
             "volumes": [{"service": "web", "source": "/var/run/docker.sock", "content": "-----BEGIN PRIVATE KEY-----"}],
             "networks": [{"name": "public", "session": "sessionid=secret-session-cookie"}],
-            "secrets": [{"name": "db_password", "file": "./secrets/db_password.txt", "content": "db_password_plaintext"}],
-            "env_files": [{"path": ".env", "read": False, "content": "POSTGRES_PASSWORD=super-secret-password"}],
+            "secrets": [{"name": "db_password", "file": "./secrets/db_password.txt", "content": "db_password_plaintext compose_secret_file_should_not_render"}],
+            "env_files": [{"path": ".env", "read": False, "content": "POSTGRES_PASSWORD=super-secret-password compose_secret_file_should_not_render"}],
             "images": [{"service": "api", "image": "registry-user:registry-pass@example.test/app:latest"}],
             "build_contexts": [{"service": "api", "context": "../api", "args": "API_KEY=raw-api-key-123456"}],
             "findings": [
@@ -4402,6 +4404,7 @@ async def test_export_compose_config_redacts_legacy_secret_values(monkeypatch, t
                 "redis://:super-secret-password@redis:6379/0",
                 "registry-user:registry-pass",
                 "token_should_never_render",
+                "compose_secret_file_should_not_render",
             ],
             "redaction_notes": ["POSTGRES_PASSWORD=super-secret-password"],
         },
@@ -4423,6 +4426,7 @@ async def test_export_compose_config_redacts_legacy_secret_values(monkeypatch, t
         b"registry-user:registry-pass",
         b"PRIVATE KEY",
         b"db_password_plaintext",
+        b"compose_secret_file_should_not_render",
         b"sessionid=secret-session-cookie",
     )
     transport = ASGITransport(app=app)

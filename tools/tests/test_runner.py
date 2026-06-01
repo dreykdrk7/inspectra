@@ -2725,7 +2725,7 @@ services:
             "deploy/compose/docker-compose.yml": compose_file,
             "deploy/compose/docker-compose.override.yml": override_file,
             ".env.production": b"POSTGRES_PASSWORD=super-secret-password\n",
-            "secrets/db_password.txt": b"db_password_plaintext\n",
+            "secrets/db_password.txt": b"db_password_plaintext\ncompose_secret_file_should_not_render\n",
         },
     )
     monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
@@ -2804,6 +2804,7 @@ services:
         "registry-user:registry-pass",
         "PRIVATE KEY",
         "db_password_plaintext",
+        "compose_secret_file_should_not_render",
     ):
         assert secret not in serialized
 

@@ -172,8 +172,8 @@ describe("ComposeConfigJobReport", () => {
             ports: [{ service: "db", published: "5432", password: "super-secret-password" }],
             volumes: [{ service: "app", source: "/root/.ssh", content: "-----BEGIN PRIVATE KEY----- PRIVATE KEY -----END PRIVATE KEY-----" }],
             networks: [{ name: "edge", token: "token_should_never_render" }],
-            secrets: [{ name: "db_password", file: "./secret.txt", content: "super-secret-password", read: false }],
-            env_files: [{ service: "app", path: ".env", content: "DATABASE_URL=postgres://user:pass@example.com/db", read: false }],
+            secrets: [{ name: "db_password", file: "./secret.txt", content: "super-secret-password compose_secret_file_should_not_render", read: false }],
+            env_files: [{ service: "app", path: ".env", content: "DATABASE_URL=postgres://user:pass@example.com/db compose_secret_file_should_not_render", read: false }],
             findings: [
               {
                 id: "legacy_compose_secret",
@@ -183,7 +183,7 @@ describe("ComposeConfigJobReport", () => {
                 recommendation: "raw-api-key-123456 token_should_never_render"
               }
             ],
-            errors: ["POSTGRES_PASSWORD=super-secret-password", "registry-user:registry-pass", "-----BEGIN PRIVATE KEY-----"]
+            errors: ["POSTGRES_PASSWORD=super-secret-password", "registry-user:registry-pass", "compose_secret_file_should_not_render", "-----BEGIN PRIVATE KEY-----"]
           }
         }}
       />
@@ -198,6 +198,7 @@ describe("ComposeConfigJobReport", () => {
       "DATABASE_URL=postgres://user:pass@example.com/db",
       "redis://:super-secret-password@redis:6379/0",
       "registry-user:registry-pass",
+      "compose_secret_file_should_not_render",
       "PRIVATE KEY"
     ]) {
       expect(rendered).not.toContain(secret);

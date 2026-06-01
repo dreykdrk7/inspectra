@@ -145,8 +145,8 @@ export function ComposeConfigJobReport({ job, file }: { job: JobRecord; file?: F
           <p className="empty-state">No Compose config redaction notes returned.</p>
         ) : (
           <ul className="warning-list">
-            {report.redactionNotes.map((note) => (
-              <li key={note}>{note}</li>
+            {report.redactionNotes.map((note, index) => (
+              <li key={`${index}-${note}`}>{note}</li>
             ))}
           </ul>
         )}
@@ -160,8 +160,8 @@ export function ComposeConfigJobReport({ job, file }: { job: JobRecord; file?: F
           {job.error ? <p className="error-text">{String(redactComposeConfigValue(job.error))}</p> : null}
           {report.errors.length > 0 ? (
             <ul className="warning-list">
-              {report.errors.map((error) => (
-                <li key={error}>{error}</li>
+              {report.errors.map((error, index) => (
+                <li key={`${index}-${error}`}>{error}</li>
               ))}
             </ul>
           ) : job.error ? null : (

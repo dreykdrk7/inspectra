@@ -271,7 +271,10 @@ export function redactComposeConfigText(value: string): string {
     .replace(/\bPRIVATE KEY\b/gi, "[REDACTED]")
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^:@/\s;'"<>]+):([^@\s;'"<>]+)@/gi, "$1[REDACTED]@")
     .replace(/\b(?:[a-z0-9._-]*user|username|login):(?:[a-z0-9._-]*(?:pass|password|secret|token|key)[a-z0-9._-]*)\b/gi, "[REDACTED]")
-    .replace(/\b(?:registry-user:registry-pass|super-secret-password|raw-api-key-[a-z0-9_-]+|token_should_never_render|db_password_plaintext)\b/gi, "[REDACTED]")
+    .replace(
+      /\b(?:registry-user:registry-pass|super-secret-password|raw-api-key-[a-z0-9_-]+|[a-z0-9._-]*should_(?:never|not)_render[a-z0-9._-]*|db_password_plaintext)\b/gi,
+      "[REDACTED]"
+    )
     .replace(
       /([?&](?:access_token|refresh_token|id_token|api_key|apikey|key|token|secret|password|passwd|pwd|session|sid|auth|authorization|jwt|bearer|sig|signature|client_secret|code|state)=)[^&#\s]+/gi,
       "$1[REDACTED]"
