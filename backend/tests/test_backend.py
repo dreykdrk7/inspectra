@@ -19,6 +19,7 @@ from app.sbom import extract_components_from_job, generate_cyclonedx_json, gener
 from app.services import (
     ArchiveAuditService,
     CiCdConfigAuditService,
+    ComposeConfigAuditService,
     DjangoConfigAuditService,
     DomainAuditService,
     DockerConfigAuditService,
@@ -87,6 +88,9 @@ class NoopAuditService:
     async def run_nginx_config_analysis(self, job_id: str) -> None:
         return None
 
+    async def run_compose_config_analysis(self, job_id: str) -> None:
+        return None
+
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
         return None
 
@@ -148,6 +152,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.k8s_config_audits = K8sConfigAuditService(settings, file_store, job_store)
     app.state.terraform_config_audits = TerraformConfigAuditService(settings, file_store, job_store)
     app.state.nginx_config_audits = NginxConfigAuditService(settings, file_store, job_store)
+    app.state.compose_config_audits = ComposeConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -1250,6 +1255,113 @@ async def test_nginx_config_service_calls_runner_endpoint(monkeypatch, tmp_path)
 
 
 @pytest.mark.anyio
+async def test_compose_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.compose_config_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("compose.zip", make_zip_bytes({"docker-compose.yml": b"services:\n  web:\n    image: nginx:latest\n"}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        compose_response = await client.post(f"/audits/compose-config/{archive_file['id']}")
+        pdf_as_compose_response = await client.post(f"/audits/compose-config/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/compose-config/not-a-file-id")
+
+    assert compose_response.status_code == 202
+    assert compose_response.json()["audit_type"] == "compose_config_basic"
+    assert pdf_as_compose_response.status_code == 400
+    assert pdf_as_compose_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_compose_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("compose.zip", make_zip_bytes({"docker-compose.yml": b"services:\n  db:\n    image: postgres:latest\n"}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_compose_config_job(archive.id)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "compose_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 2,
+                        "files_reviewed": 1,
+                        "compose_files_detected": 1,
+                        "services_detected": 1,
+                        "networks_detected": 1,
+                        "volumes_detected": 1,
+                        "secrets_detected": 1,
+                        "published_ports_detected": 1,
+                        "env_files_detected": 1,
+                        "findings_count": 1,
+                        "redacted_values_count": 1,
+                        "truncated": False,
+                    },
+                    "services": [{"name": "db", "environment": {"POSTGRES_PASSWORD": "super-secret-password"}}],
+                    "env_files": [{"path": ".env", "read": False, "content": "POSTGRES_PASSWORD=super-secret-password"}],
+                    "findings": [
+                        {
+                            "id": "compose_environment_secret_like_value",
+                            "title": "environment secret",
+                            "level": "medium",
+                            "evidence": "POSTGRES_PASSWORD=super-secret-password",
+                        }
+                    ],
+                    "errors": ["DATABASE_URL=postgres://user:pass@example.com/db", "registry-user:registry-pass"],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+
+    await app.state.compose_config_audits.run_compose_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    serialized_result = json.dumps(updated.result)
+    assert updated.status == "completed"
+    assert updated.result["analyzer"] == "compose_config_basic"
+    assert "[REDACTED]" in serialized_result
+    for secret in (
+        "super-secret-password",
+        "postgres://user:pass@example.com/db",
+        "registry-user:registry-pass",
+    ):
+        assert secret not in serialized_result
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/compose-config"
+    assert calls[0]["json"]["file_id"] == archive.id
+    assert calls[0]["json"]["original_filename"] == "compose.zip"
+    assert calls[0]["json"]["max_files"] == app.state.settings.compose_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.compose_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.compose_config_max_total_bytes
+
+
+@pytest.mark.anyio
 async def test_web_basic_audit_requires_authorization(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     app.state.web_audits = NoopAuditService()
@@ -1778,6 +1890,19 @@ def test_terraform_config_limits_config(monkeypatch, tmp_path):
     assert settings.terraform_config_max_total_bytes == 4096
 
 
+def test_compose_config_limits_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_COMPOSE_CONFIG_MAX_FILES", "12")
+    monkeypatch.setenv("INSPECTRA_COMPOSE_CONFIG_MAX_FILE_BYTES", "1024")
+    monkeypatch.setenv("INSPECTRA_COMPOSE_CONFIG_MAX_TOTAL_BYTES", "4096")
+
+    settings = load_settings()
+
+    assert settings.compose_config_max_files == 12
+    assert settings.compose_config_max_file_bytes == 1024
+    assert settings.compose_config_max_total_bytes == 4096
+
+
 @pytest.mark.parametrize(
     ("raw_domain", "expected"),
     [
@@ -2213,6 +2338,77 @@ async def test_list_jobs_includes_nginx_config_summary_and_sparse_payload(monkey
     assert summary["errors_count"] == 1
     sparse_summary = summaries["9" * 31 + "2"]
     assert sparse_summary["analyzer"] == "nginx_config_basic"
+    assert sparse_summary["files_reviewed"] is None
+    assert sparse_summary["errors_count"] == 0
+
+
+@pytest.mark.anyio
+async def test_list_jobs_includes_compose_config_summary_and_sparse_payload(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    app.state.jobs.save(
+        JobRecord(
+            id="7" * 31 + "1",
+            audit_type="compose_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={
+                "analyzer": "compose_config_basic",
+                "archive_type": "zip",
+                "summary": {
+                    "files_considered": 4,
+                    "files_reviewed": 2,
+                    "compose_files_detected": 2,
+                    "services_detected": 3,
+                    "networks_detected": 2,
+                    "volumes_detected": 2,
+                    "secrets_detected": 1,
+                    "published_ports_detected": 4,
+                    "env_files_detected": 1,
+                    "findings_count": 6,
+                    "redacted_values_count": 2,
+                    "truncated": False,
+                },
+                "errors": ["one controlled warning"],
+            },
+        )
+    )
+    app.state.jobs.save(
+        JobRecord(
+            id="7" * 31 + "2",
+            audit_type="compose_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "compose_config_basic", "summary": "unexpected"},
+        )
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    summaries = {item["id"]: item["summary"] for item in response.json()}
+    summary = summaries["7" * 31 + "1"]
+    assert summary["archive_type"] == "zip"
+    assert summary["files_considered"] == 4
+    assert summary["files_reviewed"] == 2
+    assert summary["compose_files_detected"] == 2
+    assert summary["services_detected"] == 3
+    assert summary["networks_detected"] == 2
+    assert summary["volumes_detected"] == 2
+    assert summary["secrets_detected"] == 1
+    assert summary["published_ports_detected"] == 4
+    assert summary["env_files_detected"] == 1
+    assert summary["findings_count"] == 6
+    assert summary["redacted_values_count"] == 2
+    assert summary["errors_count"] == 1
+    sparse_summary = summaries["7" * 31 + "2"]
+    assert sparse_summary["analyzer"] == "compose_config_basic"
     assert sparse_summary["files_reviewed"] is None
     assert sparse_summary["errors_count"] == 0
 
@@ -4101,6 +4297,212 @@ async def test_export_nginx_config_jobs_with_sparse_and_incomplete_results(monke
 
 
 @pytest.mark.anyio
+async def test_compose_config_job_summary_and_export_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_compose_config_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    summary = list_response.json()[0]["summary"]
+    assert summary["analyzer"] == "compose_config_basic"
+    assert summary["files_considered"] == 3
+    assert summary["files_reviewed"] == 2
+    assert summary["compose_files_detected"] == 2
+    assert summary["services_detected"] == 3
+    assert summary["networks_detected"] == 2
+    assert summary["volumes_detected"] == 2
+    assert summary["secrets_detected"] == 1
+    assert summary["published_ports_detected"] == 3
+    assert summary["env_files_detected"] == 1
+    assert summary["findings_count"] == 2
+    assert summary["redacted_values_count"] == 2
+    assert summary["truncated"] is False
+    assert summary["errors_count"] == 0
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "compose_config_basic" in responses["markdown"].text
+    assert "Compose Config Metrics" in responses["html"].text
+    assert "Services" in responses["markdown"].text
+    assert "Ports / Exposure" in responses["markdown"].text
+    assert "Volumes / Mounts" in responses["markdown"].text
+    assert "Env Files Detected But Not Read" in responses["markdown"].text
+    assert "Finding 1 Service" in responses["markdown"].text
+    assert "Finding 1 Field path" in responses["markdown"].text
+    assert "compose_environment_secret_like_value" in responses["markdown"].text
+    assert "read: False" in responses["markdown"].text or "read`" in responses["markdown"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "compose_config_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_export_compose_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="7" * 31 + "8",
+        audit_type="compose_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="POSTGRES_PASSWORD=super-secret-password",
+        result={
+            "analyzer": "compose_config_basic",
+            "archive_type": "zip",
+            "summary": {"files_reviewed": 1, "findings_count": 1, "redacted_values_count": 0},
+            "services": [
+                {
+                    "name": "db",
+                    "environment": {"POSTGRES_PASSWORD": "super-secret-password", "DATABASE_URL": "postgres://user:pass@example.com/db"},
+                    "command": "TOKEN=token_should_never_render",
+                    "labels": {"com.example.api_key": "raw-api-key-123456"},
+                }
+            ],
+            "ports": [{"service": "db", "published": "0.0.0.0:5432:5432", "password": "super-secret-password"}],
+            "volumes": [{"service": "web", "source": "/var/run/docker.sock", "content": "-----BEGIN PRIVATE KEY-----"}],
+            "networks": [{"name": "public", "session": "sessionid=secret-session-cookie"}],
+            "secrets": [{"name": "db_password", "file": "./secrets/db_password.txt", "content": "db_password_plaintext"}],
+            "env_files": [{"path": ".env", "read": False, "content": "POSTGRES_PASSWORD=super-secret-password"}],
+            "images": [{"service": "api", "image": "registry-user:registry-pass@example.test/app:latest"}],
+            "build_contexts": [{"service": "api", "context": "../api", "args": "API_KEY=raw-api-key-123456"}],
+            "findings": [
+                {
+                    "id": "legacy_compose_secret",
+                    "title": "Legacy raw secret",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets",
+                    "description": "PASSWORD=super-secret-password",
+                    "evidence": "DATABASE_URL=postgres://user:pass@example.com/db Authorization: Bearer token_should_never_render",
+                    "recommendation": "-----BEGIN PRIVATE KEY----- PRIVATE KEY raw-api-key-123456 -----END PRIVATE KEY-----",
+                    "file_path": "deploy/compose/docker-compose.yml",
+                    "context": "production<script>API_KEY=raw-api-key-123456</script>",
+                    "service": "db",
+                    "field_path": "services.db.environment.POSTGRES_PASSWORD",
+                }
+            ],
+            "errors": [
+                "POSTGRES_PASSWORD=super-secret-password",
+                "DATABASE_URL=postgres://user:pass@example.com/db",
+                "redis://:super-secret-password@redis:6379/0",
+                "registry-user:registry-pass",
+                "token_should_never_render",
+            ],
+            "redaction_notes": ["POSTGRES_PASSWORD=super-secret-password"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = (
+        b"super-secret-password",
+        b"raw-api-key-123456",
+        b"token_should_never_render",
+        b"POSTGRES_PASSWORD=super-secret-password",
+        b"postgres://user:pass@example.com/db",
+        b"redis://:super-secret-password@redis:6379/0",
+        b"registry-user:registry-pass",
+        b"PRIVATE KEY",
+        b"db_password_plaintext",
+        b"sessionid=secret-session-cookie",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    assert api_response.status_code == 200
+    assert b"REDACTED" in api_response.content
+    for secret in forbidden:
+        assert secret not in api_response.content
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
+
+
+@pytest.mark.anyio
+async def test_export_compose_config_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="7" * 31 + "9", audit_type="compose_config_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="6" * 31 + "1", audit_type="compose_config_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="6" * 31 + "2",
+            audit_type="compose_config_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="Compose config runner failed safely.",
+        ),
+        JobRecord(
+            id="6" * 31 + "3",
+            audit_type="compose_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "compose_config_basic", "summary": {}, "findings": [{"id": "sparse"}], "errors": []},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "compose_config_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "compose_config_basic" in response.text
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -4353,6 +4755,7 @@ async def test_sbom_export_rejects_incompatible_jobs(monkeypatch, tmp_path):
         "k8s_config_basic",
         "terraform_config_basic",
         "nginx_config_basic",
+        "compose_config_basic",
     )
     job_ids: list[str] = []
     for index, audit_type in enumerate(audit_types, start=1):
@@ -5939,6 +6342,112 @@ def save_nginx_config_export_fixture_job() -> JobRecord:
             "redaction_notes": [
                 "Secret-like Nginx/reverse-proxy values are redacted before storage on a best-effort basis.",
                 "Nginx include directives are detected but not resolved by this analyzer.",
+            ],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_compose_config_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="7" * 31 + "7",
+        audit_type="compose_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "compose_config_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "abc123"},
+            "file_identification": {"size_bytes": 4096, "original_filename": "compose.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 3,
+                "files_reviewed": 2,
+                "compose_files_detected": 2,
+                "services_detected": 3,
+                "networks_detected": 2,
+                "volumes_detected": 2,
+                "secrets_detected": 1,
+                "published_ports_detected": 3,
+                "env_files_detected": 1,
+                "findings_count": 2,
+                "redacted_values_count": 2,
+                "truncated": False,
+            },
+            "files_detected": [
+                {"path": "deploy/compose/docker-compose.yml", "category": "compose_config", "read": True, "size_bytes": 2048, "context": "production"},
+                {"path": "deploy/compose/docker-compose.override.yml", "category": "compose_config", "read": True, "size_bytes": 512, "context": "production"},
+                {"path": "deploy/compose/.env", "category": "env_file_sensitive", "read": False, "skip_reason": "sensitive_env_file_not_read", "context": "production"},
+            ],
+            "files_reviewed": [
+                {"path": "deploy/compose/docker-compose.yml", "category": "compose_config", "context": "production", "bytes_read": 2048},
+                {"path": "deploy/compose/docker-compose.override.yml", "category": "compose_config", "context": "production", "bytes_read": 512},
+            ],
+            "services": [
+                {"file_path": "deploy/compose/docker-compose.yml", "name": "web", "image": "nginx:latest", "context": "production"},
+                {"file_path": "deploy/compose/docker-compose.yml", "name": "db", "image": "postgres:15", "context": "production"},
+                {"file_path": "deploy/compose/docker-compose.yml", "name": "worker", "build": "./worker", "context": "production"},
+            ],
+            "images": [
+                {"service": "web", "image": "nginx:latest", "tag": "latest", "context": "production"},
+                {"service": "db", "image": "postgres:15", "tag": "15", "context": "production"},
+            ],
+            "build_contexts": [{"service": "worker", "context": "./worker", "file_path": "deploy/compose/docker-compose.yml"}],
+            "ports": [
+                {"service": "web", "host_ip": "0.0.0.0", "published": "8080", "target": "80", "protocol": "tcp"},
+                {"service": "db", "host_ip": "0.0.0.0", "published": "5432", "target": "5432", "protocol": "tcp"},
+                {"service": "admin", "published": "9000-9010", "target": "9000-9010", "protocol": "tcp"},
+            ],
+            "volumes": [
+                {"service": "web", "host_path": "/var/run/docker.sock", "container_path": "/var/run/docker.sock", "read_only": False},
+                {"service": "db", "name": "postgres-data", "container_path": "/var/lib/postgresql/data"},
+            ],
+            "networks": [
+                {"name": "edge", "external": True, "internal": False},
+                {"name": "backend", "external": False, "internal": True},
+            ],
+            "secrets": [{"name": "db_password", "file": "./secrets/db_password.txt", "read": False}],
+            "env_files": [{"service": "db", "path": ".env", "read": False, "skip_reason": "env_file_not_read"}],
+            "findings": [
+                {
+                    "id": "compose_environment_secret_like_value",
+                    "title": "Compose environment has secret-like value",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets",
+                    "context": "production",
+                    "service": "db",
+                    "field_path": "services.db.environment.POSTGRES_PASSWORD",
+                    "file_path": "deploy/compose/docker-compose.yml",
+                    "description": "A Compose review indicator was observed.",
+                    "evidence": "POSTGRES_PASSWORD=[REDACTED]",
+                    "recommendation": "Move secret-like values into a secret manager or runtime-only environment.",
+                },
+                {
+                    "id": "compose_docker_socket_mounted",
+                    "title": "Docker socket mounted into Compose service",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "volumes",
+                    "context": "production",
+                    "service": "web",
+                    "host_path": "/var/run/docker.sock",
+                    "container_path": "/var/run/docker.sock",
+                    "file_path": "deploy/compose/docker-compose.yml",
+                    "description": "A Compose review indicator was observed.",
+                    "evidence": "host_path=/var/run/docker.sock; container_path=/var/run/docker.sock",
+                    "recommendation": "Review whether the service needs Docker socket access.",
+                },
+            ],
+            "redaction_notes": [
+                "Secret-like Docker Compose values are redacted before storage on a best-effort basis.",
+                "Compose env_file and secrets.file references are detected but not read by this analyzer.",
             ],
             "errors": [],
         },

@@ -220,6 +220,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_terraform_config_sections(result))
     elif job.audit_type == "nginx_config_basic":
         sections.extend(build_nginx_config_sections(result))
+    elif job.audit_type == "compose_config_basic":
+        sections.extend(build_compose_config_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -502,6 +504,29 @@ def build_nginx_config_sections(result: dict[str, Any]) -> list[ReportSection]:
     ]
 
 
+def build_compose_config_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "Compose Config Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("Compose Config Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Compose Config Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Files Detected", flatten_django_detected_files(result.get("files_detected"))),
+        ReportSection("Files Reviewed", flatten_list(result.get("files_reviewed"))),
+        ReportSection("Services", flatten_list(result.get("services"))),
+        ReportSection("Images", flatten_list(result.get("images"))),
+        ReportSection("Build Contexts", flatten_list(result.get("build_contexts"))),
+        ReportSection("Ports / Exposure", flatten_list(result.get("ports"))),
+        ReportSection("Volumes / Mounts", flatten_list(result.get("volumes"))),
+        ReportSection("Networks", flatten_list(result.get("networks"))),
+        ReportSection("Secrets", flatten_list(result.get("secrets"))),
+        ReportSection("Env Files Detected But Not Read", flatten_list(result.get("env_files"))),
+        ReportSection("Findings", flatten_compose_findings(result.get("findings"))),
+        ReportSection("Redaction Notes", flatten_list(result.get("redaction_notes"))),
+    ]
+
+
 def flatten_django_detected_files(value: Any) -> list[tuple[str, str]]:
     if not isinstance(value, list):
         return []
@@ -704,6 +729,41 @@ def flatten_nginx_findings(value: Any) -> list[tuple[str, str]]:
     return rows
 
 
+def flatten_compose_findings(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("ID", "id"),
+        ("Code", "code"),
+        ("Title", "title"),
+        ("Level", "level"),
+        ("Confidence", "confidence"),
+        ("Category", "category"),
+        ("Context", "context"),
+        ("Service", "service"),
+        ("Field path", "field_path"),
+        ("Image", "image"),
+        ("Port", "port"),
+        ("Protocol", "protocol"),
+        ("Host path", "host_path"),
+        ("Container path", "container_path"),
+        ("Network", "network"),
+        ("File path", "file_path"),
+        ("Line", "line"),
+        ("Description", "description"),
+        ("Evidence", "evidence"),
+        ("Recommendation", "recommendation"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Finding {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"Finding {index}", record, preferred_keys)
+    return rows
+
+
 def append_preferred_rows(
     rows: list[tuple[str, str]],
     prefix: str,
@@ -885,6 +945,21 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
         data["errors_count"] = len(result.get("errors") or [])
+    elif job.audit_type == "compose_config_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["files_considered"] = summary.get("files_considered", "N/A")
+        data["files_reviewed"] = summary.get("files_reviewed", "N/A")
+        data["compose_files_detected"] = summary.get("compose_files_detected", "N/A")
+        data["services_detected"] = summary.get("services_detected", "N/A")
+        data["networks_detected"] = summary.get("networks_detected", "N/A")
+        data["volumes_detected"] = summary.get("volumes_detected", "N/A")
+        data["secrets_detected"] = summary.get("secrets_detected", "N/A")
+        data["published_ports_detected"] = summary.get("published_ports_detected", "N/A")
+        data["env_files_detected"] = summary.get("env_files_detected", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
+        data["errors_count"] = len(result.get("errors") or [])
     return data
 
 
@@ -930,6 +1005,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_terraform_config_value(result))
     if job.audit_type == "nginx_config_basic":
         return as_dict(redact_nginx_config_value(result))
+    if job.audit_type == "compose_config_basic":
+        return as_dict(redact_compose_config_value(result))
     return result
 
 
@@ -954,6 +1031,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_terraform_secret_text(job.error)
     if job.audit_type == "nginx_config_basic":
         return redact_nginx_secret_text(job.error)
+    if job.audit_type == "compose_config_basic":
+        return redact_compose_secret_text(job.error)
     return job.error
 
 
@@ -1323,6 +1402,111 @@ def redact_nginx_secret_text(value: str) -> str:
     )
     redacted = re.sub(
         r"(?i)\b([A-Z0-9_$_.-]*(?:authorization|cookie|session|client_secret|private_key|api_key|apikey|password|passwd|token|secret|credential)[A-Z0-9_$_.-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\";}\]]+",
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]",
+        redacted,
+    )
+    redacted = redacted.replace("PRIVATE KEY", "[REDACTED]")
+    return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
+
+
+def redact_compose_config_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_compose_secret_text(value)
+    if isinstance(value, list):
+        return [redact_compose_config_value(item) for item in value]
+    if isinstance(value, dict):
+        secret_named_value = compose_record_has_secret_name(value)
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if is_compose_secret_mapping_key(key_text) or (
+                secret_named_value
+                and key_text.lower()
+                in {"value", "raw_value", "default", "data", "content", "environment", "labels", "command", "entrypoint", "arguments"}
+            ):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_compose_config_value(item)
+        return redacted
+    return value
+
+
+def compose_record_has_secret_name(record: dict[str, Any]) -> bool:
+    for marker in (
+        "key",
+        "name",
+        "setting",
+        "variable",
+        "field_path",
+        "env",
+        "environment",
+        "label",
+        "labels",
+        "command",
+        "entrypoint",
+        "arguments",
+    ):
+        candidate = record.get(marker)
+        if candidate is not None and is_compose_secret_mapping_key(str(candidate)):
+            return True
+    return False
+
+
+def is_compose_secret_mapping_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if "redacted" in normalized or normalized.endswith("_count"):
+        return False
+    if normalized in {"secret", "secrets"}:
+        return False
+    if normalized in {"content", "raw", "raw_content", "private_key", "env_file_content", "secret_file_content"}:
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "authorization",
+            "bearer",
+            "cookie",
+            "session",
+            "access_token",
+            "refresh_token",
+            "auth_token",
+            "client_secret",
+            "private_key",
+            "api_key",
+            "apikey",
+            "password",
+            "passwd",
+            "token",
+            "secret",
+            "credential",
+            "database_url",
+            "redis_url",
+            "registry_auth",
+            "connection_string",
+        )
+    )
+
+
+def redact_compose_secret_text(value: str) -> str:
+    redacted = redact_nginx_secret_text(value).replace("[REDACTED PRIVATE KEY]", "[REDACTED]")
+    redacted = re.sub(
+        r"(?i)\b(?:super-secret-password|raw-api-key-[a-z0-9_-]+|[a-z0-9_.-]*should_(?:never|not)_render[a-z0-9_.-]*|db_password_plaintext)\b",
+        "[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "[REDACTED]",
+        redacted,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    redacted = re.sub(
+        r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@;\"']*):([^@\s/;\"']+)@([^\s;\"']+)",
+        r"\1[REDACTED]@\4",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b([A-Z0-9_$_.-]*(?:authorization|cookie|session|client_secret|private_key|api_key|apikey|password|passwd|token|secret|credential|database_url|redis_url)[A-Z0-9_$_.-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\";}\]]+",
         lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]",
         redacted,
     )

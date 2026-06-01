@@ -22,6 +22,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts passive Kubernetes manifest configuration analysis jobs for archive uploads.
 - Starts passive Terraform/OpenTofu/Terragrunt configuration analysis jobs for archive uploads through the API.
 - Starts passive Nginx/reverse-proxy configuration analysis jobs for archive uploads through the API.
+- Starts passive Docker Compose service wiring/configuration analysis jobs for archive uploads through the API.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -48,6 +49,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not execute workflows, emulate CI runners, call provider APIs, validate tokens, download actions/images, or query advisory/CVE data for CI/CD config audits.
 - It does not execute Terraform, OpenTofu, or Terragrunt, run init/validate/plan/apply, download providers/modules, access state remotely, call cloud APIs, or query advisory/CVE data for Terraform config audits.
 - It does not execute Nginx, run `nginx -t`, start containers, resolve includes, perform DNS/network checks, validate live servers/certificates, or query advisory/CVE data for Nginx config audits.
+- It does not execute Docker or Docker Compose, run `docker compose config`, build/pull/inspect images, interpolate `.env` values, merge multiple Compose files, contact registries, or query advisory/CVE data for Compose config audits.
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
 - It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env`/`.env.*` files from archives.
@@ -137,6 +139,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_NGINX_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Nginx/reverse-proxy config candidate files read from one archive. |
 | `INSPECTRA_NGINX_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Nginx config candidate file. |
 | `INSPECTRA_NGINX_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Nginx config audit. |
+| `INSPECTRA_COMPOSE_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Docker Compose candidate files read from one archive. |
+| `INSPECTRA_COMPOSE_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Compose config candidate file. |
+| `INSPECTRA_COMPOSE_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Compose config audit. |
 | `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
 | `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
@@ -374,6 +379,18 @@ The source file must be `kind: "archive"`. This creates a `nginx_config_basic` j
 The analysis is heuristic and local. It looks for review indicators such as legacy TLS protocols, missing HTTPS/HSTS/security-header signals, `server_tokens on`, `autoindex on`, sensitive or backup locations, stub status exposure, HTTP upstream proxying, disabled proxy TLS verification, missing forwarding headers, wildcard CORS, large body limits, high proxy timeouts, disabled access logs, debug error logs, and secret-like proxy/header/variable values. Findings are indicators for manual review, not confirmed vulnerabilities or proof of exploitability.
 
 Inspectra does not execute Nginx, run `nginx -t`, start containers, resolve includes, read host absolute paths, perform DNS lookups, scan ports, validate live servers or certificates, query CVEs/advisories, extract the project broadly, follow symlinks or hardlinks, or call the internet. Inline basic auth, credential-bearing `proxy_pass` URLs, Authorization headers, cookies/session values, private key blocks, and secret-like variables are redacted best-effort in results and exports.
+
+## Launch a Docker Compose Config Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/compose-config/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `compose_config_basic` job that opens the archive with Python standard library parsers and reads only bounded text from Docker Compose candidates such as `docker-compose.yml`, `compose.yaml`, override files, and Compose files under deployment, stack, Docker, or infrastructure directories. Real `.env`, `.env.*`, and `.envrc` files are detected as sensitive files present but are not read. `env_file` and `secrets.file` references are recorded as references and their target contents are not read by resolution.
+
+The analysis is heuristic and local. It looks for review indicators such as secret-like environment values, env file references, Docker socket mounts, privileged or host-mode services, published sensitive ports, writable sensitive bind mounts, mutable image tags, build contexts, external networks, legacy links, missing healthchecks/restart policies/resource limits, and multiple/override Compose files. Findings are indicators for manual review, not confirmed vulnerabilities or proof of exploitability.
+
+Inspectra does not execute Docker or Docker Compose; run `docker compose config`, `up`, `build`, `pull`, `push`, or `logs`; inspect images; contact registries; interpolate `.env` values; merge multiple Compose files into an effective configuration; query CVEs/advisories; extract the project broadly; follow symlinks or hardlinks; or call the internet. Secret-like environment values, credential URLs, registry credentials, database/Redis URLs with passwords, private key blocks, labels, command/entrypoint fragments, errors, and exports are redacted best-effort.
 
 ## Launch a Web Baseline Audit
 
