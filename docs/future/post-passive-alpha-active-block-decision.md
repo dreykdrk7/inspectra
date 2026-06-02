@@ -235,6 +235,18 @@ Next recommended microphase:
 ACTIVE-NETWORK-BLOCK-01-DOCS-FIRST-SCOPE
 ```
 
+That scope freeze is documented in:
+
+```text
+docs/future/active-network-block-01-docs-first-scope.md
+```
+
+Decision:
+
+```text
+ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME
+```
+
 Parallel or follow-up hardening path:
 
 ```text

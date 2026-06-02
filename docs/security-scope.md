@@ -115,6 +115,24 @@ For domain baseline audits, Inspectra makes bounded DNS queries only for the aut
 
 For subdomain inventory audits, Inspectra resolves only candidates explicitly supplied by the user under the authorized root domain, plus at most a small configured number of random wildcard-DNS probes. It does not generate candidate permutations, use wordlists, query Certificate Transparency, call third-party APIs, attempt AXFR, crawl, scan ports, use Nmap, or brute-force names. Findings such as private IP responses, external CNAMEs, rejected candidates, or possible wildcard DNS are indicators for manual review.
 
+## Future Active/Network Scope
+
+Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`.
+
+Current decision: `ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME`.
+
+This means:
+
+- No Active runtime is implemented yet.
+- No active runner files exist yet.
+- No Active endpoints exist yet.
+- No Nmap runtime exists yet.
+- Any future Active work must start with explicit authorization, target validation, dry-run behavior, rate limits, timeouts, audit logging, and clear no-scope copy.
+- Active code must not be added to the passive runner monolith in `tools/runner/main.py`.
+- Passive archive/file analyzers keep their no-network guarantee.
+
+The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.
+
 ## Out of Scope
 
 The MVP does not include:

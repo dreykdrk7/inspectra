@@ -298,6 +298,12 @@ The next Active microphase remains:
 ACTIVE-NETWORK-BLOCK-01-DOCS-FIRST-SCOPE
 ```
 
+That docs-first scope is now recorded in:
+
+```text
+docs/future/active-network-block-01-docs-first-scope.md
+```
+
 This architecture decision constrains that microphase:
 
 - no Active runtime;
