@@ -210,3 +210,9 @@ No pytest or npm validation is required for this fixtures/docs-only microphase b
 Recommended next step:
 
 `PASSIVE-ALPHA-SMOKE-DEMO-FIXTURES-03-WIRE-SMOKE-CHECKLIST-DOCS`
+
+Follow-up checklist document:
+
+```text
+docs/future/passive-alpha-smoke-demo-checklist.md
+```

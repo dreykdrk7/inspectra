@@ -72,6 +72,12 @@ Expected positive signal:
 
 ## Manual Smoke Use
 
+Full checklist:
+
+```text
+docs/future/passive-alpha-smoke-demo-checklist.md
+```
+
 1. Start Inspectra locally.
 2. Upload a source archive from `archives/`.
 3. Confirm the file is registered as `kind: "archive"`.
