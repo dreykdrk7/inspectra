@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { auditTypeLabel, buildDashboardMetrics, filterFiles, filterJobs } from "./dashboardFilters";
+import { AUDIT_TYPE_CATALOG, AUDIT_TYPE_ORDER, getAuditTypeMetadata } from "./auditCatalog";
+import { auditTypeCategoryLabel, auditTypeLabel, buildDashboardMetrics, filterFiles, filterJobs, JOB_TYPE_FILTERS } from "./dashboardFilters";
 import type { FileRecord, JobListItem } from "./types";
 
 const files: FileRecord[] = [
@@ -349,6 +350,12 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "REDIS_CONFIG")).toEqual([jobs[18]]);
   });
 
+  it("searches jobs by human audit label and category", () => {
+    expect(filterJobs(jobs, "all", "all", "SQL DB config")).toEqual([jobs[19]]);
+    expect(filterJobs(jobs, "all", "all", "Data layer")).toEqual([jobs[17], jobs[18], jobs[19]]);
+    expect(filterJobs(jobs, "all", "all", "Infrastructure & deployment")).toEqual([jobs[12], jobs[13], jobs[14]]);
+  });
+
   it("builds dashboard metrics from current files and jobs", () => {
     expect(buildDashboardMetrics(files, jobs)).toEqual({
       totalFiles: 4,
@@ -363,7 +370,29 @@ describe("dashboard filters", () => {
     });
   });
 
-  it("labels SQL database config jobs for the dashboard filter", () => {
+  it("labels all visible alpha audit types with catalog metadata", () => {
+    expect(JOB_TYPE_FILTERS).toEqual(["all", ...AUDIT_TYPE_ORDER]);
+    for (const auditType of AUDIT_TYPE_ORDER) {
+      const metadata = AUDIT_TYPE_CATALOG[auditType];
+      expect(metadata.label).not.toEqual(auditType);
+      expect(metadata.categoryLabel).not.toBe("Unknown");
+      expect(metadata.sourceFamily).not.toBe("unknown");
+    }
+  });
+
+  it("labels Redis and SQL database config jobs for the dashboard filter", () => {
+    expect(auditTypeLabel("redis_config_basic")).toBe("Redis config");
     expect(auditTypeLabel("sql_database_config_basic")).toBe("SQL DB config");
+    expect(auditTypeCategoryLabel("redis_config_basic")).toBe("Data layer");
+    expect(auditTypeCategoryLabel("sql_database_config_basic")).toBe("Data layer");
+  });
+
+  it("keeps a stable fallback for unknown audit types", () => {
+    expect(auditTypeLabel("custom_future_basic")).toBe("custom_future_basic");
+    expect(getAuditTypeMetadata("custom_future_basic")).toMatchObject({
+      auditType: "custom_future_basic",
+      categoryLabel: "Unknown",
+      sourceFamily: "unknown"
+    });
   });
 });

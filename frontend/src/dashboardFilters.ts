@@ -1,8 +1,10 @@
 import type { AuditType, FileRecord, JobListItem, JobStatus } from "./types";
+import { AUDIT_TYPE_ORDER, getAuditTypeMetadata } from "./auditCatalog";
 
 export type FileKindFilter = "all" | FileRecord["kind"];
 export type JobStatusFilter = "all" | JobStatus;
 export type JobTypeFilter = "all" | AuditType;
+export const JOB_TYPE_FILTERS: JobTypeFilter[] = ["all", ...AUDIT_TYPE_ORDER];
 
 export function buildDashboardMetrics(files: FileRecord[], jobs: JobListItem[]) {
   return {
@@ -39,6 +41,7 @@ export function filterJobs(
 ): JobListItem[] {
   const query = search.trim().toLowerCase();
   return jobs.filter((job) => {
+    const auditMetadata = getAuditTypeMetadata(job.audit_type);
     const matchesStatus = statusFilter === "all" || job.status === statusFilter;
     const matchesType = typeFilter === "all" || job.audit_type === typeFilter;
     const matchesSearch =
@@ -48,6 +51,8 @@ export function filterJobs(
       (job.target_url ?? "").toLowerCase().includes(query) ||
       (job.target_domain ?? "").toLowerCase().includes(query) ||
       job.audit_type.toLowerCase().includes(query) ||
+      auditMetadata.label.toLowerCase().includes(query) ||
+      auditMetadata.categoryLabel.toLowerCase().includes(query) ||
       job.status.toLowerCase().includes(query);
     return matchesStatus && matchesType && matchesSearch;
   });
@@ -73,54 +78,13 @@ export function statusLabel(status: JobStatusFilter): string {
   return status === "all" ? "All" : status;
 }
 
-export function auditTypeLabel(auditType: JobTypeFilter): string {
+export function auditTypeLabel(auditType: JobTypeFilter | string): string {
   if (auditType === "all") {
     return "All";
   }
-  if (auditType === "web_basic") {
-    return "web_basic";
-  }
-  if (auditType === "domain_basic") {
-    return "domain_basic";
-  }
-  if (auditType === "subdomain_inventory_basic") {
-    return "subdomain_inventory_basic";
-  }
-  if (auditType === "django_config_basic") {
-    return "django_config_basic";
-  }
-  if (auditType === "docker_config_basic") {
-    return "docker_config_basic";
-  }
-  if (auditType === "secrets_review_basic") {
-    return "secrets_review_basic";
-  }
-  if (auditType === "node_package_config_basic") {
-    return "node_package_config_basic";
-  }
-  if (auditType === "ci_cd_config_basic") {
-    return "ci_cd_config_basic";
-  }
-  if (auditType === "k8s_config_basic") {
-    return "k8s_config_basic";
-  }
-  if (auditType === "terraform_config_basic") {
-    return "terraform_config_basic";
-  }
-  if (auditType === "nginx_config_basic") {
-    return "nginx_config_basic";
-  }
-  if (auditType === "compose_config_basic") {
-    return "compose_config_basic";
-  }
-  if (auditType === "database_config_basic") {
-    return "database_config_basic";
-  }
-  if (auditType === "redis_config_basic") {
-    return "redis_config_basic";
-  }
-  if (auditType === "sql_database_config_basic") {
-    return "SQL DB config";
-  }
-  return auditType;
+  return getAuditTypeMetadata(auditType).label;
+}
+
+export function auditTypeCategoryLabel(auditType: AuditType | string): string {
+  return getAuditTypeMetadata(auditType).categoryLabel;
 }

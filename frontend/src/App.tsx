@@ -3,11 +3,13 @@ import { Activity, Download, Eye, FilePlus2, Globe2, Network, Play, RefreshCw, T
 
 import { api } from "./api";
 import {
+  auditTypeCategoryLabel,
   auditTypeLabel,
   buildDashboardMetrics,
   fileKindLabel,
   filterFiles,
   filterJobs,
+  JOB_TYPE_FILTERS,
   statusLabel,
   type FileKindFilter,
   type JobStatusFilter,
@@ -42,6 +44,18 @@ type LoadState = {
 };
 
 const initialLoadState: LoadState = { loading: false, error: null };
+const ARCHIVE_ACTION_SCOPE_COPY =
+  "Archive reviews are passive and bounded. Inspectra reads candidate files from the uploaded archive and reports review indicators; it does not execute the project or contact live services for these config checks.";
+
+type ArchiveAction = {
+  label: string;
+  onClick: () => void;
+};
+
+type ArchiveActionGroup = {
+  label: string;
+  actions: ArchiveAction[];
+};
 
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -403,6 +417,56 @@ export function App() {
     }
   }
 
+  function buildArchiveActionGroups(file: FileRecord): ArchiveActionGroup[] {
+    return [
+      {
+        label: "Start here",
+        actions: [
+          { label: "Analyze archive", onClick: () => void launchAudit(file) },
+          { label: "Analyze project manifests", onClick: () => void launchProjectArchiveAudit(file) }
+        ]
+      },
+      {
+        label: "Secrets",
+        actions: [{ label: "Analyze secrets review", onClick: () => void launchSecretsReviewAudit(file) }]
+      },
+      {
+        label: "Application",
+        actions: [
+          { label: "Analyze Django config", onClick: () => void launchDjangoConfigAudit(file) },
+          { label: "Analyze Node package config", onClick: () => void launchNodePackageConfigAudit(file) }
+        ]
+      },
+      {
+        label: "Container & service wiring",
+        actions: [
+          { label: "Analyze Docker config", onClick: () => void launchDockerConfigAudit(file) },
+          { label: "Analyze Compose config", onClick: () => void launchComposeConfigAudit(file) }
+        ]
+      },
+      {
+        label: "Deployment & IaC",
+        actions: [
+          { label: "Analyze CI/CD config", onClick: () => void launchCiCdConfigAudit(file) },
+          { label: "Analyze Kubernetes config", onClick: () => void launchK8sConfigAudit(file) },
+          { label: "Analyze Terraform config", onClick: () => void launchTerraformConfigAudit(file) }
+        ]
+      },
+      {
+        label: "Web edge",
+        actions: [{ label: "Analyze Nginx config", onClick: () => void launchNginxConfigAudit(file) }]
+      },
+      {
+        label: "Data layer",
+        actions: [
+          { label: "Analyze database config", onClick: () => void launchDatabaseConfigAudit(file) },
+          { label: "Analyze Redis config", onClick: () => void launchRedisConfigAudit(file) },
+          { label: "Analyze SQL DB config", onClick: () => void launchSqlDatabaseConfigAudit(file) }
+        ]
+      }
+    ];
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -627,88 +691,14 @@ export function App() {
                       <td>{formatDate(file.created_at)}</td>
                       <td>
                         <div className="row-actions">
-                          <button onClick={() => void launchAudit(file)}>
-                            <Play size={15} aria-hidden="true" />
-                            {auditLabel(file.kind)}
-                          </button>
                           {file.kind === "archive" ? (
-                            <button onClick={() => void launchProjectArchiveAudit(file)}>
+                            <ArchiveActionGroups groups={buildArchiveActionGroups(file)} />
+                          ) : (
+                            <button onClick={() => void launchAudit(file)}>
                               <Play size={15} aria-hidden="true" />
-                              Analyze project manifests
+                              {auditLabel(file.kind)}
                             </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchDjangoConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze Django config
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchDockerConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze Docker config
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchSecretsReviewAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze secrets review
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchNodePackageConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze Node package config
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchCiCdConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze CI/CD config
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchK8sConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze Kubernetes config
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchTerraformConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze Terraform config
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchNginxConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze Nginx config
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchComposeConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze Compose config
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchDatabaseConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze database config
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchRedisConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze Redis config
-                            </button>
-                          ) : null}
-                          {file.kind === "archive" ? (
-                            <button onClick={() => void launchSqlDatabaseConfigAudit(file)}>
-                              <Play size={15} aria-hidden="true" />
-                              Analyze SQL DB config
-                            </button>
-                          ) : null}
+                          )}
                           <button className="danger-button" onClick={() => void deleteFile(file.id)}>
                             <Trash2 size={15} aria-hidden="true" />
                             Delete
@@ -750,7 +740,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic", "ci_cd_config_basic", "k8s_config_basic", "terraform_config_basic", "nginx_config_basic", "compose_config_basic", "database_config_basic", "redis_config_basic", "sql_database_config_basic"] as JobTypeFilter[]).map((auditType) => (
+              {JOB_TYPE_FILTERS.map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -786,7 +776,10 @@ export function App() {
                       <td>
                         <span className={`status-pill ${job.status}`}>{job.status}</span>
                       </td>
-                      <td>{job.audit_type}</td>
+                      <td>
+                        {auditTypeLabel(job.audit_type)}
+                        <span className="subtle-id">{auditTypeCategoryLabel(job.audit_type)}</span>
+                      </td>
                       <td className="mono">{job.file_id ? shortId(job.file_id) : job.target_url ?? job.target_domain ?? "N/A"}</td>
                       <td>{formatDate(job.updated_at)}</td>
                       <td>{summarizeJob(job)}</td>
@@ -855,6 +848,27 @@ export function App() {
         )}
       </Panel>
     </main>
+  );
+}
+
+function ArchiveActionGroups({ groups }: { groups: ArchiveActionGroup[] }) {
+  return (
+    <div aria-label="Archive passive review actions">
+      <p className="muted">{ARCHIVE_ACTION_SCOPE_COPY}</p>
+      {groups.map((group) => (
+        <div key={group.label} role="group" aria-label={group.label}>
+          <span className="subtle-id">{group.label}</span>
+          <div className="row-actions">
+            {group.actions.map((action) => (
+              <button key={action.label} onClick={action.onClick}>
+                <Play size={15} aria-hidden="true" />
+                {action.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 

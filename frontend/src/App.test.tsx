@@ -456,7 +456,8 @@ describe("App", () => {
     expect(await screen.findByText("inspectra-backend")).toBeInTheDocument();
     expect(screen.getByText("sample.pdf")).toBeInTheDocument();
     expect(screen.getByText("django.zip")).toBeInTheDocument();
-    expect(screen.getAllByText("pdf_basic").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("PDF basic").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("File basics").length).toBeGreaterThan(0);
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledTimes(3);
@@ -603,6 +604,33 @@ describe("App", () => {
     expect(button).toBeDisabled();
     fireEvent.click(button);
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("groups archive passive actions by category without adding a run-all action", async () => {
+    render(<App />);
+
+    await screen.findAllByText("django.zip");
+    const rows = Array.from(document.querySelectorAll("tr"));
+    const archiveRow = rows.find((row) => row.textContent?.includes("django.zip"));
+    const pdfRow = rows.find((row) => row.textContent?.includes("sample.pdf"));
+    expect(archiveRow).toBeDefined();
+    expect(archiveRow?.textContent).toContain("Archive reviews are passive and bounded");
+    expect(archiveRow?.textContent).toContain("Start here");
+    expect(archiveRow?.textContent).toContain("Secrets");
+    expect(archiveRow?.textContent).toContain("Application");
+    expect(archiveRow?.textContent).toContain("Container & service wiring");
+    expect(archiveRow?.textContent).toContain("Deployment & IaC");
+    expect(archiveRow?.textContent).toContain("Web edge");
+    expect(archiveRow?.textContent).toContain("Data layer");
+    expect(archiveRow?.textContent).not.toContain("Run all recommended passive checks");
+    expect(pdfRow?.textContent).not.toContain("Start here");
+    expect(pdfRow?.textContent).not.toContain("Data layer");
+
+    const forbiddenCopy = ["compromised", "breached", "exploitable", "confirmed vulnerability", "credentials valid"];
+    const archiveText = archiveRow?.textContent?.toLowerCase() ?? "";
+    for (const phrase of forbiddenCopy) {
+      expect(archiveText).not.toContain(phrase);
+    }
   });
 
   it("starts a Django config audit from an archive action", async () => {
