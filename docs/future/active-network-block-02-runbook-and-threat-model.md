@@ -404,3 +404,15 @@ Decision:
 ```text
 ACTIVE_DRY_RUN_CONTRACTS_DESIGNED_NO_RUNTIME
 ```
+
+The follow-up no-network skeleton is documented in:
+
+```text
+docs/future/active-network-block-04-dry-run-skeleton-no-network.md
+```
+
+Decision:
+
+```text
+ACTIVE_DRY_RUN_SKELETON_IMPLEMENTED_NO_NETWORK
+```

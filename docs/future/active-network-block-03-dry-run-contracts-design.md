@@ -596,3 +596,15 @@ Next recommended microphase:
 ```text
 ACTIVE-NETWORK-BLOCK-04-DRY-RUN-SKELETON-NO-NETWORK
 ```
+
+That no-network skeleton is documented in:
+
+```text
+docs/future/active-network-block-04-dry-run-skeleton-no-network.md
+```
+
+Decision:
+
+```text
+ACTIVE_DRY_RUN_SKELETON_IMPLEMENTED_NO_NETWORK
+```

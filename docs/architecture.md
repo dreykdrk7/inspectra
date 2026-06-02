@@ -31,7 +31,7 @@ The Active scope, runbook/threat model, and dry-run contracts are documented in:
 - `docs/future/active-network-block-02-runbook-and-threat-model.md`
 - `docs/future/active-network-block-03-dry-run-contracts-design.md`
 
-The dry-run contract requires future Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. Future Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
+The dry-run contract requires future Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. A first separated no-network skeleton now exists under `tools/active_runner/`; it is not integrated with backend jobs or frontend UI. Future Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
 
 ## Components
 
