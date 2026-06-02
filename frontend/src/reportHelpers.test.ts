@@ -1592,12 +1592,12 @@ describe("report helpers", () => {
       result: {
         analyzer: "database_config_basic",
         summary: { redacted_values_count: 0 },
-        engines: [{ engine: "postgresql", content: "raw-db-password-123456" }],
+        engines: [{ engine: "postgresql", content: "raw-db-password-123456 pgpass_secret_should_not_render" }],
         postgres_settings: [{ setting: "password_encryption", value: "super-secret-password" }],
         pg_hba_rules: [{ content: "postgres://user:pass@example.com/db", auth_method: "trust" }],
         mysql_settings: [{ setting: "MYSQL_PWD", value: "super-secret-password" }],
         includes: [{ target: "/etc/postgresql/secret.conf", content: "replication_password_should_not_render" }],
-        dump_or_backup_files: [{ path: "backup.sql", read: false, content: "db_password_plaintext" }],
+        dump_or_backup_files: [{ path: "backup.sql", read: false, content: "db_password_plaintext dump_row_secret_should_not_render" }],
         findings: [
           {
             id: "legacy_database_secret",
@@ -1607,7 +1607,15 @@ describe("report helpers", () => {
             recommendation: "raw-db-password-123456 replication_password_should_not_render"
           }
         ],
-        errors: ["PGPASSWORD=super-secret-password", "mysql://user:pass@example.com/db", "-----BEGIN PRIVATE KEY-----", "db_password_plaintext"]
+        errors: [
+          "PGPASSWORD=super-secret-password",
+          "mysql://user:pass@example.com/db",
+          "-----BEGIN PRIVATE KEY-----",
+          "db_password_plaintext",
+          "dump_row_secret_should_not_render",
+          "pgpass_secret_should_not_render",
+          "mycnf_secret_should_not_render"
+        ]
       }
     });
     const serializedReport = JSON.stringify(report);
@@ -1627,6 +1635,9 @@ describe("report helpers", () => {
       "PGPASSWORD=super-secret-password",
       "MYSQL_PWD=super-secret-password",
       "db_password_plaintext",
+      "dump_row_secret_should_not_render",
+      "pgpass_secret_should_not_render",
+      "mycnf_secret_should_not_render",
       "PRIVATE KEY"
     ]) {
       expect(serializedReport).not.toContain(secret);

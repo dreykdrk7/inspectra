@@ -2990,10 +2990,10 @@ dsn = mysql://user:pass@example.com/db
             "deploy/db/postgres/pg_hba.conf": pg_hba,
             "deploy/db/mysql/my.cnf": mysql_conf,
             ".env.production": b"PGPASSWORD=super-secret-password\n",
-            ".pgpass": b"localhost:5432:*:postgres:super-secret-password\n",
-            ".my.cnf": b"[client]\npassword=raw-db-password-123456\n",
+            ".pgpass": b"localhost:5432:*:postgres:super-secret-password pgpass_secret_should_not_render\n",
+            ".my.cnf": b"[client]\npassword=raw-db-password-123456 mycnf_secret_should_not_render\n",
             ".mylogin.cnf": b"MYSQL_PWD=super-secret-password\n",
-            "db/prod.sql": b"INSERT INTO users VALUES ('db_password_plaintext');\n",
+            "db/prod.sql": b"INSERT INTO users VALUES ('db_password_plaintext', 'dump_row_secret_should_not_render');\n",
             "db/backup.dump": b"replication_password_should_not_render\n",
             "db/snapshot.backup": b"MYSQL_PWD=super-secret-password\n",
             "db/legacy.bak": b"postgres://user:pass@example.com/db\n",
@@ -3077,6 +3077,9 @@ dsn = mysql://user:pass@example.com/db
         "MYSQL_PWD=super-secret-password",
         "PRIVATE KEY",
         "db_password_plaintext",
+        "dump_row_secret_should_not_render",
+        "pgpass_secret_should_not_render",
+        "mycnf_secret_should_not_render",
     ):
         assert secret not in serialized
 
