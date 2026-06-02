@@ -1599,6 +1599,114 @@ async def test_redis_config_service_calls_runner_endpoint_and_redacts(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_redis_config_api_background_job_stores_and_exposes_redacted_result(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "redis_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 5,
+                        "files_reviewed": 2,
+                        "redis_files_detected": 1,
+                        "sentinel_files_detected": 1,
+                        "acl_files_detected": 1,
+                        "dump_or_aof_files_detected": 1,
+                        "configs_detected": 2,
+                        "findings_count": 1,
+                        "redacted_values_count": 1,
+                        "truncated": False,
+                    },
+                    "configs": [{"path": "deploy/redis/redis.conf", "content": "requirepass super-secret-password"}],
+                    "redis_settings": [{"setting": "requirepass", "value": "super-secret-password"}],
+                    "sentinel_settings": [{"setting": "sentinel auth-pass", "value": "token_should_never_render"}],
+                    "includes": [{"target": "/etc/redis/secrets.conf", "resolved": False, "content": "raw-api-key-123456"}],
+                    "acl_files": [{"path": "deploy/redis/users.acl", "read": False, "content": "acl_password_hash_should_not_render"}],
+                    "dump_or_aof_files": [{"path": "deploy/redis/dump.rdb", "read": False, "content": "dump_value_should_not_render"}],
+                    "findings": [
+                        {
+                            "id": "redis_requirepass_present_redacted",
+                            "title": "Redis requirepass is present",
+                            "level": "medium",
+                            "confidence": "high",
+                            "category": "secrets",
+                            "evidence": "requirepass super-secret-password redis://:super-secret-password@redis:6379/0",
+                            "recommendation": "Authorization: Bearer token_should_never_render",
+                        }
+                    ],
+                    "errors": [
+                        "requirepass super-secret-password",
+                        "redis://:super-secret-password@redis:6379/0",
+                        "-----BEGIN PRIVATE KEY----- PRIVATE KEY -----END PRIVATE KEY-----",
+                    ],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("redis.zip", make_zip_bytes({"deploy/redis/redis.conf": b"requirepass x\n"}), "application/zip")},
+        )
+        archive = archive_response.json()
+        launch_response = await client.post(f"/audits/redis-config/{archive['id']}")
+        job_id = launch_response.json()["id"]
+        job_response = await client.get(f"/jobs/{job_id}")
+        jobs_response = await client.get("/jobs")
+
+    stored = app.state.jobs.get(job_id)
+    stored_serialized = json.dumps(stored.result, sort_keys=True)
+    public_serialized = json.dumps(job_response.json(), sort_keys=True)
+    forbidden = (
+        "super-secret-password",
+        "raw-api-key-123456",
+        "token_should_never_render",
+        "redis://:super-secret-password@redis:6379/0",
+        "acl_password_hash_should_not_render",
+        "dump_value_should_not_render",
+        "PRIVATE KEY",
+    )
+    assert launch_response.status_code == 202
+    assert stored.status == "completed"
+    assert stored.result["analyzer"] == "redis_config_basic"
+    assert job_response.status_code == 200
+    assert job_response.json()["status"] == "completed"
+    assert job_response.json()["result"]["analyzer"] == "redis_config_basic"
+    assert "[REDACTED]" in stored_serialized
+    assert "[REDACTED]" in public_serialized
+    assert "Redis requirepass is present" in public_serialized
+    for secret in forbidden:
+        assert secret not in stored_serialized
+        assert secret not in public_serialized
+    summary = next(item for item in jobs_response.json() if item["id"] == job_id)["summary"]
+    assert summary["analyzer"] == "redis_config_basic"
+    assert summary["files_reviewed"] == 2
+    assert summary["configs_detected"] == 2
+    assert summary["errors_count"] == 3
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/redis-config"
+    assert calls[0]["json"]["file_id"] == archive["id"]
+    assert calls[0]["json"]["max_files"] == app.state.settings.redis_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.redis_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.redis_config_max_total_bytes
+
+
+@pytest.mark.anyio
 async def test_redis_config_service_records_runner_failure(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)

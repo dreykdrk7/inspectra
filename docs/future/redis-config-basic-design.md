@@ -1,6 +1,6 @@
 # redis_config_basic Design
 
-Status: docs-first design reference. The passive runner phase was implemented in commit `47dabb9`, backend/job/reporting integration is tracked in `docs/future/redis-config-basic-backend-endpoint-job-storage-reporting.md`, and frontend report UX is tracked in `docs/future/redis-config-basic-frontend-action-report-ux.md`. End-to-end review and closeout remain future microphases.
+Status: docs-first design reference. The passive runner phase was implemented in commit `47dabb9`, backend/job/reporting integration is tracked in `docs/future/redis-config-basic-backend-endpoint-job-storage-reporting.md`, frontend report UX is tracked in `docs/future/redis-config-basic-frontend-action-report-ux.md`, and end-to-end contract/redaction review is tracked in `docs/future/redis-config-basic-end-to-end-contract-redaction-review.md`. Formal docs/smoke closeout remains a future microphase.
 
 ## 1. Module Objective
 
