@@ -3218,6 +3218,285 @@ async def test_analyze_database_config_respects_file_and_byte_limits(monkeypatch
 
 
 @pytest.mark.anyio
+async def test_analyze_sql_database_config_reports_findings_and_redacts_secrets(monkeypatch, tmp_path):
+    postgres_conf = b'''
+# listen_addresses = '*'
+listen_addresses = '*'
+port = 5432
+ssl = off
+ssl_key_file = '/etc/postgresql/server.key'
+password_encryption = md5
+primary_conninfo = 'postgres://user:pass@example.com/db'
+db_password = 'super-secret-password'
+include = '/etc/postgresql/secret.conf'
+private_key = '-----BEGIN PRIVATE KEY----- raw-db-password-123456 -----END PRIVATE KEY-----'
+'''
+    pg_hba = b'''
+# host all all 0.0.0.0/0 trust
+host all all 0.0.0.0/0 trust
+host all all ::/0 md5
+'''
+    mysql_conf = b'''
+[mysqld]
+bind-address = 0.0.0.0
+port = 3306
+require_secure_transport = OFF
+skip-grant-tables
+local_infile = 1
+secure_file_priv =
+password = raw-db-password-123456
+dsn = mysql://user:pass@example.com/db
+!includedir /etc/mysql/conf.d
+'''
+    mariadb_conf = b'''
+[mariadb]
+bind-address = 127.0.0.1
+'''
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "deploy/db/postgres/postgresql.conf": postgres_conf,
+            "deploy/db/postgres/pg_hba.conf": pg_hba,
+            "deploy/db/mysql/my.cnf": mysql_conf,
+            "deploy/db/mariadb/mariadb.cnf": mariadb_conf,
+            ".env.production": b"PGPASSWORD=super-secret-password\n",
+            ".pgpass": b"localhost:5432:*:postgres:super-secret-password pgpass_secret_should_not_render\n",
+            ".my.cnf": b"[client]\npassword=raw-db-password-123456 mycnf_secret_should_not_render\n",
+            "db/prod.sql": b"INSERT INTO users VALUES ('db_password_plaintext', 'dump_row_secret_should_not_render');\n",
+            "db/backup.dump": b"replication_password_should_not_render\n",
+            "db/postgres/pg_wal/000000010000000000000001": b"dump_row_secret_should_not_render\n",
+            "db/postgres/base/123/456": b"db_password_plaintext\n",
+            "db/mysql/ibdata1": b"MYSQL_PWD=super-secret-password\n",
+            "db/mysql/mysql-bin.000001": b"raw-db-password-123456\n",
+            "db/certs/server.key": b"-----BEGIN PRIVATE KEY----- db_password_plaintext -----END PRIVATE KEY-----\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/sql-database-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    assert response.status_code == 200
+    assert payload["analyzer"] == "sql_database_config_basic"
+    assert payload["summary"]["files_reviewed"] == 4
+    assert payload["summary"]["postgres_configs_detected"] == 1
+    assert payload["summary"]["postgres_hba_files_detected"] == 1
+    assert payload["summary"]["mysql_configs_detected"] == 1
+    assert payload["summary"]["mariadb_configs_detected"] == 1
+    assert payload["summary"]["dump_or_backup_files_detected"] == 2
+    assert payload["summary"]["data_files_detected"] == 4
+    assert "sensitive_file_not_read" in reasons
+    assert "dump_or_backup_not_read" in reasons
+    assert "data_file_not_read" in reasons
+    for finding_id in (
+        "postgres_config_detected",
+        "postgres_hba_detected",
+        "mysql_config_detected",
+        "mariadb_config_detected",
+        "postgres_listen_all_interfaces",
+        "postgres_hba_trust_auth_hint",
+        "postgres_hba_md5_auth_hint",
+        "postgres_hba_all_databases_all_users_hint",
+        "postgres_hba_public_cidr_hint",
+        "postgres_ssl_disabled_or_missing",
+        "postgres_password_encryption_weak_hint",
+        "postgres_ssl_key_path_present",
+        "sql_database_include_absolute_path",
+        "sql_database_include_detected_not_resolved",
+        "postgres_include_absolute_path",
+        "postgres_include_detected_not_resolved",
+        "mysql_include_dir_detected_not_resolved",
+        "mysql_bind_all_interfaces",
+        "mysql_bind_public_address_hint",
+        "mysql_require_secure_transport_disabled_hint",
+        "mysql_skip_grant_tables_enabled",
+        "mysql_local_infile_enabled_hint",
+        "mysql_insecure_file_priv_empty_or_broad_hint",
+        "sql_database_env_file_sensitive_present",
+        "sql_database_client_credentials_file_present",
+        "sql_database_dump_or_backup_present_no_read",
+        "sql_database_data_files_present_no_read",
+        "sql_database_password_like_value",
+        "sql_database_credential_url_hint",
+        "sql_database_private_key_hint",
+    ):
+        assert finding_id in finding_ids
+    assert any(item["read"] is False and item["path"] == ".env.production" for item in payload["sensitive_files"])
+    assert any(item["read"] is False and item["path"] == "db/prod.sql" for item in payload["dump_or_backup_files"])
+    assert any(item["read"] is False and item["path"] == "db/postgres/pg_wal/000000010000000000000001" for item in payload["data_files"])
+    assert any(item["resolved"] is False and item["target"] == "/etc/postgresql/secret.conf" for item in payload["includes"])
+    assert payload["postgres_configs"]
+    assert payload["postgres_hba_rules"]
+    assert payload["mysql_configs"]
+    assert payload["database_settings"]
+    assert "[REDACTED]" in serialized
+    for secret in (
+        "super-secret-password",
+        "raw-db-password-123456",
+        "postgres://user:pass@example.com/db",
+        "mysql://user:pass@example.com/db",
+        "replication_password_should_not_render",
+        "PGPASSWORD=super-secret-password",
+        "MYSQL_PWD=super-secret-password",
+        "PRIVATE KEY",
+        "db_password_plaintext",
+        "dump_row_secret_should_not_render",
+        "pgpass_secret_should_not_render",
+        "mycnf_secret_should_not_render",
+    ):
+        assert secret not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_sql_database_config_comments_and_context(monkeypatch, tmp_path):
+    postgres_conf = b'''
+# listen_addresses = '*'
+# ssl = off
+password = ${PGPASSWORD}
+'''
+    mysql_conf = b'''
+[mysqld]
+# skip-grant-tables
+password = ${MYSQL_PWD}
+'''
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "examples/postgres/postgresql.conf": postgres_conf,
+            "examples/mysql/my.cnf": mysql_conf,
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/sql-database-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    secret_finding = next(finding for finding in payload["findings"] if finding["id"] == "sql_database_password_like_value")
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "postgres_listen_all_interfaces" not in finding_ids
+    assert "postgres_ssl_disabled_or_missing" not in finding_ids
+    assert "mysql_skip_grant_tables_enabled" not in finding_ids
+    assert secret_finding["context"] == "example"
+    assert secret_finding["level"] == "low"
+    assert "PGPASSWORD" not in serialized
+    assert "MYSQL_PWD" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_sql_database_config_skips_unsafe_archive_entries(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        traversal_content = b"password = super-secret-password\n"
+        traversal_info = tarfile.TarInfo("../postgresql.conf")
+        traversal_info.size = len(traversal_content)
+        archive.addfile(traversal_info, io.BytesIO(traversal_content))
+
+        link_info = tarfile.TarInfo("postgresql.conf")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real-postgresql.conf"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo("db/mysql/my.cnf")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real-my.cnf"
+        archive.addfile(hardlink_info)
+
+        env_content = b"PGPASSWORD=super-secret-password\n"
+        env_info = tarfile.TarInfo(".env")
+        env_info.size = len(env_content)
+        archive.addfile(env_info, io.BytesIO(env_content))
+
+        dump_content = b"INSERT INTO secrets VALUES ('db_password_plaintext');\n"
+        dump_info = tarfile.TarInfo("db/dump.sql")
+        dump_info.size = len(dump_content)
+        archive.addfile(dump_info, io.BytesIO(dump_content))
+
+        data_content = b"dump_row_secret_should_not_render\n"
+        data_info = tarfile.TarInfo("db/postgres/pg_wal/000000010000000000000001")
+        data_info.size = len(data_content)
+        archive.addfile(data_info, io.BytesIO(data_content))
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/sql-database-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "path_traversal" in reasons
+    assert "not_regular_file:symlink" in reasons
+    assert "not_regular_file:hardlink" in reasons
+    assert "sensitive_file_not_read" in reasons
+    assert "dump_or_backup_not_read" in reasons
+    assert "data_file_not_read" in reasons
+    assert "sql_database_config_path_traversal" in finding_ids
+    assert "sql_database_config_not_regular_file" in finding_ids
+    assert "sql_database_env_file_sensitive_present" in finding_ids
+    assert "sql_database_dump_or_backup_present_no_read" in finding_ids
+    assert "sql_database_data_files_present_no_read" in finding_ids
+    assert "super-secret-password" not in serialized
+    assert "db_password_plaintext" not in serialized
+    assert "dump_row_secret_should_not_render" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_sql_database_config_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "SQL_DATABASE_CONFIG_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "SQL_DATABASE_CONFIG_MAX_FILE_BYTES", 120)
+    monkeypatch.setattr(runner, "SQL_DATABASE_CONFIG_MAX_TOTAL_BYTES", 180)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "postgresql.conf": b"listen_addresses = 'localhost'\n",
+            "db/mysql/my.cnf": b"[mysqld]\npassword = " + b"x" * 150 + b"\n",
+            "db/postgres/extra.conf": b"ssl = off\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/sql-database-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "file_too_large" in reasons
+    assert "too_many_files" in reasons
+    assert "xxxxxxxxxxxxxxxxxxxxxxxx" not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_redis_config_reports_findings_and_redacts_secrets(monkeypatch, tmp_path):
     redis_conf = b'''
 # bind 0.0.0.0

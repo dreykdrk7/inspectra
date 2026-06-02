@@ -207,6 +207,9 @@ COMPOSE_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_COMPOSE_CONFIG
 DATABASE_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_DATABASE_CONFIG_MAX_FILES", 100)
 DATABASE_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_DATABASE_CONFIG_MAX_FILE_BYTES", 524_288)
 DATABASE_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_DATABASE_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
+SQL_DATABASE_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_SQL_DATABASE_CONFIG_MAX_FILES", 100)
+SQL_DATABASE_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_SQL_DATABASE_CONFIG_MAX_FILE_BYTES", 524_288)
+SQL_DATABASE_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_SQL_DATABASE_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
 REDIS_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_REDIS_CONFIG_MAX_FILES", 100)
 REDIS_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_REDIS_CONFIG_MAX_FILE_BYTES", 524_288)
 REDIS_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_REDIS_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
@@ -818,6 +821,38 @@ async def analyze_database_config(request: ArchiveAnalysisRequest) -> dict[str, 
         analysis = empty_database_config_analysis(errors=[f"Archive could not be parsed safely: {safe_error}"])
 
     return build_database_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
+
+
+@app.post("/analyze/sql-database-config")
+async def analyze_sql_database_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = sql_database_config_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_sql_database_config_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_sql_database_config_analysis(
+                errors=[
+                    "Unsupported or corrupt archive. Inspectra did not start SQL databases, connect to servers, run DB clients, parse dumps, or read env/data/credential files."
+                ]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_sql_database_config_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        safe_error, _redactions = redact_database_secret_text(str(exc))
+        analysis = empty_sql_database_config_analysis(errors=[f"Archive could not be parsed safely: {safe_error}"])
+
+    return build_sql_database_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/redis-config")
@@ -14748,6 +14783,672 @@ def add_database_config_finding(
     if port:
         finding["port"] = port
     analysis["findings"].append(finding)
+
+
+SQL_DATABASE_FINDING_ID_ALIASES: dict[str, tuple[str, ...]] = {
+    "database_env_file_sensitive_present": ("sql_database_env_file_sensitive_present",),
+    "database_client_credentials_file_present": ("sql_database_client_credentials_file_present",),
+    "database_dump_or_backup_file_present": ("sql_database_dump_or_backup_present_no_read",),
+    "database_password_like_value": ("sql_database_password_like_value",),
+    "database_credential_url_hint": ("sql_database_credential_url_hint",),
+    "database_private_key_hint": ("sql_database_private_key_hint",),
+    "database_include_absolute_path": ("sql_database_include_absolute_path",),
+    "database_include_not_resolved": ("sql_database_include_detected_not_resolved",),
+    "postgres_listen_addresses_all": ("postgres_listen_all_interfaces",),
+    "postgres_listen_addresses_public_hint": ("postgres_listen_public_address_hint",),
+    "postgres_ssl_disabled": ("postgres_ssl_disabled_or_missing",),
+    "postgres_password_encryption_weak_or_missing": ("postgres_password_encryption_weak_hint",),
+    "postgres_pg_hba_trust_auth": ("postgres_hba_trust_auth_hint",),
+    "postgres_pg_hba_md5_auth_hint": ("postgres_hba_md5_auth_hint",),
+    "postgres_pg_hba_password_auth_hint": ("postgres_hba_password_auth_hint",),
+    "postgres_pg_hba_all_all_open_world": ("postgres_hba_all_databases_all_users_hint", "postgres_hba_public_cidr_hint"),
+    "postgres_pg_hba_replication_open_world": ("postgres_hba_public_cidr_hint",),
+    "mysql_bind_address_all": ("mysql_bind_all_interfaces", "mysql_bind_public_address_hint"),
+    "mysql_require_secure_transport_off": ("mysql_require_secure_transport_disabled_hint",),
+    "mysql_local_infile_enabled": ("mysql_local_infile_enabled_hint",),
+    "mysql_symbolic_links_enabled": ("mysql_symbolic_links_enabled_hint",),
+    "mysql_secure_file_priv_empty_or_missing_hint": ("mysql_insecure_file_priv_empty_or_broad_hint",),
+}
+
+
+def sql_database_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = SQL_DATABASE_CONFIG_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = SQL_DATABASE_CONFIG_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = SQL_DATABASE_CONFIG_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SQL database config analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_sql_database_config_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_sql_database_config_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            analysis["summary"]["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"sql_database_config_{scoped['id']}"
+            scoped["code"] = scoped["id"]
+            analysis["findings"].append(scoped)
+            finalize_sql_database_config_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_sql_database_config_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_sql_database_config_entry(analysis, state, entry, lambda entry_info=info: archive.open(entry_info))
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_sql_database_config_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_sql_database_config_entry(analysis, state, entry, lambda tar_member=member: archive.extractfile(tar_member))
+
+    finalize_sql_database_config_analysis(analysis)
+    return analysis
+
+
+def empty_sql_database_config_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    analysis = empty_database_config_analysis(errors=errors)
+    analysis["summary"].update(
+        {
+            "postgres_configs_detected": 0,
+            "mysql_configs_detected": 0,
+            "mariadb_configs_detected": 0,
+            "data_files_detected": 0,
+        }
+    )
+    analysis["sensitive_files"] = []
+    analysis["data_files"] = []
+    return analysis
+
+
+def build_sql_database_config_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    findings = sql_database_config_findings(analysis)
+    summary = sql_database_config_summary(analysis, findings)
+    errors = []
+    for error in analysis.get("errors", []):
+        safe_error, _redactions = redact_database_secret_text(str(error))
+        errors.append(safe_error)
+    redaction_notes = list(analysis.get("redaction_notes", []))
+    if analysis.get("sensitive_files") or analysis.get("dump_or_backup_files") or analysis.get("data_files"):
+        redaction_notes.append(
+            ".env, client credential, dump, backup, database data, WAL/binlog, and key/certificate-like files are detected but not read by this analyzer."
+        )
+    redaction_notes = sorted({str(note) for note in redaction_notes if note})
+
+    return {
+        "file_id": file_id,
+        "analyzer": "sql_database_config_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "files_detected": analysis.get("files_detected", []),
+        "files_reviewed": analysis.get("files_reviewed", []),
+        "postgres_configs": sql_database_config_files(analysis, {"postgres"}),
+        "postgres_hba_rules": analysis.get("pg_hba_rules", []),
+        "mysql_configs": sql_database_config_files(analysis, {"mysql", "mariadb"}),
+        "database_settings": list(analysis.get("postgres_settings", [])) + list(analysis.get("mysql_settings", [])),
+        "includes": analysis.get("includes", []),
+        "sensitive_files": analysis.get("sensitive_files", []),
+        "dump_or_backup_files": analysis.get("dump_or_backup_files", []),
+        "data_files": analysis.get("data_files", []),
+        "findings": findings,
+        "redaction_notes": redaction_notes,
+        "errors": errors,
+        "truncated": bool(summary.get("truncated")),
+    }
+
+
+def should_stop_sql_database_config_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    if index > ARCHIVE_MAX_ENTRIES:
+        analysis["summary"]["truncated"] = True
+        add_database_config_finding(
+            analysis,
+            "sql_database_config_entry_limit_reached",
+            "SQL database config archive entry scan limit reached",
+            "medium",
+            "high",
+            "limit",
+            "Inspectra stopped scanning SQL database archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    return False
+
+
+def process_sql_database_config_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_sql_database_config_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    increment_sql_database_category_counts(summary, category, path)
+
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    engine = sql_database_engine_for_category(category, path)
+    context = database_config_file_context(path, category)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "engine": engine,
+        "context": context,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = sql_database_config_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["files_detected"].append(record)
+        if skip_reason == "sensitive_file_not_read":
+            add_sql_database_sensitive_file(analysis, record)
+        elif skip_reason == "dump_or_backup_not_read":
+            add_sql_database_dump_or_backup_file(analysis, record)
+        elif skip_reason == "data_file_not_read":
+            add_sql_database_data_file(analysis, record)
+        else:
+            add_sql_database_config_skip_finding(analysis, path, skip_reason, size_bytes, context)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["files_detected"].append(record)
+        safe_error, redactions = redact_database_secret_text(str(exc))
+        analysis["summary"]["redacted_values_count"] += redactions
+        add_database_config_finding(
+            analysis,
+            "sql_database_config_file_read_error",
+            "SQL database config candidate could not be read safely",
+            "low",
+            "medium",
+            "archive",
+            "A SQL database-related candidate file could not be read from the archive within Inspectra limits.",
+            f"{path}: {safe_error}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+            context=context,
+            engine=engine,
+        )
+        return
+
+    state["total_bytes_read"] += len(raw_bytes)
+    if b"\x00" in raw_bytes:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_sql_database_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_sql_database_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    state["files_read"] += 1
+    summary["files_reviewed"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["files_detected"].append(record)
+    analysis["files_reviewed"].append(
+        {"path": path, "category": category, "engine": engine, "context": context, "size_bytes": size_bytes, "bytes_read": len(raw_bytes)}
+    )
+    add_database_engine(analysis, engine, path, context)
+    add_sql_database_config_detected_finding(analysis, path, category, context, engine)
+    analyze_database_config_text(analysis, path, category, context, engine, text)
+
+
+def classify_sql_database_config_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    lower = normalized.lower()
+    basename = lower.rsplit("/", 1)[-1]
+    parts = [part for part in lower.split("/") if part]
+    path_tokens = set(parts[:-1])
+    if is_sql_database_sensitive_name(basename):
+        return "sensitive"
+    if is_sql_database_dump_or_backup_name(basename):
+        return "dump_or_backup"
+    if is_sql_database_data_file_path(lower):
+        return "data_file"
+    if basename == "my.ini":
+        return "mysql"
+    category = classify_database_config_candidate(path)
+    if category is not None:
+        return category
+    if basename.endswith(".conf") and path_tokens.intersection({"pg", "postgres", "postgresql", "db", "database"}):
+        return "postgres"
+    if basename.endswith((".cnf", ".ini")):
+        if "mariadb" in path_tokens:
+            return "mariadb"
+        if path_tokens.intersection({"mysql", "db", "database"}):
+            return "mysql"
+    return None
+
+
+def is_sql_database_sensitive_name(basename: str) -> bool:
+    return is_database_sensitive_name(basename) or basename.endswith((".pem", ".key", ".crt"))
+
+
+def is_sql_database_dump_or_backup_name(basename: str) -> bool:
+    if is_database_dump_or_backup_name(basename):
+        return True
+    if basename.endswith((".tar", ".tar.gz", ".tgz", ".gz", ".xz", ".zst")):
+        return True
+    return basename.startswith(("pg_dump", "mysqldump", "backup", "dump"))
+
+
+def is_sql_database_data_file_path(lower_path: str) -> bool:
+    parts = [part for part in lower_path.split("/") if part]
+    basename = parts[-1] if parts else lower_path
+    if any(part in {"pg_wal", "pg_xact"} for part in parts):
+        return True
+    if "base" in parts and set(parts).intersection({"postgres", "postgresql", "pg", "db", "database", "data"}):
+        return True
+    return basename.startswith(("ibdata", "ib_logfile", "binlog", "mysql-bin."))
+
+
+def sql_database_engine_for_category(category: str, path: str) -> str | None:
+    if category == "data_file":
+        lower = normalize_archive_entry_path(path).lower()
+        if any(token in lower for token in ("postgres", "postgresql", "pg_wal", "pg_xact")):
+            return "postgresql"
+        if any(token in lower for token in ("mysql", "mariadb", "ibdata", "binlog", "mysql-bin")):
+            return "mysql"
+        return None
+    return database_engine_for_category(category, path)
+
+
+def increment_sql_database_category_counts(summary: dict[str, Any], category: str, path: str) -> None:
+    increment_database_category_counts(summary, category, path)
+    if category == "postgres":
+        summary["postgres_configs_detected"] = int(summary.get("postgres_configs_detected") or 0) + 1
+    if category == "mysql":
+        summary["mysql_configs_detected"] = int(summary.get("mysql_configs_detected") or 0) + 1
+    if category == "mariadb":
+        summary["mariadb_configs_detected"] = int(summary.get("mariadb_configs_detected") or 0) + 1
+    if category == "data_file":
+        summary["data_files_detected"] = int(summary.get("data_files_detected") or 0) + 1
+
+
+def sql_database_config_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if record.get("category") == "sensitive":
+        return "sensitive_file_not_read"
+    if record.get("category") == "dump_or_backup":
+        return "dump_or_backup_not_read"
+    if record.get("category") == "data_file":
+        return "data_file_not_read"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_sql_database_config_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int, context: str) -> None:
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit"}:
+        analysis["summary"]["truncated"] = True
+    titles = {
+        "path_traversal": "SQL database config path uses traversal",
+        "absolute_path": "SQL database config path is absolute",
+        "entry_name_too_long": "SQL database config entry name is unusually long",
+        "file_too_large": "SQL database config file omitted because it exceeds the size limit",
+        "too_many_files": "SQL database config file limit reached",
+        "total_bytes_limit": "Total SQL database config byte limit reached",
+        "binary_or_non_text": "SQL database config candidate is not UTF-8 text",
+    }
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    if reason == "binary_or_non_text":
+        level = "info"
+    evidence = f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    if reason.startswith("not_regular_file"):
+        title = "SQL database config candidate omitted because it is not a regular file"
+        evidence = f"{path}: {reason}"
+        level = "low"
+    else:
+        title = titles.get(reason, "SQL database config candidate skipped by defensive limit")
+    add_database_config_finding(
+        analysis,
+        f"sql_database_config_{reason.split(':', 1)[0]}",
+        title,
+        database_contextual_level(level, context),
+        database_contextual_confidence("high" if reason in {"path_traversal", "absolute_path"} else "medium", context),
+        "archive",
+        "Inspectra detected a SQL database-related file but did not read it because of a defensive limit, unsupported format, or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+        context=context,
+    )
+
+
+def add_sql_database_sensitive_file(analysis: dict[str, Any], record: dict[str, Any]) -> None:
+    path = str(record["path"])
+    basename = path.rsplit("/", 1)[-1].lower()
+    sensitive_record = {
+        "path": path,
+        "context": record.get("context"),
+        "category": "sensitive",
+        "engine": record.get("engine"),
+        "read": False,
+        "skip_reason": "sensitive_file_not_read",
+        "size_bytes": record.get("size_bytes"),
+    }
+    analysis["sensitive_files"].append(sensitive_record)
+    if basename == ".env" or basename == ".envrc" or basename.startswith(".env."):
+        finding_id = "sql_database_env_file_sensitive_present"
+        title = "SQL database-adjacent env file detected but not read"
+    else:
+        finding_id = "sql_database_client_credentials_file_present"
+        title = "SQL database credential or key-like file detected but not read"
+    add_database_config_finding(
+        analysis,
+        finding_id,
+        title,
+        database_contextual_level("low", str(record.get("context") or "")),
+        "high",
+        "secrets",
+        "A sensitive SQL database-adjacent file was present in the archive. Inspectra records its presence but does not read or store its content.",
+        path[:240],
+        "Keep real credential, key, and env files out of shared archives and use sample files for review packages.",
+        file_path=path,
+        context=str(record.get("context") or ""),
+        engine=record.get("engine"),
+    )
+
+
+def add_sql_database_dump_or_backup_file(analysis: dict[str, Any], record: dict[str, Any]) -> None:
+    dump_record = {
+        "path": record["path"],
+        "context": record.get("context"),
+        "category": "dump_or_backup",
+        "engine": record.get("engine"),
+        "read": False,
+        "skip_reason": "dump_or_backup_not_read",
+        "size_bytes": record.get("size_bytes"),
+    }
+    analysis["dump_or_backup_files"].append(dump_record)
+    add_database_config_finding(
+        analysis,
+        "sql_database_dump_or_backup_present_no_read",
+        "SQL database dump or backup file detected but not read",
+        database_contextual_level("medium", str(record.get("context") or "")),
+        "high",
+        "data",
+        "A SQL database dump or backup-like file was present in the archive. Inspectra records its presence but does not parse table, row, schema, grant, or user data.",
+        str(record["path"])[:240],
+        "Avoid sharing SQL dumps/backups in review archives unless local storage risk is acceptable.",
+        file_path=str(record["path"]),
+        context=str(record.get("context") or ""),
+        engine=record.get("engine"),
+    )
+
+
+def add_sql_database_data_file(analysis: dict[str, Any], record: dict[str, Any]) -> None:
+    data_record = {
+        "path": record["path"],
+        "context": record.get("context"),
+        "category": "data_file",
+        "engine": record.get("engine"),
+        "read": False,
+        "skip_reason": "data_file_not_read",
+        "size_bytes": record.get("size_bytes"),
+    }
+    analysis["data_files"].append(data_record)
+    add_database_config_finding(
+        analysis,
+        "sql_database_data_files_present_no_read",
+        "SQL database data or WAL/binlog file detected but not read",
+        database_contextual_level("medium", str(record.get("context") or "")),
+        "high",
+        "data",
+        "A SQL database data, WAL, transaction, InnoDB, or binlog-like file was present. Inspectra records its presence but does not read database data files.",
+        str(record["path"])[:240],
+        "Avoid sharing database data directories or logs in review archives unless local storage risk is acceptable.",
+        file_path=str(record["path"]),
+        context=str(record.get("context") or ""),
+        engine=record.get("engine"),
+    )
+
+
+def add_sql_database_config_detected_finding(
+    analysis: dict[str, Any], path: str, category: str, context: str, engine: str | None
+) -> None:
+    finding_by_category = {
+        "postgres": ("postgres_config_detected", "PostgreSQL config detected"),
+        "pg_hba": ("postgres_hba_detected", "PostgreSQL pg_hba.conf detected"),
+        "mysql": ("mysql_config_detected", "MySQL config detected"),
+        "mariadb": ("mariadb_config_detected", "MariaDB config detected"),
+    }
+    if category not in finding_by_category:
+        return
+    finding_id, title = finding_by_category[category]
+    add_database_config_finding(
+        analysis,
+        finding_id,
+        title,
+        "info",
+        database_contextual_confidence("high", context),
+        "inventory",
+        "A SQL database configuration candidate was detected and reviewed with bounded passive parsing.",
+        path[:240],
+        "Review the reported settings in the intended deployment context.",
+        file_path=path,
+        context=context,
+        engine=engine,
+    )
+
+
+def finalize_sql_database_config_analysis(analysis: dict[str, Any]) -> None:
+    finalize_database_config_analysis(analysis)
+    for setting in list(analysis.get("postgres_settings", [])):
+        key = str(setting.get("setting") or "").lower()
+        if key in {"ssl_cert_file", "ssl_crl_file"}:
+            add_database_config_finding(
+                analysis,
+                "postgres_ssl_cert_path_present",
+                "PostgreSQL SSL certificate path is present",
+                "info",
+                "high",
+                "tls",
+                "A PostgreSQL SSL certificate path was declared. Inspectra records the path only and does not read certificate files.",
+                f"{key}={database_safe_value(str(setting.get('value') or ''))}",
+                "Confirm certificate files and permissions in the deployment environment without sharing private key material.",
+                file_path=str(setting.get("file_path") or ""),
+                context=str(setting.get("context") or ""),
+                engine="postgresql",
+                line=setting.get("line") if isinstance(setting.get("line"), int) else None,
+                setting=key,
+            )
+        if key == "ssl_key_file":
+            add_database_config_finding(
+                analysis,
+                "postgres_ssl_key_path_present",
+                "PostgreSQL SSL private key path is present",
+                "info",
+                "high",
+                "tls",
+                "A PostgreSQL SSL key path was declared. Inspectra records the path only and does not read private key files.",
+                f"{key}={database_safe_value(str(setting.get('value') or ''))}",
+                "Confirm key file permissions in the deployment environment and keep private key contents out of review archives.",
+                file_path=str(setting.get("file_path") or ""),
+                context=str(setting.get("context") or ""),
+                engine="postgresql",
+                line=setting.get("line") if isinstance(setting.get("line"), int) else None,
+                setting=key,
+            )
+    analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+
+
+def sql_database_config_summary(analysis: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
+    source = as_dict(analysis.get("summary"))
+    return {
+        "files_considered": int(source.get("files_considered") or 0),
+        "files_reviewed": int(source.get("files_reviewed") or 0),
+        "postgres_configs_detected": int(source.get("postgres_configs_detected") or 0),
+        "postgres_hba_files_detected": int(source.get("pg_hba_files_detected") or 0),
+        "mysql_configs_detected": int(source.get("mysql_configs_detected") or 0),
+        "mariadb_configs_detected": int(source.get("mariadb_configs_detected") or 0),
+        "dump_or_backup_files_detected": int(source.get("dump_or_backup_files_detected") or 0),
+        "data_files_detected": int(source.get("data_files_detected") or 0),
+        "findings_count": len(findings),
+        "redacted_values_count": int(source.get("redacted_values_count") or 0),
+        "truncated": bool(source.get("truncated")),
+    }
+
+
+def sql_database_config_files(analysis: dict[str, Any], categories: set[str]) -> list[dict[str, Any]]:
+    files = []
+    settings = list(analysis.get("postgres_settings", [])) + list(analysis.get("mysql_settings", []))
+    for record in analysis.get("files_reviewed", []):
+        if record.get("category") not in categories:
+            continue
+        path = str(record.get("path") or "")
+        files.append(
+            {
+                "file_path": path,
+                "category": record.get("category"),
+                "engine": record.get("engine"),
+                "context": record.get("context"),
+                "read": True,
+                "bytes_read": record.get("bytes_read"),
+                "settings_count": sum(1 for setting in settings if setting.get("file_path") == path),
+            }
+        )
+    return files
+
+
+def sql_database_config_findings(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    findings = []
+    for finding in analysis.get("findings", []):
+        if not isinstance(finding, dict):
+            continue
+        for finding_id in sql_database_finding_aliases(finding):
+            mapped = dict(finding)
+            mapped["id"] = finding_id
+            mapped["code"] = finding_id
+            findings.append(mapped)
+    return dedupe_findings(findings)
+
+
+def sql_database_finding_aliases(finding: dict[str, Any]) -> tuple[str, ...]:
+    finding_id = str(finding.get("id") or finding.get("code") or "")
+    if finding_id == "database_include_absolute_path":
+        engine = str(finding.get("engine") or "")
+        if engine == "postgresql":
+            return ("sql_database_include_absolute_path", "postgres_include_absolute_path")
+        if engine in {"mysql", "mariadb"}:
+            return ("sql_database_include_absolute_path", "mysql_include_absolute_path")
+    if finding_id == "database_include_not_resolved":
+        engine = str(finding.get("engine") or "")
+        directive = str(finding.get("setting") or "")
+        if engine == "postgresql":
+            return ("sql_database_include_detected_not_resolved", "postgres_include_detected_not_resolved")
+        if engine in {"mysql", "mariadb"} and directive == "!includedir":
+            return ("sql_database_include_detected_not_resolved", "mysql_include_dir_detected_not_resolved")
+        if engine in {"mysql", "mariadb"}:
+            return ("sql_database_include_detected_not_resolved", "mysql_include_detected_not_resolved")
+    if finding_id.startswith("database_config_"):
+        return (f"sql_database_config_{finding_id.removeprefix('database_config_')}",)
+    if finding_id in SQL_DATABASE_FINDING_ID_ALIASES:
+        return SQL_DATABASE_FINDING_ID_ALIASES[finding_id]
+    return (finding_id,)
 
 
 def redis_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
