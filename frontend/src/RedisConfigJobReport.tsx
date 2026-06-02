@@ -12,7 +12,13 @@ import {
   type RedisSetting
 } from "./redisConfigReport";
 import type { MetadataEntry } from "./pdfReport";
-import { EMPTY_SECTION_COPY, NO_CONTROLLED_ERRORS_COPY, NO_REDACTION_NOTES_COPY, PassiveReportShell } from "./PassiveReportShell";
+import {
+  EMPTY_SECTION_COPY,
+  NO_CONTROLLED_ERRORS_COPY,
+  NO_REDACTION_NOTES_COPY,
+  PassiveReportShell,
+  REDACTION_SCOPE_COPY
+} from "./PassiveReportShell";
 import type { FileRecord, JobRecord } from "./types";
 
 export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: FileRecord }) {
@@ -42,7 +48,7 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
       {report.redactedValuesCount > 0 ? (
         <div className="query-warning" role="status">
           Secret-like Redis values were redacted. Inspectra does not display requirepass, masterauth, Sentinel auth-pass, Redis URL
-          passwords, ACL material, dump/AOF-like values, private keys, tokens, or sensitive adjacent file contents.
+          passwords, ACL material, dump/AOF-like values, private keys, tokens, or sensitive adjacent file contents. Redacted values use [REDACTED].
         </div>
       ) : null}
 
@@ -105,6 +111,7 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
       </ReportSection>
 
       <ReportSection title="Redaction Notes">
+        <p className="muted">{REDACTION_SCOPE_COPY}</p>
         {report.redactionNotes.length === 0 ? (
           <p className="empty-state">{NO_REDACTION_NOTES_COPY}</p>
         ) : (

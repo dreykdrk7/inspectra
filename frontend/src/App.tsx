@@ -45,7 +45,7 @@ type LoadState = {
 
 const initialLoadState: LoadState = { loading: false, error: null };
 const ARCHIVE_ACTION_SCOPE_COPY =
-  "Archive reviews are passive and bounded. Inspectra reads candidate files from the uploaded archive and reports review indicators; it does not execute the project or contact live services for these config checks.";
+  "Archive reviews are passive and bounded. Inspectra reports review indicators; it does not execute the project, contact live services, validate credentials, or query CVEs for config checks.";
 
 type ArchiveAction = {
   label: string;

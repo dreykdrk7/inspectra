@@ -8,9 +8,10 @@ const DEFAULT_ARCHIVE_SCOPE_COPY =
   "Passive static review only. Inspectra reads bounded candidate files from the uploaded archive and reports heuristic review indicators. It does not execute tools, contact live services, validate credentials, query CVEs/advisories, or prove exploitability.";
 
 const HEURISTIC_COPY = "Findings are heuristic review indicators and require human validation.";
-const RAW_JSON_COPY = "Sensitive-looking values are redacted in results and exports. This does not sanitize the original uploaded file.";
 const RUNNING_COPY = "Passive analysis is running. No external services are contacted for archive config analyzers.";
 
+export const REDACTION_SCOPE_COPY =
+  "Sensitive-looking values are redacted in results, exports, and raw JSON. Redacted values use [REDACTED]. This does not sanitize the original uploaded file.";
 export const EMPTY_SECTION_COPY = "No entries reported for this section.";
 export const NO_CONTROLLED_ERRORS_COPY = "No controlled errors were reported.";
 export const NO_REDACTION_NOTES_COPY = "No redaction notes were reported.";
@@ -94,7 +95,7 @@ export function PassiveReportShell({
       {rawJson ? (
         <section className="report-section">
           <h3>Redacted Raw JSON</h3>
-          <p className="muted">{RAW_JSON_COPY}</p>
+          <p className="muted">{REDACTION_SCOPE_COPY}</p>
           {rawJson}
         </section>
       ) : null}

@@ -152,7 +152,9 @@ describe("SqlDatabaseConfigJobReport", () => {
     expect(screen.getByText("Limits were reached; results may be partial.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Redacted Raw JSON" })).toBeInTheDocument();
     expect(screen.getByText("Show redacted payload")).toBeInTheDocument();
-    expect(screen.getByText(/This does not sanitize the original uploaded file/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Sensitive-looking values are redacted in results, exports, and raw JSON/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Redacted values use \[REDACTED\]/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/This does not sanitize the original uploaded file/).length).toBeGreaterThan(0);
 
     expectControlledCopyHasNoForbiddenWording(container.textContent ?? "");
   });
@@ -177,6 +179,7 @@ describe("SqlDatabaseConfigJobReport", () => {
     expect(screen.getAllByText("No entries reported for this section.").length).toBeGreaterThan(8);
     expect(screen.getByText("No controlled errors were reported.")).toBeInTheDocument();
     expect(screen.getByText("No redaction notes were reported.")).toBeInTheDocument();
+    expect(screen.getAllByText(/Sensitive-looking values are redacted in results, exports, and raw JSON/).length).toBeGreaterThan(0);
     expect(screen.getByText("sparse")).toBeInTheDocument();
 
     cleanup();

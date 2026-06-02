@@ -24,6 +24,11 @@ describe("PassiveReportShell", () => {
     expect(screen.getByText("Passive review")).toBeInTheDocument();
     expect(screen.getByText("Data layer")).toBeInTheDocument();
     expect(screen.getAllByText(/Findings are heuristic review indicators and require human validation/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Passive static review only/)).toBeInTheDocument();
+    expect(screen.getByText(/does not execute tools, contact live services, validate credentials, query CVEs\/advisories, or prove exploitability/)).toBeInTheDocument();
+    expect(screen.getByText(/Sensitive-looking values are redacted in results, exports, and raw JSON/)).toBeInTheDocument();
+    expect(screen.getByText(/Redacted values use \[REDACTED\]/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Redacted Raw JSON" })).toBeInTheDocument();
 
     rerender(shellElement({ status: "running" }));
     expect(screen.getByText("Passive analysis is running. No external services are contacted for archive config analyzers.")).toBeInTheDocument();

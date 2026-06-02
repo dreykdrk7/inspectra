@@ -380,6 +380,31 @@ describe("dashboard filters", () => {
     }
   });
 
+  it("keeps audit catalog descriptions passive and avoids critical claim wording", () => {
+    const forbiddenCopy = [
+      "compromised",
+      "breached",
+      "exploitable",
+      "confirmed vulnerability",
+      "credentials valid",
+      "hacked",
+      "live exposure confirmed",
+      "database exposed",
+      "redis exposed"
+    ];
+
+    for (const auditType of AUDIT_TYPE_ORDER) {
+      const metadata = AUDIT_TYPE_CATALOG[auditType];
+      const description = metadata.shortDescription.toLowerCase();
+      for (const phrase of forbiddenCopy) {
+        expect(description).not.toContain(phrase);
+      }
+      if (metadata.sourceFamily === "archive") {
+        expect(description).toMatch(/passive|review|indicator/);
+      }
+    }
+  });
+
   it("labels Redis and SQL database config jobs for the dashboard filter", () => {
     expect(auditTypeLabel("redis_config_basic")).toBe("Redis config");
     expect(auditTypeLabel("sql_database_config_basic")).toBe("SQL DB config");

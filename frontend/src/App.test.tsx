@@ -639,6 +639,8 @@ describe("App", () => {
     const pdfRow = rows.find((row) => row.textContent?.includes("sample.pdf"));
     expect(archiveRow).toBeDefined();
     expect(archiveRow?.textContent).toContain("Archive reviews are passive and bounded");
+    expect(archiveRow?.textContent).toContain("validate credentials");
+    expect(archiveRow?.textContent).toContain("query CVEs");
     expect(archiveRow?.textContent).toContain("Start here");
     expect(archiveRow?.textContent).toContain("Secrets");
     expect(archiveRow?.textContent).toContain("Application");
@@ -650,7 +652,17 @@ describe("App", () => {
     expect(pdfRow?.textContent).not.toContain("Start here");
     expect(pdfRow?.textContent).not.toContain("Data layer");
 
-    const forbiddenCopy = ["compromised", "breached", "exploitable", "confirmed vulnerability", "credentials valid"];
+    const forbiddenCopy = [
+      "compromised",
+      "breached",
+      "exploitable",
+      "confirmed vulnerability",
+      "credentials valid",
+      "hacked",
+      "live exposure confirmed",
+      "database exposed",
+      "redis exposed"
+    ];
     const archiveText = archiveRow?.textContent?.toLowerCase() ?? "";
     for (const phrase of forbiddenCopy) {
       expect(archiveText).not.toContain(phrase);

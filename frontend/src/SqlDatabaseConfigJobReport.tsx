@@ -1,7 +1,13 @@
 import type { ReactNode } from "react";
 
 import type { MetadataEntry } from "./pdfReport";
-import { EMPTY_SECTION_COPY, NO_CONTROLLED_ERRORS_COPY, NO_REDACTION_NOTES_COPY, PassiveReportShell } from "./PassiveReportShell";
+import {
+  EMPTY_SECTION_COPY,
+  NO_CONTROLLED_ERRORS_COPY,
+  NO_REDACTION_NOTES_COPY,
+  PassiveReportShell,
+  REDACTION_SCOPE_COPY
+} from "./PassiveReportShell";
 import {
   buildSqlDatabaseConfigAuditReport,
   redactSqlDatabaseConfigValue,
@@ -43,7 +49,7 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
       {report.redactedValuesCount > 0 ? (
         <div className="query-warning" role="status">
           Secret-like SQL database values were redacted. Inspectra does not display passwords, connection strings, PGPASSWORD or
-          MYSQL_PWD values, replication passwords, private keys, credential-file contents, env file contents, dump rows, or data files.
+          MYSQL_PWD values, replication passwords, private keys, credential-file contents, env file contents, dump rows, or data files. Redacted values use [REDACTED].
         </div>
       ) : null}
 
@@ -135,6 +141,7 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
       </ReportSection>
 
       <ReportSection title="Redaction Notes">
+        <p className="muted">{REDACTION_SCOPE_COPY}</p>
         {report.redactionNotes.length === 0 ? (
           <p className="empty-state">{NO_REDACTION_NOTES_COPY}</p>
         ) : (
