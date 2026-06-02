@@ -1,6 +1,6 @@
 # Passive Alpha Post-Tag Verification Handoff
 
-Status: `POST_TAG_HANDOFF_RECORDED`.
+Status: `GITHUB_RELEASE_PUBLISHED`.
 
 Tag: `v0.1.0-passive-alpha`
 
@@ -9,6 +9,10 @@ Tagged commit: `c3ce00f docs(alpha): prepare passive alpha release notes`
 Tagged commit full SHA: `c3ce00fd3259cc49494db1ee0ef4cdffc229dca9`
 
 Release notes: `docs/releases/v0.1.0-passive-alpha.md`
+
+Published release: `https://github.com/dreykdrk7/inspectra/releases/tag/v0.1.0-passive-alpha`
+
+Publish record: `docs/future/passive-alpha-github-release-publish.md`
 
 This document records the post-tag verification and handoff for Inspectra Passive Technical Alpha. It does not create a new tag, create a GitHub release, push commits, push tags, add analyzers, touch runtime behavior, change endpoints, change redaction logic, modify fixtures, or open active/network scope.
 
@@ -47,7 +51,8 @@ c3ce00f docs(alpha): prepare passive alpha release notes
 - Release notes exist at `docs/releases/v0.1.0-passive-alpha.md`.
 - Tag preparation record exists at `docs/future/passive-alpha-release-tag-v0.1.0-passive-alpha.md`.
 - No push has been performed.
-- No GitHub release has been created.
+- Branch and tag have since been pushed to `origin`.
+- GitHub prerelease has since been created.
 - This post-tag handoff commit is intentionally after the tag and is not part of the tagged alpha snapshot.
 
 ## C. Scope Summary
@@ -87,13 +92,19 @@ Two valid next paths are available:
 
 ### Option A: Publish The Alpha
 
-Run a separate `PASSIVE-ALPHA-GITHUB-RELEASE-PUBLISH` microphase if the goal is to push the tag and create a GitHub release. That microphase should explicitly handle:
+The `PASSIVE-ALPHA-GITHUB-RELEASE-PUBLISH` microphase has been completed. It explicitly handled:
 
 - remote selection;
 - `git push` of the release-notes commit and tag;
 - GitHub release creation;
 - release body based on `docs/releases/v0.1.0-passive-alpha.md`;
 - verification that the published tag points to `c3ce00f`.
+
+Published URL:
+
+```text
+https://github.com/dreykdrk7/inspectra/releases/tag/v0.1.0-passive-alpha
+```
 
 ### Option B: Keep The Tag Local And Continue Readiness Work
 
@@ -106,7 +117,7 @@ Run `POST_ALPHA_READINESS_BACKLOG_EXECUTION-01-DOCS-FIRST-PLAN` if the goal is t
 - multi-user isolation and authorization model;
 - report/export readability follow-up.
 
-Recommended next step: Option B, `POST_ALPHA_READINESS_BACKLOG_EXECUTION-01-DOCS-FIRST-PLAN`, unless the immediate product goal is public publication of the local alpha tag.
+Recommended next step after publication: `POST_PASSIVE_ALPHA_ACTIVE_BLOCK_DECISION`, or `POST_ALPHA_READINESS_BACKLOG_EXECUTION-01-DOCS-FIRST-PLAN` if the product goal is hardening before opening Active/Nmap work.
 
 ## F. Safety Handoff
 
