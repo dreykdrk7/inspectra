@@ -1,10 +1,10 @@
 # redis_config_basic Design
 
-Status: docs-first design reference. The passive runner phase was implemented in commit `47dabb9`, backend/job/reporting integration is tracked in `docs/future/redis-config-basic-backend-endpoint-job-storage-reporting.md`, frontend report UX is tracked in `docs/future/redis-config-basic-frontend-action-report-ux.md`, and end-to-end contract/redaction review is tracked in `docs/future/redis-config-basic-end-to-end-contract-redaction-review.md`. Formal docs/smoke closeout remains a future microphase.
+Status: historical docs-first design reference. `redis_config_basic` v1 is implemented and closed. The passive runner phase was implemented in commit `47dabb9`, backend/job/reporting integration is tracked in `docs/future/redis-config-basic-backend-endpoint-job-storage-reporting.md`, frontend report UX is tracked in `docs/future/redis-config-basic-frontend-action-report-ux.md`, end-to-end contract/redaction review is tracked in `docs/future/redis-config-basic-end-to-end-contract-redaction-review.md`, and the final closeout is recorded in `docs/future/redis-config-basic-closeout.md`.
 
 ## 1. Module Objective
 
-`redis_config_basic` is a future passive archive audit for Redis OSS and redis.conf-style compatible configuration files supplied by the user.
+`redis_config_basic` was designed as a passive archive audit for Redis OSS and redis.conf-style compatible configuration files supplied by the user.
 
 The module should help users review static cache, queue, session-store, and data-layer configuration signals around network exposure, authentication, ACL references, TLS posture, persistence, replication, dangerous commands, modules, logging, resource limits, includes, and sensitive adjacent files before a Redis deployment archive is run or shared.
 
@@ -26,7 +26,7 @@ Allowed behavior:
 - Detection of Redis config files, Sentinel config files, includes, ACL file references, dump/AOF/backups, and sensitive `.env`-style files.
 - Detection of `.env`, `.env.*`, `.envrc`, ACL files, RDB dumps, AOF files, and backup files as sensitive files present without reading their contents.
 - Detection of `include`, `aclfile`, TLS key/cert paths, persistence paths, replication settings, Sentinel directives, module load directives, and password-like directives as bounded config context.
-- Redaction-first handling of secret-like values in evidence, errors, raw results, and future exports.
+- Redaction-first handling of secret-like values in evidence, errors, raw results, and exports.
 - Recording parser uncertainty, unsupported syntax, truncation, skipped files, and controlled errors.
 
 Disallowed behavior in v1:
@@ -428,7 +428,7 @@ Finding objects should include, when available:
 - `evidence`
 - `recommendation`
 
-Candidate future limits:
+Configured limits:
 
 - `INSPECTRA_REDIS_CONFIG_MAX_FILES`, default `100`.
 - `INSPECTRA_REDIS_CONFIG_MAX_FILE_BYTES`, default `524288`.
@@ -436,7 +436,7 @@ Candidate future limits:
 
 ## 12. UX and Reporting Expectations
 
-The future UI and exports should present `redis_config_basic` as a passive static Redis config review, not a vulnerability scanner or live Redis validator.
+The implemented UI and exports present `redis_config_basic` as a passive static Redis config review, not a vulnerability scanner or live Redis validator.
 
 Expected sections:
 
@@ -542,13 +542,13 @@ Recommended sequence:
 
 Each runtime phase should preserve the same non-scope: no Redis execution, no Redis connections, no command execution, no socket opening, no Docker execution, no include resolution, no `.env`/ACL/dump/AOF/backups reads, no network calls, no CVE/advisory lookups, and no exploitability claims.
 
-## 15. Future Documentation Updates
+## 15. Documentation Updates
 
-When implemented, update:
+The implementation updates are now tracked in:
 
 - `README.md` with the backend endpoint, UI action, limits, no-scope, and launch example.
 - `docs/architecture.md` with the backend/runner/storage/reporting/frontend flow.
 - `docs/security-scope.md` with allowed Redis config review scope and explicit out-of-scope behavior.
-- A future closeout document such as `docs/future/redis-config-basic-closeout.md`.
+- `docs/future/redis-config-basic-closeout.md`.
 
 Documentation must continue to state that Inspectra does not run Redis, run Redis clients, connect to databases, execute commands, open sockets, read `.env`/ACL/dump/AOF/backups, resolve includes, query CVEs/advisories, call external services, or confirm exploitability.
