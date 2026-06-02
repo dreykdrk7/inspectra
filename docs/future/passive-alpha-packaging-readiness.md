@@ -30,6 +30,7 @@ Reference assets for the alpha demo/readiness package:
 - Fixture pack README: `tests/fixtures/demo/passive-alpha/README.md`
 - Smoke/demo checklist: `docs/future/passive-alpha-smoke-demo-checklist.md`
 - Frontend demo note closeout: `docs/future/passive-alpha-smoke-demo-fixtures-frontend-demo-notes.md`
+- Post-alpha release-readiness triage: `docs/future/post-alpha-readiness-backlog-triage.md`
 
 ## 3. Demo Scope
 
@@ -203,3 +204,9 @@ Recommended next step after the trusted local alpha demo:
 `POST_ALPHA_READINESS_BACKLOG_TRIAGE`
 
 Focus that triage on external-user blockers first: auth/deployment hardening, retention/storage controls, onboarding, disclaimers, and report/export readability.
+
+That triage is documented in:
+
+```text
+docs/future/post-alpha-readiness-backlog-triage.md
+```
