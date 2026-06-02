@@ -1,6 +1,6 @@
 # Passive Alpha Release Gate Smoke Rerun
 
-Status: `READY_FOR_MANUAL_BROWSER_SMOKE_BEFORE_TAG`.
+Status: `BLOCKED_BEFORE_RELEASE_TAG`.
 
 Base commit: `9751e89 fix(redaction): block passive alpha ci nginx leaks`
 
@@ -9,6 +9,10 @@ Previous gate: `c23c0ca docs(alpha): record passive release gate smoke run`
 Target tag: `v0.1.0-passive-alpha`
 
 This document records the release-gate rerun for Inspectra Passive Technical Alpha after the CI/CD and Nginx redaction fix. It does not create a tag, create a release, add analyzers, change endpoints, change frontend behavior, add scripts, change exports, expand active/network scope, or inspect real secrets.
+
+Follow-up browser gate: `docs/future/passive-alpha-manual-browser-smoke-before-tag.md`.
+
+The follow-up real browser DOM and Raw JSON smoke passed for seven archive jobs, but the release remains blocked because the required non-archive `package.json` manifest sanity check failed: the UI showed `Cannot read properties of null (reading 'reset')` and backend `/files` returned `500` after manifest upload. Do not create `v0.1.0-passive-alpha` yet.
 
 ## A. Initial State
 
@@ -192,7 +196,7 @@ Known limitations:
 
 ## H. Final Decision
 
-Decision: `READY_FOR_MANUAL_BROWSER_SMOKE_BEFORE_TAG`.
+Decision: `BLOCKED_BEFORE_RELEASE_TAG`.
 
 Rationale:
 
@@ -200,6 +204,7 @@ Rationale:
 - Full API smoke with four synthetic fixture archives passed.
 - Redaction-negative checks passed for job JSON and Markdown/HTML/XML/PDF exports.
 - The previous CI/CD and Nginx release-blocking leaks were not reproduced.
-- Real browser DOM and Raw JSON smoke could not be completed with the available tooling in this environment.
+- Follow-up real browser DOM and Raw JSON smoke was completed for archive reports and recorded in `docs/future/passive-alpha-manual-browser-smoke-before-tag.md`.
+- The release is blocked because the non-archive `package.json` manifest sanity check failed in the browser smoke.
 
-Do not create `v0.1.0-passive-alpha` yet. The next step is a manual browser smoke using only the synthetic fixture archives, followed by a final clean-tree/tag decision.
+Do not create `v0.1.0-passive-alpha` yet. The next step is to fix the manifest upload/listing blocker, rerun the browser smoke, and then make a final clean-tree/tag decision.

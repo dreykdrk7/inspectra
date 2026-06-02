@@ -225,10 +225,18 @@ docs/future/passive-alpha-release-gate-smoke-rerun.md
 
 The rerun passed technical validations, full API smoke, and API/export redaction-negative checks after `9751e89 fix(redaction): block passive alpha ci nginx leaks`. The current release state is `READY_FOR_MANUAL_BROWSER_SMOKE_BEFORE_TAG`, not ready to tag yet, because real browser DOM and Raw JSON smoke remains pending.
 
+Manual browser follow-up:
+
+```text
+docs/future/passive-alpha-manual-browser-smoke-before-tag.md
+```
+
+That smoke passed DOM and expanded Raw JSON checks for seven archive jobs, but the release state is now `BLOCKED_BEFORE_RELEASE_TAG`. The blocker is the non-archive manifest sanity check: uploading `package.json` as a manifest left the UI in an upload error state and backend `/files` returned `500`, so archive-only action absence for the non-archive row could not be verified.
+
 ## 7. Next Recommended Microphase
 
 Recommended next microphase:
 
-`PASSIVE-ALPHA-RELEASE-GATE-SMOKE-RUN`
+`PASSIVE-ALPHA-MANIFEST-UPLOAD-LISTING-FIX`
 
-That microphase should run the technical validations, execute the manual smoke with synthetic fixtures, record redaction-negative outcomes, prepare release notes, and decide whether to create `v0.1.0-passive-alpha`.
+That microphase should fix the manifest upload/listing blocker found in the real browser smoke, then rerun `PASSIVE-ALPHA-MANUAL-BROWSER-SMOKE-BEFORE-TAG` and decide whether `v0.1.0-passive-alpha` can be tagged.

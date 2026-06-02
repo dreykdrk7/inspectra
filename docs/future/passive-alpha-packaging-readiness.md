@@ -33,6 +33,7 @@ Reference assets for the alpha demo/readiness package:
 - Post-alpha release-readiness triage: `docs/future/post-alpha-readiness-backlog-triage.md`
 - Release-gate smoke run: `docs/future/passive-alpha-release-gate-smoke-run.md`
 - Release-gate smoke rerun: `docs/future/passive-alpha-release-gate-smoke-rerun.md`
+- Manual browser smoke before tag: `docs/future/passive-alpha-manual-browser-smoke-before-tag.md`
 
 ## 3. Demo Scope
 
@@ -226,3 +227,11 @@ docs/future/passive-alpha-release-gate-smoke-rerun.md
 ```
 
 That rerun passed API/job/export redaction checks and records the current release state as `READY_FOR_MANUAL_BROWSER_SMOKE_BEFORE_TAG`.
+
+The manual browser smoke follow-up is documented in:
+
+```text
+docs/future/passive-alpha-manual-browser-smoke-before-tag.md
+```
+
+It passed archive report DOM and expanded Raw JSON redaction checks, but the current release state is `BLOCKED_BEFORE_RELEASE_TAG` because the non-archive `package.json` manifest sanity check failed in the browser flow and backend `/files` returned `500` after manifest upload. Do not tag until that blocker is fixed and the browser smoke is rerun.
