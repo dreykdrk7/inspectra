@@ -5410,6 +5410,74 @@ async def test_sql_database_config_job_summary_and_export_all_formats(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_sql_database_config_end_to_end_public_contract_and_no_read_exports(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_sql_database_config_export_fixture_job()
+    expected_exports = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        job_response = await client.get(f"/jobs/{job.id}")
+        exports = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected_exports
+        }
+
+    public_payload = job_response.json()
+    public_result = public_payload["result"]
+    public_serialized = json.dumps(public_payload, sort_keys=True)
+    assert public_payload["audit_type"] == "sql_database_config_basic"
+    assert public_result["analyzer"] == "sql_database_config_basic"
+    assert public_result["postgres_configs"]
+    assert public_result["postgres_hba_rules"]
+    assert public_result["mysql_configs"]
+    assert public_result["database_settings"]
+    assert public_result["includes"][0]["resolved"] is False
+    assert public_result["sensitive_files"][0]["read"] is False
+    assert public_result["dump_or_backup_files"][0]["read"] is False
+    assert public_result["data_files"][0]["read"] is False
+    assert "[REDACTED]" in public_serialized
+    for secret in SQL_DATABASE_SECRET_FIXTURES:
+        assert secret not in public_serialized
+
+    summary = next(item for item in list_response.json() if item["id"] == job.id)["summary"]
+    assert summary["analyzer"] == "sql_database_config_basic"
+    assert summary["files_reviewed"] == 3
+    assert summary["postgres_configs_detected"] == 1
+    assert summary["postgres_hba_files_detected"] == 1
+    assert summary["mysql_configs_detected"] == 1
+    assert summary["mariadb_configs_detected"] == 1
+    assert summary["dump_or_backup_files_detected"] == 1
+    assert summary["data_files_detected"] == 1
+    assert summary["errors_count"] == 0
+
+    for report_format, response in exports.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected_exports[report_format])
+        assert b"REDACTED" in response.content
+        for secret in SQL_DATABASE_SECRET_FIXTURES:
+            assert secret.encode() not in response.content
+    markdown = exports["markdown"].text
+    assert "PostgreSQL Configs" in markdown
+    assert "pg_hba.conf Rules" in markdown
+    assert "MySQL / MariaDB Configs" in markdown
+    assert "Database Settings" in markdown
+    assert "Includes Detected But Not Resolved" in markdown
+    assert "Sensitive Files Detected But Not Read" in markdown
+    assert "Dumps / Backups Detected But Not Read" in markdown
+    assert "Data / WAL / Binlog Files Detected But Not Read" in markdown
+    assert "sql_database_include_detected_not_resolved" in markdown
+    assert ElementTree.fromstring(exports["xml"].text).findtext("./job/auditType") == "sql_database_config_basic"
+    assert exports["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
 async def test_export_sql_database_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 6, 2, tzinfo=timezone.utc)
