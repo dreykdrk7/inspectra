@@ -33,7 +33,8 @@ export type AuditType =
   | 'terraform_config_basic'
   | 'nginx_config_basic'
   | 'compose_config_basic'
-  | 'database_config_basic';
+  | 'database_config_basic'
+  | 'redis_config_basic';
 export type ReportFormat = 'markdown' | 'html' | 'xml' | 'pdf';
 export type SbomFormat = 'cyclonedx-json' | 'spdx-json';
 

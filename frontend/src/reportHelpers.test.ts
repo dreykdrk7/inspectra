@@ -14,6 +14,7 @@ import { buildNginxConfigAuditReport, redactNginxConfigValue } from "./nginxConf
 import { buildNodePackageConfigAuditReport, redactNodePackageConfigValue } from "./nodePackageConfigReport";
 import { buildPdfAuditReport } from "./pdfReport";
 import { buildProjectArchiveAuditReport } from "./projectArchiveReport";
+import { buildRedisConfigAuditReport, redactRedisConfigValue } from "./redisConfigReport";
 import { buildSecretsReviewAuditReport, redactSecretsReviewValue } from "./secretsReviewReport";
 import { buildSubdomainAuditReport } from "./subdomainReport";
 import { buildTerraformConfigAuditReport, redactTerraformConfigValue } from "./terraformConfigReport";
@@ -1646,5 +1647,122 @@ describe("report helpers", () => {
     expect(serializedReport).toContain("REDACTED");
     expect(report.findings[0].evidence).toContain("[REDACTED]");
     expect(report.dumpOrBackupFiles[0]).toMatchObject({ read: false });
+  });
+
+  it("normalizes Redis config settings, includes, no-read files, and findings", () => {
+    const report = buildRedisConfigAuditReport({
+      ...baseJob,
+      audit_type: "redis_config_basic",
+      result: {
+        analyzer: "redis_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_considered: 6,
+          files_reviewed: 2,
+          redis_files_detected: 1,
+          sentinel_files_detected: 1,
+          acl_files_detected: 1,
+          dump_or_aof_files_detected: 2,
+          configs_detected: 2,
+          findings_count: 2,
+          redacted_values_count: 1,
+          truncated: false
+        },
+        files_detected: [{ path: "deploy/redis/redis.conf", category: "redis", config_type: "redis", read: true, context: "production" }],
+        configs: [
+          { path: "deploy/redis/redis.conf", config_type: "redis", context: "production" },
+          { path: "deploy/redis/sentinel.conf", config_type: "sentinel", context: "production" }
+        ],
+        redis_settings: [{ config_type: "redis", directive: "bind", setting: "bind", value: "0.0.0.0", file_path: "deploy/redis/redis.conf", line: 2 }],
+        sentinel_settings: [{ config_type: "sentinel", directive: "sentinel", setting: "sentinel monitor", value: "mymaster 10.0.0.2 6379 2", file_path: "deploy/redis/sentinel.conf", line: 2 }],
+        includes: [{ directive: "include", target: "/etc/redis/secrets.conf", resolved: false, file_path: "deploy/redis/redis.conf", config_type: "redis", line: 8 }],
+        acl_files: [{ path: "deploy/redis/users.acl", category: "acl", read: false, skip_reason: "acl_file_not_read", size_bytes: 128 }],
+        dump_or_aof_files: [{ path: "deploy/redis/dump.rdb", category: "dump_or_aof", read: false, skip_reason: "dump_or_aof_not_read", size_bytes: 4096 }],
+        findings: [
+          {
+            id: "redis_bind_public_interface",
+            title: "Redis bind allows public interface",
+            level: "medium",
+            confidence: "high",
+            category: "network",
+            context: "production",
+            config_type: "redis",
+            directive: "bind",
+            address: "0.0.0.0",
+            file_path: "deploy/redis/redis.conf",
+            line: 2,
+            evidence: "bind 0.0.0.0"
+          },
+          { code: "redis_acl_file_not_read", message: "ACL file detected but not read", severity: "info" }
+        ],
+        redaction_notes: ["Redis values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isRedisConfigAudit).toBe(true);
+    expect(report.overview).toContainEqual({ label: "Redis configs", value: "1" });
+    expect(report.overview).toContainEqual({ label: "Sentinel configs", value: "1" });
+    expect(report.detectedFiles[0]).toMatchObject({ path: "deploy/redis/redis.conf", configType: "redis" });
+    expect(report.configs[0]).toMatchObject({ path: "deploy/redis/redis.conf", configType: "redis" });
+    expect(report.redisSettings[0]).toMatchObject({ setting: "bind", value: "0.0.0.0" });
+    expect(report.sentinelSettings[0]).toMatchObject({ setting: "sentinel monitor" });
+    expect(report.includes[0]).toMatchObject({ target: "/etc/redis/secrets.conf", resolved: false });
+    expect(report.aclFiles[0]).toMatchObject({ path: "deploy/redis/users.acl", read: false });
+    expect(report.dumpOrAofFiles[0]).toMatchObject({ path: "deploy/redis/dump.rdb", read: false });
+    expect(report.findings[0]).toMatchObject({ id: "redis_bind_public_interface", configType: "redis" });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["medium", "info"]);
+    expect(report.redactionNotes).toEqual(["Redis values were redacted."]);
+  });
+
+  it("redacts legacy Redis config payloads defensively", () => {
+    const report = buildRedisConfigAuditReport({
+      ...baseJob,
+      audit_type: "redis_config_basic",
+      error: "requirepass super-secret-password",
+      result: {
+        analyzer: "redis_config_basic",
+        summary: { redacted_values_count: 0 },
+        configs: [{ path: "deploy/redis/redis.conf", content: "requirepass super-secret-password" }],
+        redis_settings: [{ setting: "requirepass", value: "super-secret-password" }],
+        sentinel_settings: [{ setting: "sentinel auth-pass", value: "token_should_never_render" }],
+        includes: [{ target: "/etc/redis/secrets.conf", content: "raw-api-key-123456", resolved: false }],
+        acl_files: [{ path: "users.acl", read: false, content: "acl_password_hash_should_not_render" }],
+        dump_or_aof_files: [{ path: "dump.rdb", read: false, content: "dump_value_should_not_render" }],
+        findings: [
+          {
+            id: "legacy_redis_secret",
+            title: "Legacy Redis secret",
+            evidence: "requirepass super-secret-password redis://:super-secret-password@redis:6379/0",
+            description: "Authorization: Bearer token_should_never_render",
+            recommendation: "-----BEGIN PRIVATE KEY----- fixture -----END PRIVATE KEY-----"
+          }
+        ],
+        errors: ["requirepass super-secret-password", "raw-api-key-123456", "token_should_never_render", "acl_password_hash_should_not_render", "dump_value_should_not_render"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(
+      redactRedisConfigValue({
+        error: "requirepass super-secret-password",
+        result: report
+      })
+    );
+
+    for (const secret of [
+      "super-secret-password",
+      "raw-api-key-123456",
+      "token_should_never_render",
+      "acl_password_hash_should_not_render",
+      "dump_value_should_not_render",
+      "redis://:super-secret-password@redis:6379/0",
+      "PRIVATE KEY"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.findings[0].evidence).toContain("[REDACTED]");
+    expect(report.aclFiles[0]).toMatchObject({ read: false });
   });
 });

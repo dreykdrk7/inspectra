@@ -262,6 +262,18 @@ const jobs: JobListItem[] = [
     updated_at: "2026-05-26T10:38:00Z",
     source_file_deleted_at: null,
     summary: null
+  },
+  {
+    id: "job-redis-completed",
+    audit_type: "redis_config_basic",
+    file_id: "archive-file-4",
+    target_url: null,
+    target_domain: null,
+    status: "completed",
+    created_at: "2026-05-26T10:39:00Z",
+    updated_at: "2026-05-26T10:40:00Z",
+    source_file_deleted_at: null,
+    summary: null
   }
 ];
 
@@ -297,6 +309,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "nginx_config_basic", "")).toEqual([jobs[15]]);
     expect(filterJobs(jobs, "all", "compose_config_basic", "")).toEqual([jobs[16]]);
     expect(filterJobs(jobs, "all", "database_config_basic", "")).toEqual([jobs[17]]);
+    expect(filterJobs(jobs, "all", "redis_config_basic", "")).toEqual([jobs[18]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
@@ -319,6 +332,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "NGINX_CONFIG")).toEqual([jobs[15]]);
     expect(filterJobs(jobs, "all", "all", "COMPOSE_CONFIG")).toEqual([jobs[16]]);
     expect(filterJobs(jobs, "all", "all", "DATABASE_CONFIG")).toEqual([jobs[17]]);
+    expect(filterJobs(jobs, "all", "all", "REDIS_CONFIG")).toEqual([jobs[18]]);
   });
 
   it("builds dashboard metrics from current files and jobs", () => {
@@ -328,8 +342,8 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 18,
-      completedJobs: 15,
+      totalJobs: 19,
+      completedJobs: 16,
       failedJobs: 1,
       activeJobs: 2
     });

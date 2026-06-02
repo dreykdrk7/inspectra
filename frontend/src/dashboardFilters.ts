@@ -116,5 +116,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "database_config_basic") {
     return "database_config_basic";
   }
+  if (auditType === "redis_config_basic") {
+    return "redis_config_basic";
+  }
   return auditType;
 }

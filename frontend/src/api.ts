@@ -180,6 +180,13 @@ export async function launchDatabaseConfigAudit(fileId: string): Promise<JobReco
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function launchRedisConfigAudit(fileId: string): Promise<JobRecord> {
+  const response = await fetch(`${API_BASE_URL}/audits/redis-config/${fileId}`, {
+    method: 'POST',
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function launchWebBasicAudit(url: string, authorizationConfirmed: boolean): Promise<JobRecord> {
   const response = await fetch(`${API_BASE_URL}/audits/web/basic`, {
     method: 'POST',
@@ -249,6 +256,7 @@ export const api = {
   launchNginxConfigAudit,
   launchComposeConfigAudit,
   launchDatabaseConfigAudit,
+  launchRedisConfigAudit,
   launchWebBasicAudit,
   launchDomainBasicAudit,
   launchSubdomainInventoryAudit,

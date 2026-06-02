@@ -1882,7 +1882,11 @@ def redact_redis_secret_text(value: str) -> str:
         r"\1[REDACTED]@\4",
         redacted,
     )
-    redacted = re.sub(r"(?i)\b(requirepass|masterauth)\b\s+[^,\n\r;}\]]+", r"\1 [REDACTED]", redacted)
+    redacted = re.sub(
+        r"(?i)\b(requirepass|masterauth)\b\s+(?!(?:is|was|present|missing|configured|observed|detected|not)\b)[^,\n\r;}\]]+",
+        r"\1 [REDACTED]",
+        redacted,
+    )
     redacted = re.sub(r"(?i)\bsentinel\s+auth-pass\s+\S+\s+[^,\n\r;}\]]+", "sentinel auth-pass [REDACTED]", redacted)
     redacted = re.sub(
         r"(?i)\b([A-Z0-9_$_.-]*(?:REDIS_PASSWORD|REQUIREPASS|MASTERAUTH|PASSWORD|PASS|SECRET|TOKEN|API_KEY|APIKEY|CLIENT_SECRET|PRIVATE_KEY|CREDENTIAL|REDIS_URL|CONNECTION_STRING|AUTH_PASS)[A-Z0-9_$_.-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\";}\]]+",
