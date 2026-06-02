@@ -205,7 +205,19 @@ Recommended next product step:
 
 `POST_PASSIVE_ALPHA_ACTIVE_BLOCK_DECISION`
 
-That decision should choose whether to begin an Active/Nmap/network product block. If active work is opened, start with a docs-first scope microphase such as:
+That decision has been recorded in:
+
+```text
+docs/future/post-passive-alpha-active-block-decision.md
+```
+
+Decision:
+
+```text
+HYBRID_ACTIVE_DESIGN_WITH_HARDENING_GATES
+```
+
+The decision chooses Active design docs now while blocking Active runtime behind safety and hardening gates. If active work is opened, start with a docs-first scope microphase such as:
 
 `ACTIVE-NETWORK-BLOCK-01-DOCS-FIRST-SCOPE`
 
