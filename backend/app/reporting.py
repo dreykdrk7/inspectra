@@ -1388,7 +1388,15 @@ def is_ci_cd_secret_mapping_key(key: str) -> bool:
 
 
 def redact_ci_cd_secret_text(value: str) -> str:
-    return redact_node_package_secret_text(value)
+    redacted = redact_node_package_secret_text(value).replace("[REDACTED PRIVATE KEY]", "[REDACTED]")
+    redacted = re.sub(
+        r"(?i)\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+",
+        "Authorization: [REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(r"(?i)\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "[REDACTED]", redacted)
+    redacted = re.sub(r"(?i)(\bAuthorization\s+)(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", redacted)
+    return redacted.replace("[REDACTED]]", "[REDACTED]")
 
 
 def redact_k8s_config_value(value: Any) -> Any:
@@ -1560,6 +1568,7 @@ def is_nginx_secret_mapping_key(key: str) -> bool:
         for token in (
             "authorization",
             "bearer",
+            "auth_basic",
             "basic_auth",
             "cookie",
             "session",
@@ -1595,6 +1604,7 @@ def redact_nginx_secret_text(value: str) -> str:
         "[REDACTED]",
         redacted,
     )
+    redacted = re.sub(r"(?i)\b(requirepass|masterauth|auth_basic)\s+[^;\s]+", r"\1 [REDACTED]", redacted)
     redacted = re.sub(
         r"(?i)\b([A-Z0-9_$_.-]*(?:authorization|cookie|session|client_secret|private_key|api_key|apikey|password|passwd|token|secret|credential)[A-Z0-9_$_.-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\";}\]]+",
         lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]",
@@ -1926,6 +1936,8 @@ def is_redis_secret_mapping_key(key: str) -> bool:
 
 def redact_redis_secret_text(value: str) -> str:
     redacted = redact_database_secret_text(value).replace("[REDACTED PRIVATE KEY]", "[REDACTED]")
+    redacted = redacted.replace("requirepass [REDACTED] present", "requirepass is present")
+    redacted = redacted.replace("masterauth [REDACTED] present", "masterauth is present")
     redacted = re.sub(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
         "[REDACTED]",

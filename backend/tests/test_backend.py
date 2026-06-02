@@ -958,8 +958,25 @@ async def test_ci_cd_config_service_calls_runner_endpoint(monkeypatch, tmp_path)
                         "redacted_values_count": 0,
                         "truncated": False,
                     },
-                    "findings": [{"id": "github_permissions_missing", "title": "permissions missing", "level": "low"}],
-                    "errors": [],
+                    "jobs": [
+                        {
+                            "file_path": ".github/workflows/deploy.yml",
+                            "provider": "github_actions",
+                            "job": "deploy",
+                            "script": 'echo "Authorization: Bearer token_should_never_render"',
+                        }
+                    ],
+                    "findings": [
+                        {
+                            "id": "github_permissions_missing",
+                            "title": "permissions missing",
+                            "level": "low",
+                            "description": "TOKEN=fixture-token",
+                            "evidence": "API_KEY=fixture-key Authorization: Bearer token_should_never_render",
+                            "recommendation": 'Remove "Bearer token_should_never_render" from scripts.',
+                        }
+                    ],
+                    "errors": ["Authorization: Bearer token_should_never_render"],
                 }
             )
 
@@ -970,6 +987,10 @@ async def test_ci_cd_config_service_calls_runner_endpoint(monkeypatch, tmp_path)
     updated = app.state.jobs.get(job.id)
     assert updated.status == "completed"
     assert updated.result["analyzer"] == "ci_cd_config_basic"
+    serialized_result = json.dumps(updated.result)
+    assert "[REDACTED]" in serialized_result
+    for secret in ("fixture-token", "fixture-key", "token_should_never_render", "Authorization: Bearer token_should_never_render"):
+        assert secret not in serialized_result
     assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/ci-cd-config"
     assert calls[0]["json"]["file_id"] == archive.id
     assert calls[0]["json"]["original_filename"] == "ci.zip"
@@ -1246,7 +1267,10 @@ async def test_nginx_config_service_calls_runner_endpoint(monkeypatch, tmp_path)
                         "truncated": False,
                     },
                     "includes": [{"target": "/etc/nginx/secrets.conf", "resolved": False}],
-                    "directives": [{"directive": "proxy_set_header", "arguments": "Authorization: Bearer token_should_never_render"}],
+                    "directives": [
+                        {"directive": "proxy_set_header", "arguments": "Authorization: Bearer token_should_never_render"},
+                        {"directive": "auth_basic", "arguments": "super-secret-password"},
+                    ],
                     "findings": [
                         {
                             "id": "nginx_proxy_pass_credentials_hint",
@@ -1270,6 +1294,7 @@ async def test_nginx_config_service_calls_runner_endpoint(monkeypatch, tmp_path)
     assert "[REDACTED]" in serialized_result
     for secret in (
         "raw-api-key-123456",
+        "super-secret-password",
         "token_should_never_render",
         "http://user:pass@example.com",
         "registry-user:registry-pass",
@@ -4194,7 +4219,7 @@ async def test_export_ci_cd_config_redacts_legacy_secret_values(monkeypatch, tmp
                     "file_path": ".github/workflows/deploy.yml",
                     "provider": "github_actions",
                     "job": "deploy",
-                    "script": "API_KEY=fixture-key npm run deploy",
+                    "script": 'API_KEY=fixture-key npm run deploy && echo "Authorization: Bearer token_should_never_render"',
                 }
             ],
             "actions": [
@@ -4232,7 +4257,7 @@ async def test_export_ci_cd_config_redacts_legacy_secret_values(monkeypatch, tmp
                     "line": "7",
                 }
             ],
-            "errors": ["API_KEY=fixture-key"],
+            "errors": ["API_KEY=fixture-key", "Authorization: Bearer token_should_never_render"],
             "redaction_notes": ["TOKEN=fixture-token"],
         },
     )
@@ -4250,15 +4275,22 @@ async def test_export_ci_cd_config_redacts_legacy_secret_values(monkeypatch, tmp
         b"fixture-secret",
         b"fixture-private-key-material",
         b"BEGIN PRIVATE KEY",
+        b"token_should_never_render",
+        b"Authorization: Bearer token_should_never_render",
     )
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
         responses = {
             report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
             for report_format in expected
         }
 
+    assert api_response.status_code == 200
+    assert b"REDACTED" in api_response.content
+    for secret in forbidden:
+        assert secret not in api_response.content
     for report_format, response in responses.items():
         assert response.status_code == 200
         assert response.headers["content-type"].startswith(expected[report_format])

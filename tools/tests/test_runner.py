@@ -1,6 +1,7 @@
 import io
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
 import struct
 import tarfile
 import threading
@@ -1651,6 +1652,36 @@ env:
 
 
 @pytest.mark.anyio
+async def test_analyze_ci_cd_config_release_gate_fixtures_redact_bearer_tokens(monkeypatch):
+    repo_root = Path(__file__).resolve().parents[2]
+    fixture_paths = [
+        repo_root / "tests/fixtures/demo/passive-alpha/archives/demo-archive-container-infra.zip",
+        repo_root / "tests/fixtures/demo/passive-alpha/archives/demo-archive-redaction-negative.zip",
+    ]
+    monkeypatch.setattr(runner, "DATA_DIR", repo_root.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for archive_path in fixture_paths:
+            response = await client.post(
+                "/analyze/ci-cd-config",
+                json={
+                    "file_id": "f" * 32,
+                    "relative_path": str(archive_path.relative_to(repo_root)),
+                    "original_filename": archive_path.name,
+                },
+            )
+
+            payload = response.json()
+            serialized = json.dumps(payload)
+            assert response.status_code == 200
+            assert payload["analyzer"] == "ci_cd_config_basic"
+            assert "[REDACTED]" in serialized
+            assert "token_should_never_render" not in serialized
+            assert "Authorization: Bearer token_should_never_render" not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_ci_cd_config_missing_permissions_comments_and_context(monkeypatch, tmp_path):
     workflow = b"""
 name: example
@@ -2493,6 +2524,39 @@ token_should_never_render
         "registry-user:registry-pass",
         "sessionid=secret-session-cookie",
         "proxy_password_should_not_render",
+        "PRIVATE KEY",
+    ):
+        assert secret not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_nginx_config_release_gate_fixture_redacts_negative_values(monkeypatch):
+    repo_root = Path(__file__).resolve().parents[2]
+    archive_path = repo_root / "tests/fixtures/demo/passive-alpha/archives/demo-archive-redaction-negative.zip"
+    monkeypatch.setattr(runner, "DATA_DIR", repo_root.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/nginx-config",
+            json={
+                "file_id": "f" * 32,
+                "relative_path": str(archive_path.relative_to(repo_root)),
+                "original_filename": archive_path.name,
+            },
+        )
+
+    payload = response.json()
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["analyzer"] == "nginx_config_basic"
+    assert "[REDACTED]" in serialized
+    for secret in (
+        "super-secret-password",
+        "token_should_never_render",
+        "Authorization: Bearer token_should_never_render",
+        "http://registry-user:registry-pass@example.com",
+        "registry-user:registry-pass",
         "PRIVATE KEY",
     ):
         assert secret not in serialized

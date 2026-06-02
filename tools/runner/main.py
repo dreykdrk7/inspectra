@@ -8292,6 +8292,15 @@ def safe_ci_cd_script_excerpt(value: str) -> str:
 
 def redact_ci_cd_secret_text(text: str) -> tuple[str, int]:
     redacted, count = redact_node_secret_text(text)
+
+    def apply(pattern: str, replacement: str, flags: int = re.IGNORECASE) -> None:
+        nonlocal redacted, count
+        redacted, replacements = re.subn(pattern, replacement, redacted, flags=flags)
+        count += replacements
+
+    apply(r"\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "Authorization: [REDACTED]")
+    apply(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "[REDACTED]")
+    apply(r"(\bAuthorization\s+)(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]")
     updated, replacements = re.subn(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
         "[REDACTED PRIVATE KEY]",
@@ -8300,7 +8309,7 @@ def redact_ci_cd_secret_text(text: str) -> tuple[str, int]:
     )
     redacted = updated
     count += replacements
-    return redacted, count
+    return redacted.replace("[REDACTED]]", "[REDACTED]"), count
 
 
 def finalize_ci_cd_config_analysis(analysis: dict[str, Any]) -> None:
@@ -11100,6 +11109,7 @@ def redact_nginx_secret_text(text: str | None) -> tuple[str, int]:
     apply(r"\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "Authorization: [REDACTED]")
     apply(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "[REDACTED]")
     apply(r"\b(?:proxy_set_header|add_header|set)\s+([A-Za-z0-9_$-]*(?:token|secret|password|api[_-]?key|authorization|cookie)[A-Za-z0-9_$-]*)\s+[^;\n]+", r"\1 [REDACTED]")
+    apply(r"\b(requirepass|masterauth|auth_basic)\s+[^;\s]+", r"\1 [REDACTED]")
     apply(r"(\b(?:password|token|secret|api[_-]?key|client[_-]?secret|authorization|cookie|session)\b\s*[:=]\s*)[^;\s,\"']+", r"\1[REDACTED]")
     apply(r"(\bAuthorization\s+)(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]")
     redacted = redacted.replace("[REDACTED PRIVATE KEY]", "[REDACTED]").replace("PRIVATE_KEY_BLOCK_REDACTED", "[REDACTED]")

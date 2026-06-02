@@ -4,6 +4,8 @@ import httpx
 
 from app.config import Settings
 from app.reporting import (
+    redact_ci_cd_config_value,
+    redact_ci_cd_secret_text,
     redact_compose_config_value,
     redact_database_config_value,
     redact_sql_database_config_value,
@@ -284,10 +286,11 @@ class CiCdConfigAuditService:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/ci-cd-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            self.jobs.update(job_id, status="failed", error=f"Tool runner request failed: {exc}")
+            self.jobs.update(job_id, status="failed", error=redact_ci_cd_secret_text(f"Tool runner request failed: {exc}"))
             return
 
-        self.jobs.update(job_id, status="completed", result=response.json())
+        result = redact_ci_cd_config_value(response.json())
+        self.jobs.update(job_id, status="completed", result=result if isinstance(result, dict) else {"result": result})
 
 
 class K8sConfigAuditService:

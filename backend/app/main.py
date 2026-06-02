@@ -367,6 +367,7 @@ async def list_jobs(request: Request) -> list[JobListItem]:
 async def get_job(request: Request, job_id: str) -> JobRecord:
     job = request.app.state.jobs.get(job_id)
     if job.audit_type in {
+        "ci_cd_config_basic",
         "k8s_config_basic",
         "terraform_config_basic",
         "nginx_config_basic",
