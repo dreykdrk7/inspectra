@@ -31,6 +31,7 @@ Reference assets for the alpha demo/readiness package:
 - Smoke/demo checklist: `docs/future/passive-alpha-smoke-demo-checklist.md`
 - Frontend demo note closeout: `docs/future/passive-alpha-smoke-demo-fixtures-frontend-demo-notes.md`
 - Post-alpha release-readiness triage: `docs/future/post-alpha-readiness-backlog-triage.md`
+- Release-gate smoke run: `docs/future/passive-alpha-release-gate-smoke-run.md`
 
 ## 3. Demo Scope
 
@@ -209,4 +210,10 @@ That triage is documented in:
 
 ```text
 docs/future/post-alpha-readiness-backlog-triage.md
+```
+
+The release-gate smoke run is documented in:
+
+```text
+docs/future/passive-alpha-release-gate-smoke-run.md
 ```

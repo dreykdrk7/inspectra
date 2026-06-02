@@ -17,6 +17,7 @@ Current assets are in place:
 - Packaging readiness decision: `docs/future/passive-alpha-packaging-readiness.md`
 - Frontend upload-panel demo note: `docs/future/passive-alpha-smoke-demo-fixtures-frontend-demo-notes.md`
 - Passive suite closeout: `docs/future/passive-suite-alpha-transversal-closeout.md`
+- Release-gate smoke run: `docs/future/passive-alpha-release-gate-smoke-run.md`
 
 Trusted local demo is possible with limitations. Public/external user readiness is not achieved yet. Active scanning, Nmap, network scanning, and new passive analyzers remain outside this release path. No tag or release should be created until the release gate in this document is completed.
 
@@ -207,6 +208,14 @@ Decision: `READY_FOR_SMOKE_RUN_BEFORE_RELEASE_TAG`.
 No documentation blockers were found for proceeding to the final smoke run. Do not create a tag yet. The release-blocking work is now operational: run the gate, record outcomes, prepare release notes, decide final tag metadata, and only then create the passive alpha tag.
 
 If any release gate item fails, change the release state to `BLOCKED_BEFORE_RELEASE_TAG` and record the blocker in the release notes or a follow-up readiness document.
+
+Release-gate follow-up:
+
+```text
+docs/future/passive-alpha-release-gate-smoke-run.md
+```
+
+That gate found release-blocking redaction failures and records the current release state as `BLOCKED_BEFORE_RELEASE_TAG`.
 
 ## 7. Next Recommended Microphase
 
