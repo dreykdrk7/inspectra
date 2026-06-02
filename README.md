@@ -71,6 +71,16 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not inventory subdomains unless you provide explicit candidates and confirm authorization.
 - It does not brute-force subdomains, use wordlists, query Certificate Transparency logs, attempt AXFR, crawl, scan ports, or call reputation APIs.
 
+## Passive Technical Alpha Scope
+
+Inspectra Passive technical alpha is closed for new module expansion. The current passive suite is ready for technical-alpha smoke and UX polish instead of opening more analyzers.
+
+The alpha includes local file uploads, bounded archive analysis, project-archive manifest parsing, passive configuration reviews for Django, Docker, secrets exposure, Node package config, CI/CD, Kubernetes, Terraform, Nginx, Docker Compose, Database, SQL DB, and Redis, plus the already bounded web/DNS/subdomain baseline flows. Archive-based config analyzers are offered only for uploaded files registered as `kind: "archive"`.
+
+All passive config findings are heuristic review indicators. They are not confirmed vulnerabilities, exploitability claims, live reachability checks, breach claims, or proof of compromise. The shared posture is local, bounded, archive/file-only, redaction-first, and intentionally avoids runtime execution, credential validation, registry/CVE/advisory lookups, and external service calls unless a separate authorized audit family explicitly documents that behavior.
+
+The recommended next product block is UI/report polish and smoke-demo coherence, not MongoDB, RabbitMQ, Elasticsearch/OpenSearch, Apache, or another new analyzer.
+
 ## Requirements
 
 - Docker

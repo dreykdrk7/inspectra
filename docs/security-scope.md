@@ -57,6 +57,23 @@ Allowed in this phase:
 - Recording Redis configuration indicators such as bind/protected-mode exposure, `requirepass`/`masterauth` posture, ACL references, TLS posture, persistence/backup posture, replication/Sentinel settings, dangerous command renames, module loading, runtime/logging/resource signals, include directives, sensitive adjacent files present, and secret-like Redis values.
 - Using the local web UI to perform implemented UI actions where available for the same bounded audit families.
 
+## Passive Technical Alpha Principles
+
+The passive technical alpha is closed for new module expansion. Its shared principles are:
+
+- Passive analysis first.
+- User-supplied files, archives, URLs, domains, or explicit candidates only.
+- Archive-only config analyzers for uploaded files registered as `kind: "archive"`.
+- Bounded reads and controlled errors/truncation.
+- Local storage and local report generation.
+- Redaction-first evidence and defensive redaction again at reporting/UI boundaries.
+- No runtime execution of user projects, package managers, databases, caches, orchestrators, Docker, Kubernetes, Terraform, Nginx, Redis, or SQL database clients/servers for passive config modules.
+- No active pentesting, exploitation, brute force, network scanning, port scanning, credential validation, live reachability claims, or compromise/breach claims.
+- No registry, provider, CVE, advisory, or external lookup for passive config modules.
+- Findings are heuristic review indicators requiring human validation, not confirmed vulnerabilities or complete coverage guarantees.
+
+For modules that mark `.env`, credential files, dumps, backups, data files, ACL files, state files, or other sensitive adjacent files as no-read, Inspectra records safe context only and does not read those contents. Uploaded archive bytes may still contain secrets and are stored locally according to the MVP data model.
+
 Tools used in this phase:
 
 - `pdfinfo`

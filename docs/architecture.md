@@ -4,6 +4,23 @@
 
 Inspectra starts as a small defensive audit API for authorized local files and controlled baseline web checks. The MVP keeps the backend simple and delegates passive analysis to a dedicated Docker container where external tools, local parsers, or bounded HTTP clients run away from the host.
 
+## Passive Technical Alpha
+
+The passive technical alpha is closed for new module expansion. The current suite has enough breadth for alpha validation across local uploads, file metadata analysis, archive inspection, project-archive manifest parsing, archive-only passive config reviews, and the bounded authorized web/DNS/subdomain flows.
+
+The common archive-based config flow is:
+
+1. Upload a source file and record its `kind`.
+2. Offer archive-only config actions only when `kind: "archive"`.
+3. Create a backend job with a stable audit type.
+4. Call the internal tool runner endpoint with a relative path and configured limits.
+5. Store the runner JSON result under `data/results/jobs`.
+6. Serve compact summaries through `GET /jobs` and full results through `GET /jobs/{job_id}`.
+7. Render Markdown, HTML, XML, and PDF exports from stored job JSON.
+8. Render frontend report sections and redacted raw JSON.
+
+Redaction is layered: runner output, backend storage/reporting, public API payloads for sensitive modules, exports, frontend reports, and frontend raw JSON all apply defensive redaction for legacy or malformed payloads. Findings remain heuristic review indicators rather than confirmed vulnerabilities, live reachability checks, exploitability claims, breach claims, or proof of compromise.
+
 ## Components
 
 ### Backend
