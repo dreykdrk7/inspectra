@@ -23,7 +23,7 @@ afterEach(() => {
 
 describe("RedisConfigJobReport", () => {
   it("renders summary, Redis sections, no-read files, findings, limits, errors, and raw JSON", () => {
-    render(
+    const { container } = render(
       <RedisConfigJobReport
         job={{
           ...baseJob,
@@ -110,13 +110,18 @@ describe("RedisConfigJobReport", () => {
       />
     );
 
-    expect(screen.getByRole("heading", { name: "General Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Redis config" })).toBeInTheDocument();
+    expect(screen.getAllByText("redis_config_basic").length).toBeGreaterThan(0);
+    expect(screen.getByText("Data layer")).toBeInTheDocument();
+    expect(screen.getByText("Passive review")).toBeInTheDocument();
+    expect(screen.getAllByText(/Findings are heuristic review indicators and require human validation/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Passive static review only/)).toBeInTheDocument();
+    expect(screen.getByText(/Review indicators were reported. Validate them manually before acting./)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Redis Settings" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Sentinel Settings" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Includes" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "ACL / Dumps / AOF / Backups" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Findings" })).toBeInTheDocument();
-    expect(screen.getByText(/Passive Redis\/Sentinel configuration review/)).toBeInTheDocument();
     expect(screen.getByText(/Sensitive adjacent files are detected but not read by v1/)).toBeInTheDocument();
     expect(screen.getByText("no (not resolved by v1)")).toBeInTheDocument();
     expect(screen.getAllByText("no (not read by v1)").length).toBeGreaterThan(0);
@@ -127,7 +132,11 @@ describe("RedisConfigJobReport", () => {
     expect(screen.getByText("deploy/redis/appendonly.aof")).toBeInTheDocument();
     expect(screen.getByText("Analysis truncated by configured Redis config limits. Review skipped files and rerun with a smaller archive if needed.")).toBeInTheDocument();
     expect(screen.getByText("controlled parser warning")).toBeInTheDocument();
-    expect(screen.getByText("Raw JSON (redacted)")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Redacted Raw JSON" })).toBeInTheDocument();
+    expect(screen.getByText("Show redacted payload")).toBeInTheDocument();
+    expect(screen.getByText(/This does not sanitize the original uploaded file/)).toBeInTheDocument();
+
+    expectControlledCopyHasNoForbiddenWording(container.textContent ?? "");
   });
 
   it("tolerates sparse, malformed, and failed Redis config payloads", () => {
@@ -145,6 +154,7 @@ describe("RedisConfigJobReport", () => {
       />
     );
 
+    expect(screen.getByText("Passive analysis is running. Some result fields are unavailable; showing available redacted data.")).toBeInTheDocument();
     expect(screen.getByText("No Redis settings returned yet.")).toBeInTheDocument();
     expect(screen.getByText("No Redis Sentinel settings returned yet.")).toBeInTheDocument();
     expect(screen.getByText("No Redis include directives returned yet.")).toBeInTheDocument();
@@ -156,8 +166,34 @@ describe("RedisConfigJobReport", () => {
     cleanup();
 
     render(<RedisConfigJobReport job={{ ...baseJob, status: "failed", result: null, error: "controlled failure" }} />);
+    expect(screen.getByText("The job failed in a controlled state. Review errors below; uploaded content was not executed.")).toBeInTheDocument();
     expect(screen.getByText("controlled failure")).toBeInTheDocument();
-    expect(screen.getByText("Raw JSON (redacted)")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Redacted Raw JSON" })).toBeInTheDocument();
+
+    cleanup();
+
+    render(<RedisConfigJobReport job={{ ...baseJob, status: "queued", result: { analyzer: "redis_config_basic", summary: {} }, error: null }} />);
+    expect(screen.getByText("Job queued. Results will appear when processing starts.")).toBeInTheDocument();
+  });
+
+  it("does not describe completed Redis reports with no findings as safe or secure", () => {
+    const { container } = render(
+      <RedisConfigJobReport
+        job={{
+          ...baseJob,
+          result: {
+            analyzer: "redis_config_basic",
+            summary: { findings_count: 0 },
+            findings: []
+          }
+        }}
+      />
+    );
+
+    expect(screen.getByText("No heuristic findings were reported for this analyzer.")).toBeInTheDocument();
+    const rendered = container.textContent?.toLowerCase() ?? "";
+    expect(rendered).not.toContain("safe");
+    expect(rendered).not.toContain("secure");
   });
 
   it("redacts legacy Redis secret-like values in report sections and raw JSON", () => {
@@ -213,6 +249,23 @@ describe("RedisConfigJobReport", () => {
       expect(rendered).not.toContain(secret);
     }
     expect(rendered).toContain("REDACTED");
-    expect(screen.getByText("Raw JSON (redacted)")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Redacted Raw JSON" })).toBeInTheDocument();
   });
 });
+
+function expectControlledCopyHasNoForbiddenWording(text: string) {
+  const normalized = text.toLowerCase();
+  for (const phrase of [
+    "compromised",
+    "breached",
+    "exploitable",
+    "confirmed vulnerability",
+    "credentials valid",
+    "hacked",
+    "live exposure confirmed",
+    "database exposed",
+    "redis exposed"
+  ]) {
+    expect(normalized).not.toContain(phrase);
+  }
+}

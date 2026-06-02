@@ -23,7 +23,7 @@ afterEach(() => {
 
 describe("SqlDatabaseConfigJobReport", () => {
   it("renders summary, SQL DB sections, no-read files, findings, limits, errors, and raw JSON", () => {
-    render(
+    const { container } = render(
       <SqlDatabaseConfigJobReport
         job={{
           ...baseJob,
@@ -122,7 +122,13 @@ describe("SqlDatabaseConfigJobReport", () => {
       />
     );
 
-    expect(screen.getByRole("heading", { name: "General Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "SQL DB config" })).toBeInTheDocument();
+    expect(screen.getAllByText("sql_database_config_basic").length).toBeGreaterThan(0);
+    expect(screen.getByText("Data layer")).toBeInTheDocument();
+    expect(screen.getByText("Passive review")).toBeInTheDocument();
+    expect(screen.getAllByText(/Findings are heuristic review indicators and require human validation/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Passive static review only/)).toBeInTheDocument();
+    expect(screen.getByText(/Review indicators were reported. Validate them manually before acting./)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Engine / Config Overview" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "PostgreSQL Configs" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "PostgreSQL pg_hba.conf Rules" })).toBeInTheDocument();
@@ -133,7 +139,6 @@ describe("SqlDatabaseConfigJobReport", () => {
     expect(screen.getByRole("heading", { name: "Dumps / Backups Detected / Not Read" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Data / WAL / Binlog / InnoDB Files Detected / Not Read" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Findings" })).toBeInTheDocument();
-    expect(screen.getByText(/Passive SQL database configuration review/)).toBeInTheDocument();
     expect(screen.getByText("no (not resolved by v1)")).toBeInTheDocument();
     expect(screen.getAllByText("no (not read by v1)").length).toBeGreaterThan(0);
     expect(screen.getByText("pg_hba.conf allows trust authentication")).toBeInTheDocument();
@@ -144,7 +149,11 @@ describe("SqlDatabaseConfigJobReport", () => {
     expect(screen.getAllByText("backups/prod.sql").length).toBeGreaterThan(0);
     expect(screen.getByText("db/postgres/pg_wal/0001")).toBeInTheDocument();
     expect(screen.getByText("controlled parser warning")).toBeInTheDocument();
-    expect(screen.getByText("Raw JSON (redacted)")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Redacted Raw JSON" })).toBeInTheDocument();
+    expect(screen.getByText("Show redacted payload")).toBeInTheDocument();
+    expect(screen.getByText(/This does not sanitize the original uploaded file/)).toBeInTheDocument();
+
+    expectControlledCopyHasNoForbiddenWording(container.textContent ?? "");
   });
 
   it("tolerates sparse, malformed, and failed SQL database config payloads", () => {
@@ -162,6 +171,7 @@ describe("SqlDatabaseConfigJobReport", () => {
       />
     );
 
+    expect(screen.getByText("Passive analysis is running. Some result fields are unavailable; showing available redacted data.")).toBeInTheDocument();
     expect(screen.getByText("No SQL database config overview returned yet.")).toBeInTheDocument();
     expect(screen.getByText("No PostgreSQL configs returned yet.")).toBeInTheDocument();
     expect(screen.getByText("No pg_hba.conf rules returned yet.")).toBeInTheDocument();
@@ -177,8 +187,34 @@ describe("SqlDatabaseConfigJobReport", () => {
     cleanup();
 
     render(<SqlDatabaseConfigJobReport job={{ ...baseJob, status: "failed", result: null, error: "controlled failure" }} />);
+    expect(screen.getByText("The job failed in a controlled state. Review errors below; uploaded content was not executed.")).toBeInTheDocument();
     expect(screen.getByText("controlled failure")).toBeInTheDocument();
-    expect(screen.getByText("Raw JSON (redacted)")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Redacted Raw JSON" })).toBeInTheDocument();
+
+    cleanup();
+
+    render(<SqlDatabaseConfigJobReport job={{ ...baseJob, status: "queued", result: { analyzer: "sql_database_config_basic", summary: {} }, error: null }} />);
+    expect(screen.getByText("Job queued. Results will appear when processing starts.")).toBeInTheDocument();
+  });
+
+  it("does not describe completed SQL database reports with no findings as safe or secure", () => {
+    const { container } = render(
+      <SqlDatabaseConfigJobReport
+        job={{
+          ...baseJob,
+          result: {
+            analyzer: "sql_database_config_basic",
+            summary: { findings_count: 0 },
+            findings: []
+          }
+        }}
+      />
+    );
+
+    expect(screen.getByText("No heuristic findings were reported for this analyzer.")).toBeInTheDocument();
+    const rendered = container.textContent?.toLowerCase() ?? "";
+    expect(rendered).not.toContain("safe");
+    expect(rendered).not.toContain("secure");
   });
 
   it("redacts legacy SQL database secret-like values in report sections and raw JSON", () => {
@@ -243,6 +279,23 @@ describe("SqlDatabaseConfigJobReport", () => {
     }
     expect(rendered).toContain("[REDACTED]");
     expect(rendered).toContain("password encryption is weak");
-    expect(screen.getByText("Raw JSON (redacted)")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Redacted Raw JSON" })).toBeInTheDocument();
   });
 });
+
+function expectControlledCopyHasNoForbiddenWording(text: string) {
+  const normalized = text.toLowerCase();
+  for (const phrase of [
+    "compromised",
+    "breached",
+    "exploitable",
+    "confirmed vulnerability",
+    "credentials valid",
+    "hacked",
+    "live exposure confirmed",
+    "database exposed",
+    "redis exposed"
+  ]) {
+    expect(normalized).not.toContain(phrase);
+  }
+}

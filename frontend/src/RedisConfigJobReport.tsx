@@ -12,7 +12,8 @@ import {
   type RedisSetting
 } from "./redisConfigReport";
 import type { MetadataEntry } from "./pdfReport";
-import type { FileRecord, JobRecord, JobStatus } from "./types";
+import { PassiveReportShell } from "./PassiveReportShell";
+import type { FileRecord, JobRecord } from "./types";
 
 export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: FileRecord }) {
   const report = buildRedisConfigAuditReport(job);
@@ -27,39 +28,16 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
   }
 
   return (
-    <div className="report-layout">
-      <section className="report-section">
-        <div className="section-title-row">
-          <h3>General Summary</h3>
-          <div className="badge-row">
-            <StatusBadge status={job.status} />
-          </div>
-        </div>
-        <div className="report-summary-grid">
-          {report.overview.map((entry) => (
-            <div className="report-metric" key={entry.label}>
-              <span>{entry.label}</span>
-              <strong>{entry.value}</strong>
-            </div>
-          ))}
-        </div>
-        <dl className="summary-list">
-          <MetadataRow label="Audit type" value={job.audit_type} />
-          <MetadataRow label="Analyzer" value={report.analyzer ?? "Not available"} />
-          <MetadataRow label="Archive type" value={report.archiveType ?? "Not available"} />
-          <MetadataRow label="Job ID" value={job.id} mono />
-          <MetadataRow label="Source file" value={file?.original_filename ?? job.file_id ?? "Not available"} mono />
-          <MetadataRow label="Created" value={formatDate(job.created_at)} />
-          <MetadataRow label="Updated" value={formatDate(job.updated_at)} />
-        </dl>
-      </section>
-
-      <div className="alert" role="status">
-        Passive Redis/Sentinel configuration review for uploaded archives. Inspectra does not execute Redis or Sentinel, use redis-cli,
-        open sockets, make network calls, resolve includes, read .env/ACL/RDB/AOF/appendonly/backups, validate credentials, query CVEs,
-        or confirm exploitability. Findings are heuristic review indicators requiring human review.
-      </div>
-
+    <PassiveReportShell
+      job={job}
+      file={file}
+      analyzer={report.analyzer}
+      archiveType={report.archiveType}
+      overview={report.overview}
+      findingsCount={report.findingsCount}
+      isSparse={report.summary.length === 0}
+      rawJson={<RawJson job={job} />}
+    >
       {report.truncated ? (
         <div className="alert" role="status">
           Analysis truncated by configured Redis config limits. Review skipped files and rerun with a smaller archive if needed.
@@ -160,9 +138,7 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
           )}
         </ReportSection>
       </div>
-
-      <RawJson job={job} />
-    </div>
+    </PassiveReportShell>
   );
 }
 
@@ -398,10 +374,6 @@ function MetadataRow({ label, value, mono = false }: { label: string; value: str
   );
 }
 
-function StatusBadge({ status }: { status: JobStatus }) {
-  return <span className={`status-pill ${status}`}>{status}</span>;
-}
-
 function RawJson({ job }: { job: JobRecord }) {
   const redactedJob = {
     ...job,
@@ -410,7 +382,7 @@ function RawJson({ job }: { job: JobRecord }) {
   };
   return (
     <details className="raw-json">
-      <summary>Raw JSON (redacted)</summary>
+      <summary>Show redacted payload</summary>
       <pre>{JSON.stringify(redactedJob, null, 2)}</pre>
     </details>
   );
@@ -418,11 +390,4 @@ function RawJson({ job }: { job: JobRecord }) {
 
 function formatBoolean(value: boolean | null): string {
   return value === null ? "N/A" : value ? "yes" : "no";
-}
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(new Date(value));
 }
