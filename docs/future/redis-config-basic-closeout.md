@@ -203,12 +203,13 @@ Potential backlog:
 - Optional managed-service static export review if users provide safe static exports.
 - Optional backup metadata review without parsing data.
 
-Recommended next docs-first module: `mongodb_config_basic`.
+Recommended next docs-first module: `sql_database_config_basic`.
 
-Rationale: MongoDB config is a natural next data-layer module after PostgreSQL/MySQL/MariaDB and Redis. It has high-value passive posture signals around bind addresses, authorization, TLS, keyfiles, replica sets, audit/logging, profiling, storage, and backup-related files while remaining archive-only and static.
+Rationale: before the first Inspectra Passive technical alpha closes transversally, the product should freeze one explicit SQL database config design for PostgreSQL, MySQL, and MariaDB under a name that does not blur Redis or future NoSQL/broker modules. The design remains archive-only and passive, and it should not expand the already closed Redis runtime scope.
 
-Alternative future candidates:
+Deferred future candidates after the SQL database design and transversal passive closeout:
 
 - `apache_config_basic`, if continuing web-edge coverage.
 - `rabbitmq_config_basic`, if prioritizing queue/broker config.
+- `mongodb_config_basic`, if prioritizing document databases.
 - `elasticsearch_config_basic`, if prioritizing search/data-platform config.
