@@ -24,6 +24,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts passive Nginx/reverse-proxy configuration analysis jobs for archive uploads through the API.
 - Starts passive Docker Compose service wiring/configuration analysis jobs for archive uploads through the API.
 - Starts passive PostgreSQL/MySQL/MariaDB configuration analysis jobs for archive uploads through the API.
+- Starts passive SQL DB configuration analysis jobs for archive uploads through the API and UI.
 - Starts passive Redis/Sentinel configuration analysis jobs for archive uploads through the API.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
@@ -53,7 +54,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not execute Terraform, OpenTofu, or Terragrunt, run init/validate/plan/apply, download providers/modules, access state remotely, call cloud APIs, or query advisory/CVE data for Terraform config audits.
 - It does not execute Nginx, run `nginx -t`, start containers, resolve includes, perform DNS/network checks, validate live servers/certificates, or query advisory/CVE data for Nginx config audits.
 - It does not execute Docker or Docker Compose, run `docker compose config`, build/pull/inspect images, interpolate `.env` values, merge multiple Compose files, contact registries, or query advisory/CVE data for Compose config audits.
-- It does not execute database clients or servers, validate database configs against live instances, resolve includes, read dumps/backups/credential files, connect to databases, or query advisory/CVE data for Database config audits.
+- It does not execute database clients or servers, validate database configs against live instances, resolve includes, read dumps/backups/credential files, connect to databases, or query advisory/CVE data for Database or SQL DB config audits.
 - It does not execute Redis or Sentinel, use `redis-cli`, open sockets, resolve includes, read `.env`/ACL/RDB/AOF/appendonly/backup contents, validate credentials, or query advisory/CVE data for Redis config audits.
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
@@ -102,7 +103,7 @@ curl http://localhost:8000/health
 
 ## Configuration
 
-The Docker Compose defaults are intentionally conservative:
+The application defaults are intentionally conservative. Docker Compose sets many of these values explicitly, and the backend/runner fall back to these defaults when a variable is unset:
 
 | Variable | Service | Default | Purpose |
 | --- | --- | --- | --- |
@@ -150,6 +151,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_DATABASE_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum PostgreSQL/MySQL/MariaDB config candidate files read from one archive. |
 | `INSPECTRA_DATABASE_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Database config candidate file. |
 | `INSPECTRA_DATABASE_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Database config audit. |
+| `INSPECTRA_SQL_DATABASE_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum SQL database config candidate files read from one archive. |
+| `INSPECTRA_SQL_DATABASE_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one SQL DB config candidate file. |
+| `INSPECTRA_SQL_DATABASE_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one SQL DB config audit. |
 | `INSPECTRA_REDIS_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Redis/Sentinel config candidate files read from one archive. |
 | `INSPECTRA_REDIS_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Redis config candidate file. |
 | `INSPECTRA_REDIS_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Redis config audit. |
@@ -176,13 +180,13 @@ http://localhost:5173
 
 From the UI you can check backend health, upload PDFs, images, manifests, or archives, submit an authorized URL for baseline web audit, submit an authorized domain for DNS baseline audit, submit explicit authorized subdomain candidates for inventory, list uploaded files, launch matching audits, delete uploaded files, list recent jobs, and inspect job results.
 
-For archive files, the file list shows archive actions for `Analyze archive`, `Analyze project manifests`, `Analyze Django config`, `Analyze Docker config`, `Analyze secrets review`, `Analyze Node package config`, `Analyze CI/CD config`, `Analyze Kubernetes config`, `Analyze Terraform config`, `Analyze Nginx config`, `Analyze Compose config`, `Analyze database config`, and `Analyze Redis config`. These launch passive, bounded, archive-only review jobs for their respective configuration surfaces.
+For archive files, the file list shows archive actions for `Analyze archive`, `Analyze project manifests`, `Analyze Django config`, `Analyze Docker config`, `Analyze secrets review`, `Analyze Node package config`, `Analyze CI/CD config`, `Analyze Kubernetes config`, `Analyze Terraform config`, `Analyze Nginx config`, `Analyze Compose config`, `Analyze database config`, `Analyze SQL DB config`, and `Analyze Redis config`. These launch passive, bounded, archive-only review jobs for their respective configuration surfaces.
 
 The dashboard includes client-side counters, file filters by kind, job filters by status and audit type, quick search fields, manual refresh, and gentle auto-refresh while jobs are queued or running.
 
 From the upload panel, choose `PDF`, `Image`, `Manifest`, or `Archive`. Image uploads currently accept JPEG, PNG, and WebP. Manifest uploads currently accept `package.json`, `requirements.txt`, and `pyproject.toml`. Archive uploads currently accept `.zip`, `.tar`, `.tar.gz`, and `.tgz`. Inspectra does not render image previews or extract archives broadly in this phase.
 
-Completed PDF, image, manifest, archive, project-archive, Django config, Docker config, secrets review, Node package config, CI/CD config, Kubernetes config, Terraform config, Nginx config, Compose config, Database config, Redis config, web, domain, and subdomain jobs show readable reports with:
+Completed PDF, image, manifest, archive, project-archive, Django config, Docker config, secrets review, Node package config, CI/CD config, Kubernetes config, Terraform config, Nginx config, Compose config, Database config, SQL DB config, Redis config, web, domain, and subdomain jobs show readable reports with:
 
 - General job summary.
 - Hashes.
@@ -203,6 +207,7 @@ Completed PDF, image, manifest, archive, project-archive, Django config, Docker 
 - Nginx config reports include server blocks, locations, upstreams/proxy targets, includes detected but not resolved, directives, heuristic findings, redaction notes, limits, truncation, controlled errors, and redacted raw JSON.
 - Compose config reports include services, images/build contexts, published ports, volumes, networks, secrets/env file references detected but not read, heuristic findings, redaction notes, limits, truncation, controlled errors, and redacted raw JSON.
 - Database config reports include PostgreSQL/MySQL/MariaDB settings, pg_hba rules, includes detected but not resolved, dumps/backups/credential files detected but not read, heuristic findings, redaction notes, limits, truncation, controlled errors, and redacted raw JSON.
+- SQL DB config reports include PostgreSQL/MySQL/MariaDB settings, pg_hba rules, includes detected but not resolved, hidden credential files, dumps/backups, data/WAL/binlog/InnoDB files detected but not read, heuristic findings, redaction notes, limits, truncation, controlled errors, and redacted raw JSON.
 - Redis config reports include Redis settings, Sentinel settings, includes detected but not resolved, ACL files detected but not read, dumps/RDB/AOF/appendonly/backups detected but not read, heuristic findings, redaction notes, limits, truncation, controlled errors, and redacted raw JSON.
 - Web target URL, redirects, HTTP status, response headers, security headers, cookies, TLS certificate summary, `robots.txt`, `security.txt`, and informational configuration findings.
 - Domain DNS baseline records, email security checks, `www` baseline, and informational DNS findings.
@@ -419,6 +424,18 @@ The source file must be `kind: "archive"`. This creates a `database_config_basic
 The analysis is heuristic and local. It looks for review indicators such as public listen/bind settings, pg_hba trust/password/open-world rules, disabled or weak TLS settings, weak password/auth settings, logging/backup/replication posture, include directives, dumps/backups present, and secret-like database config values. Findings are indicators for manual review, not confirmed vulnerabilities or proof of exploitability.
 
 Inspectra does not execute `psql`, `mysql`, `mariadb`, `pg_ctl`, `postgres`, `mysqld`, `mysqladmin`, `pg_dump`, `mysqldump`, or similar tools; connect to database servers; validate configs against live instances; resolve includes; read host paths; read dumps/backups/credential files; query CVEs/advisories; extract the project broadly; follow symlinks or hardlinks; or call the internet. Database credentials, DSNs, `PGPASSWORD`/`MYSQL_PWD`, private key blocks, errors, and exports are redacted best-effort.
+
+## Launch a SQL DB Config Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/sql-database-config/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `sql_database_config_basic` job that opens the archive with Python standard library parsers and reads only bounded text from PostgreSQL, MySQL, and MariaDB configuration candidates such as `postgresql.conf`, `pg_hba.conf`, `my.cnf`, `mariadb.conf`, and related config paths. Real `.env`, `.env.*`, `.envrc`, `.pgpass`, `.my.cnf`, `.mylogin.cnf`, dumps, backups, data files, WAL/binlog/InnoDB files, and key/certificate-like files are detected as sensitive files present but are not read. Database include directives are detected as context but not resolved.
+
+The analysis is heuristic and local. It looks for review indicators such as public listen/bind settings, pg_hba trust/password/open-world rules, disabled or weak TLS settings, weak password/auth settings, logging/backup/replication posture, include directives, sensitive adjacent files present, and secret-like SQL database values. Findings are indicators for manual review, not confirmed vulnerabilities, live reachability, compromise, breach, or proof of exploitability.
+
+Inspectra does not execute PostgreSQL, MySQL, or MariaDB clients or servers; run `psql`, `mysql`, `mysqladmin`, `mysqld`, `postgres`, `pg_ctl`, `mariadb`, `mariadbd`, `pg_dump`, `mysqldump`, or similar tools; open sockets; connect to database servers; validate configs against live instances; resolve includes; read host paths; read dumps/backups/credential/data files; query CVEs/advisories; extract the project broadly; follow symlinks or hardlinks; or call the internet. SQL database credentials, DSNs, `PGPASSWORD`/`MYSQL_PWD`, private key blocks, errors, raw JSON, and exports are redacted best-effort.
 
 ## Launch a Redis Config Audit
 

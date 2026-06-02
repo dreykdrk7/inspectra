@@ -1,12 +1,12 @@
 # sql_database_config_basic Design
 
-Status: docs-first design for a future passive archive-based SQL database config audit. No runner, backend, frontend, jobs, exports, or runtime behavior are implemented by this document.
+Status: historical docs-first design. `sql_database_config_basic` is now implemented and closed as a v1 passive archive-based SQL database config audit module. This document remains the design reference for scope and future maintenance; the closeout is recorded in `docs/future/sql-database-config-basic-closeout.md`.
 
-Product note: Inspectra already has a closed `database_config_basic` lineage in this repository. This design freezes the preferred explicit name `sql_database_config_basic` for the final SQL database configuration coverage decision before the first Inspectra Passive technical alpha. A future runtime microphase should decide whether to implement this as a new audit type, rename/alias the existing SQL database surface, or treat this as the canonical design for the existing PostgreSQL/MySQL/MariaDB capability. It must not duplicate user-facing behavior accidentally.
+Product note: Inspectra already has a `database_config_basic` lineage in this repository. This design froze the preferred explicit name `sql_database_config_basic` for the final SQL database configuration coverage decision before the first Inspectra Passive technical alpha. The implemented module uses `sql_database_config_basic` as its explicit audit type, with runner endpoint `POST /analyze/sql-database-config`, backend endpoint `POST /audits/sql-database-config/{file_id}`, archive-only frontend action `Analyze SQL DB config`, and redaction-first reporting/export.
 
 ## 1. Module Objective
 
-`sql_database_config_basic` is a future passive archive audit for static PostgreSQL, MySQL, and MariaDB configuration files supplied by the user.
+`sql_database_config_basic` is a passive archive audit for static PostgreSQL, MySQL, and MariaDB configuration files supplied by the user.
 
 The module should help users review SQL database posture signals around:
 
@@ -38,7 +38,7 @@ Allowed behavior:
 - Detect sensitive adjacent files as present without reading contents.
 - Detect include/import/config-dir directives as context.
 - Review included files only when they also appear as normal archive candidates through ordinary archive scanning, not by resolving include paths.
-- Apply redaction before storing evidence, errors, raw result data, backend exports, or frontend display in future runtime phases.
+- Apply redaction before storing evidence, errors, raw result data, backend exports, or frontend display.
 - Record parser uncertainty, skipped files, truncation, and controlled errors.
 
 Findings must remain review indicators, not confirmed vulnerabilities, exploitability claims, compromise claims, live exposure truth, or data-breach assertions.
@@ -405,7 +405,7 @@ The result should align with existing passive audit modules:
 }
 ```
 
-Suggested future limits:
+Implemented/default limits:
 
 - `INSPECTRA_SQL_DATABASE_CONFIG_MAX_FILES`, default `100`.
 - `INSPECTRA_SQL_DATABASE_CONFIG_MAX_FILE_BYTES`, default `524288`.
@@ -413,7 +413,7 @@ Suggested future limits:
 
 ## 13. UX and Reporting Expectations
 
-Future UI and exports should present `sql_database_config_basic` as a passive static SQL database config review, not a vulnerability scanner or live database validator.
+UI and exports present `sql_database_config_basic` as a passive static SQL database config review, not a vulnerability scanner or live database validator.
 
 Expected sections:
 
@@ -437,9 +437,9 @@ Expected sections:
 
 Reports should clearly state that Inspectra does not execute database servers or clients, open sockets, connect to databases, validate credentials, execute SQL queries, resolve includes, read `.env` files, read dumps/backups/data files, query CVEs/advisories, or confirm exploitability.
 
-## 14. Future Tests
+## 14. Tests and Validation Expectations
 
-Runner tests should cover:
+Runner tests and future regressions should cover:
 
 - PostgreSQL `listen_addresses = '*'` generates `postgres_listen_all_interfaces`.
 - PostgreSQL public-looking `listen_addresses` values generate `postgres_listen_public_address_hint`.
@@ -473,7 +473,7 @@ Runner tests should cover:
 Backend/reporting tests should cover:
 
 - Endpoint accepts only archives.
-- Runner call targets `/analyze/sql-database-config` if that becomes the final endpoint.
+- Runner call targets `/analyze/sql-database-config`.
 - Job type is `sql_database_config_basic`.
 - Summary tolerates sparse, null, and malformed payloads.
 - Markdown, HTML, XML, and PDF exports redact legacy secrets.
@@ -515,7 +515,7 @@ Suggested fixture secrets:
 
 ## 15. Implementation Microphases
 
-Recommended sequence:
+Series sequence:
 
 1. Docs-first design and scope freeze.
 2. Runner/parser passive analysis plus redaction and tests.
@@ -523,18 +523,18 @@ Recommended sequence:
 4. Frontend action/report UX and tests.
 5. End-to-end contract/redaction review.
 6. Docs/smoke closeout.
-7. Passive suite transversal closeout.
+7. Passive suite transversal closeout, recommended next.
 
-Each runtime phase should preserve the same non-scope: no PostgreSQL/MySQL/MariaDB execution, no database clients, no database connections, no query execution, no socket opening, no Docker execution, no include resolution, no `.env`/dump/backup/data-file reads, no network calls, no CVE/advisory lookups, and no exploitability claims.
+Each runtime phase preserved the same non-scope: no PostgreSQL/MySQL/MariaDB execution, no database clients, no database connections, no query execution, no socket opening, no Docker execution, no include resolution, no `.env`/dump/backup/data-file reads, no network calls, no CVE/advisory lookups, and no exploitability claims.
 
-## 16. Documentation Updates for Future Runtime Phases
+## 16. Documentation Maintenance After Implementation
 
-When implemented, update:
+The implementation updated these surfaces and future maintenance should keep them aligned:
 
 - `README.md` with the backend endpoint, UI action, limits, no-scope, and launch example.
 - `docs/architecture.md` with the backend/runner/storage/reporting/frontend flow.
 - `docs/security-scope.md` with allowed SQL database config review scope and explicit out-of-scope behavior.
-- A future closeout document such as `docs/future/sql-database-config-basic-closeout.md`.
+- `docs/future/sql-database-config-basic-closeout.md`.
 - Any session summary document if the repository introduces one.
 
 Documentation must continue to state that Inspectra does not run database servers or clients, connect to databases, execute queries, open sockets, read `.env`/dump/backup/data-file contents, resolve includes, query CVEs/advisories, call external services, or confirm exploitability.
