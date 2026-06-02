@@ -78,6 +78,12 @@ Full checklist:
 docs/future/passive-alpha-smoke-demo-checklist.md
 ```
 
+Readiness/packaging decision:
+
+```text
+docs/future/passive-alpha-packaging-readiness.md
+```
+
 1. Start Inspectra locally.
 2. Upload a source archive from `archives/`.
 3. Confirm the file is registered as `kind: "archive"`.

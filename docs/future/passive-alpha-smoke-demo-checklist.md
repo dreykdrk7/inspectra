@@ -80,6 +80,10 @@ Frontend demo-note follow-up:
 
 - `docs/future/passive-alpha-smoke-demo-fixtures-frontend-demo-notes.md`
 
+Alpha packaging/readiness:
+
+- `docs/future/passive-alpha-packaging-readiness.md`
+
 ## 4. Technical Smoke Before Demo
 
 Recommended commands:
@@ -405,12 +409,18 @@ Do not:
 
 ## 16. Next Step
 
-Recommended next microphase:
+Readiness packaging was added in:
 
-`PASSIVE-ALPHA-SMOKE-DEMO-FIXTURES-05-ALPHA-PACKAGING-READINESS`
+```text
+docs/future/passive-alpha-packaging-readiness.md
+```
 
 Frontend demo notes were added in:
 
 ```text
 docs/future/passive-alpha-smoke-demo-fixtures-frontend-demo-notes.md
 ```
+
+Recommended next product step after the trusted local alpha demo:
+
+`POST_ALPHA_READINESS_BACKLOG_TRIAGE`
