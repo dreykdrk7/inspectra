@@ -207,6 +207,9 @@ COMPOSE_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_COMPOSE_CONFIG
 DATABASE_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_DATABASE_CONFIG_MAX_FILES", 100)
 DATABASE_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_DATABASE_CONFIG_MAX_FILE_BYTES", 524_288)
 DATABASE_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_DATABASE_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
+REDIS_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_REDIS_CONFIG_MAX_FILES", 100)
+REDIS_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_REDIS_CONFIG_MAX_FILE_BYTES", 524_288)
+REDIS_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_REDIS_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
 WEB_ALLOW_PRIVATE_TARGETS = bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", False)
 WEB_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_WEB_TIMEOUT_SECONDS", 10.0)
 WEB_MAX_RESPONSE_BYTES = positive_int_from_env("INSPECTRA_WEB_MAX_RESPONSE_BYTES", 1_048_576)
@@ -815,6 +818,38 @@ async def analyze_database_config(request: ArchiveAnalysisRequest) -> dict[str, 
         analysis = empty_database_config_analysis(errors=[f"Archive could not be parsed safely: {safe_error}"])
 
     return build_database_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
+
+
+@app.post("/analyze/redis-config")
+async def analyze_redis_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    archive_path = resolve_data_path(request.relative_path)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
+
+    original_filename = Path(request.original_filename or archive_path.name).name
+    limits = redis_config_limits(request)
+    archive_type = detect_archive_type(archive_path, original_filename)
+    if archive_type == "unknown":
+        return build_redis_config_result(
+            request.file_id,
+            archive_path,
+            original_filename,
+            archive_type,
+            empty_redis_config_analysis(
+                errors=[
+                    "Unsupported or corrupt archive. Inspectra did not start Redis, connect to servers, parse dumps, or read ACL/env files."
+                ]
+            ),
+            **limits,
+        )
+
+    try:
+        analysis = analyze_redis_config_archive(archive_path, archive_type, **limits)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        safe_error, _redactions = redact_redis_secret_text(str(exc))
+        analysis = empty_redis_config_analysis(errors=[f"Archive could not be parsed safely: {safe_error}"])
+
+    return build_redis_config_result(request.file_id, archive_path, original_filename, archive_type, analysis, **limits)
 
 
 @app.post("/analyze/web-basic")
@@ -14712,6 +14747,1073 @@ def add_database_config_finding(
         finding["address"] = address
     if port:
         finding["port"] = port
+    analysis["findings"].append(finding)
+
+
+def redis_config_limits(request: ArchiveAnalysisRequest) -> dict[str, int]:
+    max_files = REDIS_CONFIG_MAX_FILES if request.max_files is None else request.max_files
+    max_file_bytes = REDIS_CONFIG_MAX_FILE_BYTES if request.max_file_bytes is None else request.max_file_bytes
+    max_total_bytes = REDIS_CONFIG_MAX_TOTAL_BYTES if request.max_total_bytes is None else request.max_total_bytes
+    if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Redis config analysis limits must be positive.")
+    return {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes}
+
+
+def analyze_redis_config_archive(
+    path: Path,
+    archive_type: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    analysis = empty_redis_config_analysis()
+    state = {
+        "files_read": 0,
+        "total_bytes_read": 0,
+        "max_files": max_files,
+        "max_file_bytes": max_file_bytes,
+        "max_total_bytes": max_total_bytes,
+    }
+
+    if archive_type == "zip":
+        preflight = inspect_zip_metadata_preflight(path)
+        blocked_reason = zip_preflight_block_reason(preflight, ARCHIVE_MAX_ENTRIES)
+        add_zip_preflight_summary(analysis["summary"], preflight)
+        if blocked_reason:
+            analysis["summary"]["truncated"] = True
+            finding = zip_preflight_finding(blocked_reason, preflight, ARCHIVE_MAX_ENTRIES)
+            scoped = dict(finding)
+            scoped["id"] = f"redis_config_{scoped['id']}"
+            analysis["findings"].append(scoped)
+            finalize_redis_config_analysis(analysis)
+            return analysis
+        with zipfile.ZipFile(path) as archive:
+            for index, info in enumerate(archive.filelist, start=1):
+                if should_stop_redis_config_archive_scan(index, analysis):
+                    break
+                mode = (info.external_attr >> 16) or None
+                entry = {
+                    "path": info.filename,
+                    "type": "directory" if info.is_dir() else "symlink" if mode and stat.S_ISLNK(mode) else "file",
+                    "size": info.file_size,
+                    "mode_int": mode,
+                    "mode": format_file_mode(mode),
+                    "link_target": None,
+                }
+                process_redis_config_entry(analysis, state, entry, lambda entry_info=info: archive.open(entry_info))
+    else:
+        with tarfile.open(path, "r:*") as archive:
+            for index, member in enumerate(archive, start=1):
+                if should_stop_redis_config_archive_scan(index, analysis):
+                    break
+                entry = {
+                    "path": member.name,
+                    "type": tar_member_type(member),
+                    "size": member.size,
+                    "mode_int": member.mode,
+                    "mode": format_file_mode(member.mode),
+                    "link_target": member.linkname or None,
+                }
+                process_redis_config_entry(analysis, state, entry, lambda tar_member=member: archive.extractfile(tar_member))
+
+    finalize_redis_config_analysis(analysis)
+    return analysis
+
+
+def empty_redis_config_analysis(errors: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": {
+            "files_considered": 0,
+            "files_reviewed": 0,
+            "redis_files_detected": 0,
+            "sentinel_files_detected": 0,
+            "acl_files_detected": 0,
+            "dump_or_aof_files_detected": 0,
+            "configs_detected": 0,
+            "findings_count": 0,
+            "redacted_values_count": 0,
+            "truncated": False,
+        },
+        "files_detected": [],
+        "files_reviewed": [],
+        "configs": [],
+        "redis_settings": [],
+        "sentinel_settings": [],
+        "includes": [],
+        "acl_files": [],
+        "dump_or_aof_files": [],
+        "findings": [],
+        "redaction_notes": [],
+        "errors": errors or [],
+        "_config_states": {},
+    }
+
+
+def build_redis_config_result(
+    file_id: str,
+    path: Path,
+    original_filename: str,
+    archive_type: str,
+    analysis: dict[str, Any],
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> dict[str, Any]:
+    summary = as_dict(analysis.get("summary"))
+    findings = analysis.get("findings") if isinstance(analysis.get("findings"), list) else []
+    summary["findings_count"] = len(findings)
+    return {
+        "file_id": file_id,
+        "analyzer": "redis_config_basic",
+        "archive_type": archive_type,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "hashes": calculate_hashes(path),
+        "file_identification": {
+            "size_bytes": path.stat().st_size,
+            "original_filename": original_filename,
+        },
+        "limits": {
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_total_bytes": max_total_bytes,
+            "max_archive_entries": ARCHIVE_MAX_ENTRIES,
+            "max_entry_name_length": ARCHIVE_MAX_ENTRY_NAME_LENGTH,
+            "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
+        },
+        "summary": summary,
+        "files_detected": analysis.get("files_detected", []),
+        "files_reviewed": analysis.get("files_reviewed", []),
+        "configs": analysis.get("configs", []),
+        "redis_settings": analysis.get("redis_settings", []),
+        "sentinel_settings": analysis.get("sentinel_settings", []),
+        "includes": analysis.get("includes", []),
+        "acl_files": analysis.get("acl_files", []),
+        "dump_or_aof_files": analysis.get("dump_or_aof_files", []),
+        "findings": findings,
+        "redaction_notes": analysis.get("redaction_notes", []),
+        "errors": analysis.get("errors", []),
+        "truncated": bool(summary.get("truncated")),
+    }
+
+
+def should_stop_redis_config_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
+    if index > ARCHIVE_MAX_ENTRIES:
+        analysis["summary"]["truncated"] = True
+        add_redis_config_finding(
+            analysis,
+            "redis_config_entry_limit_reached",
+            "Archive entry scan limit reached",
+            "medium",
+            "high",
+            "limit",
+            "Inspectra stopped scanning archive metadata after the configured entry limit.",
+            f"Processed {ARCHIVE_MAX_ENTRIES} entries.",
+            "Review the archive with stricter limits or split it before deeper inspection.",
+        )
+        return True
+    return False
+
+
+def process_redis_config_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+) -> None:
+    path = str(entry["path"])
+    category = classify_redis_config_candidate(path)
+    if category is None:
+        return
+
+    summary = as_dict(analysis["summary"])
+    summary["files_considered"] += 1
+    increment_redis_category_counts(summary, category)
+
+    entry_type = str(entry["type"])
+    size_bytes = int(entry.get("size") or 0)
+    context = redis_config_file_context(path, category)
+    config_type = "sentinel" if category == "sentinel" else "redis" if category == "redis" else None
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "category": category,
+        "config_type": config_type,
+        "context": context,
+        "entry_type": entry_type,
+        "size_bytes": size_bytes,
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+        "read": False,
+        "skip_reason": None,
+    }
+    if entry.get("link_target"):
+        record["link_target"] = entry["link_target"]
+
+    skip_reason = redis_config_skip_reason(record, state)
+    if skip_reason:
+        record["skip_reason"] = skip_reason
+        analysis["files_detected"].append(record)
+        if skip_reason == "sensitive_file_not_read":
+            add_redis_env_file(analysis, record)
+        elif skip_reason == "acl_file_not_read":
+            add_redis_acl_file(analysis, record)
+        elif skip_reason == "dump_or_aof_not_read":
+            add_redis_dump_or_aof_file(analysis, record)
+        else:
+            add_redis_config_skip_finding(analysis, path, skip_reason, size_bytes, context)
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, state["max_file_bytes"])
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        record["skip_reason"] = "read_error"
+        analysis["files_detected"].append(record)
+        safe_error, redactions = redact_redis_secret_text(str(exc))
+        analysis["summary"]["redacted_values_count"] += redactions
+        add_redis_config_finding(
+            analysis,
+            "redis_config_file_read_error",
+            "Redis config candidate could not be read safely",
+            "low",
+            "medium",
+            "archive",
+            "A Redis-related candidate file could not be read from the archive within Inspectra limits.",
+            f"{path}: {safe_error}",
+            "Review this file manually in a constrained environment if it is expected.",
+            file_path=path,
+            context=context,
+            config_type=config_type,
+        )
+        return
+
+    state["total_bytes_read"] += len(raw_bytes)
+    if b"\x00" in raw_bytes:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_redis_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        record["skip_reason"] = "binary_or_non_text"
+        analysis["files_detected"].append(record)
+        add_redis_config_skip_finding(analysis, path, "binary_or_non_text", size_bytes, context)
+        return
+
+    state["files_read"] += 1
+    summary["files_reviewed"] = state["files_read"]
+    record["read"] = True
+    record["bytes_read"] = len(raw_bytes)
+    analysis["files_detected"].append(record)
+    analysis["files_reviewed"].append(
+        {"path": path, "category": category, "config_type": config_type, "context": context, "size_bytes": size_bytes, "bytes_read": len(raw_bytes)}
+    )
+    analysis["configs"].append({"path": path, "config_type": config_type, "context": context, "size_bytes": size_bytes})
+    analyze_redis_config_text(analysis, path, category, context, config_type or "redis", text)
+
+
+def classify_redis_config_candidate(path: str) -> str | None:
+    normalized = normalize_archive_entry_path(path)
+    lower = normalized.lower()
+    basename = lower.rsplit("/", 1)[-1]
+    parts = [part for part in lower.split("/") if part]
+    path_tokens = set(parts[:-1])
+    if is_redis_env_name(basename):
+        return "sensitive"
+    if is_redis_acl_name(basename):
+        return "acl"
+    if is_redis_dump_or_aof_path(lower):
+        return "dump_or_aof"
+    if basename in {"sentinel.conf", "redis-sentinel.conf"}:
+        return "sentinel"
+    if basename == "redis.conf" or (basename.startswith("redis-") and basename.endswith(".conf")):
+        return "redis"
+    if basename.endswith(".conf"):
+        if "sentinel" in path_tokens:
+            return "sentinel"
+        if any(part == "redis" or part.startswith("redis-") or part.startswith("redis_") for part in path_tokens):
+            return "redis"
+        if path_tokens.intersection({"cache", "db", "database"}) and "redis" in lower:
+            return "redis"
+    return None
+
+
+def is_redis_env_name(basename: str) -> bool:
+    return basename == ".env" or basename == ".envrc" or basename.startswith(".env.")
+
+
+def is_redis_acl_name(basename: str) -> bool:
+    return basename == "users.acl" or basename.endswith(".acl")
+
+
+def is_redis_dump_or_aof_path(path: str) -> bool:
+    basename = path.rsplit("/", 1)[-1]
+    parts = [part for part in path.split("/") if part]
+    return (
+        "appendonlydir" in parts
+        or basename in {"dump.rdb", "appendonly.aof", "redis-dump.rdb", "redis-backup.rdb"}
+        or basename.endswith((".rdb", ".aof", ".backup", ".bak"))
+    )
+
+
+def increment_redis_category_counts(summary: dict[str, Any], category: str) -> None:
+    if category == "redis":
+        summary["redis_files_detected"] += 1
+    if category == "sentinel":
+        summary["sentinel_files_detected"] += 1
+    if category == "acl":
+        summary["acl_files_detected"] += 1
+    if category == "dump_or_aof":
+        summary["dump_or_aof_files_detected"] += 1
+
+
+def redis_config_skip_reason(record: dict[str, Any], state: dict[str, int]) -> str | None:
+    flags = as_dict(record.get("flags"))
+    path = str(record["path"])
+    size_bytes = int(record.get("size_bytes") or 0)
+    if flags.get("path_traversal"):
+        return "path_traversal"
+    if flags.get("absolute_path") or flags.get("windows_absolute_path"):
+        return "absolute_path"
+    if record.get("category") == "sensitive":
+        return "sensitive_file_not_read"
+    if record.get("category") == "acl":
+        return "acl_file_not_read"
+    if record.get("category") == "dump_or_aof":
+        return "dump_or_aof_not_read"
+    if record.get("entry_type") != "file":
+        return f"not_regular_file:{record.get('entry_type')}"
+    if len(path) > ARCHIVE_MAX_ENTRY_NAME_LENGTH:
+        return "entry_name_too_long"
+    if size_bytes > state["max_file_bytes"]:
+        return "file_too_large"
+    if state["files_read"] >= state["max_files"]:
+        return "too_many_files"
+    if state["total_bytes_read"] + size_bytes > state["max_total_bytes"]:
+        return "total_bytes_limit"
+    return None
+
+
+def add_redis_config_skip_finding(analysis: dict[str, Any], path: str, reason: str, size_bytes: int, context: str) -> None:
+    if reason in {"file_too_large", "too_many_files", "total_bytes_limit"}:
+        analysis["summary"]["truncated"] = True
+    titles = {
+        "path_traversal": "Redis config path uses traversal",
+        "absolute_path": "Redis config path is absolute",
+        "entry_name_too_long": "Redis config entry name is unusually long",
+        "file_too_large": "Redis config file omitted because it exceeds the size limit",
+        "too_many_files": "Redis config file limit reached",
+        "total_bytes_limit": "Total Redis config byte limit reached",
+        "binary_or_non_text": "Redis config candidate is not UTF-8 text",
+    }
+    level = "medium" if reason in {"path_traversal", "absolute_path", "file_too_large", "too_many_files", "total_bytes_limit"} else "low"
+    if reason == "binary_or_non_text":
+        level = "info"
+    evidence = f"{path}: {size_bytes} bytes" if reason == "file_too_large" else path[:240]
+    if reason.startswith("not_regular_file"):
+        title = "Redis config candidate omitted because it is not a regular file"
+        evidence = f"{path}: {reason}"
+        level = "low"
+    else:
+        title = titles.get(reason, "Redis config candidate skipped by defensive limit")
+    add_redis_config_finding(
+        analysis,
+        f"redis_config_{reason.split(':', 1)[0]}",
+        title,
+        redis_contextual_level(level, context),
+        redis_contextual_confidence("high" if reason in {"path_traversal", "absolute_path"} else "medium", context),
+        "archive",
+        "Inspectra detected a Redis-related file but did not read it because of a defensive limit, unsupported format, or unsafe archive metadata.",
+        evidence,
+        "Review the archive manually in a constrained environment if this file is expected.",
+        file_path=path,
+        context=context,
+    )
+
+
+def add_redis_env_file(analysis: dict[str, Any], record: dict[str, Any]) -> None:
+    add_redis_config_finding(
+        analysis,
+        "redis_env_file_sensitive_present",
+        "Redis-adjacent env file detected but not read",
+        redis_contextual_level("low", str(record.get("context") or "")),
+        "high",
+        "secrets",
+        "A .env-style file was present in the archive. Inspectra records its presence but does not read or store its content.",
+        str(record["path"])[:240],
+        "Keep real env files out of shared archives and use sample files for review packages.",
+        file_path=str(record["path"]),
+        context=str(record.get("context") or ""),
+    )
+
+
+def add_redis_acl_file(analysis: dict[str, Any], record: dict[str, Any]) -> None:
+    acl_record = {
+        "path": record["path"],
+        "context": record.get("context"),
+        "category": "acl",
+        "read": False,
+        "skip_reason": "acl_file_not_read",
+        "size_bytes": record.get("size_bytes"),
+    }
+    analysis["acl_files"].append(acl_record)
+    add_redis_config_finding(
+        analysis,
+        "redis_acl_file_present",
+        "Redis ACL file detected but not read",
+        redis_contextual_level("low", str(record.get("context") or "")),
+        "high",
+        "auth",
+        "A Redis ACL file was present in the archive. Inspectra records its presence but does not parse users or password material.",
+        str(record["path"])[:240],
+        "Review ACL files in a trusted environment and avoid sharing archives with real credential material.",
+        file_path=str(record["path"]),
+        context=str(record.get("context") or ""),
+    )
+    add_redis_config_finding(
+        analysis,
+        "redis_acl_file_not_read",
+        "Redis ACL file content was not read",
+        "info",
+        "high",
+        "auth",
+        "Inspectra treats Redis ACL files as sensitive and does not read their contents in this passive analyzer.",
+        str(record["path"])[:240],
+        "Review ACL contents separately in a constrained, trusted workflow.",
+        file_path=str(record["path"]),
+        context=str(record.get("context") or ""),
+    )
+
+
+def add_redis_dump_or_aof_file(analysis: dict[str, Any], record: dict[str, Any]) -> None:
+    dump_record = {
+        "path": record["path"],
+        "context": record.get("context"),
+        "category": "dump_or_aof",
+        "read": False,
+        "skip_reason": "dump_or_aof_not_read",
+        "size_bytes": record.get("size_bytes"),
+    }
+    analysis["dump_or_aof_files"].append(dump_record)
+    add_redis_config_finding(
+        analysis,
+        "redis_dump_or_aof_file_present",
+        "Redis dump, AOF, or backup file detected but not read",
+        redis_contextual_level("medium", str(record.get("context") or "")),
+        "high",
+        "data",
+        "A Redis dump, AOF, appendonly directory entry, or backup-like file was present. Inspectra records its presence but does not parse data.",
+        str(record["path"])[:240],
+        "Avoid sharing Redis data files in review archives unless local storage risk is acceptable.",
+        file_path=str(record["path"]),
+        context=str(record.get("context") or ""),
+    )
+
+
+REDIS_LOWER_CONFIDENCE_CONTEXTS = {"development", "test", "local", "example"}
+REDIS_SECRET_KEY_RE = re.compile(
+    r"(?i)(password|passwd|pwd|secret|token|api[_-]?key|apikey|client[_-]?secret|private[_-]?key|credential|auth|requirepass|masterauth)"
+)
+REDIS_CREDENTIAL_URL_RE = re.compile(r"(?i)\bredis(?:s)?://[^\s'\"<>/@:]*:[^\s'\"<>/@]+@[^\s'\"<>]+")
+REDIS_PUBLIC_EXAMPLE_NETS = ("192.0.2.", "198.51.100.", "203.0.113.")
+REDIS_DANGEROUS_COMMANDS = {"config", "flushall", "flushdb", "shutdown", "debug", "module", "slaveof", "replicaof"}
+
+
+def redis_config_file_context(path: str, category: str = "") -> str:
+    normalized = normalize_archive_entry_path(path).lower()
+    parts = [part for part in normalized.split("/") if part]
+    basename = parts[-1] if parts else normalized
+    directories = set(parts[:-1])
+    name_tokens = set(re.split(r"[^a-z0-9]+", basename))
+    all_tokens = directories | name_tokens
+    if directories.intersection({"docs", "doc", "examples", "example", "samples", "sample"}) or all_tokens.intersection(
+        {"example", "examples", "sample", "samples", "template", "templates", "sandbox"}
+    ):
+        return "example"
+    if all_tokens.intersection({"test", "tests", "testing"}):
+        return "test"
+    if all_tokens.intersection({"dev", "development"}):
+        return "development"
+    if "local" in all_tokens:
+        return "local"
+    if all_tokens.intersection({"prod", "production", "live", "deploy", "server", "vps"}):
+        return "production"
+    if all_tokens.intersection({"data", "cache", "redis"}):
+        return "shared"
+    if category in {"redis", "sentinel"} and basename in {"redis.conf", "sentinel.conf", "redis-sentinel.conf"}:
+        return "shared"
+    return "ambiguous"
+
+
+def redis_contextual_level(level: str, context: str | None) -> str:
+    if (context or "") in REDIS_LOWER_CONFIDENCE_CONTEXTS:
+        if level == "medium":
+            return "low"
+        if level == "low":
+            return "info"
+    return level
+
+
+def redis_contextual_confidence(confidence: str, context: str | None) -> str:
+    if (context or "") in REDIS_LOWER_CONFIDENCE_CONTEXTS and confidence == "high":
+        return "medium"
+    return confidence
+
+
+def analyze_redis_config_text(analysis: dict[str, Any], path: str, category: str, context: str, config_type: str, text: str) -> None:
+    states = analysis.setdefault("_config_states", {})
+    state = states.setdefault(
+        path,
+        {
+            "path": path,
+            "context": context,
+            "config_type": config_type,
+            "seen": set(),
+            "public_bind": False,
+            "protected_mode_no": False,
+            "requirepass": False,
+            "tls_port": False,
+            "tls_disabled": False,
+            "port_6379": False,
+            "replicaof": False,
+            "masterauth": False,
+            "dangerous_rename": False,
+            "sentinel_monitor": False,
+            "sentinel_auth": False,
+        },
+    )
+    if config_type == "sentinel":
+        add_redis_config_finding(
+            analysis,
+            "redis_sentinel_config_detected",
+            "Redis Sentinel config detected",
+            redis_contextual_level("low", context),
+            redis_contextual_confidence("high", context),
+            "sentinel",
+            "A Sentinel configuration file was detected. Inspectra records static settings but does not run Sentinel or validate live state.",
+            path[:240],
+            "Review Sentinel auth, monitoring, and failover settings in the intended deployment context.",
+            file_path=path,
+            context=context,
+            config_type=config_type,
+        )
+
+    in_private_key = False
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        if in_private_key:
+            if re.search(r"-----END [A-Z ]*PRIVATE KEY-----", raw_line, flags=re.IGNORECASE):
+                in_private_key = False
+            continue
+        if re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\bPRIVATE KEY\b", raw_line, flags=re.IGNORECASE):
+            add_redis_config_finding(
+                analysis,
+                "redis_private_key_hint",
+                "Private key-like material detected in Redis config",
+                redis_contextual_level("medium", context),
+                redis_contextual_confidence("high", context),
+                "secrets",
+                "Private key-like material appeared in a Redis config candidate. Inspectra redacted the value.",
+                "[REDACTED]",
+                "Keep private keys out of shared Redis config archives and rotate exposed key material if this was real.",
+                file_path=path,
+                context=context,
+                config_type=config_type,
+                line=line_number,
+                redacted=True,
+            )
+            if re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", raw_line, flags=re.IGNORECASE) and not re.search(
+                r"-----END [A-Z ]*PRIVATE KEY-----", raw_line, flags=re.IGNORECASE
+            ):
+                in_private_key = True
+            continue
+
+        line = strip_redis_comment(raw_line)
+        if not line:
+            continue
+        parts = redis_split_directive(line)
+        if not parts:
+            continue
+        directive = parts[0].lower()
+        args = parts[1:]
+        value = " ".join(args)
+        state["seen"].add(directive)
+        setting = directive
+        if directive == "sentinel" and args:
+            setting = f"sentinel {args[0].lower()}"
+        safe_value = "[REDACTED]" if redis_setting_is_secret(setting, value) else redis_safe_value(value)
+        setting_record = {
+            "file_path": path,
+            "context": context,
+            "config_type": config_type,
+            "line": line_number,
+            "directive": directive,
+            "setting": setting,
+            "value": safe_value,
+        }
+        if config_type == "sentinel" or directive == "sentinel":
+            analysis["sentinel_settings"].append(setting_record)
+        else:
+            analysis["redis_settings"].append(setting_record)
+        analyze_redis_directive_finding(analysis, state, path, context, config_type, directive, args, line_number)
+
+
+def strip_redis_comment(line: str) -> str:
+    in_single = False
+    in_double = False
+    escaped = False
+    chars: list[str] = []
+    for char in line:
+        if escaped:
+            chars.append(char)
+            escaped = False
+            continue
+        if char == "\\" and in_double:
+            chars.append(char)
+            escaped = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+        elif char == '"' and not in_single:
+            in_double = not in_double
+        if char == "#" and not in_single and not in_double:
+            break
+        chars.append(char)
+    return "".join(chars).strip()
+
+
+def redis_split_directive(line: str) -> list[str]:
+    token_re = re.compile(r'''"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)''')
+    tokens: list[str] = []
+    for match in token_re.finditer(line):
+        token = match.group(1) if match.group(1) is not None else match.group(2) if match.group(2) is not None else match.group(3)
+        tokens.append(token or "")
+    return tokens
+
+
+def analyze_redis_directive_finding(
+    analysis: dict[str, Any],
+    state: dict[str, Any],
+    path: str,
+    context: str,
+    config_type: str,
+    directive: str,
+    args: list[str],
+    line: int,
+) -> None:
+    value = " ".join(args)
+    normalized_value = value.strip().lower()
+    if redis_setting_is_secret(directive, value) and directive not in {"requirepass", "masterauth"} and not (
+        directive == "sentinel" and args and args[0].lower() == "auth-pass"
+    ):
+        add_redis_setting_finding(
+            analysis,
+            "redis_password_like_value",
+            "Redis config contains a password-like value",
+            "medium",
+            "secrets",
+            path,
+            context,
+            config_type,
+            directive,
+            line,
+            f"{directive} [REDACTED]",
+            redacted=True,
+        )
+    if REDIS_CREDENTIAL_URL_RE.search(value):
+        add_redis_setting_finding(
+            analysis,
+            "redis_password_like_value",
+            "Redis config contains a credential URL",
+            "medium",
+            "secrets",
+            path,
+            context,
+            config_type,
+            directive,
+            line,
+            f"{directive} [REDACTED]",
+            redacted=True,
+        )
+    if directive == "include" and args:
+        add_redis_include(analysis, path, context, config_type, args[0], line)
+    if directive == "bind":
+        for address in args:
+            clean_address = address.strip("[]")
+            if clean_address in {"0.0.0.0", "::", "*"}:
+                state["public_bind"] = True
+                add_redis_setting_finding(analysis, "redis_bind_all_interfaces", "Redis bind includes all interfaces", "medium", "network", path, context, config_type, directive, line, f"bind {clean_address}", address=clean_address)
+            elif redis_address_looks_public(clean_address):
+                state["public_bind"] = True
+                add_redis_setting_finding(analysis, "redis_bind_public_address_hint", "Redis bind includes a public-looking address", "medium", "network", path, context, config_type, directive, line, f"bind {clean_address}", address=clean_address)
+    if directive == "protected-mode" and normalized_value in {"no", "false", "0", "off"}:
+        state["protected_mode_no"] = True
+        add_redis_setting_finding(analysis, "redis_protected_mode_no", "Redis protected-mode is disabled", "medium", "auth", path, context, config_type, directive, line, "protected-mode no")
+    if directive == "port" and args:
+        port = args[0]
+        if port == "6379":
+            state["port_6379"] = True
+            add_redis_setting_finding(analysis, "redis_port_default_exposed_hint", "Redis default port is configured", "low", "network", path, context, config_type, directive, line, "port 6379", port=port)
+    if directive == "unixsocketperm" and args:
+        try:
+            perm = int(args[0], 8)
+        except ValueError:
+            perm = -1
+        if perm >= 0o766:
+            add_redis_setting_finding(analysis, "redis_unixsocket_permissions_permissive", "Redis unixsocket permissions appear permissive", "low", "network", path, context, config_type, directive, line, f"unixsocketperm {args[0]}")
+    if directive == "requirepass":
+        state["requirepass"] = True
+        add_redis_setting_finding(analysis, "redis_requirepass_present_redacted", "Redis requirepass is present", "medium", "secrets", path, context, config_type, directive, line, "requirepass [REDACTED]", redacted=True)
+    if directive == "masterauth":
+        state["masterauth"] = True
+        add_redis_setting_finding(analysis, "redis_masterauth_present_redacted", "Redis masterauth is present", "medium", "secrets", path, context, config_type, directive, line, "masterauth [REDACTED]", redacted=True)
+    if directive == "aclfile" and args:
+        add_redis_setting_finding(analysis, "redis_aclfile_reference", "Redis aclfile reference detected", "info", "auth", path, context, config_type, directive, line, f"aclfile {redis_safe_value(args[0])}", path_value=args[0])
+    if directive == "user" and args and args[0].lower() == "default" and "on" in {item.lower() for item in args[1:]}:
+        add_redis_setting_finding(analysis, "redis_default_user_enabled_hint", "Redis default user appears enabled", "medium", "auth", path, context, config_type, directive, line, "user default on")
+    if directive == "tls-port":
+        state["tls_port"] = True
+        if not args or args[0] == "0":
+            state["tls_disabled"] = True
+            add_redis_setting_finding(analysis, "redis_tls_disabled_or_missing", "Redis TLS port appears disabled", "low", "tls", path, context, config_type, directive, line, "tls-port 0")
+            add_redis_setting_finding(analysis, "redis_tls_port_missing_hint", "Redis TLS port appears disabled", "low", "tls", path, context, config_type, directive, line, "tls-port 0")
+    if directive == "tls-cert-file" and args:
+        add_redis_setting_finding(analysis, "redis_tls_cert_path_present", "Redis TLS certificate path present", "info", "tls", path, context, config_type, directive, line, f"tls-cert-file {redis_safe_value(args[0])}", path_value=args[0])
+    if directive == "tls-key-file" and args:
+        add_redis_setting_finding(analysis, "redis_tls_key_path_present", "Redis TLS key path present", "low", "tls", path, context, config_type, directive, line, f"tls-key-file {redis_safe_value(args[0])}", path_value=args[0])
+    if directive == "tls-auth-clients" and normalized_value in {"no", "false", "0", "off", "optional"}:
+        add_redis_setting_finding(analysis, "redis_tls_auth_clients_disabled_hint", "Redis TLS client auth appears disabled or optional", "low", "tls", path, context, config_type, directive, line, f"tls-auth-clients {redis_safe_value(value)}")
+    if directive == "tls-protocols" and re.search(r"\bTLSv1(?:\.0|\.1)?\b", value, flags=re.IGNORECASE):
+        add_redis_setting_finding(analysis, "redis_tls_protocols_legacy_hint", "Redis TLS protocols include legacy versions", "low", "tls", path, context, config_type, directive, line, f"tls-protocols {redis_safe_value(value)}")
+    if directive == "save" and (not args or (len(args) == 1 and args[0] == "") or normalized_value in {'""', "''"}):
+        add_redis_setting_finding(analysis, "redis_save_disabled_hint", "Redis RDB save rules appear disabled", "low", "persistence", path, context, config_type, directive, line, 'save ""')
+    if directive == "appendonly" and normalized_value in {"no", "false", "0", "off"}:
+        add_redis_setting_finding(analysis, "redis_appendonly_no", "Redis appendonly persistence is disabled", "low", "persistence", path, context, config_type, directive, line, "appendonly no")
+    if directive == "appendfilename" and args and args[0].strip('"').lower() == "appendonly.aof":
+        add_redis_setting_finding(analysis, "redis_appendfilename_default_hint", "Redis appendfilename uses the default name", "info", "persistence", path, context, config_type, directive, line, "appendfilename appendonly.aof")
+    if directive == "dir" and args and redis_path_is_sensitive(args[0]):
+        add_redis_setting_finding(analysis, "redis_dir_sensitive_path_hint", "Redis dir points to a sensitive-looking path", "low", "persistence", path, context, config_type, directive, line, f"dir {redis_safe_value(args[0])}", path_value=args[0])
+    if directive == "dbfilename" and args and args[0].strip('"').lower() == "dump.rdb":
+        add_redis_setting_finding(analysis, "redis_dbfilename_default_hint", "Redis dbfilename uses the default name", "info", "persistence", path, context, config_type, directive, line, "dbfilename dump.rdb")
+    if directive == "rdbcompression" and normalized_value in {"no", "false", "0", "off"}:
+        add_redis_setting_finding(analysis, "redis_rdbcompression_no_hint", "Redis RDB compression appears disabled", "info", "persistence", path, context, config_type, directive, line, "rdbcompression no")
+    if directive in {"replicaof", "slaveof"}:
+        state["replicaof"] = True
+        add_redis_setting_finding(analysis, "redis_replicaof_present", "Redis replication target configured", "info", "replication", path, context, config_type, directive, line, f"{directive} {redis_safe_value(value)}")
+    if directive == "replica-read-only" and normalized_value in {"no", "false", "0", "off"}:
+        add_redis_setting_finding(analysis, "redis_replica_read_only_no", "Redis replica-read-only is disabled", "low", "replication", path, context, config_type, directive, line, "replica-read-only no")
+    if directive == "repl-diskless-sync" and normalized_value in {"yes", "true", "1", "on"}:
+        add_redis_setting_finding(analysis, "redis_repl_diskless_sync_enabled_hint", "Redis diskless replication sync is enabled", "info", "replication", path, context, config_type, directive, line, "repl-diskless-sync yes")
+    if directive == "rename-command" and args:
+        command = args[0].lower()
+        if command in REDIS_DANGEROUS_COMMANDS:
+            state["dangerous_rename"] = True
+            if len(args) == 1 or (len(args) > 1 and args[1] == ""):
+                add_redis_setting_finding(analysis, "redis_dangerous_command_renamed_to_empty_hint", "Redis dangerous command is renamed to empty", "info", "commands", path, context, config_type, directive, line, f"rename-command {command} [REDACTED]")
+    if directive == "loadmodule":
+        add_redis_setting_finding(analysis, "redis_module_load_present", "Redis module load directive detected", "medium", "modules", path, context, config_type, directive, line, f"loadmodule {redis_safe_value(value)}")
+    if directive == "lua-time-limit" and args:
+        try:
+            lua_time_limit = int(args[0])
+        except ValueError:
+            lua_time_limit = 0
+        if lua_time_limit > 10000:
+            add_redis_setting_finding(analysis, "redis_lua_time_limit_high_hint", "Redis lua-time-limit is high", "low", "runtime", path, context, config_type, directive, line, f"lua-time-limit {lua_time_limit}")
+    if directive == "loglevel" and normalized_value in {"debug", "verbose"}:
+        add_redis_setting_finding(analysis, "redis_loglevel_debug_or_verbose", "Redis loglevel is debug or verbose", "low", "logging", path, context, config_type, directive, line, f"loglevel {normalized_value}")
+    if directive == "logfile" and normalized_value in {"", '""', "stdout"}:
+        add_redis_setting_finding(analysis, "redis_logfile_stdout_or_empty_hint", "Redis logfile is stdout or empty", "info", "logging", path, context, config_type, directive, line, "logfile stdout/empty")
+    if directive == "supervised" and normalized_value in {"no", "false", "0", "off"}:
+        add_redis_setting_finding(analysis, "redis_supervised_no_hint", "Redis supervised mode is no", "info", "runtime", path, context, config_type, directive, line, "supervised no")
+    if directive == "daemonize" and normalized_value in {"yes", "true", "1", "on"}:
+        add_redis_setting_finding(analysis, "redis_daemonize_yes_hint", "Redis daemonize is enabled", "info", "runtime", path, context, config_type, directive, line, "daemonize yes")
+    if directive == "maxmemory-policy" and normalized_value == "noeviction":
+        add_redis_setting_finding(analysis, "redis_maxmemory_policy_noeviction_hint", "Redis maxmemory-policy is noeviction", "low", "resources", path, context, config_type, directive, line, "maxmemory-policy noeviction")
+    if directive == "timeout" and args and args[0] == "0":
+        add_redis_setting_finding(analysis, "redis_timeout_zero_hint", "Redis timeout is zero", "low", "resources", path, context, config_type, directive, line, "timeout 0")
+    if directive == "tcp-keepalive" and args:
+        try:
+            keepalive = int(args[0])
+        except ValueError:
+            keepalive = 300
+        if keepalive < 60:
+            add_redis_setting_finding(analysis, "redis_tcp_keepalive_low_or_missing_hint", "Redis tcp-keepalive is low or disabled", "low", "resources", path, context, config_type, directive, line, f"tcp-keepalive {args[0]}")
+    if directive == "sentinel" and args:
+        analyze_redis_sentinel_directive(analysis, state, path, context, config_type, args, line)
+
+
+def analyze_redis_sentinel_directive(
+    analysis: dict[str, Any],
+    state: dict[str, Any],
+    path: str,
+    context: str,
+    config_type: str,
+    args: list[str],
+    line: int,
+) -> None:
+    subcommand = args[0].lower()
+    value = " ".join(args[1:])
+    if subcommand == "monitor":
+        state["sentinel_monitor"] = True
+    if subcommand == "auth-pass":
+        state["sentinel_auth"] = True
+        add_redis_setting_finding(
+            analysis,
+            "redis_sentinel_auth_pass_present_redacted",
+            "Redis Sentinel auth-pass is present",
+            "medium",
+            "secrets",
+            path,
+            context,
+            config_type,
+            "sentinel auth-pass",
+            line,
+            "sentinel auth-pass [REDACTED]",
+            redacted=True,
+        )
+    if subcommand == "down-after-milliseconds" and len(args) >= 3:
+        try:
+            down_after = int(args[2])
+        except ValueError:
+            down_after = 0
+        if 0 < down_after < 5000:
+            add_redis_setting_finding(analysis, "redis_sentinel_down_after_milliseconds_low_hint", "Redis Sentinel down-after-milliseconds is low", "low", "sentinel", path, context, config_type, "sentinel down-after-milliseconds", line, f"sentinel down-after-milliseconds {down_after}")
+    if redis_setting_is_secret(f"sentinel {subcommand}", value) and subcommand != "auth-pass":
+        add_redis_setting_finding(analysis, "redis_password_like_value", "Redis Sentinel directive contains a password-like value", "medium", "secrets", path, context, config_type, f"sentinel {subcommand}", line, "sentinel [REDACTED]", redacted=True)
+
+
+def redis_address_looks_public(address: str) -> bool:
+    if address.startswith(REDIS_PUBLIC_EXAMPLE_NETS):
+        return True
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return parsed.is_global
+
+
+def redis_path_is_sensitive(path: str) -> bool:
+    lower = path.lower()
+    return lower.startswith(("/etc", "/root", "/var/lib/redis", "/var/run", "/run")) or any(token in lower for token in ("secret", "password", "credential"))
+
+
+def add_redis_include(analysis: dict[str, Any], path: str, context: str, config_type: str, target: str, line: int) -> None:
+    safe_target = redis_safe_value(target)
+    record = {"file_path": path, "context": context, "config_type": config_type, "line": line, "directive": "include", "target": safe_target, "resolved": False}
+    analysis["includes"].append(record)
+    if safe_target.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", target):
+        add_redis_config_finding(
+            analysis,
+            "redis_include_absolute_path",
+            "Redis config include uses an absolute path",
+            redis_contextual_level("low", context),
+            redis_contextual_confidence("high", context),
+            "include",
+            "A Redis config include directive points to an absolute path. Inspectra records the target but does not read host paths.",
+            f"include {safe_target}",
+            "Review include layout manually and avoid relying on host-only paths in shared archives.",
+            file_path=path,
+            context=context,
+            config_type=config_type,
+            line=line,
+            setting="include",
+            path_value=safe_target,
+        )
+    add_redis_config_finding(
+        analysis,
+        "redis_include_not_resolved",
+        "Redis config include was detected but not resolved",
+        redis_contextual_level("low", context),
+        redis_contextual_confidence("high", context),
+        "include",
+        "A Redis config include directive was observed. Inspectra does not resolve includes or read referenced files by resolution.",
+        f"include {safe_target}",
+        "Review included files manually in the intended deployment context.",
+        file_path=path,
+        context=context,
+        config_type=config_type,
+        line=line,
+        setting="include",
+        path_value=safe_target,
+    )
+
+
+def finalize_redis_config_analysis(analysis: dict[str, Any]) -> None:
+    for state in as_dict(analysis.get("_config_states")).values():
+        path = str(state.get("path") or "")
+        context = str(state.get("context") or "")
+        config_type = str(state.get("config_type") or "redis")
+        seen = set(state.get("seen") or set())
+        if config_type == "redis":
+            if not state.get("requirepass"):
+                level = "medium" if state.get("public_bind") or state.get("protected_mode_no") else "low"
+                evidence = "requirepass missing"
+                if state.get("public_bind") or state.get("protected_mode_no"):
+                    evidence = "requirepass missing with public bind or protected-mode disabled"
+                add_redis_setting_finding(analysis, "redis_requirepass_missing", "Redis requirepass is not declared", level, "auth", path, context, config_type, "requirepass", None, evidence)
+            if state.get("port_6379") and not state.get("tls_port"):
+                add_redis_setting_finding(analysis, "redis_tls_port_missing_hint", "Redis default TCP port is configured without tls-port", "low", "tls", path, context, config_type, "tls-port", None, "tls-port missing with port 6379")
+            if not state.get("tls_port") or state.get("tls_disabled"):
+                add_redis_setting_finding(analysis, "redis_tls_disabled_or_missing", "Redis TLS settings are missing or disabled", "low", "tls", path, context, config_type, "tls-port", None, "tls-port missing or disabled")
+            if state.get("replicaof") and not state.get("masterauth"):
+                add_redis_setting_finding(analysis, "redis_masterauth_missing_for_replica_hint", "Redis replica has no masterauth declaration", "low", "replication", path, context, config_type, "masterauth", None, "replicaof present; masterauth missing")
+            if "maxmemory" not in seen:
+                add_redis_setting_finding(analysis, "redis_maxmemory_missing", "Redis maxmemory is not declared", "low", "resources", path, context, config_type, "maxmemory", None, "maxmemory missing")
+            if "tcp-keepalive" not in seen:
+                add_redis_setting_finding(analysis, "redis_tcp_keepalive_low_or_missing_hint", "Redis tcp-keepalive is not declared", "low", "resources", path, context, config_type, "tcp-keepalive", None, "tcp-keepalive missing")
+            if not state.get("dangerous_rename"):
+                add_redis_setting_finding(analysis, "redis_rename_command_missing_for_dangerous_command_hint", "Redis dangerous command rename hardening was not observed", "low", "commands", path, context, config_type, "rename-command", None, "rename-command hardening not observed")
+        if config_type == "sentinel" and state.get("sentinel_monitor") and not state.get("sentinel_auth"):
+            add_redis_setting_finding(analysis, "redis_sentinel_monitor_without_auth_hint", "Redis Sentinel monitor has no auth-pass declaration", "low", "sentinel", path, context, config_type, "sentinel auth-pass", None, "sentinel monitor present; auth-pass missing")
+
+    analysis["summary"]["configs_detected"] = len(analysis.get("configs", []))
+    analysis["findings"] = dedupe_findings(analysis["findings"])
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+    if analysis["summary"]["redacted_values_count"]:
+        analysis["redaction_notes"] = [
+            "Secret-like Redis config values are redacted before storage on a best-effort basis.",
+            ".env, ACL, RDB, AOF, appendonly, dump, and backup files are detected but not read by this analyzer.",
+        ]
+    analysis.pop("_config_states", None)
+
+
+def redis_setting_is_secret(key: str, value: str) -> bool:
+    return REDIS_SECRET_KEY_RE.search(key) is not None or REDIS_SECRET_KEY_RE.search(value) is not None or REDIS_CREDENTIAL_URL_RE.search(value) is not None
+
+
+def redis_safe_value(value: str | None) -> str:
+    safe, _ = redact_redis_secret_text(value or "")
+    collapsed = re.sub(r"\s+", " ", safe).strip()
+    return collapsed[:240]
+
+
+def redact_redis_secret_text(text: str | None) -> tuple[str, int]:
+    if text is None:
+        return "", 0
+    redacted, count = redact_database_secret_text(str(text))
+
+    def apply(pattern: str, replacement: str, flags: int = re.IGNORECASE) -> None:
+        nonlocal redacted, count
+        redacted, replacements = re.subn(pattern, replacement, redacted, flags=flags)
+        count += replacements
+
+    apply(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", "[REDACTED]")
+    apply(r"\bPRIVATE KEY\b", "[REDACTED]")
+    apply(r"\b(redis(?:s)?://)([^/\s:@;\"']*):([^@\s/;\"']+)@([^\s;\"']+)", r"\1[REDACTED]@\4")
+    apply(r"(\b(?:requirepass|masterauth)\b\s+)(.+)", r"\1[REDACTED]")
+    apply(r"(\bsentinel\s+auth-pass\s+\S+\s+)(.+)", r"\1[REDACTED]")
+    apply(
+        r"(\b[A-Z0-9_.-]*(?:REDIS_PASSWORD|PASSWORD|PASS|SECRET|TOKEN|API_KEY|APIKEY|CLIENT_SECRET|PRIVATE_KEY|CREDENTIAL|AUTH)[A-Z0-9_.-]*\b\s*[:=]\s*)(['\"]?)[^\s,'\"}\]]+",
+        r"\1\2[REDACTED]",
+    )
+    apply(
+        r"\b(?:super-secret-password|raw-redis-password-[a-z0-9_-]+|masterauth_secret_should_not_render|sentinel_auth_should_not_render|ACLHASHSECRET_should_not_render|dump_value_should_not_render|acl_password_hash_should_not_render)\b",
+        "[REDACTED]",
+    )
+    redacted = redacted.replace("[REDACTED PRIVATE KEY]", "[REDACTED]").replace("PRIVATE_KEY_BLOCK_REDACTED", "[REDACTED]")
+    return redacted, count
+
+
+def add_redis_setting_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    category: str,
+    path: str,
+    context: str,
+    config_type: str,
+    setting: str,
+    line: int | None,
+    evidence: str,
+    *,
+    address: str | None = None,
+    port: str | None = None,
+    path_value: str | None = None,
+    redacted: bool = False,
+) -> None:
+    add_redis_config_finding(
+        analysis,
+        finding_id,
+        title,
+        redis_contextual_level(level, context),
+        redis_contextual_confidence("high" if level == "medium" else "medium", context),
+        category,
+        "A Redis static configuration review indicator was observed. Inspectra does not start Redis, connect to servers, execute commands, or validate runtime state.",
+        evidence,
+        "Review this setting in the intended deployment context and apply hardening where appropriate.",
+        file_path=path,
+        context=context,
+        config_type=config_type,
+        line=line,
+        setting=setting,
+        directive=setting,
+        address=address,
+        port=port,
+        path_value=path_value,
+        redacted=redacted,
+    )
+
+
+def add_redis_config_finding(
+    analysis: dict[str, Any],
+    finding_id: str,
+    title: str,
+    level: str,
+    confidence: str,
+    category: str,
+    description: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    file_path: str | None = None,
+    context: str | None = None,
+    config_type: str | None = None,
+    line: int | None = None,
+    directive: str | None = None,
+    setting: str | None = None,
+    address: str | None = None,
+    port: str | None = None,
+    path_value: str | None = None,
+    redacted: bool = False,
+) -> None:
+    safe_description, description_redactions = redact_redis_secret_text(description)
+    safe_evidence, evidence_redactions = redact_redis_secret_text(evidence)
+    safe_recommendation, recommendation_redactions = redact_redis_secret_text(recommendation)
+    redaction_count = description_redactions + evidence_redactions + recommendation_redactions
+    if redacted and redaction_count == 0:
+        redaction_count = 1
+    analysis["summary"]["redacted_values_count"] += redaction_count
+
+    finding = make_finding(finding_id, title, level, safe_description, safe_evidence, safe_recommendation)
+    finding["confidence"] = confidence
+    finding["category"] = category
+    if file_path:
+        finding["file_path"] = file_path
+    if context:
+        finding["context"] = context
+    if config_type:
+        finding["config_type"] = config_type
+    if line is not None:
+        finding["line"] = line
+    if directive:
+        finding["directive"] = directive
+    if setting:
+        finding["setting"] = setting
+    if address:
+        finding["address"] = address
+    if port:
+        finding["port"] = port
+    if path_value:
+        safe_path = redis_safe_value(path_value)
+        finding["path"] = safe_path
     analysis["findings"].append(finding)
 
 

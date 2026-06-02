@@ -3218,6 +3218,298 @@ async def test_analyze_database_config_respects_file_and_byte_limits(monkeypatch
 
 
 @pytest.mark.anyio
+async def test_analyze_redis_config_reports_findings_and_redacts_secrets(monkeypatch, tmp_path):
+    redis_conf = b'''
+# bind 0.0.0.0
+bind 0.0.0.0
+bind 8.8.8.8
+protected-mode no
+port 6379
+requirepass super-secret-password
+masterauth masterauth_secret_should_not_render
+aclfile /etc/redis/users.acl
+user default on >ACLHASHSECRET_should_not_render
+tls-port 0
+tls-cert-file /etc/redis/tls.crt
+tls-key-file /etc/redis/tls.key
+tls-auth-clients no
+tls-protocols "TLSv1 TLSv1.1 TLSv1.2"
+save ""
+appendonly no
+appendfilename appendonly.aof
+dir /var/lib/redis
+dbfilename dump.rdb
+rdbcompression no
+replicaof redis-primary 6379
+replica-read-only no
+repl-diskless-sync yes
+rename-command CONFIG ""
+loadmodule /usr/lib/redis/modules/redisbloom.so
+lua-time-limit 20000
+loglevel debug
+logfile ""
+supervised no
+daemonize yes
+maxmemory-policy noeviction
+timeout 0
+tcp-keepalive 0
+unixsocketperm 777
+redis_url redis://:super-secret-password@redis:6379/0
+include /etc/redis/secrets.conf
+private_key -----BEGIN PRIVATE KEY----- raw-redis-password-123456 -----END PRIVATE KEY-----
+'''
+    sentinel_conf = b'''
+sentinel monitor mymaster 10.0.0.2 6379 2
+sentinel auth-pass mymaster sentinel_auth_should_not_render
+sentinel down-after-milliseconds mymaster 1000
+'''
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "deploy/redis/redis.conf": redis_conf,
+            "deploy/redis/sentinel.conf": sentinel_conf,
+            ".env.production": b"REDIS_PASSWORD=super-secret-password\n",
+            "deploy/redis/users.acl": b"user default on >acl_password_hash_should_not_render\n",
+            "deploy/redis/dump.rdb": b"dump_value_should_not_render\n",
+            "deploy/redis/appendonly.aof": b"super-secret-password\n",
+            "deploy/redis/appendonlydir/appendonly.aof.1.incr.aof": b"raw-redis-password-123456\n",
+            "deploy/redis/redis-backup.rdb": b"ACLHASHSECRET_should_not_render\n",
+            "deploy/redis/snapshot.backup": b"masterauth_secret_should_not_render\n",
+            "deploy/redis/old.bak": b"redis://:super-secret-password@redis:6379/0\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/redis-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    assert response.status_code == 200
+    assert payload["analyzer"] == "redis_config_basic"
+    assert payload["summary"]["files_reviewed"] == 2
+    assert payload["summary"]["redis_files_detected"] == 1
+    assert payload["summary"]["sentinel_files_detected"] == 1
+    assert payload["summary"]["acl_files_detected"] == 1
+    assert payload["summary"]["dump_or_aof_files_detected"] == 6
+    assert "sensitive_file_not_read" in reasons
+    assert "acl_file_not_read" in reasons
+    assert "dump_or_aof_not_read" in reasons
+    for finding_id in (
+        "redis_env_file_sensitive_present",
+        "redis_acl_file_present",
+        "redis_acl_file_not_read",
+        "redis_dump_or_aof_file_present",
+        "redis_password_like_value",
+        "redis_private_key_hint",
+        "redis_include_absolute_path",
+        "redis_include_not_resolved",
+        "redis_bind_all_interfaces",
+        "redis_bind_public_address_hint",
+        "redis_protected_mode_no",
+        "redis_port_default_exposed_hint",
+        "redis_tls_port_missing_hint",
+        "redis_unixsocket_permissions_permissive",
+        "redis_requirepass_present_redacted",
+        "redis_masterauth_present_redacted",
+        "redis_aclfile_reference",
+        "redis_default_user_enabled_hint",
+        "redis_tls_disabled_or_missing",
+        "redis_tls_cert_path_present",
+        "redis_tls_key_path_present",
+        "redis_tls_auth_clients_disabled_hint",
+        "redis_tls_protocols_legacy_hint",
+        "redis_save_disabled_hint",
+        "redis_appendonly_no",
+        "redis_appendfilename_default_hint",
+        "redis_dir_sensitive_path_hint",
+        "redis_dbfilename_default_hint",
+        "redis_rdbcompression_no_hint",
+        "redis_replicaof_present",
+        "redis_replica_read_only_no",
+        "redis_repl_diskless_sync_enabled_hint",
+        "redis_dangerous_command_renamed_to_empty_hint",
+        "redis_module_load_present",
+        "redis_lua_time_limit_high_hint",
+        "redis_loglevel_debug_or_verbose",
+        "redis_logfile_stdout_or_empty_hint",
+        "redis_supervised_no_hint",
+        "redis_daemonize_yes_hint",
+        "redis_maxmemory_missing",
+        "redis_maxmemory_policy_noeviction_hint",
+        "redis_timeout_zero_hint",
+        "redis_tcp_keepalive_low_or_missing_hint",
+        "redis_sentinel_config_detected",
+        "redis_sentinel_auth_pass_present_redacted",
+        "redis_sentinel_down_after_milliseconds_low_hint",
+    ):
+        assert finding_id in finding_ids
+    assert any(item["read"] is False and item["path"] == "deploy/redis/users.acl" for item in payload["acl_files"])
+    assert any(item["read"] is False and item["path"] == "deploy/redis/dump.rdb" for item in payload["dump_or_aof_files"])
+    assert any(item["resolved"] is False and item["target"] == "/etc/redis/secrets.conf" for item in payload["includes"])
+    assert "[REDACTED]" in serialized
+    for secret in (
+        "super-secret-password",
+        "raw-redis-password-123456",
+        "redis://:super-secret-password@redis:6379/0",
+        "masterauth_secret_should_not_render",
+        "sentinel_auth_should_not_render",
+        "ACLHASHSECRET_should_not_render",
+        "PRIVATE KEY",
+        "dump_value_should_not_render",
+        "acl_password_hash_should_not_render",
+    ):
+        assert secret not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_redis_config_comments_context_and_missing_auth(monkeypatch, tmp_path):
+    redis_conf = b'''
+# protected-mode no
+# bind 0.0.0.0
+port 6379
+requirepass ${REDIS_PASSWORD}
+'''
+    sentinel_conf = b'''
+sentinel monitor mymaster 127.0.0.1 6379 2
+'''
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "examples/redis/redis.conf": redis_conf,
+            "examples/redis/sentinel.conf": sentinel_conf,
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/redis-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    requirepass_finding = next(finding for finding in payload["findings"] if finding["id"] == "redis_requirepass_present_redacted")
+    sentinel_auth_finding = next(finding for finding in payload["findings"] if finding["id"] == "redis_sentinel_monitor_without_auth_hint")
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "redis_protected_mode_no" not in finding_ids
+    assert "redis_bind_all_interfaces" not in finding_ids
+    assert requirepass_finding["context"] == "example"
+    assert requirepass_finding["level"] == "low"
+    assert sentinel_auth_finding["context"] == "example"
+    assert sentinel_auth_finding["level"] == "info"
+    assert "REDIS_PASSWORD" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_redis_config_skips_unsafe_archive_entries(monkeypatch, tmp_path):
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    archive_path = uploads_dir / "project.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        traversal_content = b"requirepass super-secret-password\n"
+        traversal_info = tarfile.TarInfo("../redis.conf")
+        traversal_info.size = len(traversal_content)
+        archive.addfile(traversal_info, io.BytesIO(traversal_content))
+
+        link_info = tarfile.TarInfo("deploy/redis/redis.conf")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "real-redis.conf"
+        archive.addfile(link_info)
+
+        hardlink_info = tarfile.TarInfo("deploy/redis/redis-extra.conf")
+        hardlink_info.type = tarfile.LNKTYPE
+        hardlink_info.linkname = "real-redis-extra.conf"
+        archive.addfile(hardlink_info)
+
+        env_content = b"REDIS_PASSWORD=super-secret-password\n"
+        env_info = tarfile.TarInfo(".env")
+        env_info.size = len(env_content)
+        archive.addfile(env_info, io.BytesIO(env_content))
+
+        acl_content = b"user default on >acl_password_hash_should_not_render\n"
+        acl_info = tarfile.TarInfo("users.acl")
+        acl_info.size = len(acl_content)
+        archive.addfile(acl_info, io.BytesIO(acl_content))
+
+        dump_content = b"dump_value_should_not_render\n"
+        dump_info = tarfile.TarInfo("dump.rdb")
+        dump_info.size = len(dump_content)
+        archive.addfile(dump_info, io.BytesIO(dump_content))
+
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/redis-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.tar"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    finding_ids = {finding["id"] for finding in payload["findings"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert "path_traversal" in reasons
+    assert "not_regular_file:symlink" in reasons
+    assert "not_regular_file:hardlink" in reasons
+    assert "sensitive_file_not_read" in reasons
+    assert "acl_file_not_read" in reasons
+    assert "dump_or_aof_not_read" in reasons
+    assert "redis_config_path_traversal" in finding_ids
+    assert "redis_config_not_regular_file" in finding_ids
+    assert "redis_env_file_sensitive_present" in finding_ids
+    assert "redis_acl_file_present" in finding_ids
+    assert "redis_dump_or_aof_file_present" in finding_ids
+    assert "super-secret-password" not in serialized
+    assert "acl_password_hash_should_not_render" not in serialized
+    assert "dump_value_should_not_render" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_redis_config_respects_file_and_byte_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "REDIS_CONFIG_MAX_FILES", 1)
+    monkeypatch.setattr(runner, "REDIS_CONFIG_MAX_FILE_BYTES", 120)
+    monkeypatch.setattr(runner, "REDIS_CONFIG_MAX_TOTAL_BYTES", 180)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "deploy/redis/redis.conf": b"port 6379\n",
+            "deploy/redis/redis-extra.conf": b"requirepass " + b"x" * 150 + b"\n",
+            "deploy/redis/redis-third.conf": b"protected-mode no\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/redis-config",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    reasons = {item.get("skip_reason") for item in payload["files_detected"]}
+    serialized = json.dumps(payload)
+    assert response.status_code == 200
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["summary"]["truncated"] is True
+    assert "file_too_large" in reasons
+    assert "too_many_files" in reasons
+    assert "xxxxxxxxxxxxxxxxxxxxxxxx" not in serialized
+
+
+@pytest.mark.anyio
 async def test_analyze_web_basic_reports_http_headers_cookies_and_well_known_files():
     server = start_test_http_server()
     transport = ASGITransport(app=runner.app)
