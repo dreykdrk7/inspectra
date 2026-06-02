@@ -23,6 +23,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts passive Terraform/OpenTofu/Terragrunt configuration analysis jobs for archive uploads through the API.
 - Starts passive Nginx/reverse-proxy configuration analysis jobs for archive uploads through the API.
 - Starts passive Docker Compose service wiring/configuration analysis jobs for archive uploads through the API.
+- Starts passive PostgreSQL/MySQL/MariaDB configuration analysis jobs for archive uploads through the API.
 - Starts authorized baseline web configuration audit jobs for a single URL.
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
@@ -50,6 +51,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - It does not execute Terraform, OpenTofu, or Terragrunt, run init/validate/plan/apply, download providers/modules, access state remotely, call cloud APIs, or query advisory/CVE data for Terraform config audits.
 - It does not execute Nginx, run `nginx -t`, start containers, resolve includes, perform DNS/network checks, validate live servers/certificates, or query advisory/CVE data for Nginx config audits.
 - It does not execute Docker or Docker Compose, run `docker compose config`, build/pull/inspect images, interpolate `.env` values, merge multiple Compose files, contact registries, or query advisory/CVE data for Compose config audits.
+- It does not execute database clients or servers, validate database configs against live instances, resolve includes, read dumps/backups/credential files, connect to databases, or query advisory/CVE data for Database config audits.
 - It does not extract archives broadly to the filesystem.
 - It does not execute, install, or resolve anything found inside archives.
 - It does not execute Django projects, import settings modules, run `manage.py`, connect to databases, or read real `.env`/`.env.*` files from archives.
@@ -142,6 +144,9 @@ The Docker Compose defaults are intentionally conservative:
 | `INSPECTRA_COMPOSE_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum Docker Compose candidate files read from one archive. |
 | `INSPECTRA_COMPOSE_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Compose config candidate file. |
 | `INSPECTRA_COMPOSE_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Compose config audit. |
+| `INSPECTRA_DATABASE_CONFIG_MAX_FILES` | backend, audit-tools | `100` | Maximum PostgreSQL/MySQL/MariaDB config candidate files read from one archive. |
+| `INSPECTRA_DATABASE_CONFIG_MAX_FILE_BYTES` | backend, audit-tools | `524288` | Maximum bytes read from one Database config candidate file. |
+| `INSPECTRA_DATABASE_CONFIG_MAX_TOTAL_BYTES` | backend, audit-tools | `2097152` | Maximum total bytes read for one Database config audit. |
 | `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS` | backend, audit-tools | `false` | Allows private/loopback web targets for labs when set to `true`; cloud metadata/link-local targets remain blocked. |
 | `INSPECTRA_WEB_TIMEOUT_SECONDS` | backend, audit-tools | `10` | Timeout for each controlled HTTP/HTTPS request in the web audit. |
 | `INSPECTRA_WEB_MAX_RESPONSE_BYTES` | backend, audit-tools | `1048576` | Maximum bytes read from each web response. |
@@ -394,6 +399,18 @@ The source file must be `kind: "archive"`. This creates a `compose_config_basic`
 The analysis is heuristic and local. It looks for review indicators such as secret-like environment values, env file references, Docker socket mounts, privileged or host-mode services, published sensitive ports, writable sensitive bind mounts, mutable image tags, build contexts, external networks, legacy links, missing healthchecks/restart policies/resource limits, and multiple/override Compose files. Findings are indicators for manual review, not confirmed vulnerabilities or proof of exploitability.
 
 Inspectra does not execute Docker or Docker Compose; run `docker compose config`, `up`, `build`, `pull`, `push`, or `logs`; inspect images; contact registries; interpolate `.env` values; merge multiple Compose files into an effective configuration; query CVEs/advisories; extract the project broadly; follow symlinks or hardlinks; or call the internet. Secret-like environment values, credential URLs, registry credentials, database/Redis URLs with passwords, private key blocks, labels, command/entrypoint fragments, errors, and exports are redacted best-effort.
+
+## Launch a Database Config Audit
+
+```bash
+curl -sS -X POST http://localhost:8000/audits/database-config/<file_id>
+```
+
+The source file must be `kind: "archive"`. This creates a `database_config_basic` job that opens the archive with Python standard library parsers and reads only bounded text from PostgreSQL, MySQL, and MariaDB configuration candidates such as `postgresql.conf`, `pg_hba.conf`, `my.cnf`, `mariadb.conf`, and related config paths. Real `.env`, `.env.*`, `.envrc`, `.pgpass`, hidden client credential files, dumps, and backups are detected as sensitive files present but are not read. Database include directives are detected as context but not resolved.
+
+The analysis is heuristic and local. It looks for review indicators such as public listen/bind settings, pg_hba trust/password/open-world rules, disabled or weak TLS settings, weak password/auth settings, logging/backup/replication posture, include directives, dumps/backups present, and secret-like database config values. Findings are indicators for manual review, not confirmed vulnerabilities or proof of exploitability.
+
+Inspectra does not execute `psql`, `mysql`, `mariadb`, `pg_ctl`, `postgres`, `mysqld`, `mysqladmin`, `pg_dump`, `mysqldump`, or similar tools; connect to database servers; validate configs against live instances; resolve includes; read host paths; read dumps/backups/credential files; query CVEs/advisories; extract the project broadly; follow symlinks or hardlinks; or call the internet. Database credentials, DSNs, `PGPASSWORD`/`MYSQL_PWD`, private key blocks, errors, and exports are redacted best-effort.
 
 ## Launch a Web Baseline Audit
 

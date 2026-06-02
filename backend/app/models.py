@@ -23,6 +23,7 @@ AuditType = Literal[
     "terraform_config_basic",
     "nginx_config_basic",
     "compose_config_basic",
+    "database_config_basic",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 

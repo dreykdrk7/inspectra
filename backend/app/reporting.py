@@ -222,6 +222,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_nginx_config_sections(result))
     elif job.audit_type == "compose_config_basic":
         sections.extend(build_compose_config_sections(result))
+    elif job.audit_type == "database_config_basic":
+        sections.extend(build_database_config_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -527,6 +529,27 @@ def build_compose_config_sections(result: dict[str, Any]) -> list[ReportSection]
     ]
 
 
+def build_database_config_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "Database Config Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("Database Config Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Database Config Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Files Detected", flatten_django_detected_files(result.get("files_detected"))),
+        ReportSection("Files Reviewed", flatten_list(result.get("files_reviewed"))),
+        ReportSection("Engines Detected", flatten_list(result.get("engines"))),
+        ReportSection("PostgreSQL Settings", flatten_list(result.get("postgres_settings"))),
+        ReportSection("pg_hba.conf Rules", flatten_list(result.get("pg_hba_rules"))),
+        ReportSection("MySQL / MariaDB Settings", flatten_list(result.get("mysql_settings"))),
+        ReportSection("Includes Detected But Not Resolved", flatten_list(result.get("includes"))),
+        ReportSection("Dumps / Backups Detected But Not Read", flatten_list(result.get("dump_or_backup_files"))),
+        ReportSection("Findings", flatten_database_findings(result.get("findings"))),
+        ReportSection("Redaction Notes", flatten_list(result.get("redaction_notes"))),
+    ]
+
+
 def flatten_django_detected_files(value: Any) -> list[tuple[str, str]]:
     if not isinstance(value, list):
         return []
@@ -764,6 +787,38 @@ def flatten_compose_findings(value: Any) -> list[tuple[str, str]]:
     return rows
 
 
+def flatten_database_findings(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("ID", "id"),
+        ("Code", "code"),
+        ("Title", "title"),
+        ("Level", "level"),
+        ("Confidence", "confidence"),
+        ("Category", "category"),
+        ("Context", "context"),
+        ("Engine", "engine"),
+        ("Section", "section"),
+        ("Setting", "setting"),
+        ("Auth method", "auth_method"),
+        ("Address", "address"),
+        ("File path", "file_path"),
+        ("Line", "line"),
+        ("Description", "description"),
+        ("Evidence", "evidence"),
+        ("Recommendation", "recommendation"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Finding {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"Finding {index}", record, preferred_keys)
+    return rows
+
+
 def append_preferred_rows(
     rows: list[tuple[str, str]],
     prefix: str,
@@ -960,6 +1015,21 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
         data["errors_count"] = len(result.get("errors") or [])
+    elif job.audit_type == "database_config_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["files_considered"] = summary.get("files_considered", "N/A")
+        data["files_reviewed"] = summary.get("files_reviewed", "N/A")
+        data["database_files_detected"] = summary.get("database_files_detected", "N/A")
+        data["postgres_files_detected"] = summary.get("postgres_files_detected", "N/A")
+        data["mysql_files_detected"] = summary.get("mysql_files_detected", "N/A")
+        data["mariadb_files_detected"] = summary.get("mariadb_files_detected", "N/A")
+        data["pg_hba_files_detected"] = summary.get("pg_hba_files_detected", "N/A")
+        data["dump_or_backup_files_detected"] = summary.get("dump_or_backup_files_detected", "N/A")
+        data["engines_detected"] = summary.get("engines_detected", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
+        data["errors_count"] = len(result.get("errors") or [])
     return data
 
 
@@ -1007,6 +1077,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_nginx_config_value(result))
     if job.audit_type == "compose_config_basic":
         return as_dict(redact_compose_config_value(result))
+    if job.audit_type == "database_config_basic":
+        return as_dict(redact_database_config_value(result))
     return result
 
 
@@ -1033,6 +1105,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_nginx_secret_text(job.error)
     if job.audit_type == "compose_config_basic":
         return redact_compose_secret_text(job.error)
+    if job.audit_type == "database_config_basic":
+        return redact_database_secret_text(job.error)
     return job.error
 
 
@@ -1511,6 +1585,126 @@ def redact_compose_secret_text(value: str) -> str:
         redacted,
     )
     redacted = redacted.replace("PRIVATE KEY", "[REDACTED]")
+    return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
+
+
+def redact_database_config_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_database_secret_text(value)
+    if isinstance(value, list):
+        return [redact_database_config_value(item) for item in value]
+    if isinstance(value, dict):
+        secret_named_value = database_record_has_secret_name(value)
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if is_database_secret_mapping_key(key_text) or (
+                secret_named_value
+                and key_text.lower()
+                in {"value", "raw_value", "default", "data", "content", "sql", "statement", "arguments", "connection_string", "dsn"}
+            ):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_database_config_value(item)
+        return redacted
+    return value
+
+
+def database_record_has_secret_name(record: dict[str, Any]) -> bool:
+    for marker in (
+        "key",
+        "name",
+        "setting",
+        "variable",
+        "field_path",
+        "attribute",
+        "directive",
+        "target",
+        "environment",
+        "env",
+        "error",
+    ):
+        candidate = record.get(marker)
+        if candidate is not None and is_database_secret_mapping_key(str(candidate)):
+            return True
+    return False
+
+
+def is_database_secret_mapping_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if "redacted" in normalized or normalized.endswith("_count"):
+        return False
+    if normalized in {
+        "content",
+        "raw",
+        "raw_content",
+        "dump_content",
+        "backup_content",
+        "sql",
+        "statement",
+        "private_key",
+        "certificate_key",
+        "pgpass",
+        "pg_service",
+        "my_cnf",
+        "mylogin_cnf",
+        "env_file_content",
+        "credential_file_content",
+    }:
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "authorization",
+            "access_token",
+            "refresh_token",
+            "auth_token",
+            "client_secret",
+            "private_key",
+            "api_key",
+            "apikey",
+            "password",
+            "passwd",
+            "pgpassword",
+            "mysql_pwd",
+            "token",
+            "secret",
+            "credential",
+            "database_url",
+            "connection_string",
+            "conninfo",
+            "dsn",
+            "primary_conninfo",
+            "replication_password",
+        )
+    )
+
+
+def redact_database_secret_text(value: str) -> str:
+    redacted = redact_compose_secret_text(value).replace("[REDACTED PRIVATE KEY]", "[REDACTED]")
+    redacted = re.sub(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "[REDACTED]",
+        redacted,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    redacted = re.sub(r"\bPRIVATE KEY\b", "[REDACTED]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(
+        r"(?i)\b((?:postgres(?:ql)?|mysql|mariadb)://)([^/\s:@;\"']*):([^@\s/;\"']+)@([^\s;\"']+)",
+        r"\1[REDACTED]@\4",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b([A-Z0-9_$_.-]*(?:PGPASSWORD|MYSQL_PWD|PASSWORD|PASS|SECRET|TOKEN|API_KEY|APIKEY|CLIENT_SECRET|PRIVATE_KEY|CREDENTIAL|DATABASE_URL|CONNECTION_STRING|CONNINFO|DSN)[A-Z0-9_$_.-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\";}\]]+",
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b(?:super-secret-password|raw-db-password-[a-z0-9_-]+|raw-api-key-[a-z0-9_-]+|[a-z0-9_.-]*should_(?:never|not)_render[a-z0-9_.-]*|db_password_plaintext)\b",
+        "[REDACTED]",
+        redacted,
+    )
+    redacted = redacted.replace("PRIVATE_KEY_BLOCK_REDACTED", "[REDACTED]")
     return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
 
 

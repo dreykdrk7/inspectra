@@ -2,7 +2,7 @@
 
 ## Intended Use
 
-Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-target web and domain baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, passive Docker/Django/Node package configuration review, passive CI/CD configuration review, passive Kubernetes/Terraform/Nginx/Compose configuration review, redaction-first secrets review, passive HTTP/HTTPS configuration review, and bounded DNS baseline review.
+Inspectra is for defensive, educational, and authorized security audits. The MVP is limited to files that the user intentionally uploads plus controlled single-target web and domain baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, passive Docker/Django/Node package configuration review, passive CI/CD configuration review, passive Kubernetes/Terraform/Nginx/Compose/Database configuration review, redaction-first secrets review, passive HTTP/HTTPS configuration review, and bounded DNS baseline review.
 
 Use Inspectra only on files, domains, systems, or services that you own or are explicitly authorized to assess.
 
@@ -28,6 +28,7 @@ Allowed in this phase:
 - Reading bounded Terraform/OpenTofu/Terragrunt config text from archives in memory for `terraform_config_basic`, while detecting Terraform state files as sensitive files present without reading their content.
 - Reading bounded Nginx/reverse-proxy config text from archives in memory for `nginx_config_basic`, while detecting `include` directives without resolving them.
 - Reading bounded Docker Compose config text from archives in memory for `compose_config_basic`, while detecting real `.env`, `.env.*`, and `.envrc` files plus `env_file` and `secrets.file` references without reading referenced content.
+- Reading bounded PostgreSQL/MySQL/MariaDB config text from archives in memory for `database_config_basic`, while detecting real `.env`, `.env.*`, `.envrc`, hidden client credential files, dumps, backups, and include directives without reading sensitive file contents or resolving includes.
 - Extracting declared dependencies, scripts, engines, and basic project metadata from supported manifests.
 - Recording informational dependency indicators such as lifecycle scripts, unpinned requirements, broad ranges, and URL/VCS/local dependency references.
 - Recording informational archive indicators such as path traversal entries, absolute paths, symlinks, hardlinks, executable bits, nested archives, sensitive-looking filenames, manifest filenames, large estimated uncompressed size, high compression ratio, and truncated analysis.
@@ -49,7 +50,8 @@ Allowed in this phase:
 - Recording CI/CD configuration indicators such as broad or privileged triggers, missing or broad permissions, action/image pinning signals, inline secret-like env values, curl-pipe-shell scripts, publish/deploy commands, self-hosted runner usage, and artifact/cache/service-container hints.
 - Recording Terraform/OpenTofu/Terragrunt configuration indicators such as secret-like tfvars/default/output/backend/provider values, state-file presence, missing version/backend/lockfile signals, unpinned provider/module references, AWS world-ingress security group hints, IAM wildcard hints, and S3 public-access hints.
 - Recording Docker Compose configuration indicators such as secret-like environment values, env/secret file references, published ports, privileged services, host network/PID/IPC modes, Docker socket and sensitive bind mounts, mutable image tags, build contexts, external networks, legacy links, healthcheck/restart/resource posture, multiple Compose files, and override files.
-- Using the local web UI to perform implemented UI actions for the same bounded audit families.
+- Recording database configuration indicators such as PostgreSQL listen/pg_hba/TLS/logging/backup/replication posture, MySQL/MariaDB bind/auth/TLS/logging/backup posture, include directives, sensitive credential/dump/backup files present, and secret-like database values.
+- Using the local web UI to perform implemented UI actions where available for the same bounded audit families.
 
 Tools used in this phase:
 
@@ -120,6 +122,7 @@ The MVP does not include:
 - Running `kubectl`, connecting to clusters, validating manifests against API servers, applying manifests, rendering Helm, building Kustomize overlays, resolving remote bases/charts/includes/CRDs, downloading images, querying registries/CVEs/advisories, or claiming exploitability for Kubernetes config review.
 - Executing Terraform, OpenTofu, or Terragrunt; running init/validate/plan/apply/destroy/state/refresh/import/output commands; downloading providers or modules; resolving remote modules; evaluating variables or expressions; reading remote state; calling cloud/Kubernetes APIs; querying registries/CVEs/advisories; or claiming exploitability for Terraform config review.
 - Executing Docker or Docker Compose for Compose config review; running `docker compose config`, `up`, `run`, `exec`, `build`, `pull`, `push`, or `logs`; inspecting images; contacting registries; interpolating `.env` values; merging multiple Compose files into an effective config; reading referenced env/secret files; querying CVEs/advisories; or claiming exploitability for Compose config review.
+- Executing database clients or servers for Database config review; running `psql`, `mysql`, `mariadb`, `pg_ctl`, `postgres`, `mysqld`, `mysqladmin`, `pg_dump`, `mysqldump`, or similar tools; connecting to database servers; validating configs against live instances; resolving includes; reading host paths; reading dumps, backups, hidden credential files, `.env`, `.env.*`, or `.envrc` contents; querying CVEs/advisories; or claiming exploitability for Database config review.
 - Extracting uploaded archives broadly to the filesystem.
 - Executing files, scripts, binaries, symlinks, or hardlinks from uploaded archives.
 - Installing or resolving dependencies discovered inside archives.
@@ -167,6 +170,8 @@ CI/CD config analysis may read bounded text from CI/CD workflow/config candidate
 
 Compose config analysis may read bounded text from Docker Compose and Compose-like candidates inside uploaded archives. It detects real `.env`, `.env.*`, and `.envrc` files as sensitive files present without reading their content, and records `env_file` and `secrets.file` references without reading referenced content. Findings are heuristic indicators such as secret-like environment values, published ports, privileged services, host modes, Docker socket mounts, sensitive bind mounts, image/build signals, external networks, missing healthchecks/restart/resource limits, and multiple/override files. Inspectra does not execute Docker or Docker Compose, run `docker compose config`, build or pull images, inspect images, contact registries, interpolate env vars, merge multiple Compose files, query CVEs/advisories, or claim that a deployment is exploitable. Secret-like values, credential URLs, database/Redis URLs, registry credentials, private key blocks, labels, command/entrypoint fragments, errors, and exports are redacted best-effort, but uploaded archive bytes may still contain secrets and are stored locally.
 
+Database config analysis may read bounded text from PostgreSQL, MySQL, and MariaDB config candidates inside uploaded archives. It detects real `.env`, `.env.*`, `.envrc`, hidden client credential files, dumps, and backups as sensitive files present without reading their content, and records database include directives without resolving them. Findings are heuristic indicators such as PostgreSQL listen/pg_hba/TLS/logging/backup/replication posture, MySQL/MariaDB bind/auth/TLS/logging/backup posture, include directives, sensitive files present, and secret-like database values. Inspectra does not execute database clients or servers, connect to databases, validate configs against live instances, resolve includes, read host paths, read dump/backup/credential file contents, query CVEs/advisories, or claim that a database is exploitable. Database credentials, DSNs, `PGPASSWORD`/`MYSQL_PWD`, private key blocks, errors, and exports are redacted best-effort, but uploaded archive bytes may still contain secrets and are stored locally.
+
 Report exports are generated locally from existing job results. The generated HTML is static, self-contained, and does not include JavaScript or external CSS. Inspectra escapes dynamic content before writing HTML and XML reports, and Markdown reports render dynamic values as code spans or fenced code blocks to reduce misleading links, images, inline HTML, headings, tables, and blockquotes in external renderers. Exporting a report does not execute uploaded files, manifest scripts, or result content.
 
 SBOM exports are generated locally from existing completed dependency-analysis jobs. They may include package names, declared version ranges, manifest paths inside uploaded archives, and conservative package URLs for clear npm/PyPI registry dependencies. Ambiguous URL, VCS, local, editable, workspace, or alias dependencies keep the original declaration and an omitted-`purl` reason. They do not include vulnerability assertions.
@@ -207,6 +212,7 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Terraform config analysis limits through `INSPECTRA_TERRAFORM_CONFIG_MAX_FILES`, `INSPECTRA_TERRAFORM_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_TERRAFORM_CONFIG_MAX_TOTAL_BYTES`.
 - Nginx config analysis limits through `INSPECTRA_NGINX_CONFIG_MAX_FILES`, `INSPECTRA_NGINX_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_NGINX_CONFIG_MAX_TOTAL_BYTES`.
 - Compose config analysis limits through `INSPECTRA_COMPOSE_CONFIG_MAX_FILES`, `INSPECTRA_COMPOSE_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_COMPOSE_CONFIG_MAX_TOTAL_BYTES`.
+- Database config analysis limits through `INSPECTRA_DATABASE_CONFIG_MAX_FILES`, `INSPECTRA_DATABASE_CONFIG_MAX_FILE_BYTES`, and `INSPECTRA_DATABASE_CONFIG_MAX_TOTAL_BYTES`.
 - Explicit development CORS origins through `INSPECTRA_CORS_ORIGINS`.
 
 ## Operational Guidance

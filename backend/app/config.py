@@ -41,6 +41,9 @@ DEFAULT_NGINX_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_COMPOSE_CONFIG_MAX_FILES = 100
 DEFAULT_COMPOSE_CONFIG_MAX_FILE_BYTES = 524_288
 DEFAULT_COMPOSE_CONFIG_MAX_TOTAL_BYTES = 2_097_152
+DEFAULT_DATABASE_CONFIG_MAX_FILES = 100
+DEFAULT_DATABASE_CONFIG_MAX_FILE_BYTES = 524_288
+DEFAULT_DATABASE_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,9 @@ class Settings:
     compose_config_max_files: int = DEFAULT_COMPOSE_CONFIG_MAX_FILES
     compose_config_max_file_bytes: int = DEFAULT_COMPOSE_CONFIG_MAX_FILE_BYTES
     compose_config_max_total_bytes: int = DEFAULT_COMPOSE_CONFIG_MAX_TOTAL_BYTES
+    database_config_max_files: int = DEFAULT_DATABASE_CONFIG_MAX_FILES
+    database_config_max_file_bytes: int = DEFAULT_DATABASE_CONFIG_MAX_FILE_BYTES
+    database_config_max_total_bytes: int = DEFAULT_DATABASE_CONFIG_MAX_TOTAL_BYTES
 
     @property
     def upload_dir(self) -> Path:
@@ -237,6 +243,18 @@ def load_settings() -> Settings:
         "INSPECTRA_COMPOSE_CONFIG_MAX_TOTAL_BYTES",
         DEFAULT_COMPOSE_CONFIG_MAX_TOTAL_BYTES,
     )
+    database_config_max_files = _positive_int_from_env(
+        "INSPECTRA_DATABASE_CONFIG_MAX_FILES",
+        DEFAULT_DATABASE_CONFIG_MAX_FILES,
+    )
+    database_config_max_file_bytes = _positive_int_from_env(
+        "INSPECTRA_DATABASE_CONFIG_MAX_FILE_BYTES",
+        DEFAULT_DATABASE_CONFIG_MAX_FILE_BYTES,
+    )
+    database_config_max_total_bytes = _positive_int_from_env(
+        "INSPECTRA_DATABASE_CONFIG_MAX_TOTAL_BYTES",
+        DEFAULT_DATABASE_CONFIG_MAX_TOTAL_BYTES,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -278,6 +296,9 @@ def load_settings() -> Settings:
         compose_config_max_files=compose_config_max_files,
         compose_config_max_file_bytes=compose_config_max_file_bytes,
         compose_config_max_total_bytes=compose_config_max_total_bytes,
+        database_config_max_files=database_config_max_files,
+        database_config_max_file_bytes=database_config_max_file_bytes,
+        database_config_max_total_bytes=database_config_max_total_bytes,
     )
 
 

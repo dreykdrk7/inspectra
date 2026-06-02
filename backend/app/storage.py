@@ -312,6 +312,9 @@ class JobStore:
     def create_compose_config_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "compose_config_basic")
 
+    def create_database_config_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "database_config_basic")
+
     def create_web_job(self, target_url: str) -> JobRecord:
         return self._create_job(None, "web_basic", target_url=target_url)
 
@@ -688,6 +691,21 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["secrets_detected"] = manifest_summary.get("secrets_detected")
             summary["published_ports_detected"] = manifest_summary.get("published_ports_detected")
             summary["env_files_detected"] = manifest_summary.get("env_files_detected")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
+            summary["truncated"] = manifest_summary.get("truncated")
+            summary["errors_count"] = len(record.result.get("errors") or [])
+        if record.audit_type == "database_config_basic":
+            summary["archive_type"] = record.result.get("archive_type")
+            summary["files_considered"] = manifest_summary.get("files_considered")
+            summary["files_reviewed"] = manifest_summary.get("files_reviewed")
+            summary["database_files_detected"] = manifest_summary.get("database_files_detected")
+            summary["postgres_files_detected"] = manifest_summary.get("postgres_files_detected")
+            summary["mysql_files_detected"] = manifest_summary.get("mysql_files_detected")
+            summary["mariadb_files_detected"] = manifest_summary.get("mariadb_files_detected")
+            summary["pg_hba_files_detected"] = manifest_summary.get("pg_hba_files_detected")
+            summary["dump_or_backup_files_detected"] = manifest_summary.get("dump_or_backup_files_detected")
+            summary["engines_detected"] = manifest_summary.get("engines_detected")
             summary["findings_count"] = manifest_summary.get("findings_count")
             summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
             summary["truncated"] = manifest_summary.get("truncated")

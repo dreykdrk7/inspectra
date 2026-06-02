@@ -28,6 +28,7 @@ from app.services import (
     ArchiveAuditService,
     CiCdConfigAuditService,
     ComposeConfigAuditService,
+    DatabaseConfigAuditService,
     DjangoConfigAuditService,
     DomainAuditService,
     DockerConfigAuditService,
@@ -71,6 +72,7 @@ async def lifespan(app: FastAPI):
     app.state.terraform_config_audits = TerraformConfigAuditService(settings, file_store, job_store)
     app.state.nginx_config_audits = NginxConfigAuditService(settings, file_store, job_store)
     app.state.compose_config_audits = ComposeConfigAuditService(settings, file_store, job_store)
+    app.state.database_config_audits = DatabaseConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -275,6 +277,16 @@ async def launch_compose_config_audit(request: Request, file_id: str, background
     return job
 
 
+@app.post("/audits/database-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_database_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
+    stored_file = request.app.state.files.get(file_id)
+    if stored_file.kind != "archive":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
+    job = request.app.state.jobs.create_database_config_job(file_id)
+    background_tasks.add_task(request.app.state.database_config_audits.run_database_config_analysis, job.id)
+    return job
+
+
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_web_basic_audit(request: Request, payload: WebAuditRequest, background_tasks: BackgroundTasks) -> JobRecord:
     if not payload.authorization_confirmed:
@@ -330,7 +342,7 @@ async def list_jobs(request: Request) -> list[JobListItem]:
 @app.get("/jobs/{job_id}", response_model=JobRecord)
 async def get_job(request: Request, job_id: str) -> JobRecord:
     job = request.app.state.jobs.get(job_id)
-    if job.audit_type in {"k8s_config_basic", "terraform_config_basic", "nginx_config_basic", "compose_config_basic"}:
+    if job.audit_type in {"k8s_config_basic", "terraform_config_basic", "nginx_config_basic", "compose_config_basic", "database_config_basic"}:
         return job.model_copy(
             update={
                 "result": public_result_for_job(job, job.result or {}),
