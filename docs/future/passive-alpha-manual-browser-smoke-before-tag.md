@@ -1,6 +1,6 @@
 # Passive Alpha Manual Browser Smoke Before Tag
 
-Status: `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
+Status: `SUPERSEDED_BY_PASSING_BROWSER_SMOKE_RERUN`.
 
 Base commit: `c245c60 docs(alpha): rerun passive release gate smoke`
 
@@ -10,7 +10,11 @@ This document records the real browser DOM and Raw JSON smoke attempted before c
 
 Follow-up fix: `docs/future/passive-alpha-release-gate-manifest-upload-listing-fix.md`.
 
-The original smoke decision below remains `BLOCKED_BEFORE_RELEASE_TAG` for this recorded run. The manifest upload/listing blocker has since been fixed, and the current release-gate state is `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
+Passing rerun: `docs/future/passive-alpha-manual-browser-smoke-rerun-before-tag.md`.
+
+The original smoke decision below remains `BLOCKED_BEFORE_RELEASE_TAG` for this recorded run. The manifest upload/listing blocker has since been fixed and the follow-up rerun has passed.
+
+The follow-up rerun passed real-browser DOM, expanded Raw JSON, export-control, redaction-negative, and non-archive manifest sanity checks. The current release-gate state is `READY_TO_TAG_PASSIVE_ALPHA`, assuming `git status --short` remains clean at tag time. No tag was created in that rerun microphase.
 
 ## A. Initial State
 

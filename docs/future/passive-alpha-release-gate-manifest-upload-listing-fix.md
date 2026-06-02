@@ -1,12 +1,14 @@
 # Passive Alpha Release Gate Manifest Upload Listing Fix
 
-Status: `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
+Status: `FIX_VERIFIED_BY_PASSING_BROWSER_SMOKE_RERUN`.
 
 Base commit: `fb3c289 docs(alpha): record manual browser smoke before tag`
 
 Target tag: `v0.1.0-passive-alpha`
 
 This document records the release-gate fix for the manifest upload/listing blocker found in the manual browser smoke. It does not create a tag, create a release, add analyzers, add scripts, add fixtures, change exports, change redaction logic, or open active/network scope.
+
+Passing browser rerun: `docs/future/passive-alpha-manual-browser-smoke-rerun-before-tag.md`.
 
 ## A. Blocker
 
@@ -116,12 +118,12 @@ git diff --check
 
 ## G. Final State
 
-Decision: `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
+Decision: `READY_TO_TAG_PASSIVE_ALPHA`.
 
-The manifest upload/listing blocker found in the previous browser smoke is fixed and covered by backend, frontend, and focused browser smoke checks.
+The manifest upload/listing blocker found in the previous browser smoke is fixed and covered by backend, frontend, focused browser smoke checks, and the full browser rerun in `docs/future/passive-alpha-manual-browser-smoke-rerun-before-tag.md`.
 
-Do not create `v0.1.0-passive-alpha` yet. The next required microphase is a full browser smoke rerun using the synthetic fixtures, followed by a clean-tree tag decision.
+No tag was created in the fix or browser-rerun microphases. The next required microphase may prepare release notes and create `v0.1.0-passive-alpha`, provided `git status --short` remains clean at tag time.
 
 ## H. Next Recommended Microphase
 
-`PASSIVE-ALPHA-MANUAL-BROWSER-SMOKE-RERUN-BEFORE-TAG`
+`PASSIVE-ALPHA-RELEASE-NOTES-AND-TAG`

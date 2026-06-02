@@ -35,6 +35,7 @@ Reference assets for the alpha demo/readiness package:
 - Release-gate smoke rerun: `docs/future/passive-alpha-release-gate-smoke-rerun.md`
 - Manual browser smoke before tag: `docs/future/passive-alpha-manual-browser-smoke-before-tag.md`
 - Manifest upload/listing fix: `docs/future/passive-alpha-release-gate-manifest-upload-listing-fix.md`
+- Final manual browser smoke rerun before tag: `docs/future/passive-alpha-manual-browser-smoke-rerun-before-tag.md`
 
 ## 3. Demo Scope
 
@@ -227,7 +228,7 @@ The post-fix release-gate API smoke rerun is documented in:
 docs/future/passive-alpha-release-gate-smoke-rerun.md
 ```
 
-That rerun passed API/job/export redaction checks and records the current release state as `READY_FOR_MANUAL_BROWSER_SMOKE_BEFORE_TAG`.
+That rerun passed API/job/export redaction checks and recorded the release state at that time as `READY_FOR_MANUAL_BROWSER_SMOKE_BEFORE_TAG`.
 
 The manual browser smoke follow-up is documented in:
 
@@ -235,7 +236,7 @@ The manual browser smoke follow-up is documented in:
 docs/future/passive-alpha-manual-browser-smoke-before-tag.md
 ```
 
-It passed archive report DOM and expanded Raw JSON redaction checks, but the current release state is `BLOCKED_BEFORE_RELEASE_TAG` because the non-archive `package.json` manifest sanity check failed in the browser flow and backend `/files` returned `500` after manifest upload. Do not tag until that blocker is fixed and the browser smoke is rerun.
+It passed archive report DOM and expanded Raw JSON redaction checks, but that recorded run remained `BLOCKED_BEFORE_RELEASE_TAG` because the non-archive `package.json` manifest sanity check failed in the browser flow and backend `/files` returned `500` after manifest upload.
 
 The manifest upload/listing blocker fix is documented in:
 
@@ -243,4 +244,12 @@ The manifest upload/listing blocker fix is documented in:
 docs/future/passive-alpha-release-gate-manifest-upload-listing-fix.md
 ```
 
-That fix passed focused backend/frontend tests and a focused real-browser smoke for `package.json` manifest upload. The current state is `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`; do not tag until the full browser smoke is rerun.
+That fix passed focused backend/frontend tests and a focused real-browser smoke for `package.json` manifest upload.
+
+The full browser smoke rerun is documented in:
+
+```text
+docs/future/passive-alpha-manual-browser-smoke-rerun-before-tag.md
+```
+
+That rerun passed archive DOM, expanded Raw JSON, export-control, redaction-negative, and non-archive manifest sanity checks. The current release-gate state is `READY_TO_TAG_PASSIVE_ALPHA`, assuming `git status --short` remains clean at tag time. No tag was created in the rerun microphase.

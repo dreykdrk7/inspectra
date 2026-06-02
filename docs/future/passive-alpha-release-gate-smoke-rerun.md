@@ -1,6 +1,6 @@
 # Passive Alpha Release Gate Smoke Rerun
 
-Status: `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
+Status: `READY_TO_TAG_PASSIVE_ALPHA`.
 
 Base commit: `9751e89 fix(redaction): block passive alpha ci nginx leaks`
 
@@ -12,11 +12,15 @@ This document records the release-gate rerun for Inspectra Passive Technical Alp
 
 Follow-up browser gate: `docs/future/passive-alpha-manual-browser-smoke-before-tag.md`.
 
-The follow-up real browser DOM and Raw JSON smoke passed for seven archive jobs, but the release remains blocked because the required non-archive `package.json` manifest sanity check failed: the UI showed `Cannot read properties of null (reading 'reset')` and backend `/files` returned `500` after manifest upload. Do not create `v0.1.0-passive-alpha` yet.
+The follow-up real browser DOM and Raw JSON smoke passed for seven archive jobs, but that recorded run remained blocked because the required non-archive `package.json` manifest sanity check failed: the UI showed `Cannot read properties of null (reading 'reset')` and backend `/files` returned `500` after manifest upload.
 
 Manifest blocker fix: `docs/future/passive-alpha-release-gate-manifest-upload-listing-fix.md`.
 
-The manifest upload/listing blocker has been fixed and covered by focused backend/frontend tests plus a focused real-browser smoke. The current state is `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
+The manifest upload/listing blocker was fixed and covered by focused backend/frontend tests plus a focused real-browser smoke.
+
+Final browser rerun: `docs/future/passive-alpha-manual-browser-smoke-rerun-before-tag.md`.
+
+That rerun passed archive DOM, expanded Raw JSON, export-control, redaction-negative, and non-archive manifest sanity checks. The current state is `READY_TO_TAG_PASSIVE_ALPHA`, assuming a clean working tree at tag time. No tag was created in the rerun microphase.
 
 ## A. Initial State
 
@@ -200,7 +204,7 @@ Known limitations:
 
 ## H. Final Decision
 
-Decision: `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
+Decision: `READY_TO_TAG_PASSIVE_ALPHA`.
 
 Rationale:
 
@@ -210,5 +214,6 @@ Rationale:
 - The previous CI/CD and Nginx release-blocking leaks were not reproduced.
 - Follow-up real browser DOM and Raw JSON smoke was completed for archive reports and recorded in `docs/future/passive-alpha-manual-browser-smoke-before-tag.md`.
 - The non-archive `package.json` manifest sanity blocker has been fixed in `docs/future/passive-alpha-release-gate-manifest-upload-listing-fix.md`.
+- The follow-up browser smoke rerun passed and is recorded in `docs/future/passive-alpha-manual-browser-smoke-rerun-before-tag.md`.
 
-Do not create `v0.1.0-passive-alpha` yet. The next step is to rerun the full browser smoke and then make a final clean-tree/tag decision.
+No tag was created in this rerun or in the browser-rerun microphase. The next step may prepare release notes and create `v0.1.0-passive-alpha`, provided `git status --short` is clean at tag time.
