@@ -224,6 +224,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_compose_config_sections(result))
     elif job.audit_type == "database_config_basic":
         sections.extend(build_database_config_sections(result))
+    elif job.audit_type == "redis_config_basic":
+        sections.extend(build_redis_config_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -550,6 +552,27 @@ def build_database_config_sections(result: dict[str, Any]) -> list[ReportSection
     ]
 
 
+def build_redis_config_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "Redis Config Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("Redis Config Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("Redis Config Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Files Detected", flatten_django_detected_files(result.get("files_detected"))),
+        ReportSection("Files Reviewed", flatten_list(result.get("files_reviewed"))),
+        ReportSection("Configs", flatten_list(result.get("configs"))),
+        ReportSection("Redis Settings", flatten_list(result.get("redis_settings"))),
+        ReportSection("Sentinel Settings", flatten_list(result.get("sentinel_settings"))),
+        ReportSection("Includes Detected But Not Resolved", flatten_list(result.get("includes"))),
+        ReportSection("ACL Files Detected But Not Read", flatten_list(result.get("acl_files"))),
+        ReportSection("Dumps / AOF / Backups Detected But Not Read", flatten_list(result.get("dump_or_aof_files"))),
+        ReportSection("Findings", flatten_redis_findings(result.get("findings"))),
+        ReportSection("Redaction Notes", flatten_list(result.get("redaction_notes"))),
+    ]
+
+
 def flatten_django_detected_files(value: Any) -> list[tuple[str, str]]:
     if not isinstance(value, list):
         return []
@@ -819,6 +842,39 @@ def flatten_database_findings(value: Any) -> list[tuple[str, str]]:
     return rows
 
 
+def flatten_redis_findings(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("ID", "id"),
+        ("Code", "code"),
+        ("Title", "title"),
+        ("Level", "level"),
+        ("Confidence", "confidence"),
+        ("Category", "category"),
+        ("Context", "context"),
+        ("Config type", "config_type"),
+        ("Directive", "directive"),
+        ("Setting", "setting"),
+        ("Address", "address"),
+        ("Port", "port"),
+        ("Path", "path"),
+        ("File path", "file_path"),
+        ("Line", "line"),
+        ("Description", "description"),
+        ("Evidence", "evidence"),
+        ("Recommendation", "recommendation"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Finding {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"Finding {index}", record, preferred_keys)
+    return rows
+
+
 def append_preferred_rows(
     rows: list[tuple[str, str]],
     prefix: str,
@@ -1030,6 +1086,19 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
         data["errors_count"] = len(result.get("errors") or [])
+    elif job.audit_type == "redis_config_basic":
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["files_considered"] = summary.get("files_considered", "N/A")
+        data["files_reviewed"] = summary.get("files_reviewed", "N/A")
+        data["redis_files_detected"] = summary.get("redis_files_detected", "N/A")
+        data["sentinel_files_detected"] = summary.get("sentinel_files_detected", "N/A")
+        data["acl_files_detected"] = summary.get("acl_files_detected", "N/A")
+        data["dump_or_aof_files_detected"] = summary.get("dump_or_aof_files_detected", "N/A")
+        data["configs_detected"] = summary.get("configs_detected", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
+        data["errors_count"] = len(result.get("errors") or [])
     return data
 
 
@@ -1079,6 +1148,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_compose_config_value(result))
     if job.audit_type == "database_config_basic":
         return as_dict(redact_database_config_value(result))
+    if job.audit_type == "redis_config_basic":
+        return as_dict(redact_redis_config_value(result))
     return result
 
 
@@ -1107,6 +1178,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_compose_secret_text(job.error)
     if job.audit_type == "database_config_basic":
         return redact_database_secret_text(job.error)
+    if job.audit_type == "redis_config_basic":
+        return redact_redis_secret_text(job.error)
     return job.error
 
 
@@ -1701,6 +1774,123 @@ def redact_database_secret_text(value: str) -> str:
     )
     redacted = re.sub(
         r"(?i)\b(?:super-secret-password|raw-db-password-[a-z0-9_-]+|raw-api-key-[a-z0-9_-]+|[a-z0-9_.-]*should_(?:never|not)_render[a-z0-9_.-]*|db_password_plaintext)\b",
+        "[REDACTED]",
+        redacted,
+    )
+    redacted = redacted.replace("PRIVATE_KEY_BLOCK_REDACTED", "[REDACTED]")
+    return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
+
+
+def redact_redis_config_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_redis_secret_text(value)
+    if isinstance(value, list):
+        return [redact_redis_config_value(item) for item in value]
+    if isinstance(value, dict):
+        secret_named_value = redis_record_has_secret_name(value)
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if is_redis_secret_mapping_key(key_text) or (
+                secret_named_value
+                and key_text.lower()
+                in {"value", "raw_value", "default", "data", "content", "dump", "aof", "acl", "arguments", "connection_string", "url"}
+            ):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_redis_config_value(item)
+        return redacted
+    return value
+
+
+def redis_record_has_secret_name(record: dict[str, Any]) -> bool:
+    for marker in (
+        "key",
+        "name",
+        "setting",
+        "directive",
+        "target",
+        "path",
+        "environment",
+        "env",
+        "error",
+        "url",
+    ):
+        candidate = record.get(marker)
+        if candidate is not None and is_redis_secret_mapping_key(str(candidate)):
+            return True
+    return False
+
+
+def is_redis_secret_mapping_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if "redacted" in normalized or normalized.endswith("_count"):
+        return False
+    if normalized in {
+        "content",
+        "raw",
+        "raw_content",
+        "dump_content",
+        "aof_content",
+        "acl_content",
+        "appendonly_content",
+        "backup_content",
+        "private_key",
+        "certificate_key",
+        "env_file_content",
+        "credential_file_content",
+    }:
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "authorization",
+            "access_token",
+            "refresh_token",
+            "auth_token",
+            "auth_pass",
+            "requirepass",
+            "masterauth",
+            "client_secret",
+            "private_key",
+            "api_key",
+            "apikey",
+            "password",
+            "passwd",
+            "redis_password",
+            "token",
+            "secret",
+            "credential",
+            "redis_url",
+            "connection_string",
+            "acl_hash",
+        )
+    )
+
+
+def redact_redis_secret_text(value: str) -> str:
+    redacted = redact_database_secret_text(value).replace("[REDACTED PRIVATE KEY]", "[REDACTED]")
+    redacted = re.sub(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "[REDACTED]",
+        redacted,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    redacted = re.sub(r"\bPRIVATE KEY\b", "[REDACTED]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(
+        r"(?i)\b(redis(?:s)?://)([^/\s:@;\"']*):([^@\s/;\"']+)@([^\s;\"']+)",
+        r"\1[REDACTED]@\4",
+        redacted,
+    )
+    redacted = re.sub(r"(?i)\b(requirepass|masterauth)\b\s+[^,\n\r;}\]]+", r"\1 [REDACTED]", redacted)
+    redacted = re.sub(r"(?i)\bsentinel\s+auth-pass\s+\S+\s+[^,\n\r;}\]]+", "sentinel auth-pass [REDACTED]", redacted)
+    redacted = re.sub(
+        r"(?i)\b([A-Z0-9_$_.-]*(?:REDIS_PASSWORD|REQUIREPASS|MASTERAUTH|PASSWORD|PASS|SECRET|TOKEN|API_KEY|APIKEY|CLIENT_SECRET|PRIVATE_KEY|CREDENTIAL|REDIS_URL|CONNECTION_STRING|AUTH_PASS)[A-Z0-9_$_.-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\";}\]]+",
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b(?:super-secret-password|raw-redis-password-[a-z0-9_-]+|raw-api-key-[a-z0-9_-]+|[a-z0-9_.-]*should_(?:never|not)_render[a-z0-9_.-]*|ACLHASHSECRET[a-z0-9_.-]*|dump_value_should_not_render|acl_password_hash_should_not_render)\b",
         "[REDACTED]",
         redacted,
     )

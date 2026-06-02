@@ -31,6 +31,7 @@ from app.services import (
     NginxConfigAuditService,
     PdfAuditService,
     ProjectArchiveAuditService,
+    RedisConfigAuditService,
     SecretsReviewAuditService,
     SubdomainInventoryAuditService,
     TerraformConfigAuditService,
@@ -93,6 +94,9 @@ class NoopAuditService:
         return None
 
     async def run_database_config_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_redis_config_analysis(self, job_id: str) -> None:
         return None
 
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
@@ -158,6 +162,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.nginx_config_audits = NginxConfigAuditService(settings, file_store, job_store)
     app.state.compose_config_audits = ComposeConfigAuditService(settings, file_store, job_store)
     app.state.database_config_audits = DatabaseConfigAuditService(settings, file_store, job_store)
+    app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -1477,6 +1482,154 @@ async def test_database_config_service_calls_runner_endpoint(monkeypatch, tmp_pa
     assert calls[0]["json"]["max_files"] == app.state.settings.database_config_max_files
     assert calls[0]["json"]["max_file_bytes"] == app.state.settings.database_config_max_file_bytes
     assert calls[0]["json"]["max_total_bytes"] == app.state.settings.database_config_max_total_bytes
+
+
+@pytest.mark.anyio
+async def test_redis_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.redis_config_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("redis.zip", make_zip_bytes({"redis.conf": b"port 6379\n"}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        redis_response = await client.post(f"/audits/redis-config/{archive_file['id']}")
+        pdf_as_redis_response = await client.post(f"/audits/redis-config/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/redis-config/not-a-file-id")
+
+    assert redis_response.status_code == 202
+    assert redis_response.json()["audit_type"] == "redis_config_basic"
+    assert pdf_as_redis_response.status_code == 400
+    assert pdf_as_redis_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_redis_config_service_calls_runner_endpoint_and_redacts(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("redis.zip", make_zip_bytes({"redis.conf": b"requirepass x\n"}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_redis_config_job(archive.id)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "redis_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 4,
+                        "files_reviewed": 2,
+                        "redis_files_detected": 1,
+                        "sentinel_files_detected": 1,
+                        "acl_files_detected": 1,
+                        "dump_or_aof_files_detected": 1,
+                        "configs_detected": 2,
+                        "findings_count": 1,
+                        "redacted_values_count": 1,
+                        "truncated": False,
+                    },
+                    "redis_settings": [{"setting": "requirepass", "value": "super-secret-password"}],
+                    "sentinel_settings": [{"setting": "sentinel auth-pass", "value": "sentinel_auth_should_not_render"}],
+                    "acl_files": [{"path": "users.acl", "read": False, "content": "acl_password_hash_should_not_render"}],
+                    "dump_or_aof_files": [{"path": "dump.rdb", "read": False, "content": "dump_value_should_not_render"}],
+                    "findings": [
+                        {
+                            "id": "redis_requirepass_present_redacted",
+                            "title": "Redis requirepass",
+                            "level": "medium",
+                            "evidence": "requirepass super-secret-password redis://:super-secret-password@redis:6379/0",
+                        }
+                    ],
+                    "errors": [
+                        "masterauth masterauth_secret_should_not_render",
+                        "-----BEGIN PRIVATE KEY----- PRIVATE KEY -----END PRIVATE KEY-----",
+                    ],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+
+    await app.state.redis_config_audits.run_redis_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    serialized_result = json.dumps(updated.result)
+    assert updated.status == "completed"
+    assert updated.result["analyzer"] == "redis_config_basic"
+    assert "[REDACTED]" in serialized_result
+    for secret in (
+        "super-secret-password",
+        "redis://:super-secret-password@redis:6379/0",
+        "masterauth_secret_should_not_render",
+        "sentinel_auth_should_not_render",
+        "acl_password_hash_should_not_render",
+        "dump_value_should_not_render",
+        "PRIVATE KEY",
+    ):
+        assert secret not in serialized_result
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/redis-config"
+    assert calls[0]["json"]["file_id"] == archive.id
+    assert calls[0]["json"]["original_filename"] == "redis.zip"
+    assert calls[0]["json"]["max_files"] == app.state.settings.redis_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.redis_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.redis_config_max_total_bytes
+
+
+@pytest.mark.anyio
+async def test_redis_config_service_records_runner_failure(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("redis.zip", make_zip_bytes({"redis.conf": b"port 6379\n"}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_redis_config_job(archive.id)
+
+    class FailingAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            raise audit_services.httpx.HTTPError("runner unavailable")
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FailingAsyncClient)
+
+    await app.state.redis_config_audits.run_redis_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    assert updated.status == "failed"
+    assert updated.error == "Tool runner request failed: runner unavailable"
 
 
 @pytest.mark.anyio
@@ -4826,6 +4979,202 @@ async def test_export_database_config_jobs_with_sparse_and_incomplete_results(mo
 
 
 @pytest.mark.anyio
+async def test_redis_config_job_summary_and_export_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_redis_config_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    summary = list_response.json()[0]["summary"]
+    assert summary["analyzer"] == "redis_config_basic"
+    assert summary["files_considered"] == 6
+    assert summary["files_reviewed"] == 2
+    assert summary["redis_files_detected"] == 1
+    assert summary["sentinel_files_detected"] == 1
+    assert summary["acl_files_detected"] == 1
+    assert summary["dump_or_aof_files_detected"] == 2
+    assert summary["configs_detected"] == 2
+    assert summary["findings_count"] == 2
+    assert summary["redacted_values_count"] == 2
+    assert summary["truncated"] is False
+    assert summary["errors_count"] == 0
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "redis_config_basic" in responses["markdown"].text
+    assert "Redis Config Metrics" in responses["html"].text
+    assert "Redis Settings" in responses["markdown"].text
+    assert "Sentinel Settings" in responses["markdown"].text
+    assert "Includes Detected But Not Resolved" in responses["markdown"].text
+    assert "ACL Files Detected But Not Read" in responses["markdown"].text
+    assert "Dumps / AOF / Backups Detected But Not Read" in responses["markdown"].text
+    assert "Finding 1 Config type" in responses["markdown"].text
+    assert "redis_requirepass_present_redacted" in responses["markdown"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "redis_config_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_export_redis_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="3" * 31 + "8",
+        audit_type="redis_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="requirepass super-secret-password",
+        result={
+            "analyzer": "redis_config_basic",
+            "archive_type": "zip",
+            "summary": {"files_reviewed": 1, "findings_count": 1, "redacted_values_count": 0},
+            "configs": [{"path": "deploy/redis/redis.conf", "content": "requirepass super-secret-password"}],
+            "redis_settings": [{"setting": "requirepass", "value": "super-secret-password"}],
+            "sentinel_settings": [{"setting": "sentinel auth-pass", "value": "sentinel_auth_should_not_render"}],
+            "includes": [{"target": "/etc/redis/secrets.conf", "content": "masterauth_secret_should_not_render", "resolved": False}],
+            "acl_files": [{"path": "users.acl", "read": False, "content": "acl_password_hash_should_not_render ACLHASHSECRET_should_not_render"}],
+            "dump_or_aof_files": [{"path": "dump.rdb", "read": False, "content": "dump_value_should_not_render"}],
+            "findings": [
+                {
+                    "id": "legacy_redis_secret",
+                    "title": "Legacy raw secret",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets",
+                    "description": "masterauth masterauth_secret_should_not_render",
+                    "evidence": "requirepass super-secret-password redis://:super-secret-password@redis:6379/0",
+                    "recommendation": "-----BEGIN PRIVATE KEY----- PRIVATE KEY raw-redis-password-123456 -----END PRIVATE KEY-----",
+                    "file_path": "deploy/redis/redis.conf",
+                    "context": "production<script>requirepass super-secret-password</script>",
+                    "config_type": "redis",
+                    "setting": "requirepass",
+                }
+            ],
+            "errors": [
+                "requirepass super-secret-password",
+                "masterauth masterauth_secret_should_not_render",
+                "sentinel auth-pass mymaster sentinel_auth_should_not_render",
+                "redis://:super-secret-password@redis:6379/0",
+                "raw-redis-password-123456",
+                "ACLHASHSECRET_should_not_render",
+                "dump_value_should_not_render",
+                "acl_password_hash_should_not_render",
+            ],
+            "redaction_notes": ["raw-redis-password-123456"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = (
+        b"super-secret-password",
+        b"raw-redis-password-123456",
+        b"redis://:super-secret-password@redis:6379/0",
+        b"masterauth_secret_should_not_render",
+        b"sentinel_auth_should_not_render",
+        b"ACLHASHSECRET_should_not_render",
+        b"PRIVATE KEY",
+        b"dump_value_should_not_render",
+        b"acl_password_hash_should_not_render",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    assert api_response.status_code == 200
+    assert b"REDACTED" in api_response.content
+    for secret in forbidden:
+        assert secret not in api_response.content
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
+
+
+@pytest.mark.anyio
+async def test_export_redis_config_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="3" * 31 + "9", audit_type="redis_config_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="2" * 31 + "1", audit_type="redis_config_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="2" * 31 + "2",
+            audit_type="redis_config_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="Redis config runner failed safely.",
+        ),
+        JobRecord(
+            id="2" * 31 + "3",
+            audit_type="redis_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "redis_config_basic", "summary": {}, "findings": [{"id": "sparse"}], "errors": []},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "redis_config_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "redis_config_basic" in response.text
+
+
+@pytest.mark.anyio
 async def test_export_domain_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -6896,6 +7245,132 @@ def save_database_config_export_fixture_job() -> JobRecord:
             "redaction_notes": [
                 "Secret-like database config values are redacted before storage on a best-effort basis.",
                 ".env, .pgpass, hidden client credential files, dumps, and backups are detected but not read by this analyzer.",
+            ],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_redis_config_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="6" * 31 + "8",
+        audit_type="redis_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "redis_config_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "redis256"},
+            "file_identification": {"size_bytes": 4096, "original_filename": "redis.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 6,
+                "files_reviewed": 2,
+                "redis_files_detected": 1,
+                "sentinel_files_detected": 1,
+                "acl_files_detected": 1,
+                "dump_or_aof_files_detected": 2,
+                "configs_detected": 2,
+                "findings_count": 2,
+                "redacted_values_count": 2,
+                "truncated": False,
+            },
+            "files_detected": [
+                {"path": "deploy/redis/redis.conf", "category": "redis", "read": True, "size_bytes": 1024, "context": "production"},
+                {"path": "deploy/redis/sentinel.conf", "category": "sentinel", "read": True, "size_bytes": 512, "context": "production"},
+                {"path": ".env.production", "category": "sensitive", "read": False, "skip_reason": "sensitive_file_not_read", "context": "production"},
+                {"path": "deploy/redis/users.acl", "category": "acl", "read": False, "skip_reason": "acl_file_not_read", "context": "production"},
+                {"path": "deploy/redis/dump.rdb", "category": "dump_or_aof", "read": False, "skip_reason": "dump_or_aof_not_read", "context": "production"},
+                {"path": "deploy/redis/appendonly.aof", "category": "dump_or_aof", "read": False, "skip_reason": "dump_or_aof_not_read", "context": "production"},
+            ],
+            "files_reviewed": [
+                {"path": "deploy/redis/redis.conf", "category": "redis", "config_type": "redis", "context": "production", "bytes_read": 1024},
+                {"path": "deploy/redis/sentinel.conf", "category": "sentinel", "config_type": "sentinel", "context": "production", "bytes_read": 512},
+            ],
+            "configs": [
+                {"path": "deploy/redis/redis.conf", "config_type": "redis", "context": "production"},
+                {"path": "deploy/redis/sentinel.conf", "config_type": "sentinel", "context": "production"},
+            ],
+            "redis_settings": [
+                {"file_path": "deploy/redis/redis.conf", "config_type": "redis", "line": 2, "setting": "bind", "value": "0.0.0.0"},
+                {"file_path": "deploy/redis/redis.conf", "config_type": "redis", "line": 3, "setting": "requirepass", "value": "[REDACTED]"},
+            ],
+            "sentinel_settings": [
+                {
+                    "file_path": "deploy/redis/sentinel.conf",
+                    "config_type": "sentinel",
+                    "line": 2,
+                    "setting": "sentinel monitor",
+                    "value": "mymaster 10.0.0.2 6379 2",
+                },
+                {
+                    "file_path": "deploy/redis/sentinel.conf",
+                    "config_type": "sentinel",
+                    "line": 3,
+                    "setting": "sentinel auth-pass",
+                    "value": "[REDACTED]",
+                },
+            ],
+            "includes": [
+                {
+                    "file_path": "deploy/redis/redis.conf",
+                    "config_type": "redis",
+                    "line": 5,
+                    "directive": "include",
+                    "target": "/etc/redis/secrets.conf",
+                    "resolved": False,
+                }
+            ],
+            "acl_files": [
+                {"path": "deploy/redis/users.acl", "category": "acl", "read": False, "skip_reason": "acl_file_not_read"}
+            ],
+            "dump_or_aof_files": [
+                {"path": "deploy/redis/dump.rdb", "category": "dump_or_aof", "read": False, "skip_reason": "dump_or_aof_not_read"},
+                {"path": "deploy/redis/appendonly.aof", "category": "dump_or_aof", "read": False, "skip_reason": "dump_or_aof_not_read"},
+            ],
+            "findings": [
+                {
+                    "id": "redis_requirepass_present_redacted",
+                    "title": "Redis requirepass is present",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets",
+                    "context": "production",
+                    "config_type": "redis",
+                    "setting": "requirepass",
+                    "directive": "requirepass",
+                    "file_path": "deploy/redis/redis.conf",
+                    "line": 3,
+                    "description": "A Redis static configuration review indicator was observed.",
+                    "evidence": "requirepass [REDACTED]",
+                    "recommendation": "Review this setting in the intended deployment context.",
+                },
+                {
+                    "id": "redis_include_not_resolved",
+                    "title": "Redis config include was detected but not resolved",
+                    "level": "low",
+                    "confidence": "high",
+                    "category": "include",
+                    "context": "production",
+                    "config_type": "redis",
+                    "setting": "include",
+                    "path": "/etc/redis/secrets.conf",
+                    "file_path": "deploy/redis/redis.conf",
+                    "line": 5,
+                    "description": "Includes are detected but intentionally not resolved.",
+                    "evidence": "include /etc/redis/secrets.conf",
+                    "recommendation": "Review included files manually in the intended deployment context.",
+                },
+            ],
+            "redaction_notes": [
+                "Secret-like Redis config values are redacted before storage on a best-effort basis.",
+                ".env, ACL, RDB, AOF, appendonly, dump, and backup files are detected but not read by this analyzer.",
             ],
             "errors": [],
         },

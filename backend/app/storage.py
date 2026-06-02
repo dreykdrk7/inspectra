@@ -315,6 +315,9 @@ class JobStore:
     def create_database_config_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "database_config_basic")
 
+    def create_redis_config_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "redis_config_basic")
+
     def create_web_job(self, target_url: str) -> JobRecord:
         return self._create_job(None, "web_basic", target_url=target_url)
 
@@ -706,6 +709,19 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["pg_hba_files_detected"] = manifest_summary.get("pg_hba_files_detected")
             summary["dump_or_backup_files_detected"] = manifest_summary.get("dump_or_backup_files_detected")
             summary["engines_detected"] = manifest_summary.get("engines_detected")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
+            summary["truncated"] = manifest_summary.get("truncated")
+            summary["errors_count"] = len(record.result.get("errors") or [])
+        if record.audit_type == "redis_config_basic":
+            summary["archive_type"] = record.result.get("archive_type")
+            summary["files_considered"] = manifest_summary.get("files_considered")
+            summary["files_reviewed"] = manifest_summary.get("files_reviewed")
+            summary["redis_files_detected"] = manifest_summary.get("redis_files_detected")
+            summary["sentinel_files_detected"] = manifest_summary.get("sentinel_files_detected")
+            summary["acl_files_detected"] = manifest_summary.get("acl_files_detected")
+            summary["dump_or_aof_files_detected"] = manifest_summary.get("dump_or_aof_files_detected")
+            summary["configs_detected"] = manifest_summary.get("configs_detected")
             summary["findings_count"] = manifest_summary.get("findings_count")
             summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
             summary["truncated"] = manifest_summary.get("truncated")

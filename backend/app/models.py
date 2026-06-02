@@ -24,6 +24,7 @@ AuditType = Literal[
     "nginx_config_basic",
     "compose_config_basic",
     "database_config_basic",
+    "redis_config_basic",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 

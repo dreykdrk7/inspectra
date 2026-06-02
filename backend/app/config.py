@@ -44,6 +44,9 @@ DEFAULT_COMPOSE_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_DATABASE_CONFIG_MAX_FILES = 100
 DEFAULT_DATABASE_CONFIG_MAX_FILE_BYTES = 524_288
 DEFAULT_DATABASE_CONFIG_MAX_TOTAL_BYTES = 2_097_152
+DEFAULT_REDIS_CONFIG_MAX_FILES = 100
+DEFAULT_REDIS_CONFIG_MAX_FILE_BYTES = 524_288
+DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,9 @@ class Settings:
     database_config_max_files: int = DEFAULT_DATABASE_CONFIG_MAX_FILES
     database_config_max_file_bytes: int = DEFAULT_DATABASE_CONFIG_MAX_FILE_BYTES
     database_config_max_total_bytes: int = DEFAULT_DATABASE_CONFIG_MAX_TOTAL_BYTES
+    redis_config_max_files: int = DEFAULT_REDIS_CONFIG_MAX_FILES
+    redis_config_max_file_bytes: int = DEFAULT_REDIS_CONFIG_MAX_FILE_BYTES
+    redis_config_max_total_bytes: int = DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES
 
     @property
     def upload_dir(self) -> Path:
@@ -255,6 +261,18 @@ def load_settings() -> Settings:
         "INSPECTRA_DATABASE_CONFIG_MAX_TOTAL_BYTES",
         DEFAULT_DATABASE_CONFIG_MAX_TOTAL_BYTES,
     )
+    redis_config_max_files = _positive_int_from_env(
+        "INSPECTRA_REDIS_CONFIG_MAX_FILES",
+        DEFAULT_REDIS_CONFIG_MAX_FILES,
+    )
+    redis_config_max_file_bytes = _positive_int_from_env(
+        "INSPECTRA_REDIS_CONFIG_MAX_FILE_BYTES",
+        DEFAULT_REDIS_CONFIG_MAX_FILE_BYTES,
+    )
+    redis_config_max_total_bytes = _positive_int_from_env(
+        "INSPECTRA_REDIS_CONFIG_MAX_TOTAL_BYTES",
+        DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -299,6 +317,9 @@ def load_settings() -> Settings:
         database_config_max_files=database_config_max_files,
         database_config_max_file_bytes=database_config_max_file_bytes,
         database_config_max_total_bytes=database_config_max_total_bytes,
+        redis_config_max_files=redis_config_max_files,
+        redis_config_max_file_bytes=redis_config_max_file_bytes,
+        redis_config_max_total_bytes=redis_config_max_total_bytes,
     )
 
 
