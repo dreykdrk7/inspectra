@@ -6,7 +6,7 @@ Base commit: `0fff2c7 docs(alpha): triage passive release readiness backlog`
 
 Release candidate target: `v0.1.0-passive-alpha`
 
-Follow-up: the release-blocking CI/CD and Nginx redaction leaks are tracked and fixed in `docs/future/passive-alpha-release-gate-redaction-fix.md`. The release gate still requires a full smoke rerun and manual/browser UI DOM check before any tag.
+Follow-up: the release-blocking CI/CD and Nginx redaction leaks are tracked and fixed in `docs/future/passive-alpha-release-gate-redaction-fix.md`. The full API smoke rerun is recorded in `docs/future/passive-alpha-release-gate-smoke-rerun.md`; API redaction checks passed, but manual/browser UI DOM and Raw JSON smoke remains pending before any tag.
 
 This document records the release-gate smoke run for Inspectra Passive Technical Alpha. It does not create a tag, create a release, add analyzers, change runtime behavior, change endpoints, change exports, change redaction logic, add scripts, add fixtures, or open active/network scope.
 

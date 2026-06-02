@@ -1,12 +1,14 @@
 # Passive Alpha Release Gate Redaction Fix
 
-Status: `REDACTION_FIX_VALIDATED_PENDING_FULL_GATE_RERUN`.
+Status: `REDACTION_FIX_VALIDATED_API_RERUN_PASSED_BROWSER_PENDING`.
 
 Base blocker document: `docs/future/passive-alpha-release-gate-smoke-run.md`
 
 Fix commit target: `fix(redaction): block passive alpha ci nginx leaks`
 
 This document records the focused follow-up for the release-gate redaction blockers found in the Passive Technical Alpha smoke run. It does not create a tag, create a release, add analyzers, change endpoints, add frontend behavior, expand passive scope, or introduce active/network execution.
+
+Full API smoke rerun follow-up: `docs/future/passive-alpha-release-gate-smoke-rerun.md`.
 
 ## Blocker Summary
 
@@ -99,10 +101,10 @@ The first sandbox-local client attempt failed with `Operation not permitted` on 
 
 ## Product Decision
 
-This fix is necessary but not sufficient for tagging the alpha. After the fix commit, rerun the full passive alpha release gate smoke, including the manual/browser UI DOM and Raw JSON checks that were still pending in the blocked gate.
+This fix cleared the API/export redaction blockers in the full smoke rerun. It is still not sufficient for tagging the alpha because real browser DOM and Raw JSON smoke remains pending.
 
 Recommended next microphase:
 
 ```text
-PASSIVE-ALPHA-RELEASE-GATE-SMOKE-RERUN
+PASSIVE-ALPHA-MANUAL-BROWSER-SMOKE-BEFORE-TAG
 ```

@@ -217,6 +217,14 @@ docs/future/passive-alpha-release-gate-smoke-run.md
 
 That gate found release-blocking redaction failures and records the current release state as `BLOCKED_BEFORE_RELEASE_TAG`.
 
+Post-fix rerun:
+
+```text
+docs/future/passive-alpha-release-gate-smoke-rerun.md
+```
+
+The rerun passed technical validations, full API smoke, and API/export redaction-negative checks after `9751e89 fix(redaction): block passive alpha ci nginx leaks`. The current release state is `READY_FOR_MANUAL_BROWSER_SMOKE_BEFORE_TAG`, not ready to tag yet, because real browser DOM and Raw JSON smoke remains pending.
+
 ## 7. Next Recommended Microphase
 
 Recommended next microphase:

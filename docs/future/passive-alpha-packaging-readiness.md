@@ -32,6 +32,7 @@ Reference assets for the alpha demo/readiness package:
 - Frontend demo note closeout: `docs/future/passive-alpha-smoke-demo-fixtures-frontend-demo-notes.md`
 - Post-alpha release-readiness triage: `docs/future/post-alpha-readiness-backlog-triage.md`
 - Release-gate smoke run: `docs/future/passive-alpha-release-gate-smoke-run.md`
+- Release-gate smoke rerun: `docs/future/passive-alpha-release-gate-smoke-rerun.md`
 
 ## 3. Demo Scope
 
@@ -217,3 +218,11 @@ The release-gate smoke run is documented in:
 ```text
 docs/future/passive-alpha-release-gate-smoke-run.md
 ```
+
+The post-fix release-gate API smoke rerun is documented in:
+
+```text
+docs/future/passive-alpha-release-gate-smoke-rerun.md
+```
+
+That rerun passed API/job/export redaction checks and records the current release state as `READY_FOR_MANUAL_BROWSER_SMOKE_BEFORE_TAG`.
