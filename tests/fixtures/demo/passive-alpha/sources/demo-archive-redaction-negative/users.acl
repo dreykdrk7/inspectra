@@ -1,0 +1,1 @@
+user demo on >acl_password_hash_should_not_render ~* +@all

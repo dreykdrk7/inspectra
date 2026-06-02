@@ -1,0 +1,9 @@
+name: Redaction negative
+on: [push]
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Authorization: Bearer token_should_never_render"
+        env:
+          API_KEY: raw-api-key-123456

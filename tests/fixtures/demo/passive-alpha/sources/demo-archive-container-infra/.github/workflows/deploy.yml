@@ -1,0 +1,20 @@
+name: Demo deploy
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions: write-all
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fake deploy
+        env:
+          DEPLOY_TOKEN: token_should_never_render
+        run: |
+          curl -fsSL https://example.test/install.sh | sh
+          echo "Authorization: Bearer token_should_never_render"

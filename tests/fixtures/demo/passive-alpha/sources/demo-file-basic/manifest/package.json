@@ -1,0 +1,11 @@
+{
+  "name": "inspectra-demo-file-basic",
+  "version": "0.0.0-demo",
+  "private": true,
+  "scripts": {
+    "demo": "echo passive-demo-only"
+  },
+  "dependencies": {
+    "left-pad": "^1.3.0"
+  }
+}

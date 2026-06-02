@@ -1,0 +1,5 @@
+Inspectra Passive demo-file-basic fixture.
+
+This pack is intentionally simple and synthetic. It is meant for manifest/file smoke only.
+
+No real secrets or real project data are present.

@@ -1,0 +1,16 @@
+{
+  "name": "inspectra-demo-app-config",
+  "version": "0.0.0-demo",
+  "private": true,
+  "scripts": {
+    "postinstall": "echo passive-demo-only",
+    "deploy": "echo deploy-demo"
+  },
+  "dependencies": {
+    "express": "*",
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "typescript": "~5.0.0"
+  }
+}

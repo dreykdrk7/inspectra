@@ -1,0 +1,27 @@
+services:
+  web:
+    build: .
+    image: inspectra-demo-web:latest
+    privileged: true
+    ports:
+      - "0.0.0.0:8080:8000"
+    environment:
+      DATABASE_URL: postgres://user:pass@example.com/db
+      REDIS_URL: redis://:super-secret-password@redis:6379/0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./nginx/conf.d:/etc/nginx/conf.d
+    depends_on:
+      - db
+      - redis
+  db:
+    image: postgres:latest
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+networks:
+  default:
+    external: true

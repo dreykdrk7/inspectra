@@ -1,6 +1,6 @@
 # Passive Alpha Smoke Demo Fixtures Design
 
-Status: docs-first design. This document does not create fixtures, change runtime behavior, add analyzers, or touch backend, runner, frontend, jobs, exports, or tests.
+Status: docs-first design. The initial synthetic fixture pack was created later in `tests/fixtures/demo/passive-alpha/` and documented in `docs/future/passive-alpha-smoke-demo-fixtures-create-synthetic-pack.md`.
 
 Base commit: `da3cc69 feat(ui): standardize passive scope and redaction copy`
 

@@ -1,0 +1,4 @@
+[mariadb]
+bind-address=0.0.0.0
+skip-networking=0
+log_error=/var/log/mysql/error.log

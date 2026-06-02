@@ -1,0 +1,10 @@
+services:
+  app:
+    image: nginx:latest
+    environment:
+      POSTGRES_PASSWORD: super-secret-password
+      DATABASE_URL: postgres://user:pass@example.com/db
+      REDIS_URL: redis://:super-secret-password@redis:6379/0
+    command: ["sh", "-c", "echo token_should_never_render"]
+    ports:
+      - "0.0.0.0:8080:80"
