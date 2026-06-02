@@ -16,6 +16,7 @@ import { buildPdfAuditReport } from "./pdfReport";
 import { buildProjectArchiveAuditReport } from "./projectArchiveReport";
 import { buildRedisConfigAuditReport, redactRedisConfigValue } from "./redisConfigReport";
 import { buildSecretsReviewAuditReport, redactSecretsReviewValue } from "./secretsReviewReport";
+import { buildSqlDatabaseConfigAuditReport, redactSqlDatabaseConfigValue } from "./sqlDatabaseConfigReport";
 import { buildSubdomainAuditReport } from "./subdomainReport";
 import { buildTerraformConfigAuditReport, redactTerraformConfigValue } from "./terraformConfigReport";
 import { buildWebAuditReport } from "./webReport";
@@ -1647,6 +1648,145 @@ describe("report helpers", () => {
     expect(serializedReport).toContain("REDACTED");
     expect(report.findings[0].evidence).toContain("[REDACTED]");
     expect(report.dumpOrBackupFiles[0]).toMatchObject({ read: false });
+  });
+
+  it("normalizes SQL database config sections and no-read files", () => {
+    const report = buildSqlDatabaseConfigAuditReport({
+      ...baseJob,
+      audit_type: "sql_database_config_basic",
+      result: {
+        analyzer: "sql_database_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_considered: 9,
+          files_reviewed: 3,
+          postgres_configs_detected: 1,
+          postgres_hba_files_detected: 1,
+          mysql_configs_detected: 1,
+          mariadb_configs_detected: 1,
+          dump_or_backup_files_detected: 1,
+          data_files_detected: 1,
+          sensitive_files_detected: 1,
+          findings_count: 2,
+          redacted_values_count: 1,
+          truncated: false
+        },
+        files_detected: [{ path: "db/postgres/postgresql.conf", category: "postgres", engine: "postgresql", read: true, context: "production" }],
+        postgres_configs: [{ file_path: "db/postgres/postgresql.conf", category: "postgres", engine: "postgresql", context: "production", settings_count: 2 }],
+        postgres_hba_rules: [{ type: "host", database: "all", user: "all", address: "0.0.0.0/0", auth_method: "trust", file_path: "db/postgres/pg_hba.conf", line: 5 }],
+        mysql_configs: [{ file_path: "db/mysql/my.cnf", category: "mysql", engine: "mysql", context: "production", settings_count: 1 }],
+        database_settings: [
+          { engine: "postgresql", setting: "listen_addresses", value: "*", file_path: "db/postgres/postgresql.conf", line: 3 },
+          { engine: "postgresql", setting: "password_encryption", value: "scram-sha-256", file_path: "db/postgres/postgresql.conf", line: 4 }
+        ],
+        includes: [{ directive: "include", target: "/etc/postgresql/secret.conf", resolved: false, file_path: "db/postgres/postgresql.conf", engine: "postgresql", line: 10 }],
+        sensitive_files: [{ path: ".pgpass", category: "client_credentials", read: false, skip_reason: "credential_file_not_read", size_bytes: 128 }],
+        dump_or_backup_files: [{ path: "backups/prod.sql", category: "database_dump", read: false, skip_reason: "dump_not_read", size_bytes: 4096 }],
+        data_files: [{ path: "db/postgres/pg_wal/0001", category: "database_data", read: false, skip_reason: "data_not_read", size_bytes: 4096 }],
+        findings: [
+          {
+            id: "postgres_pg_hba_trust_auth",
+            title: "pg_hba.conf allows trust authentication",
+            level: "medium",
+            confidence: "high",
+            category: "auth",
+            engine: "postgresql",
+            auth_method: "trust",
+            address: "0.0.0.0/0",
+            file_path: "db/postgres/pg_hba.conf",
+            line: 5,
+            evidence: "host all all 0.0.0.0/0 trust"
+          },
+          { code: "sql_database_data_files_present_no_read", message: "data file detected but not read", severity: "info" }
+        ],
+        redaction_notes: ["SQL database values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isSqlDatabaseConfigAudit).toBe(true);
+    expect(report.overview).toContainEqual({ label: "PostgreSQL configs", value: "1" });
+    expect(report.overview).toContainEqual({ label: "MySQL/MariaDB configs", value: "2" });
+    expect(report.postgresConfigs[0]).toMatchObject({ filePath: "db/postgres/postgresql.conf", engine: "postgresql" });
+    expect(report.postgresHbaRules[0]).toMatchObject({ authMethod: "trust", address: "0.0.0.0/0" });
+    expect(report.mysqlConfigs[0]).toMatchObject({ filePath: "db/mysql/my.cnf", engine: "mysql" });
+    expect(report.databaseSettings[1]).toMatchObject({ setting: "password_encryption", value: "scram-sha-256" });
+    expect(report.includes[0]).toMatchObject({ target: "/etc/postgresql/secret.conf", resolved: false });
+    expect(report.sensitiveFiles[0]).toMatchObject({ path: ".pgpass", read: false });
+    expect(report.dumpOrBackupFiles[0]).toMatchObject({ path: "backups/prod.sql", read: false });
+    expect(report.dataFiles[0]).toMatchObject({ path: "db/postgres/pg_wal/0001", read: false });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["medium", "info"]);
+    expect(report.redactionNotes).toEqual(["SQL database values were redacted."]);
+  });
+
+  it("redacts legacy SQL database config payloads defensively", () => {
+    const report = buildSqlDatabaseConfigAuditReport({
+      ...baseJob,
+      audit_type: "sql_database_config_basic",
+      error: "PGPASSWORD=super-secret-password",
+      result: {
+        analyzer: "sql_database_config_basic",
+        summary: { redacted_values_count: 0 },
+        postgres_configs: [{ file_path: "postgresql.conf", content: "postgres://user:pass@example.com/db" }],
+        postgres_hba_rules: [{ content: "db_password_plaintext", auth_method: "trust" }],
+        mysql_configs: [{ file_path: "my.cnf", content: "raw-db-password-123456" }],
+        database_settings: [
+          { setting: "primary_conninfo", value: "postgres://user:pass@example.com/db" },
+          { setting: "password_encryption", value: "password encryption is weak" }
+        ],
+        includes: [{ target: "/etc/postgresql/secret.conf", content: "replication_password_should_not_render" }],
+        sensitive_files: [{ path: ".pgpass", read: false, content: "pgpass_secret_should_not_render" }],
+        dump_or_backup_files: [{ path: "backup.sql", read: false, content: "dump_row_secret_should_not_render" }],
+        data_files: [{ path: "pg_wal/0001", read: false, content: "db_password_plaintext" }],
+        findings: [
+          {
+            id: "legacy_sql_database_secret",
+            title: "password encryption is weak",
+            evidence: "mysql://user:pass@example.com/db",
+            description: "MYSQL_PWD=super-secret-password",
+            recommendation: "raw-db-password-123456 replication_password_should_not_render"
+          }
+        ],
+        errors: [
+          "PGPASSWORD=super-secret-password",
+          "mysql://user:pass@example.com/db",
+          "-----BEGIN PRIVATE KEY-----",
+          "db_password_plaintext",
+          "dump_row_secret_should_not_render",
+          "pgpass_secret_should_not_render",
+          "mycnf_secret_should_not_render"
+        ]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(
+      redactSqlDatabaseConfigValue({
+        error: "PGPASSWORD=super-secret-password",
+        result: report
+      })
+    );
+
+    for (const secret of [
+      "super-secret-password",
+      "raw-db-password-123456",
+      "postgres://user:pass@example.com/db",
+      "mysql://user:pass@example.com/db",
+      "replication_password_should_not_render",
+      "PGPASSWORD=super-secret-password",
+      "MYSQL_PWD=super-secret-password",
+      "db_password_plaintext",
+      "dump_row_secret_should_not_render",
+      "pgpass_secret_should_not_render",
+      "mycnf_secret_should_not_render",
+      "PRIVATE KEY"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(serializedReport).toContain("password encryption is weak");
+    expect(report.findings[0].evidence).toContain("[REDACTED]");
+    expect(report.dataFiles[0]).toMatchObject({ read: false });
   });
 
   it("normalizes Redis config settings, includes, no-read files, and findings", () => {

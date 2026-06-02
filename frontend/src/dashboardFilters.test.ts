@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildDashboardMetrics, filterFiles, filterJobs } from "./dashboardFilters";
+import { auditTypeLabel, buildDashboardMetrics, filterFiles, filterJobs } from "./dashboardFilters";
 import type { FileRecord, JobListItem } from "./types";
 
 const files: FileRecord[] = [
@@ -274,6 +274,18 @@ const jobs: JobListItem[] = [
     updated_at: "2026-05-26T10:40:00Z",
     source_file_deleted_at: null,
     summary: null
+  },
+  {
+    id: "job-sql-database-completed",
+    audit_type: "sql_database_config_basic",
+    file_id: "archive-file-4",
+    target_url: null,
+    target_domain: null,
+    status: "completed",
+    created_at: "2026-05-26T10:41:00Z",
+    updated_at: "2026-05-26T10:42:00Z",
+    source_file_deleted_at: null,
+    summary: null
   }
 ];
 
@@ -310,6 +322,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "compose_config_basic", "")).toEqual([jobs[16]]);
     expect(filterJobs(jobs, "all", "database_config_basic", "")).toEqual([jobs[17]]);
     expect(filterJobs(jobs, "all", "redis_config_basic", "")).toEqual([jobs[18]]);
+    expect(filterJobs(jobs, "all", "sql_database_config_basic", "")).toEqual([jobs[19]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
@@ -323,6 +336,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "EXAMPLE.COM")).toEqual([jobs[6], jobs[7]]);
     expect(filterJobs(jobs, "all", "all", "SUBDOMAIN_INVENTORY")).toEqual([jobs[7]]);
     expect(filterJobs(jobs, "all", "all", "DJANGO_CONFIG")).toEqual([jobs[8]]);
+    expect(filterJobs(jobs, "all", "all", "SQL_DATABASE_CONFIG")).toEqual([jobs[19]]);
     expect(filterJobs(jobs, "all", "all", "DOCKER_CONFIG")).toEqual([jobs[9]]);
     expect(filterJobs(jobs, "all", "all", "SECRETS_REVIEW")).toEqual([jobs[10]]);
     expect(filterJobs(jobs, "all", "all", "NODE_PACKAGE")).toEqual([jobs[11]]);
@@ -331,7 +345,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "TERRAFORM_CONFIG")).toEqual([jobs[14]]);
     expect(filterJobs(jobs, "all", "all", "NGINX_CONFIG")).toEqual([jobs[15]]);
     expect(filterJobs(jobs, "all", "all", "COMPOSE_CONFIG")).toEqual([jobs[16]]);
-    expect(filterJobs(jobs, "all", "all", "DATABASE_CONFIG")).toEqual([jobs[17]]);
+    expect(filterJobs(jobs, "all", "all", "DATABASE_CONFIG")).toEqual([jobs[17], jobs[19]]);
     expect(filterJobs(jobs, "all", "all", "REDIS_CONFIG")).toEqual([jobs[18]]);
   });
 
@@ -342,10 +356,14 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 19,
-      completedJobs: 16,
+      totalJobs: 20,
+      completedJobs: 17,
       failedJobs: 1,
       activeJobs: 2
     });
+  });
+
+  it("labels SQL database config jobs for the dashboard filter", () => {
+    expect(auditTypeLabel("sql_database_config_basic")).toBe("SQL DB config");
   });
 });

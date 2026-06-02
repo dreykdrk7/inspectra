@@ -382,6 +382,26 @@ describe("App", () => {
             )
           );
         }
+        if (url.endsWith("/audits/sql-database-config/file-archive-1")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-sql-database-1",
+                audit_type: "sql_database_config_basic",
+                file_id: "file-archive-1",
+                target_url: null,
+                target_domain: null,
+                status: "queued",
+                created_at: "2026-05-26T10:20:00Z",
+                updated_at: "2026-05-26T10:20:00Z",
+                source_file_deleted_at: null,
+                result: null,
+                error: null
+              },
+              202
+            )
+          );
+        }
         if (url.endsWith("/jobs")) {
           return Promise.resolve(
             jsonResponse([
@@ -819,6 +839,29 @@ describe("App", () => {
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
         "http://localhost:8000/audits/redis-config/file-archive-1",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+  });
+
+  it("starts a SQL DB config audit from an archive action", async () => {
+    render(<App />);
+
+    await screen.findAllByText("django.zip");
+    const rows = Array.from(document.querySelectorAll("tr"));
+    const archiveRow = rows.find((row) => row.textContent?.includes("django.zip") && row.textContent.includes("Analyze SQL DB config"));
+    const pdfRow = rows.find((row) => row.textContent?.includes("sample.pdf") && row.textContent.includes("Analyze PDF"));
+    expect(archiveRow?.textContent).toContain("Analyze SQL DB config");
+    expect(pdfRow?.textContent).not.toContain("Analyze SQL DB config");
+    const button = Array.from(archiveRow?.querySelectorAll("button") ?? []).find((item) =>
+      item.textContent?.includes("Analyze SQL DB config")
+    );
+    expect(button).toBeDefined();
+    fireEvent.click(button as HTMLButtonElement);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/audits/sql-database-config/file-archive-1",
         expect.objectContaining({ method: "POST" })
       );
     });
