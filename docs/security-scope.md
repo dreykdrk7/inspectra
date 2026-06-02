@@ -117,7 +117,7 @@ For subdomain inventory audits, Inspectra resolves only candidates explicitly su
 
 ## Future Active/Network Scope
 
-Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`, the docs-first runbook/threat model is recorded in `docs/future/active-network-block-02-runbook-and-threat-model.md`, the dry-run contract design is recorded in `docs/future/active-network-block-03-dry-run-contracts-design.md`, and the separated no-network skeleton is recorded in `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`.
+Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`, the docs-first runbook/threat model is recorded in `docs/future/active-network-block-02-runbook-and-threat-model.md`, the dry-run contract design is recorded in `docs/future/active-network-block-03-dry-run-contracts-design.md`, the separated no-network skeleton is recorded in `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`, and the future backend/job/storage/reporting contract design is recorded in `docs/future/active-network-block-05-dry-run-backend-contract-design.md`.
 
 Current decision: `ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME`.
 
@@ -127,13 +127,16 @@ Dry-run contract decision: `ACTIVE_DRY_RUN_CONTRACTS_DESIGNED_NO_RUNTIME`.
 
 Skeleton decision: `ACTIVE_DRY_RUN_SKELETON_IMPLEMENTED_NO_NETWORK`.
 
+Backend contract decision: `ACTIVE_DRY_RUN_BACKEND_CONTRACT_DESIGNED_NO_RUNTIME_INTEGRATION`.
+
 This means:
 
-- No Active runtime is implemented yet.
-- No active runner files exist yet.
+- No Active backend runtime is implemented yet.
 - No Active endpoints exist yet.
+- No Active jobs, storage summaries, reporting sections, exports, or frontend UI exist yet.
 - No Nmap runtime exists yet.
 - The `tools/active_runner/` skeleton is not backend-integrated and performs no network, DNS, HTTP, subprocess, or Nmap behavior.
+- Future backend integration is designed around `POST /active/network/dry-run`, `active_network_dry_run`, target-based jobs with no `file_id`, existing job statuses, redacted storage/reporting, and no-network preservation.
 - Dry-run design requires `network_requests_sent: 0`, no DNS resolution, no live data, no response headers, no status codes, and no Nmap output.
 - Any future Active work must start with explicit authorization, target validation, dry-run behavior, rate limits, timeouts, audit logging, and clear no-scope copy.
 - The future Active block must preserve audit logs without storing secrets, use controlled failure states, and fail closed on ambiguous targets.

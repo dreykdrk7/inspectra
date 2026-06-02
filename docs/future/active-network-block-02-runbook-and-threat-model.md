@@ -416,3 +416,15 @@ Decision:
 ```text
 ACTIVE_DRY_RUN_SKELETON_IMPLEMENTED_NO_NETWORK
 ```
+
+The future backend/job/storage/reporting contract design is documented in:
+
+```text
+docs/future/active-network-block-05-dry-run-backend-contract-design.md
+```
+
+Decision:
+
+```text
+ACTIVE_DRY_RUN_BACKEND_CONTRACT_DESIGNED_NO_RUNTIME_INTEGRATION
+```

@@ -23,15 +23,17 @@ Redaction is layered: runner output, backend storage/reporting, public API paylo
 
 ## Future Active/Network Design
 
-Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active as docs-first only: no Active runtime, no active runner, no endpoints, no Nmap runtime, and no network traffic.
+Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, but there are still no Active backend endpoints, no jobs, no frontend UI, no Nmap runtime, and no network traffic.
 
-The Active scope, runbook/threat model, and dry-run contracts are documented in:
+The Active scope, runbook/threat model, dry-run contracts, skeleton, and backend contract design are documented in:
 
 - `docs/future/active-network-block-01-docs-first-scope.md`
 - `docs/future/active-network-block-02-runbook-and-threat-model.md`
 - `docs/future/active-network-block-03-dry-run-contracts-design.md`
+- `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`
+- `docs/future/active-network-block-05-dry-run-backend-contract-design.md`
 
-The dry-run contract requires future Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. A first separated no-network skeleton now exists under `tools/active_runner/`; it is not integrated with backend jobs or frontend UI. Future Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
+The dry-run contract requires future Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. The backend contract design recommends future endpoint `POST /active/network/dry-run`, audit type `active_network_dry_run`, target-based jobs with no `file_id`, existing job statuses with blocked state represented inside `result.policy`, defensive redaction, and an opt-in `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=true` gate. The skeleton remains not integrated with backend jobs or frontend UI. Future Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
 
 ## Components
 

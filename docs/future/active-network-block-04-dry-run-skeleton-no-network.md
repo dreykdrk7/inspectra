@@ -247,7 +247,7 @@ The skeleton exists to validate contracts and safety posture before backend inte
 
 ## K. Next Recommended Microphase
 
-Recommended next step:
+Recommended next step at the time this skeleton was created:
 
 ```text
 ACTIVE-NETWORK-BLOCK-05-DRY-RUN-BACKEND-CONTRACT-DESIGN
@@ -266,6 +266,18 @@ ACTIVE-NETWORK-BLOCK-05-DRY-RUN-BACKEND-INTEGRATION
 ```
 
 The safer path is backend contract design first.
+
+That backend contract design is now documented in:
+
+```text
+docs/future/active-network-block-05-dry-run-backend-contract-design.md
+```
+
+Decision:
+
+```text
+ACTIVE_DRY_RUN_BACKEND_CONTRACT_DESIGNED_NO_RUNTIME_INTEGRATION
+```
 
 ## L. Decision Field
 
