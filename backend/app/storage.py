@@ -315,6 +315,9 @@ class JobStore:
     def create_database_config_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "database_config_basic")
 
+    def create_sql_database_config_job(self, file_id: str) -> JobRecord:
+        return self._create_job(file_id, "sql_database_config_basic")
+
     def create_redis_config_job(self, file_id: str) -> JobRecord:
         return self._create_job(file_id, "redis_config_basic")
 
@@ -713,6 +716,21 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
             summary["truncated"] = manifest_summary.get("truncated")
             summary["errors_count"] = len(record.result.get("errors") or [])
+        if record.audit_type == "sql_database_config_basic":
+            errors = record.result.get("errors")
+            summary["archive_type"] = record.result.get("archive_type")
+            summary["files_considered"] = manifest_summary.get("files_considered")
+            summary["files_reviewed"] = manifest_summary.get("files_reviewed")
+            summary["postgres_configs_detected"] = manifest_summary.get("postgres_configs_detected")
+            summary["postgres_hba_files_detected"] = manifest_summary.get("postgres_hba_files_detected")
+            summary["mysql_configs_detected"] = manifest_summary.get("mysql_configs_detected")
+            summary["mariadb_configs_detected"] = manifest_summary.get("mariadb_configs_detected")
+            summary["dump_or_backup_files_detected"] = manifest_summary.get("dump_or_backup_files_detected")
+            summary["data_files_detected"] = manifest_summary.get("data_files_detected")
+            summary["findings_count"] = manifest_summary.get("findings_count")
+            summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
+            summary["truncated"] = manifest_summary.get("truncated")
+            summary["errors_count"] = len(errors) if isinstance(errors, list) else 1 if errors else 0
         if record.audit_type == "redis_config_basic":
             summary["archive_type"] = record.result.get("archive_type")
             summary["files_considered"] = manifest_summary.get("files_considered")

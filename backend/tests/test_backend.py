@@ -33,6 +33,7 @@ from app.services import (
     ProjectArchiveAuditService,
     RedisConfigAuditService,
     SecretsReviewAuditService,
+    SqlDatabaseConfigAuditService,
     SubdomainInventoryAuditService,
     TerraformConfigAuditService,
     WebAuditService,
@@ -48,6 +49,20 @@ SAMPLE_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x
 SAMPLE_PACKAGE_JSON = b'{"name":"demo","version":"1.0.0","dependencies":{"react":"^18.3.1"}}'
 SAMPLE_REQUIREMENTS = b"fastapi==0.115.0\nhttpx>=0.27\n"
 SAMPLE_PYPROJECT = b'[project]\nname = "demo"\nversion = "1.0.0"\ndependencies = ["fastapi>=0.115"]\n'
+SQL_DATABASE_SECRET_FIXTURES = (
+    "super-secret-password",
+    "raw-db-password-123456",
+    "postgres://user:pass@example.com/db",
+    "mysql://user:pass@example.com/db",
+    "replication_password_should_not_render",
+    "PGPASSWORD=super-secret-password",
+    "MYSQL_PWD=super-secret-password",
+    "PRIVATE KEY",
+    "db_password_plaintext",
+    "dump_row_secret_should_not_render",
+    "pgpass_secret_should_not_render",
+    "mycnf_secret_should_not_render",
+)
 
 
 class NoopAuditService:
@@ -94,6 +109,9 @@ class NoopAuditService:
         return None
 
     async def run_database_config_analysis(self, job_id: str) -> None:
+        return None
+
+    async def run_sql_database_config_analysis(self, job_id: str) -> None:
         return None
 
     async def run_redis_config_analysis(self, job_id: str) -> None:
@@ -162,6 +180,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.nginx_config_audits = NginxConfigAuditService(settings, file_store, job_store)
     app.state.compose_config_audits = ComposeConfigAuditService(settings, file_store, job_store)
     app.state.database_config_audits = DatabaseConfigAuditService(settings, file_store, job_store)
+    app.state.sql_database_config_audits = SqlDatabaseConfigAuditService(settings, file_store, job_store)
     app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
@@ -1482,6 +1501,255 @@ async def test_database_config_service_calls_runner_endpoint(monkeypatch, tmp_pa
     assert calls[0]["json"]["max_files"] == app.state.settings.database_config_max_files
     assert calls[0]["json"]["max_file_bytes"] == app.state.settings.database_config_max_file_bytes
     assert calls[0]["json"]["max_total_bytes"] == app.state.settings.database_config_max_total_bytes
+
+
+@pytest.mark.anyio
+async def test_sql_database_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    noop = NoopAuditService()
+    app.state.sql_database_config_audits = noop
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("sql-db.zip", make_zip_bytes({"postgresql.conf": b"listen_addresses = 'localhost'\n"}), "application/zip")},
+        )
+        pdf_file = pdf_response.json()
+        archive_file = archive_response.json()
+
+        sql_response = await client.post(f"/audits/sql-database-config/{archive_file['id']}")
+        pdf_as_sql_response = await client.post(f"/audits/sql-database-config/{pdf_file['id']}")
+        invalid_response = await client.post("/audits/sql-database-config/not-a-file-id")
+
+    assert sql_response.status_code == 202
+    assert sql_response.json()["audit_type"] == "sql_database_config_basic"
+    assert pdf_as_sql_response.status_code == 400
+    assert pdf_as_sql_response.json()["detail"] == "File is not an archive."
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_sql_database_config_service_calls_runner_endpoint_and_redacts(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("sql-db.zip", make_zip_bytes({"postgresql.conf": b"password = 'x'\n"}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_sql_database_config_job(archive.id)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "sql_database_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 6,
+                        "files_reviewed": 3,
+                        "postgres_configs_detected": 1,
+                        "postgres_hba_files_detected": 1,
+                        "mysql_configs_detected": 1,
+                        "mariadb_configs_detected": 0,
+                        "dump_or_backup_files_detected": 1,
+                        "data_files_detected": 1,
+                        "findings_count": 1,
+                        "redacted_values_count": 1,
+                        "truncated": False,
+                    },
+                    "postgres_configs": [{"file_path": "postgresql.conf", "setting": "primary_conninfo", "value": "postgres://user:pass@example.com/db"}],
+                    "postgres_hba_rules": [{"database": "all", "user": "all", "address": "0.0.0.0/0", "auth_method": "trust"}],
+                    "mysql_configs": [{"file_path": "my.cnf", "setting": "password", "value": "raw-db-password-123456"}],
+                    "database_settings": [{"setting": "db_password", "value": "super-secret-password"}],
+                    "sensitive_files": [{"path": ".pgpass", "read": False, "content": "pgpass_secret_should_not_render"}],
+                    "dump_or_backup_files": [{"path": "db/prod.sql", "read": False, "content": "dump_row_secret_should_not_render"}],
+                    "data_files": [{"path": "pg_wal/0001", "read": False, "content": "db_password_plaintext"}],
+                    "findings": [
+                        {
+                            "id": "sql_database_password_like_value",
+                            "title": "SQL database password-like value",
+                            "level": "medium",
+                            "evidence": "PGPASSWORD=super-secret-password postgres://user:pass@example.com/db",
+                        }
+                    ],
+                    "errors": ["MYSQL_PWD=super-secret-password", "-----BEGIN PRIVATE KEY----- PRIVATE KEY -----END PRIVATE KEY-----"],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+
+    await app.state.sql_database_config_audits.run_sql_database_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    serialized_result = json.dumps(updated.result)
+    assert updated.status == "completed"
+    assert updated.result["analyzer"] == "sql_database_config_basic"
+    assert "[REDACTED]" in serialized_result
+    for secret in SQL_DATABASE_SECRET_FIXTURES:
+        assert secret not in serialized_result
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/sql-database-config"
+    assert calls[0]["json"]["file_id"] == archive.id
+    assert calls[0]["json"]["original_filename"] == "sql-db.zip"
+    assert calls[0]["json"]["max_files"] == app.state.settings.sql_database_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.sql_database_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.sql_database_config_max_total_bytes
+
+
+@pytest.mark.anyio
+async def test_sql_database_config_api_background_job_stores_and_exposes_redacted_result(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    calls: list[dict] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append({"url": url, "json": json, "timeout": self.timeout})
+            return FakeRunnerResponse(
+                {
+                    "analyzer": "sql_database_config_basic",
+                    "archive_type": "zip",
+                    "summary": {
+                        "files_considered": 7,
+                        "files_reviewed": 3,
+                        "postgres_configs_detected": 1,
+                        "postgres_hba_files_detected": 1,
+                        "mysql_configs_detected": 1,
+                        "mariadb_configs_detected": 1,
+                        "dump_or_backup_files_detected": 1,
+                        "data_files_detected": 1,
+                        "findings_count": 1,
+                        "redacted_values_count": 1,
+                        "truncated": False,
+                    },
+                    "postgres_configs": [{"file_path": "deploy/db/postgresql.conf", "content": "primary_conninfo=postgres://user:pass@example.com/db"}],
+                    "postgres_hba_rules": [{"database": "all", "user": "all", "address": "0.0.0.0/0", "auth_method": "trust"}],
+                    "mysql_configs": [{"file_path": "deploy/db/my.cnf", "content": "password=raw-db-password-123456"}],
+                    "database_settings": [{"setting": "primary_conninfo", "value": "postgres://user:pass@example.com/db"}],
+                    "includes": [{"target": "/etc/postgresql/secret.conf", "resolved": False, "content": "replication_password_should_not_render"}],
+                    "sensitive_files": [{"path": ".pgpass", "read": False, "content": "pgpass_secret_should_not_render"}],
+                    "dump_or_backup_files": [{"path": "db/prod.sql", "read": False, "sql": "dump_row_secret_should_not_render"}],
+                    "data_files": [{"path": "db/postgres/pg_wal/0001", "read": False, "content": "db_password_plaintext"}],
+                    "findings": [
+                        {
+                            "id": "postgres_hba_trust_auth_hint",
+                            "title": "PostgreSQL pg_hba trust auth configured",
+                            "level": "medium",
+                            "confidence": "high",
+                            "category": "auth",
+                            "evidence": "PGPASSWORD=super-secret-password postgres://user:pass@example.com/db",
+                            "recommendation": "Review trust auth without changing password encryption wording.",
+                        }
+                    ],
+                    "errors": [
+                        "MYSQL_PWD=super-secret-password",
+                        "mysql://user:pass@example.com/db",
+                        "-----BEGIN PRIVATE KEY----- PRIVATE KEY -----END PRIVATE KEY-----",
+                    ],
+                }
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("sql-db.zip", make_zip_bytes({"deploy/db/postgresql.conf": b"password = 'x'\n"}), "application/zip")},
+        )
+        archive = archive_response.json()
+        launch_response = await client.post(f"/audits/sql-database-config/{archive['id']}")
+        job_id = launch_response.json()["id"]
+        job_response = await client.get(f"/jobs/{job_id}")
+        jobs_response = await client.get("/jobs")
+
+    stored = app.state.jobs.get(job_id)
+    stored_serialized = json.dumps(stored.result, sort_keys=True)
+    public_serialized = json.dumps(job_response.json(), sort_keys=True)
+    assert launch_response.status_code == 202
+    assert stored.status == "completed"
+    assert stored.result["analyzer"] == "sql_database_config_basic"
+    assert job_response.status_code == 200
+    assert job_response.json()["status"] == "completed"
+    assert job_response.json()["result"]["analyzer"] == "sql_database_config_basic"
+    assert "[REDACTED]" in stored_serialized
+    assert "[REDACTED]" in public_serialized
+    assert "password encryption wording" in public_serialized
+    for secret in SQL_DATABASE_SECRET_FIXTURES:
+        assert secret not in stored_serialized
+        assert secret not in public_serialized
+    summary = next(item for item in jobs_response.json() if item["id"] == job_id)["summary"]
+    assert summary["analyzer"] == "sql_database_config_basic"
+    assert summary["files_reviewed"] == 3
+    assert summary["postgres_configs_detected"] == 1
+    assert summary["postgres_hba_files_detected"] == 1
+    assert summary["mysql_configs_detected"] == 1
+    assert summary["mariadb_configs_detected"] == 1
+    assert summary["data_files_detected"] == 1
+    assert summary["errors_count"] == 3
+    assert calls[0]["url"] == f"{app.state.settings.tool_runner_url}/analyze/sql-database-config"
+    assert calls[0]["json"]["file_id"] == archive["id"]
+    assert calls[0]["json"]["max_files"] == app.state.settings.sql_database_config_max_files
+    assert calls[0]["json"]["max_file_bytes"] == app.state.settings.sql_database_config_max_file_bytes
+    assert calls[0]["json"]["max_total_bytes"] == app.state.settings.sql_database_config_max_total_bytes
+
+
+@pytest.mark.anyio
+async def test_sql_database_config_service_records_runner_failure(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("sql-db.zip", make_zip_bytes({"postgresql.conf": b"port = 5432\n"}), "application/zip")},
+        )
+    archive = app.state.files.get(archive_response.json()["id"])
+    job = app.state.jobs.create_sql_database_config_job(archive.id)
+
+    class FailingAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            raise audit_services.httpx.HTTPError("runner unavailable PGPASSWORD=super-secret-password")
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FailingAsyncClient)
+
+    await app.state.sql_database_config_audits.run_sql_database_config_analysis(job.id)
+
+    updated = app.state.jobs.get(job.id)
+    assert updated.status == "failed"
+    assert "Tool runner request failed: runner unavailable" in updated.error
+    assert "super-secret-password" not in updated.error
+    assert "[REDACTED]" in updated.error
 
 
 @pytest.mark.anyio
@@ -5087,6 +5355,208 @@ async def test_export_database_config_jobs_with_sparse_and_incomplete_results(mo
 
 
 @pytest.mark.anyio
+async def test_sql_database_config_job_summary_and_export_all_formats(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_sql_database_config_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    summary = list_response.json()[0]["summary"]
+    assert summary["analyzer"] == "sql_database_config_basic"
+    assert summary["files_considered"] == 7
+    assert summary["files_reviewed"] == 3
+    assert summary["postgres_configs_detected"] == 1
+    assert summary["postgres_hba_files_detected"] == 1
+    assert summary["mysql_configs_detected"] == 1
+    assert summary["mariadb_configs_detected"] == 1
+    assert summary["dump_or_backup_files_detected"] == 1
+    assert summary["data_files_detected"] == 1
+    assert summary["findings_count"] == 2
+    assert summary["redacted_values_count"] == 2
+    assert summary["truncated"] is False
+    assert summary["errors_count"] == 0
+    for report_format, response in responses.items():
+        content_type, extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+        assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
+    assert "sql_database_config_basic" in responses["markdown"].text
+    assert "SQL Database Config Metrics" in responses["html"].text
+    assert "PostgreSQL Configs" in responses["markdown"].text
+    assert "pg_hba.conf Rules" in responses["markdown"].text
+    assert "MySQL / MariaDB Configs" in responses["markdown"].text
+    assert "Database Settings" in responses["markdown"].text
+    assert "Includes Detected But Not Resolved" in responses["markdown"].text
+    assert "Sensitive Files Detected But Not Read" in responses["markdown"].text
+    assert "Dumps / Backups Detected But Not Read" in responses["markdown"].text
+    assert "Data / WAL / Binlog Files Detected But Not Read" in responses["markdown"].text
+    assert "Finding 1 Engine" in responses["markdown"].text
+    assert "Finding 1 Auth method" in responses["markdown"].text
+    assert "postgres_hba_trust_auth_hint" in responses["markdown"].text
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "sql_database_config_basic"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_export_sql_database_config_redacts_legacy_secret_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="7" * 31 + "8",
+        audit_type="sql_database_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        error="PGPASSWORD=super-secret-password",
+        result={
+            "analyzer": "sql_database_config_basic",
+            "archive_type": "zip",
+            "summary": {"files_reviewed": 1, "findings_count": 1, "redacted_values_count": 0},
+            "postgres_configs": [{"file_path": "postgresql.conf", "content": "postgres://user:pass@example.com/db"}],
+            "postgres_hba_rules": [{"user": "all", "database": "all", "address": "0.0.0.0/0", "auth_method": "trust", "content": "db_password_plaintext"}],
+            "mysql_configs": [{"file_path": "my.cnf", "content": "raw-db-password-123456"}],
+            "database_settings": [{"setting": "primary_conninfo", "value": "postgres://user:pass@example.com/db"}],
+            "includes": [{"target": "/etc/postgresql/secret.conf", "content": "replication_password_should_not_render", "resolved": False}],
+            "sensitive_files": [{"path": ".pgpass", "read": False, "content": "pgpass_secret_should_not_render"}],
+            "dump_or_backup_files": [{"path": "db/prod.sql", "read": False, "sql": "db_password_plaintext dump_row_secret_should_not_render"}],
+            "data_files": [{"path": "db/postgres/pg_wal/0001", "read": False, "content": "dump_row_secret_should_not_render"}],
+            "findings": [
+                {
+                    "id": "legacy_sql_database_secret",
+                    "title": "password encryption is weak but safe wording",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "secrets",
+                    "description": "MYSQL_PWD=super-secret-password",
+                    "evidence": "DATABASE_URL=postgres://user:pass@example.com/db mysql://user:pass@example.com/db",
+                    "recommendation": "-----BEGIN PRIVATE KEY----- PRIVATE KEY raw-db-password-123456 -----END PRIVATE KEY-----",
+                    "file_path": "deploy/db/postgresql.conf",
+                    "context": "production<script>PGPASSWORD=super-secret-password</script>",
+                    "engine": "postgresql",
+                    "setting": "primary_conninfo",
+                }
+            ],
+            "errors": [
+                "PGPASSWORD=super-secret-password",
+                "MYSQL_PWD=super-secret-password",
+                "postgres://user:pass@example.com/db",
+                "mysql://user:pass@example.com/db",
+                "replication_password_should_not_render",
+                "pgpass_secret_should_not_render",
+                "mycnf_secret_should_not_render",
+                "dump_row_secret_should_not_render",
+                "db_password_plaintext",
+            ],
+            "redaction_notes": ["raw-db-password-123456"],
+        },
+    )
+    app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    forbidden = tuple(secret.encode() for secret in SQL_DATABASE_SECRET_FIXTURES)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    assert api_response.status_code == 200
+    assert b"REDACTED" in api_response.content
+    assert b"password encryption is weak but safe wording" in api_response.content
+    for secret in forbidden:
+        assert secret not in api_response.content
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(expected[report_format])
+        assert b"REDACTED" in response.content
+        for secret in forbidden:
+            assert secret not in response.content
+    assert "password encryption is weak but safe wording" in responses["markdown"].text
+    assert "&lt;script&gt;" in responses["html"].text
+    assert "<script>" not in responses["html"].text
+
+
+@pytest.mark.anyio
+async def test_export_sql_database_config_jobs_with_sparse_and_incomplete_results(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    jobs = [
+        JobRecord(id="7" * 31 + "9", audit_type="sql_database_config_basic", file_id="4" * 32, status="queued", created_at=now, updated_at=now),
+        JobRecord(id="6" * 31 + "1", audit_type="sql_database_config_basic", file_id="4" * 32, status="running", created_at=now, updated_at=now),
+        JobRecord(
+            id="6" * 31 + "2",
+            audit_type="sql_database_config_basic",
+            file_id="4" * 32,
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            error="SQL database config runner failed safely. MYSQL_PWD=super-secret-password",
+        ),
+        JobRecord(
+            id="6" * 31 + "3",
+            audit_type="sql_database_config_basic",
+            file_id="4" * 32,
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "sql_database_config_basic", "summary": None, "findings": [{"id": "sparse"}], "errors": "PGPASSWORD=super-secret-password"},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    expected = {
+        "markdown": "text/markdown",
+        "html": "text/html",
+        "xml": "application/xml",
+        "pdf": "application/pdf",
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        jobs_response = await client.get("/jobs")
+        for job in jobs:
+            job_response = await client.get(f"/jobs/{job.id}")
+            for report_format, content_type in expected.items():
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith(content_type)
+                assert b"super-secret-password" not in response.content
+                if report_format == "xml":
+                    root = ElementTree.fromstring(response.text)
+                    assert root.findtext("./job/status") == job.status
+                    assert root.findtext("./job/auditType") == "sql_database_config_basic"
+                elif report_format == "pdf":
+                    assert response.content.startswith(b"%PDF")
+                else:
+                    assert job.status in response.text
+                    assert "sql_database_config_basic" in response.text
+            assert "super-secret-password" not in job_response.text
+    sparse_summary = next(item for item in jobs_response.json() if item["id"] == "6" * 31 + "3")["summary"]
+    assert sparse_summary["errors_count"] == 1
+
+
+@pytest.mark.anyio
 async def test_redis_config_job_summary_and_export_all_formats(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     job = save_redis_config_export_fixture_job()
@@ -7353,6 +7823,138 @@ def save_database_config_export_fixture_job() -> JobRecord:
             "redaction_notes": [
                 "Secret-like database config values are redacted before storage on a best-effort basis.",
                 ".env, .pgpass, hidden client credential files, dumps, and backups are detected but not read by this analyzer.",
+            ],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_sql_database_config_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="7" * 31 + "7",
+        audit_type="sql_database_config_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "sql_database_config_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "sqlabc123"},
+            "file_identification": {"size_bytes": 4096, "original_filename": "sql-db.zip"},
+            "limits": {"max_files": 100, "max_file_bytes": 524288, "max_total_bytes": 2097152},
+            "summary": {
+                "files_considered": 7,
+                "files_reviewed": 3,
+                "postgres_configs_detected": 1,
+                "postgres_hba_files_detected": 1,
+                "mysql_configs_detected": 1,
+                "mariadb_configs_detected": 1,
+                "dump_or_backup_files_detected": 1,
+                "data_files_detected": 1,
+                "findings_count": 2,
+                "redacted_values_count": 2,
+                "truncated": False,
+            },
+            "files_detected": [
+                {"path": "deploy/db/postgresql.conf", "category": "postgres", "read": True, "size_bytes": 1024, "context": "production"},
+                {"path": "deploy/db/pg_hba.conf", "category": "pg_hba", "read": True, "size_bytes": 512, "context": "production"},
+                {"path": "deploy/db/my.cnf", "category": "mysql", "read": True, "size_bytes": 512, "context": "production"},
+                {"path": ".pgpass", "category": "sensitive", "read": False, "skip_reason": "sensitive_file_not_read", "context": "production"},
+                {"path": "db/prod.sql", "category": "dump_or_backup", "read": False, "skip_reason": "dump_or_backup_not_read", "context": "production"},
+                {"path": "db/postgres/pg_wal/0001", "category": "data_file", "read": False, "skip_reason": "data_file_not_read", "context": "production"},
+            ],
+            "files_reviewed": [
+                {"path": "deploy/db/postgresql.conf", "category": "postgres", "context": "production", "bytes_read": 1024},
+                {"path": "deploy/db/pg_hba.conf", "category": "pg_hba", "context": "production", "bytes_read": 512},
+                {"path": "deploy/db/my.cnf", "category": "mysql", "context": "production", "bytes_read": 512},
+            ],
+            "postgres_configs": [
+                {"file_path": "deploy/db/postgresql.conf", "category": "postgres", "engine": "postgresql", "context": "production", "settings_count": 2},
+            ],
+            "postgres_hba_rules": [
+                {
+                    "file_path": "deploy/db/pg_hba.conf",
+                    "engine": "postgresql",
+                    "line": 1,
+                    "type": "host",
+                    "database": "all",
+                    "user": "all",
+                    "address": "0.0.0.0/0",
+                    "auth_method": "trust",
+                }
+            ],
+            "mysql_configs": [
+                {"file_path": "deploy/db/my.cnf", "category": "mysql", "engine": "mysql", "context": "production", "settings_count": 2},
+                {"file_path": "deploy/db/mariadb.cnf", "category": "mariadb", "engine": "mariadb", "context": "production", "settings_count": 1},
+            ],
+            "database_settings": [
+                {"file_path": "deploy/db/postgresql.conf", "engine": "postgresql", "line": 2, "setting": "listen_addresses", "value": "*"},
+                {"file_path": "deploy/db/postgresql.conf", "engine": "postgresql", "line": 3, "setting": "primary_conninfo", "value": "[REDACTED]"},
+                {"file_path": "deploy/db/my.cnf", "engine": "mysql", "section": "mysqld", "line": 3, "setting": "bind-address", "value": "0.0.0.0"},
+                {"file_path": "deploy/db/my.cnf", "engine": "mysql", "section": "mysqld", "line": 4, "setting": "password", "value": "[REDACTED]"},
+            ],
+            "includes": [
+                {
+                    "file_path": "deploy/db/postgresql.conf",
+                    "engine": "postgresql",
+                    "line": 5,
+                    "directive": "include",
+                    "target": "/etc/postgresql/secret.conf",
+                    "resolved": False,
+                }
+            ],
+            "sensitive_files": [
+                {"path": ".pgpass", "category": "sensitive", "read": False, "skip_reason": "sensitive_file_not_read"},
+            ],
+            "dump_or_backup_files": [
+                {"path": "db/prod.sql", "category": "dump_or_backup", "read": False, "skip_reason": "dump_or_backup_not_read"},
+            ],
+            "data_files": [
+                {"path": "db/postgres/pg_wal/0001", "category": "data_file", "read": False, "skip_reason": "data_file_not_read"},
+            ],
+            "findings": [
+                {
+                    "id": "postgres_hba_trust_auth_hint",
+                    "code": "postgres_hba_trust_auth_hint",
+                    "title": "PostgreSQL pg_hba uses trust auth",
+                    "level": "medium",
+                    "confidence": "high",
+                    "category": "auth",
+                    "context": "production",
+                    "engine": "postgresql",
+                    "auth_method": "trust",
+                    "address": "0.0.0.0/0",
+                    "file_path": "deploy/db/pg_hba.conf",
+                    "line": 1,
+                    "description": "A SQL database static configuration review indicator was observed.",
+                    "evidence": "database=all; user=all; address=0.0.0.0/0; auth_method=trust",
+                    "recommendation": "Review pg_hba.conf rules manually.",
+                },
+                {
+                    "id": "sql_database_include_detected_not_resolved",
+                    "code": "sql_database_include_detected_not_resolved",
+                    "title": "SQL database config include was detected but not resolved",
+                    "level": "low",
+                    "confidence": "high",
+                    "category": "include",
+                    "context": "production",
+                    "engine": "postgresql",
+                    "setting": "include",
+                    "file_path": "deploy/db/postgresql.conf",
+                    "line": 5,
+                    "description": "Includes are detected but intentionally not resolved.",
+                    "evidence": "include /etc/postgresql/secret.conf",
+                    "recommendation": "Review included files manually in the intended deployment context.",
+                },
+            ],
+            "redaction_notes": [
+                "Secret-like SQL database config values are redacted before storage on a best-effort basis.",
+                ".env, client credential, dump, backup, data, WAL/binlog, and key-like files are detected but not read by this analyzer.",
             ],
             "errors": [],
         },

@@ -224,6 +224,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_compose_config_sections(result))
     elif job.audit_type == "database_config_basic":
         sections.extend(build_database_config_sections(result))
+    elif job.audit_type == "sql_database_config_basic":
+        sections.extend(build_sql_database_config_sections(result))
     elif job.audit_type == "redis_config_basic":
         sections.extend(build_redis_config_sections(result))
 
@@ -552,6 +554,29 @@ def build_database_config_sections(result: dict[str, Any]) -> list[ReportSection
     ]
 
 
+def build_sql_database_config_sections(result: dict[str, Any]) -> list[ReportSection]:
+    return [
+        ReportSection(
+            "SQL Database Config Identification",
+            flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
+        ),
+        ReportSection("SQL Database Config Metrics", flatten_mapping(as_dict(result.get("summary")))),
+        ReportSection("SQL Database Config Limits", flatten_mapping(as_dict(result.get("limits")))),
+        ReportSection("Files Detected", flatten_django_detected_files(result.get("files_detected"))),
+        ReportSection("Files Reviewed", flatten_list(result.get("files_reviewed"))),
+        ReportSection("PostgreSQL Configs", flatten_list(result.get("postgres_configs"))),
+        ReportSection("pg_hba.conf Rules", flatten_list(result.get("postgres_hba_rules"))),
+        ReportSection("MySQL / MariaDB Configs", flatten_list(result.get("mysql_configs"))),
+        ReportSection("Database Settings", flatten_list(result.get("database_settings"))),
+        ReportSection("Includes Detected But Not Resolved", flatten_list(result.get("includes"))),
+        ReportSection("Sensitive Files Detected But Not Read", flatten_list(result.get("sensitive_files"))),
+        ReportSection("Dumps / Backups Detected But Not Read", flatten_list(result.get("dump_or_backup_files"))),
+        ReportSection("Data / WAL / Binlog Files Detected But Not Read", flatten_list(result.get("data_files"))),
+        ReportSection("Findings", flatten_sql_database_findings(result.get("findings"))),
+        ReportSection("Redaction Notes", flatten_list(result.get("redaction_notes"))),
+    ]
+
+
 def build_redis_config_sections(result: dict[str, Any]) -> list[ReportSection]:
     return [
         ReportSection(
@@ -842,6 +867,10 @@ def flatten_database_findings(value: Any) -> list[tuple[str, str]]:
     return rows
 
 
+def flatten_sql_database_findings(value: Any) -> list[tuple[str, str]]:
+    return flatten_database_findings(value)
+
+
 def flatten_redis_findings(value: Any) -> list[tuple[str, str]]:
     if not isinstance(value, list):
         return []
@@ -1086,6 +1115,21 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
         data["errors_count"] = len(result.get("errors") or [])
+    elif job.audit_type == "sql_database_config_basic":
+        errors = result.get("errors")
+        data["archive_type"] = result.get("archive_type", "N/A")
+        data["files_considered"] = summary.get("files_considered", "N/A")
+        data["files_reviewed"] = summary.get("files_reviewed", "N/A")
+        data["postgres_configs_detected"] = summary.get("postgres_configs_detected", "N/A")
+        data["postgres_hba_files_detected"] = summary.get("postgres_hba_files_detected", "N/A")
+        data["mysql_configs_detected"] = summary.get("mysql_configs_detected", "N/A")
+        data["mariadb_configs_detected"] = summary.get("mariadb_configs_detected", "N/A")
+        data["dump_or_backup_files_detected"] = summary.get("dump_or_backup_files_detected", "N/A")
+        data["data_files_detected"] = summary.get("data_files_detected", "N/A")
+        data["findings_count"] = summary.get("findings_count", "N/A")
+        data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
+        data["truncated"] = summary.get("truncated", "N/A")
+        data["errors_count"] = len(errors) if isinstance(errors, list) else 1 if errors else 0
     elif job.audit_type == "redis_config_basic":
         data["archive_type"] = result.get("archive_type", "N/A")
         data["files_considered"] = summary.get("files_considered", "N/A")
@@ -1148,6 +1192,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_compose_config_value(result))
     if job.audit_type == "database_config_basic":
         return as_dict(redact_database_config_value(result))
+    if job.audit_type == "sql_database_config_basic":
+        return as_dict(redact_sql_database_config_value(result))
     if job.audit_type == "redis_config_basic":
         return as_dict(redact_redis_config_value(result))
     return result
@@ -1178,6 +1224,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_compose_secret_text(job.error)
     if job.audit_type == "database_config_basic":
         return redact_database_secret_text(job.error)
+    if job.audit_type == "sql_database_config_basic":
+        return redact_sql_database_secret_text(job.error)
     if job.audit_type == "redis_config_basic":
         return redact_redis_secret_text(job.error)
     return job.error
@@ -1779,6 +1827,14 @@ def redact_database_secret_text(value: str) -> str:
     )
     redacted = redacted.replace("PRIVATE_KEY_BLOCK_REDACTED", "[REDACTED]")
     return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
+
+
+def redact_sql_database_config_value(value: Any) -> Any:
+    return redact_database_config_value(value)
+
+
+def redact_sql_database_secret_text(value: str) -> str:
+    return redact_database_secret_text(value)
 
 
 def redact_redis_config_value(value: Any) -> Any:

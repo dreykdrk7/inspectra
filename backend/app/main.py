@@ -41,6 +41,7 @@ from app.services import (
     ProjectArchiveAuditService,
     RedisConfigAuditService,
     SecretsReviewAuditService,
+    SqlDatabaseConfigAuditService,
     SubdomainInventoryAuditService,
     TerraformConfigAuditService,
     WebAuditService,
@@ -74,6 +75,7 @@ async def lifespan(app: FastAPI):
     app.state.nginx_config_audits = NginxConfigAuditService(settings, file_store, job_store)
     app.state.compose_config_audits = ComposeConfigAuditService(settings, file_store, job_store)
     app.state.database_config_audits = DatabaseConfigAuditService(settings, file_store, job_store)
+    app.state.sql_database_config_audits = SqlDatabaseConfigAuditService(settings, file_store, job_store)
     app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
@@ -289,6 +291,16 @@ async def launch_database_config_audit(request: Request, file_id: str, backgroun
     return job
 
 
+@app.post("/audits/sql-database-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_sql_database_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
+    stored_file = request.app.state.files.get(file_id)
+    if stored_file.kind != "archive":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
+    job = request.app.state.jobs.create_sql_database_config_job(file_id)
+    background_tasks.add_task(request.app.state.sql_database_config_audits.run_sql_database_config_analysis, job.id)
+    return job
+
+
 @app.post("/audits/redis-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_redis_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
     stored_file = request.app.state.files.get(file_id)
@@ -360,6 +372,7 @@ async def get_job(request: Request, job_id: str) -> JobRecord:
         "nginx_config_basic",
         "compose_config_basic",
         "database_config_basic",
+        "sql_database_config_basic",
         "redis_config_basic",
     }:
         return job.model_copy(
