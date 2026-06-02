@@ -46,6 +46,10 @@ type LoadState = {
 const initialLoadState: LoadState = { loading: false, error: null };
 const ARCHIVE_ACTION_SCOPE_COPY =
   "Archive reviews are passive and bounded. Inspectra reports review indicators; it does not execute the project, contact live services, validate credentials, or query CVEs for config checks.";
+const LOCAL_ALPHA_DEMO_COPY =
+  "Local alpha demo: use the synthetic fixtures under tests/fixtures/demo/passive-alpha/ to smoke uploads, grouped archive actions, reports, exports, and redaction. Do not upload real secrets or production archives for demos.";
+const LOCAL_ALPHA_DEMO_REDACTION_COPY =
+  "Results, exports, and Raw JSON are redacted with [REDACTED]; this does not sanitize the original uploaded file.";
 
 type ArchiveAction = {
   label: string;
@@ -533,6 +537,9 @@ export function App() {
               {uploadState.loading ? "Uploading" : "Upload"}
             </button>
           </form>
+          <div className="query-warning" role="note" aria-label="Local alpha demo fixture note">
+            {LOCAL_ALPHA_DEMO_COPY} {LOCAL_ALPHA_DEMO_REDACTION_COPY}
+          </div>
           {uploadState.error ? <p className="error-text">{uploadState.error}</p> : null}
         </Panel>
 

@@ -452,6 +452,28 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Subdomain Inventory" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Jobs" })).toBeInTheDocument();
+    const demoNote = screen.getByRole("note", { name: "Local alpha demo fixture note" });
+    expect(demoNote.textContent).toContain("Local alpha demo");
+    expect(demoNote.textContent).toContain("synthetic fixtures");
+    expect(demoNote.textContent).toContain("tests/fixtures/demo/passive-alpha/");
+    expect(demoNote.textContent).toContain("Do not upload real secrets or production archives");
+    expect(demoNote.textContent).toContain("[REDACTED]");
+    expect(demoNote.textContent).toContain("does not sanitize the original uploaded file");
+    expect(demoNote.textContent).not.toContain("Run all recommended passive checks");
+    for (const phrase of [
+      "compromised",
+      "breached",
+      "exploitable",
+      "confirmed vulnerability",
+      "credentials valid",
+      "hacked",
+      "safe",
+      "secure",
+      "live exposure",
+      "clean"
+    ]) {
+      expect(demoNote.textContent?.toLowerCase() ?? "").not.toContain(phrase);
+    }
 
     expect(await screen.findByText("inspectra-backend")).toBeInTheDocument();
     expect(screen.getByText("sample.pdf")).toBeInTheDocument();

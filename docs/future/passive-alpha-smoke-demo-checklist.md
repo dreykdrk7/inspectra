@@ -46,11 +46,12 @@ Before running the smoke:
 2. Start the local Inspectra app.
 3. Confirm the backend is reachable.
 4. Confirm the frontend is reachable.
-5. Use only fixtures under `tests/fixtures/demo/passive-alpha/`.
-6. Do not use real data.
-7. Do not upload real secrets.
-8. Do not execute tools from fixture contents.
-9. Do not contact live services for archive config checks.
+5. Confirm the upload panel shows the local alpha demo fixture note.
+6. Use only fixtures under `tests/fixtures/demo/passive-alpha/`.
+7. Do not use real data.
+8. Do not upload real secrets.
+9. Do not execute tools from fixture contents.
+10. Do not contact live services for archive config checks.
 
 The `.env`, dump, ACL, state, private key, and credential-looking files inside `tests/fixtures/demo/passive-alpha/` are synthetic fixtures and may be inspected as part of this smoke. Do not inspect or upload real `.env` files outside the fixture root.
 
@@ -74,6 +75,10 @@ Source fixture folders:
 Fixture README:
 
 - `tests/fixtures/demo/passive-alpha/README.md`
+
+Frontend demo-note follow-up:
+
+- `docs/future/passive-alpha-smoke-demo-fixtures-frontend-demo-notes.md`
 
 ## 4. Technical Smoke Before Demo
 
@@ -402,8 +407,10 @@ Do not:
 
 Recommended next microphase:
 
-`PASSIVE-ALPHA-SMOKE-DEMO-FIXTURES-04-OPTIONAL-FRONTEND-DEMO-NOTES`
-
-Alternative if the product wants final readiness packaging first:
-
 `PASSIVE-ALPHA-SMOKE-DEMO-FIXTURES-05-ALPHA-PACKAGING-READINESS`
+
+Frontend demo notes were added in:
+
+```text
+docs/future/passive-alpha-smoke-demo-fixtures-frontend-demo-notes.md
+```
