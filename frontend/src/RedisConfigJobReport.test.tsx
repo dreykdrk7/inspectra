@@ -130,7 +130,7 @@ describe("RedisConfigJobReport", () => {
     expect(screen.getByText("deploy/redis/users.acl")).toBeInTheDocument();
     expect(screen.getByText("deploy/redis/dump.rdb")).toBeInTheDocument();
     expect(screen.getByText("deploy/redis/appendonly.aof")).toBeInTheDocument();
-    expect(screen.getByText("Analysis truncated by configured Redis config limits. Review skipped files and rerun with a smaller archive if needed.")).toBeInTheDocument();
+    expect(screen.getByText("Limits were reached; results may be partial.")).toBeInTheDocument();
     expect(screen.getByText("controlled parser warning")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Redacted Raw JSON" })).toBeInTheDocument();
     expect(screen.getByText("Show redacted payload")).toBeInTheDocument();
@@ -154,13 +154,11 @@ describe("RedisConfigJobReport", () => {
       />
     );
 
-    expect(screen.getByText("Passive analysis is running. Some result fields are unavailable; showing available redacted data.")).toBeInTheDocument();
-    expect(screen.getByText("No Redis settings returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No Redis Sentinel settings returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No Redis include directives returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No Redis ACL files returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No Redis dumps, AOF files, appendonly entries, or backups returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No Redis config limits returned yet.")).toBeInTheDocument();
+    expect(screen.getByText(/Passive analysis is running. No external services are contacted for archive config analyzers./)).toBeInTheDocument();
+    expect(screen.getByText(/Some result fields are unavailable; showing available redacted data/)).toBeInTheDocument();
+    expect(screen.getAllByText("No entries reported for this section.").length).toBeGreaterThan(5);
+    expect(screen.getByText("No controlled errors were reported.")).toBeInTheDocument();
+    expect(screen.getByText("No redaction notes were reported.")).toBeInTheDocument();
     expect(screen.getByText("sparse")).toBeInTheDocument();
 
     cleanup();
@@ -264,7 +262,9 @@ function expectControlledCopyHasNoForbiddenWording(text: string) {
     "hacked",
     "live exposure confirmed",
     "database exposed",
-    "redis exposed"
+    "redis exposed",
+    "safe",
+    "secure"
   ]) {
     expect(normalized).not.toContain(phrase);
   }

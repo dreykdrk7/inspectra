@@ -660,7 +660,7 @@ export function App() {
           </div>
           {filesState.error ? <p className="error-text">{filesState.error}</p> : null}
           {files.length === 0 ? (
-            <EmptyState text="No files registered." />
+            <EmptyState text="Upload a file or archive to start a passive review." />
           ) : filteredFiles.length === 0 ? (
             <EmptyState text="No files match the current filters." />
           ) : (
@@ -754,7 +754,7 @@ export function App() {
           </div>
           {jobsState.error ? <p className="error-text">{jobsState.error}</p> : null}
           {jobs.length === 0 ? (
-            <EmptyState text="No jobs yet." />
+            <EmptyState text="Choose a passive archive review to create a job." />
           ) : filteredJobs.length === 0 ? (
             <EmptyState text="No jobs match the current filters." />
           ) : (

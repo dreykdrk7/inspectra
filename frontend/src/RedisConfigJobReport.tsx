@@ -12,7 +12,7 @@ import {
   type RedisSetting
 } from "./redisConfigReport";
 import type { MetadataEntry } from "./pdfReport";
-import { PassiveReportShell } from "./PassiveReportShell";
+import { EMPTY_SECTION_COPY, NO_CONTROLLED_ERRORS_COPY, NO_REDACTION_NOTES_COPY, PassiveReportShell } from "./PassiveReportShell";
 import type { FileRecord, JobRecord } from "./types";
 
 export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: FileRecord }) {
@@ -36,14 +36,9 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
       overview={report.overview}
       findingsCount={report.findingsCount}
       isSparse={report.summary.length === 0}
+      truncated={report.truncated}
       rawJson={<RawJson job={job} />}
     >
-      {report.truncated ? (
-        <div className="alert" role="status">
-          Analysis truncated by configured Redis config limits. Review skipped files and rerun with a smaller archive if needed.
-        </div>
-      ) : null}
-
       {report.redactedValuesCount > 0 ? (
         <div className="query-warning" role="status">
           Secret-like Redis values were redacted. Inspectra does not display requirepass, masterauth, Sentinel auth-pass, Redis URL
@@ -52,12 +47,12 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
       ) : null}
 
       <ReportSection title="Summary">
-        <MetadataList entries={report.summary} empty="No Redis config summary returned yet." />
+        <MetadataList entries={report.summary} empty={EMPTY_SECTION_COPY} />
       </ReportSection>
 
       <ReportSection title="Files / Configs Detected">
         {report.detectedFiles.length === 0 ? (
-          <p className="empty-state">No Redis config candidate files detected or returned yet.</p>
+          <p className="empty-state">{EMPTY_SECTION_COPY}</p>
         ) : (
           <FilesTable files={report.detectedFiles} />
         )}
@@ -76,12 +71,12 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
       </ReportSection>
 
       <ReportSection title="Redis Settings">
-        {report.redisSettings.length === 0 ? <p className="empty-state">No Redis settings returned yet.</p> : <SettingsTable settings={report.redisSettings} />}
+        {report.redisSettings.length === 0 ? <p className="empty-state">{EMPTY_SECTION_COPY}</p> : <SettingsTable settings={report.redisSettings} />}
       </ReportSection>
 
       <ReportSection title="Sentinel Settings">
         {report.sentinelSettings.length === 0 ? (
-          <p className="empty-state">No Redis Sentinel settings returned yet.</p>
+          <p className="empty-state">{EMPTY_SECTION_COPY}</p>
         ) : (
           <SettingsTable settings={report.sentinelSettings} />
         )}
@@ -89,19 +84,19 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
 
       <ReportSection title="Includes">
         <p className="muted">Redis include directives are shown as detected context. v1 does not resolve includes or read host paths.</p>
-        {report.includes.length === 0 ? <p className="empty-state">No Redis include directives returned yet.</p> : <IncludesTable includes={report.includes} />}
+        {report.includes.length === 0 ? <p className="empty-state">{EMPTY_SECTION_COPY}</p> : <IncludesTable includes={report.includes} />}
       </ReportSection>
 
       <ReportSection title="ACL / Dumps / AOF / Backups">
         <p className="muted">Sensitive adjacent files are detected but not read by v1. This includes ACL files, .env files, RDB dumps, AOF files, appendonly directories, and backups.</p>
-        {report.aclFiles.length === 0 ? <p className="empty-state">No Redis ACL files returned yet.</p> : <SensitiveFilesTable files={report.aclFiles} />}
+        {report.aclFiles.length === 0 ? <p className="empty-state">{EMPTY_SECTION_COPY}</p> : <SensitiveFilesTable files={report.aclFiles} />}
         {report.dumpOrAofFiles.length > 0 ? (
           <>
             <h4>Dumps, AOF, appendonly, and backups</h4>
             <SensitiveFilesTable files={report.dumpOrAofFiles} />
           </>
         ) : (
-          <p className="empty-state">No Redis dumps, AOF files, appendonly entries, or backups returned yet.</p>
+          <p className="empty-state">{EMPTY_SECTION_COPY}</p>
         )}
       </ReportSection>
 
@@ -111,7 +106,7 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
 
       <ReportSection title="Redaction Notes">
         {report.redactionNotes.length === 0 ? (
-          <p className="empty-state">No Redis config redaction notes returned.</p>
+          <p className="empty-state">{NO_REDACTION_NOTES_COPY}</p>
         ) : (
           <ul className="warning-list">
             {report.redactionNotes.map((note, index) => (
@@ -123,7 +118,7 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
 
       <div className="report-grid">
         <ReportSection title="Limits / Truncation">
-          <MetadataList entries={report.limits} empty="No Redis config limits returned yet." />
+          <MetadataList entries={report.limits} empty={EMPTY_SECTION_COPY} />
         </ReportSection>
         <ReportSection title="Errors">
           {job.error ? <p className="error-text">{String(redactRedisConfigValue(job.error))}</p> : null}
@@ -133,9 +128,7 @@ export function RedisConfigJobReport({ job, file }: { job: JobRecord; file?: Fil
                 <li key={`${index}-${error}`}>{error}</li>
               ))}
             </ul>
-          ) : job.error ? null : (
-            <p className="empty-state">No Redis config errors reported.</p>
-          )}
+          ) : job.error ? null : <p className="empty-state">{NO_CONTROLLED_ERRORS_COPY}</p>}
         </ReportSection>
       </div>
     </PassiveReportShell>
@@ -284,7 +277,7 @@ function ConfigsTable({ configs }: { configs: RedisConfigFile[] }) {
 function SettingsTable({ settings }: { settings: RedisSetting[] }) {
   return (
     <SimpleTable
-      columns={["Config", "Directive", "Setting", "Safe value", "File", "Line", "Context"]}
+      columns={["Config", "Directive", "Setting", "Redacted value", "File", "Line", "Context"]}
       rows={settings.map((setting) => [
         setting.configType ?? "N/A",
         setting.directive ?? "N/A",

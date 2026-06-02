@@ -149,6 +149,7 @@ describe("SqlDatabaseConfigJobReport", () => {
     expect(screen.getAllByText("backups/prod.sql").length).toBeGreaterThan(0);
     expect(screen.getByText("db/postgres/pg_wal/0001")).toBeInTheDocument();
     expect(screen.getByText("controlled parser warning")).toBeInTheDocument();
+    expect(screen.getByText("Limits were reached; results may be partial.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Redacted Raw JSON" })).toBeInTheDocument();
     expect(screen.getByText("Show redacted payload")).toBeInTheDocument();
     expect(screen.getByText(/This does not sanitize the original uploaded file/)).toBeInTheDocument();
@@ -171,17 +172,11 @@ describe("SqlDatabaseConfigJobReport", () => {
       />
     );
 
-    expect(screen.getByText("Passive analysis is running. Some result fields are unavailable; showing available redacted data.")).toBeInTheDocument();
-    expect(screen.getByText("No SQL database config overview returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No PostgreSQL configs returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No pg_hba.conf rules returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No MySQL or MariaDB configs returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No SQL database settings returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No SQL database include directives returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No sensitive SQL database adjacent files returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No SQL database dumps or backups returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No SQL database data files returned yet.")).toBeInTheDocument();
-    expect(screen.getByText("No SQL database config limits returned yet.")).toBeInTheDocument();
+    expect(screen.getByText(/Passive analysis is running. No external services are contacted for archive config analyzers./)).toBeInTheDocument();
+    expect(screen.getByText(/Some result fields are unavailable; showing available redacted data/)).toBeInTheDocument();
+    expect(screen.getAllByText("No entries reported for this section.").length).toBeGreaterThan(8);
+    expect(screen.getByText("No controlled errors were reported.")).toBeInTheDocument();
+    expect(screen.getByText("No redaction notes were reported.")).toBeInTheDocument();
     expect(screen.getByText("sparse")).toBeInTheDocument();
 
     cleanup();
@@ -294,7 +289,9 @@ function expectControlledCopyHasNoForbiddenWording(text: string) {
     "hacked",
     "live exposure confirmed",
     "database exposed",
-    "redis exposed"
+    "redis exposed",
+    "safe",
+    "secure"
   ]) {
     expect(normalized).not.toContain(phrase);
   }

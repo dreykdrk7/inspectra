@@ -464,6 +464,30 @@ describe("App", () => {
     });
   });
 
+  it("renders clear empty dashboard states for files and jobs", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Upload a file or archive to start a passive review.")).toBeInTheDocument();
+    expect(screen.getByText("Choose a passive archive review to create a job.")).toBeInTheDocument();
+  });
+
   it("shows SBOM export buttons only for completed manifest jobs", async () => {
     render(<App />);
 

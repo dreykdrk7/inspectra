@@ -9,6 +9,12 @@ const DEFAULT_ARCHIVE_SCOPE_COPY =
 
 const HEURISTIC_COPY = "Findings are heuristic review indicators and require human validation.";
 const RAW_JSON_COPY = "Sensitive-looking values are redacted in results and exports. This does not sanitize the original uploaded file.";
+const RUNNING_COPY = "Passive analysis is running. No external services are contacted for archive config analyzers.";
+
+export const EMPTY_SECTION_COPY = "No entries reported for this section.";
+export const NO_CONTROLLED_ERRORS_COPY = "No controlled errors were reported.";
+export const NO_REDACTION_NOTES_COPY = "No redaction notes were reported.";
+export const TRUNCATION_COPY = "Limits were reached; results may be partial.";
 
 export function PassiveReportShell({
   job,
@@ -18,6 +24,7 @@ export function PassiveReportShell({
   overview,
   findingsCount,
   isSparse = false,
+  truncated = false,
   scopeCopy = DEFAULT_ARCHIVE_SCOPE_COPY,
   children,
   rawJson
@@ -29,6 +36,7 @@ export function PassiveReportShell({
   overview: MetadataEntry[];
   findingsCount?: number;
   isSparse?: boolean;
+  truncated?: boolean;
   scopeCopy?: string;
   children: ReactNode;
   rawJson?: ReactNode;
@@ -75,6 +83,12 @@ export function PassiveReportShell({
         {statusMessage(job.status, findingsCount, isSparse)}
       </div>
 
+      {truncated ? (
+        <div className="alert" role="status">
+          {TRUNCATION_COPY}
+        </div>
+      ) : null}
+
       {children}
 
       {rawJson ? (
@@ -93,9 +107,7 @@ function statusMessage(status: JobStatus, findingsCount?: number, isSparse = fal
     return "Job queued. Results will appear when processing starts.";
   }
   if (status === "running") {
-    return isSparse
-      ? "Passive analysis is running. Some result fields are unavailable; showing available redacted data."
-      : "Passive analysis is running.";
+    return isSparse ? `${RUNNING_COPY} Some result fields are unavailable; showing available redacted data.` : RUNNING_COPY;
   }
   if (status === "failed") {
     return "The job failed in a controlled state. Review errors below; uploaded content was not executed.";

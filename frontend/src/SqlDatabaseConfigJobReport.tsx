@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import type { MetadataEntry } from "./pdfReport";
-import { PassiveReportShell } from "./PassiveReportShell";
+import { EMPTY_SECTION_COPY, NO_CONTROLLED_ERRORS_COPY, NO_REDACTION_NOTES_COPY, PassiveReportShell } from "./PassiveReportShell";
 import {
   buildSqlDatabaseConfigAuditReport,
   redactSqlDatabaseConfigValue,
@@ -37,14 +37,9 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
       overview={report.overview}
       findingsCount={report.findingsCount}
       isSparse={report.summary.length === 0}
+      truncated={report.truncated}
       rawJson={<RawJson job={job} />}
     >
-      {report.truncated ? (
-        <div className="alert" role="status">
-          Analysis truncated by configured SQL database config limits. Review skipped files and rerun with a smaller archive if needed.
-        </div>
-      ) : null}
-
       {report.redactedValuesCount > 0 ? (
         <div className="query-warning" role="status">
           Secret-like SQL database values were redacted. Inspectra does not display passwords, connection strings, PGPASSWORD or
@@ -53,12 +48,12 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
       ) : null}
 
       <ReportSection title="Summary">
-        <MetadataList entries={report.summary} empty="No SQL database config summary returned yet." />
+        <MetadataList entries={report.summary} empty={EMPTY_SECTION_COPY} />
       </ReportSection>
 
       <ReportSection title="Files Detected / Reviewed">
         {report.detectedFiles.length === 0 ? (
-          <p className="empty-state">No SQL database candidate files detected or returned yet.</p>
+          <p className="empty-state">{EMPTY_SECTION_COPY}</p>
         ) : (
           <FilesTable files={report.detectedFiles} />
         )}
@@ -72,7 +67,7 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
 
       <ReportSection title="Engine / Config Overview">
         {report.postgresConfigs.length === 0 && report.mysqlConfigs.length === 0 ? (
-          <p className="empty-state">No SQL database config overview returned yet.</p>
+          <p className="empty-state">{EMPTY_SECTION_COPY}</p>
         ) : (
           <>
             {report.postgresConfigs.length > 0 ? (
@@ -92,20 +87,20 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
       </ReportSection>
 
       <ReportSection title="PostgreSQL Configs">
-        {report.postgresConfigs.length === 0 ? <p className="empty-state">No PostgreSQL configs returned yet.</p> : <ConfigFilesTable files={report.postgresConfigs} />}
+        {report.postgresConfigs.length === 0 ? <p className="empty-state">{EMPTY_SECTION_COPY}</p> : <ConfigFilesTable files={report.postgresConfigs} />}
       </ReportSection>
 
       <ReportSection title="PostgreSQL pg_hba.conf Rules">
-        {report.postgresHbaRules.length === 0 ? <p className="empty-state">No pg_hba.conf rules returned yet.</p> : <PgHbaRulesTable rules={report.postgresHbaRules} />}
+        {report.postgresHbaRules.length === 0 ? <p className="empty-state">{EMPTY_SECTION_COPY}</p> : <PgHbaRulesTable rules={report.postgresHbaRules} />}
       </ReportSection>
 
       <ReportSection title="MySQL / MariaDB Configs">
-        {report.mysqlConfigs.length === 0 ? <p className="empty-state">No MySQL or MariaDB configs returned yet.</p> : <ConfigFilesTable files={report.mysqlConfigs} />}
+        {report.mysqlConfigs.length === 0 ? <p className="empty-state">{EMPTY_SECTION_COPY}</p> : <ConfigFilesTable files={report.mysqlConfigs} />}
       </ReportSection>
 
       <ReportSection title="Database Settings">
         {report.databaseSettings.length === 0 ? (
-          <p className="empty-state">No SQL database settings returned yet.</p>
+          <p className="empty-state">{EMPTY_SECTION_COPY}</p>
         ) : (
           <SettingsTable settings={report.databaseSettings} />
         )}
@@ -113,18 +108,18 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
 
       <ReportSection title="Includes Detected / Not Resolved">
         <p className="muted">SQL database include directives are shown as detected context. v1 does not resolve includes or read host paths.</p>
-        {report.includes.length === 0 ? <p className="empty-state">No SQL database include directives returned yet.</p> : <IncludesTable includes={report.includes} />}
+        {report.includes.length === 0 ? <p className="empty-state">{EMPTY_SECTION_COPY}</p> : <IncludesTable includes={report.includes} />}
       </ReportSection>
 
       <ReportSection title="Sensitive Files Detected / Not Read">
         <p className="muted">.env, .pgpass, .my.cnf, .mylogin.cnf, private key, certificate, and credential-adjacent files are detected but not read by v1.</p>
-        {report.sensitiveFiles.length === 0 ? <p className="empty-state">No sensitive SQL database adjacent files returned yet.</p> : <NoReadFilesTable files={report.sensitiveFiles} />}
+        {report.sensitiveFiles.length === 0 ? <p className="empty-state">{EMPTY_SECTION_COPY}</p> : <NoReadFilesTable files={report.sensitiveFiles} />}
       </ReportSection>
 
       <ReportSection title="Dumps / Backups Detected / Not Read">
         <p className="muted">SQL dumps and backup files are detected as review context and are not read by v1.</p>
         {report.dumpOrBackupFiles.length === 0 ? (
-          <p className="empty-state">No SQL database dumps or backups returned yet.</p>
+          <p className="empty-state">{EMPTY_SECTION_COPY}</p>
         ) : (
           <NoReadFilesTable files={report.dumpOrBackupFiles} />
         )}
@@ -132,7 +127,7 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
 
       <ReportSection title="Data / WAL / Binlog / InnoDB Files Detected / Not Read">
         <p className="muted">Database data, WAL, binlog, and InnoDB files are detected as sensitive adjacent files and are not read by v1.</p>
-        {report.dataFiles.length === 0 ? <p className="empty-state">No SQL database data files returned yet.</p> : <NoReadFilesTable files={report.dataFiles} />}
+        {report.dataFiles.length === 0 ? <p className="empty-state">{EMPTY_SECTION_COPY}</p> : <NoReadFilesTable files={report.dataFiles} />}
       </ReportSection>
 
       <ReportSection title="Findings">
@@ -141,7 +136,7 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
 
       <ReportSection title="Redaction Notes">
         {report.redactionNotes.length === 0 ? (
-          <p className="empty-state">No SQL database config redaction notes returned.</p>
+          <p className="empty-state">{NO_REDACTION_NOTES_COPY}</p>
         ) : (
           <ul className="warning-list">
             {report.redactionNotes.map((note, index) => (
@@ -153,7 +148,7 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
 
       <div className="report-grid">
         <ReportSection title="Limits / Truncation">
-          <MetadataList entries={report.limits} empty="No SQL database config limits returned yet." />
+          <MetadataList entries={report.limits} empty={EMPTY_SECTION_COPY} />
         </ReportSection>
         <ReportSection title="Errors">
           {job.error ? <p className="error-text">{String(redactSqlDatabaseConfigValue(job.error))}</p> : null}
@@ -163,9 +158,7 @@ export function SqlDatabaseConfigJobReport({ job, file }: { job: JobRecord; file
                 <li key={`${index}-${error}`}>{error}</li>
               ))}
             </ul>
-          ) : job.error ? null : (
-            <p className="empty-state">No SQL database config errors reported.</p>
-          )}
+          ) : job.error ? null : <p className="empty-state">{NO_CONTROLLED_ERRORS_COPY}</p>}
         </ReportSection>
       </div>
     </PassiveReportShell>
@@ -309,7 +302,7 @@ function ConfigFilesTable({ files }: { files: SqlDatabaseConfigFile[] }) {
 function SettingsTable({ settings }: { settings: SqlDatabaseSetting[] }) {
   return (
     <SimpleTable
-      columns={["Engine", "Section", "Setting", "Safe value", "File", "Line", "Context"]}
+      columns={["Engine", "Section", "Setting", "Redacted value", "File", "Line", "Context"]}
       rows={settings.map((setting) => [
         setting.engine ?? "N/A",
         setting.section ?? "N/A",
