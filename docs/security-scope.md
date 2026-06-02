@@ -117,9 +117,11 @@ For subdomain inventory audits, Inspectra resolves only candidates explicitly su
 
 ## Future Active/Network Scope
 
-Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`.
+Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`, and the docs-first runbook/threat model is recorded in `docs/future/active-network-block-02-runbook-and-threat-model.md`.
 
 Current decision: `ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME`.
+
+Runbook decision: `ACTIVE_RUNBOOK_THREAT_MODEL_FROZEN_NO_RUNTIME`.
 
 This means:
 
@@ -128,6 +130,7 @@ This means:
 - No Active endpoints exist yet.
 - No Nmap runtime exists yet.
 - Any future Active work must start with explicit authorization, target validation, dry-run behavior, rate limits, timeouts, audit logging, and clear no-scope copy.
+- The future Active block must preserve audit logs without storing secrets, use controlled failure states, and fail closed on ambiguous targets.
 - Active code must not be added to the passive runner monolith in `tools/runner/main.py`.
 - Passive archive/file analyzers keep their no-network guarantee.
 

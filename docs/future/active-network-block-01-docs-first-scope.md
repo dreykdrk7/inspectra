@@ -358,6 +358,18 @@ Next recommended microphase:
 ACTIVE-NETWORK-BLOCK-02-RUNBOOK-AND-THREAT-MODEL
 ```
 
+That runbook and threat model is documented in:
+
+```text
+docs/future/active-network-block-02-runbook-and-threat-model.md
+```
+
+Decision:
+
+```text
+ACTIVE_RUNBOOK_THREAT_MODEL_FROZEN_NO_RUNTIME
+```
+
 ## P. No-Scope
 
 This microphase does not include:

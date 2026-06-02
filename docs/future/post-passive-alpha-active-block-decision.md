@@ -247,6 +247,18 @@ Decision:
 ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME
 ```
 
+The follow-up runbook and threat model is documented in:
+
+```text
+docs/future/active-network-block-02-runbook-and-threat-model.md
+```
+
+Decision:
+
+```text
+ACTIVE_RUNBOOK_THREAT_MODEL_FROZEN_NO_RUNTIME
+```
+
 Parallel or follow-up hardening path:
 
 ```text
