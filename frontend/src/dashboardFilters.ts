@@ -113,5 +113,8 @@ export function auditTypeLabel(auditType: JobTypeFilter): string {
   if (auditType === "compose_config_basic") {
     return "compose_config_basic";
   }
+  if (auditType === "database_config_basic") {
+    return "database_config_basic";
+  }
   return auditType;
 }

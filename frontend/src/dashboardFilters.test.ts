@@ -250,6 +250,18 @@ const jobs: JobListItem[] = [
     updated_at: "2026-05-26T10:36:00Z",
     source_file_deleted_at: null,
     summary: null
+  },
+  {
+    id: "job-database-completed",
+    audit_type: "database_config_basic",
+    file_id: "archive-file-4",
+    target_url: null,
+    target_domain: null,
+    status: "completed",
+    created_at: "2026-05-26T10:37:00Z",
+    updated_at: "2026-05-26T10:38:00Z",
+    source_file_deleted_at: null,
+    summary: null
   }
 ];
 
@@ -284,6 +296,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "terraform_config_basic", "")).toEqual([jobs[14]]);
     expect(filterJobs(jobs, "all", "nginx_config_basic", "")).toEqual([jobs[15]]);
     expect(filterJobs(jobs, "all", "compose_config_basic", "")).toEqual([jobs[16]]);
+    expect(filterJobs(jobs, "all", "database_config_basic", "")).toEqual([jobs[17]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
@@ -305,6 +318,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "TERRAFORM_CONFIG")).toEqual([jobs[14]]);
     expect(filterJobs(jobs, "all", "all", "NGINX_CONFIG")).toEqual([jobs[15]]);
     expect(filterJobs(jobs, "all", "all", "COMPOSE_CONFIG")).toEqual([jobs[16]]);
+    expect(filterJobs(jobs, "all", "all", "DATABASE_CONFIG")).toEqual([jobs[17]]);
   });
 
   it("builds dashboard metrics from current files and jobs", () => {
@@ -314,8 +328,8 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 17,
-      completedJobs: 14,
+      totalJobs: 18,
+      completedJobs: 15,
       failedJobs: 1,
       activeJobs: 2
     });

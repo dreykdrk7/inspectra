@@ -16,6 +16,7 @@ import {
 import { ArchiveJobReport } from "./ArchiveJobReport";
 import { CiCdConfigJobReport } from "./CiCdConfigJobReport";
 import { ComposeConfigJobReport } from "./ComposeConfigJobReport";
+import { DatabaseConfigJobReport } from "./DatabaseConfigJobReport";
 import { DjangoConfigJobReport } from "./DjangoConfigJobReport";
 import { DomainJobReport } from "./DomainJobReport";
 import { DockerConfigJobReport } from "./DockerConfigJobReport";
@@ -291,6 +292,17 @@ export function App() {
     setActionError(null);
     try {
       const job = await api.launchComposeConfigAudit(file.id);
+      setSelectedJob(job);
+      await refreshJobs();
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    }
+  }
+
+  async function launchDatabaseConfigAudit(file: FileRecord) {
+    setActionError(null);
+    try {
+      const job = await api.launchDatabaseConfigAudit(file.id);
       setSelectedJob(job);
       await refreshJobs();
     } catch (error) {
@@ -655,6 +667,12 @@ export function App() {
                               Analyze Compose config
                             </button>
                           ) : null}
+                          {file.kind === "archive" ? (
+                            <button onClick={() => void launchDatabaseConfigAudit(file)}>
+                              <Play size={15} aria-hidden="true" />
+                              Analyze database config
+                            </button>
+                          ) : null}
                           <button className="danger-button" onClick={() => void deleteFile(file.id)}>
                             <Trash2 size={15} aria-hidden="true" />
                             Delete
@@ -696,7 +714,7 @@ export function App() {
               />
             </div>
             <div className="segmented-control wide-control" aria-label="Job audit type filter">
-              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic", "ci_cd_config_basic", "k8s_config_basic", "terraform_config_basic", "nginx_config_basic", "compose_config_basic"] as JobTypeFilter[]).map((auditType) => (
+              {(["all", "pdf_basic", "image_basic", "manifest_basic", "archive_basic", "project_archive_basic", "web_basic", "domain_basic", "subdomain_inventory_basic", "django_config_basic", "docker_config_basic", "secrets_review_basic", "node_package_config_basic", "ci_cd_config_basic", "k8s_config_basic", "terraform_config_basic", "nginx_config_basic", "compose_config_basic", "database_config_basic"] as JobTypeFilter[]).map((auditType) => (
                 <button
                   type="button"
                   key={auditType}
@@ -786,6 +804,8 @@ export function App() {
               <NginxConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "compose_config_basic" ? (
               <ComposeConfigJobReport job={selectedJob} file={selectedJobFile} />
+            ) : selectedJob.audit_type === "database_config_basic" ? (
+              <DatabaseConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : (
               <WebJobReport job={selectedJob} />
             )}
@@ -1055,6 +1075,12 @@ function summarizeJob(job: JobListItem): string {
     const servicesDetected = typeof job.summary.services_detected === "number" ? job.summary.services_detected : 0;
     const publishedPortsDetected = typeof job.summary.published_ports_detected === "number" ? job.summary.published_ports_detected : 0;
     return `${filesReviewed} files reviewed, ${servicesDetected} services, ${publishedPortsDetected} ports, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "database_config_basic") {
+    const filesReviewed = typeof job.summary.files_reviewed === "number" ? job.summary.files_reviewed : 0;
+    const enginesDetected = typeof job.summary.engines_detected === "number" ? job.summary.engines_detected : 0;
+    const dumpFilesDetected = typeof job.summary.dump_or_backup_files_detected === "number" ? job.summary.dump_or_backup_files_detected : 0;
+    return `${filesReviewed} files reviewed, ${enginesDetected} engines, ${dumpFilesDetected} dumps/backups, ${findingsCount ?? 0} findings`;
   }
   const validation = qpdfOk === undefined ? "unknown" : qpdfOk ? "valid" : "review";
   return `${validation}, ${warnings} warnings, ${timedOut} timeouts`;

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildArchiveAuditReport } from "./archiveReport";
 import { buildCiCdConfigAuditReport, redactCiCdConfigValue } from "./ciCdConfigReport";
 import { buildComposeConfigAuditReport, redactComposeConfigValue } from "./composeConfigReport";
+import { buildDatabaseConfigAuditReport, redactDatabaseConfigValue } from "./databaseConfigReport";
 import { buildDjangoConfigAuditReport, redactDjangoConfigValue } from "./djangoConfigReport";
 import { buildDomainAuditReport } from "./domainReport";
 import { buildDockerConfigAuditReport, redactDockerConfigValue } from "./dockerConfigReport";
@@ -1516,5 +1517,123 @@ describe("report helpers", () => {
     expect(report.findings[0].evidence).toContain("[REDACTED]");
     expect(report.secrets[0]).toMatchObject({ read: false });
     expect(report.envFiles[0]).toMatchObject({ read: false });
+  });
+
+  it("normalizes Database config engines, settings, includes, dumps, and findings", () => {
+    const report = buildDatabaseConfigAuditReport({
+      ...baseJob,
+      audit_type: "database_config_basic",
+      result: {
+        analyzer: "database_config_basic",
+        archive_type: "zip",
+        summary: {
+          files_considered: 7,
+          files_reviewed: 3,
+          database_files_detected: 4,
+          postgres_files_detected: 2,
+          mysql_files_detected: 1,
+          mariadb_files_detected: 1,
+          pg_hba_files_detected: 1,
+          dump_or_backup_files_detected: 2,
+          engines_detected: 2,
+          findings_count: 2,
+          redacted_values_count: 1,
+          truncated: false
+        },
+        files_detected: [{ path: "db/postgres/postgresql.conf", category: "postgres_config", read: true, context: "production" }],
+        engines: [{ engine: "postgresql", file_path: "db/postgres/postgresql.conf", context: "production", files_count: 2 }],
+        postgres_settings: [{ engine: "postgresql", setting: "listen_addresses", value: "*", file_path: "db/postgres/postgresql.conf", line: 3, context: "production" }],
+        pg_hba_rules: [{ type: "host", database: "all", user: "all", address: "0.0.0.0/0", auth_method: "trust", file_path: "db/postgres/pg_hba.conf", line: 5, context: "production" }],
+        mysql_settings: [{ engine: "mysql", section: "mysqld", setting: "bind-address", value: "0.0.0.0", file_path: "db/mysql/my.cnf", line: 8 }],
+        includes: [{ directive: "include", target: "/etc/postgresql/secret.conf", resolved: false, file_path: "db/postgres/postgresql.conf", engine: "postgresql", line: 10 }],
+        dump_or_backup_files: [{ path: "backups/prod.sql", category: "database_dump", read: false, skip_reason: "dump_not_read", size_bytes: 4096, context: "production" }],
+        findings: [
+          {
+            id: "postgres_pg_hba_trust_auth",
+            title: "pg_hba.conf allows trust authentication",
+            level: "medium",
+            confidence: "high",
+            category: "auth",
+            context: "production",
+            engine: "postgresql",
+            auth_method: "trust",
+            address: "0.0.0.0/0",
+            file_path: "db/postgres/pg_hba.conf",
+            line: 5,
+            evidence: "host all all 0.0.0.0/0 trust",
+            recommendation: "Review whether trust authentication is appropriate."
+          },
+          { code: "database_dump_or_backup_file_present", message: "dump detected but not read", severity: "info" }
+        ],
+        redaction_notes: ["Database values were redacted."],
+        errors: []
+      }
+    });
+
+    expect(report.isDatabaseConfigAudit).toBe(true);
+    expect(report.overview).toContainEqual({ label: "Engines", value: "2" });
+    expect(report.detectedFiles[0]).toMatchObject({ path: "db/postgres/postgresql.conf", context: "production" });
+    expect(report.engines[0]).toMatchObject({ engine: "postgresql", filesCount: 2 });
+    expect(report.postgresSettings[0]).toMatchObject({ setting: "listen_addresses", value: "*" });
+    expect(report.pgHbaRules[0]).toMatchObject({ authMethod: "trust", address: "0.0.0.0/0" });
+    expect(report.mysqlSettings[0]).toMatchObject({ setting: "bind-address", value: "0.0.0.0" });
+    expect(report.includes[0]).toMatchObject({ target: "/etc/postgresql/secret.conf", resolved: false });
+    expect(report.dumpOrBackupFiles[0]).toMatchObject({ path: "backups/prod.sql", read: false });
+    expect(report.findings[0]).toMatchObject({ id: "postgres_pg_hba_trust_auth", engine: "postgresql" });
+    expect(report.findingGroups.map((group) => group.level)).toEqual(["medium", "info"]);
+    expect(report.redactionNotes).toEqual(["Database values were redacted."]);
+  });
+
+  it("redacts legacy Database config payloads defensively", () => {
+    const report = buildDatabaseConfigAuditReport({
+      ...baseJob,
+      audit_type: "database_config_basic",
+      error: "PGPASSWORD=super-secret-password",
+      result: {
+        analyzer: "database_config_basic",
+        summary: { redacted_values_count: 0 },
+        engines: [{ engine: "postgresql", content: "raw-db-password-123456" }],
+        postgres_settings: [{ setting: "password_encryption", value: "super-secret-password" }],
+        pg_hba_rules: [{ content: "postgres://user:pass@example.com/db", auth_method: "trust" }],
+        mysql_settings: [{ setting: "MYSQL_PWD", value: "super-secret-password" }],
+        includes: [{ target: "/etc/postgresql/secret.conf", content: "replication_password_should_not_render" }],
+        dump_or_backup_files: [{ path: "backup.sql", read: false, content: "db_password_plaintext" }],
+        findings: [
+          {
+            id: "legacy_database_secret",
+            title: "Legacy Database secret",
+            evidence: "postgres://user:pass@example.com/db",
+            description: "MYSQL_PWD=super-secret-password",
+            recommendation: "raw-db-password-123456 replication_password_should_not_render"
+          }
+        ],
+        errors: ["PGPASSWORD=super-secret-password", "mysql://user:pass@example.com/db", "-----BEGIN PRIVATE KEY-----", "db_password_plaintext"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(
+      redactDatabaseConfigValue({
+        error: "PGPASSWORD=super-secret-password",
+        result: report
+      })
+    );
+
+    for (const secret of [
+      "super-secret-password",
+      "raw-db-password-123456",
+      "postgres://user:pass@example.com/db",
+      "mysql://user:pass@example.com/db",
+      "replication_password_should_not_render",
+      "PGPASSWORD=super-secret-password",
+      "MYSQL_PWD=super-secret-password",
+      "db_password_plaintext",
+      "PRIVATE KEY"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+    expect(report.findings[0].evidence).toContain("[REDACTED]");
+    expect(report.dumpOrBackupFiles[0]).toMatchObject({ read: false });
   });
 });
