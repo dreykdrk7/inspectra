@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
@@ -508,6 +508,76 @@ describe("App", () => {
 
     expect(await screen.findByText("Upload a file or archive to start a passive review.")).toBeInTheDocument();
     expect(screen.getByText("Choose a passive archive review to create a job.")).toBeInTheDocument();
+  });
+
+  it("uploads a manifest and keeps archive-only actions off the non-archive row", async () => {
+    const manifestRecord = {
+      id: "file-manifest-uploaded",
+      kind: "manifest",
+      original_filename: "package.json",
+      stored_filename: "file-manifest-uploaded-package.json",
+      content_type: "application/json",
+      size_bytes: 48,
+      sha256: "1234567890abcdef1234567890abcdef",
+      created_at: "2026-05-26T10:20:00Z"
+    };
+    let uploaded = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files")) {
+          return Promise.resolve(jsonResponse(uploaded ? [manifestRecord] : []));
+        }
+        if (url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/files/manifest")) {
+          uploaded = true;
+          return Promise.resolve(jsonResponse(manifestRecord, 201));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+    const scoped = within(view.container);
+
+    expect(await scoped.findByText("Upload a file or archive to start a passive review.")).toBeInTheDocument();
+    fireEvent.click(scoped.getAllByRole("button", { name: "Manifest" })[0]);
+    const input = view.container.querySelector('input[type="file"]');
+    expect(input).not.toBeNull();
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [new File(['{"name":"demo","version":"1.0.0"}'], "package.json", { type: "application/json" })]
+      }
+    });
+    fireEvent.click(scoped.getByRole("button", { name: /Upload/i }));
+
+    expect(await scoped.findByText("package.json")).toBeInTheDocument();
+    expect(view.container.textContent).not.toContain("Cannot read properties of null");
+    expect(globalThis.fetch).toHaveBeenCalledWith("http://localhost:8000/files/manifest", expect.objectContaining({ method: "POST" }));
+
+    const rows = Array.from(view.container.querySelectorAll("tr"));
+    const manifestRow = rows.find((row) => row.textContent?.includes("package.json"));
+    expect(manifestRow).toBeDefined();
+    expect(manifestRow?.textContent).toContain("Analyze manifest");
+    for (const archiveOnlyAction of [
+      "Analyze Redis config",
+      "Analyze SQL DB config",
+      "Analyze secrets review",
+      "Analyze CI/CD config",
+      "Analyze Nginx config",
+      "Analyze Docker config",
+      "Analyze Kubernetes config",
+      "Analyze Terraform config"
+    ]) {
+      expect(manifestRow?.textContent).not.toContain(archiveOnlyAction);
+    }
+    expect(manifestRow?.textContent).not.toContain("Run all recommended passive checks");
   });
 
   it("shows SBOM export buttons only for completed manifest jobs", async () => {

@@ -217,7 +217,11 @@ class FileStore:
         return record
 
     def list(self) -> list[StoredFile]:
-        records = [self._load_metadata_file(path) for path in self.settings.upload_dir.glob("*.json")]
+        records = [
+            self._load_metadata_file(path)
+            for path in self.settings.upload_dir.glob("*.json")
+            if IDENTIFIER_PATTERN.fullmatch(path.stem)
+        ]
         return sorted(records, key=lambda item: item.created_at, reverse=True)
 
     def get(self, file_id: str) -> StoredFile:

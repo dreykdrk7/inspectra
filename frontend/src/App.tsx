@@ -160,6 +160,7 @@ export function App() {
 
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const form = event.currentTarget;
     if (!selectedFile) {
       setUploadState({ loading: false, error: uploadErrorForKind(uploadKind) });
       return;
@@ -178,7 +179,7 @@ export function App() {
         await api.uploadArchive(selectedFile);
       }
       setSelectedFile(null);
-      event.currentTarget.reset();
+      form.reset();
       await refreshFiles();
       setUploadState({ loading: false, error: null });
     } catch (error) {

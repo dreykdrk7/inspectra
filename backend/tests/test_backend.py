@@ -263,6 +263,7 @@ async def test_manifest_upload_accepts_package_json(monkeypatch, tmp_path):
             "/files/manifest",
             files={"file": ("package.json", SAMPLE_PACKAGE_JSON, "application/json")},
         )
+        list_response = await client.get("/files")
 
     assert response.status_code == 201
     payload = response.json()
@@ -270,6 +271,12 @@ async def test_manifest_upload_accepts_package_json(monkeypatch, tmp_path):
     assert payload["content_type"] == "application/json"
     assert payload["stored_filename"].endswith("-package.json")
     assert (tmp_path / "uploads" / payload["stored_filename"]).exists()
+    assert list_response.status_code == 200
+    files_payload = list_response.json()
+    assert len(files_payload) == 1
+    assert files_payload[0]["id"] == payload["id"]
+    assert files_payload[0]["kind"] == "manifest"
+    assert files_payload[0]["original_filename"] == "package.json"
 
 
 @pytest.mark.anyio

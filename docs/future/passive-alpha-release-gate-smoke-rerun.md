@@ -1,6 +1,6 @@
 # Passive Alpha Release Gate Smoke Rerun
 
-Status: `BLOCKED_BEFORE_RELEASE_TAG`.
+Status: `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
 
 Base commit: `9751e89 fix(redaction): block passive alpha ci nginx leaks`
 
@@ -13,6 +13,10 @@ This document records the release-gate rerun for Inspectra Passive Technical Alp
 Follow-up browser gate: `docs/future/passive-alpha-manual-browser-smoke-before-tag.md`.
 
 The follow-up real browser DOM and Raw JSON smoke passed for seven archive jobs, but the release remains blocked because the required non-archive `package.json` manifest sanity check failed: the UI showed `Cannot read properties of null (reading 'reset')` and backend `/files` returned `500` after manifest upload. Do not create `v0.1.0-passive-alpha` yet.
+
+Manifest blocker fix: `docs/future/passive-alpha-release-gate-manifest-upload-listing-fix.md`.
+
+The manifest upload/listing blocker has been fixed and covered by focused backend/frontend tests plus a focused real-browser smoke. The current state is `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
 
 ## A. Initial State
 
@@ -196,7 +200,7 @@ Known limitations:
 
 ## H. Final Decision
 
-Decision: `BLOCKED_BEFORE_RELEASE_TAG`.
+Decision: `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
 
 Rationale:
 
@@ -205,6 +209,6 @@ Rationale:
 - Redaction-negative checks passed for job JSON and Markdown/HTML/XML/PDF exports.
 - The previous CI/CD and Nginx release-blocking leaks were not reproduced.
 - Follow-up real browser DOM and Raw JSON smoke was completed for archive reports and recorded in `docs/future/passive-alpha-manual-browser-smoke-before-tag.md`.
-- The release is blocked because the non-archive `package.json` manifest sanity check failed in the browser smoke.
+- The non-archive `package.json` manifest sanity blocker has been fixed in `docs/future/passive-alpha-release-gate-manifest-upload-listing-fix.md`.
 
-Do not create `v0.1.0-passive-alpha` yet. The next step is to fix the manifest upload/listing blocker, rerun the browser smoke, and then make a final clean-tree/tag decision.
+Do not create `v0.1.0-passive-alpha` yet. The next step is to rerun the full browser smoke and then make a final clean-tree/tag decision.

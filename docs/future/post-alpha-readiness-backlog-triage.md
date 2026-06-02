@@ -233,10 +233,18 @@ docs/future/passive-alpha-manual-browser-smoke-before-tag.md
 
 That smoke passed DOM and expanded Raw JSON checks for seven archive jobs, but the release state is now `BLOCKED_BEFORE_RELEASE_TAG`. The blocker is the non-archive manifest sanity check: uploading `package.json` as a manifest left the UI in an upload error state and backend `/files` returned `500`, so archive-only action absence for the non-archive row could not be verified.
 
+Manifest blocker fix:
+
+```text
+docs/future/passive-alpha-release-gate-manifest-upload-listing-fix.md
+```
+
+The manifest upload/listing blocker is fixed. The current state is `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
+
 ## 7. Next Recommended Microphase
 
 Recommended next microphase:
 
-`PASSIVE-ALPHA-MANIFEST-UPLOAD-LISTING-FIX`
+`PASSIVE-ALPHA-MANUAL-BROWSER-SMOKE-RERUN-BEFORE-TAG`
 
-That microphase should fix the manifest upload/listing blocker found in the real browser smoke, then rerun `PASSIVE-ALPHA-MANUAL-BROWSER-SMOKE-BEFORE-TAG` and decide whether `v0.1.0-passive-alpha` can be tagged.
+That microphase should rerun the full browser smoke with synthetic fixtures after the manifest upload/listing fix and decide whether `v0.1.0-passive-alpha` can be tagged.

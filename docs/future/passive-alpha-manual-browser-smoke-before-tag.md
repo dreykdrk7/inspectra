@@ -1,12 +1,16 @@
 # Passive Alpha Manual Browser Smoke Before Tag
 
-Status: `BLOCKED_BEFORE_RELEASE_TAG`.
+Status: `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
 
 Base commit: `c245c60 docs(alpha): rerun passive release gate smoke`
 
 Target tag: `v0.1.0-passive-alpha`
 
 This document records the real browser DOM and Raw JSON smoke attempted before creating the passive alpha tag. It does not create a tag, create a release, add analyzers, add scripts, add fixtures, change runtime behavior, change endpoints, change frontend behavior, change exports, or inspect real secrets.
+
+Follow-up fix: `docs/future/passive-alpha-release-gate-manifest-upload-listing-fix.md`.
+
+The original smoke decision below remains `BLOCKED_BEFORE_RELEASE_TAG` for this recorded run. The manifest upload/listing blocker has since been fixed, and the current release-gate state is `READY_FOR_BROWSER_SMOKE_RERUN_BEFORE_TAG`.
 
 ## A. Initial State
 
@@ -149,7 +153,7 @@ Rationale:
 - No listed fixture-string leaks were observed in browser DOM or expanded Raw JSON for those archive reports.
 - The required non-archive sanity check failed because uploading `package.json` as a manifest left the UI in an upload error state and caused backend `/files` to return `500`.
 
-Do not create `v0.1.0-passive-alpha` yet. The next required work is a runtime fix for the manifest upload/listing path, followed by a rerun of the browser smoke and final clean-tree tag decision.
+Do not create `v0.1.0-passive-alpha` yet. The manifest upload/listing path has been fixed in `docs/future/passive-alpha-release-gate-manifest-upload-listing-fix.md`; the next required work is a full browser smoke rerun and final clean-tree tag decision.
 
 ## J. Validation Commands
 
