@@ -21,6 +21,18 @@ The common archive-based config flow is:
 
 Redaction is layered: runner output, backend storage/reporting, public API payloads for sensitive modules, exports, frontend reports, and frontend raw JSON all apply defensive redaction for legacy or malformed payloads. Findings remain heuristic review indicators rather than confirmed vulnerabilities, live reachability checks, exploitability claims, breach claims, or proof of compromise.
 
+## Future Active/Network Design
+
+Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active as docs-first only: no Active runtime, no active runner, no endpoints, no Nmap runtime, and no network traffic.
+
+The Active scope, runbook/threat model, and dry-run contracts are documented in:
+
+- `docs/future/active-network-block-01-docs-first-scope.md`
+- `docs/future/active-network-block-02-runbook-and-threat-model.md`
+- `docs/future/active-network-block-03-dry-run-contracts-design.md`
+
+The dry-run contract requires future Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. Future Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
+
 ## Components
 
 ### Backend

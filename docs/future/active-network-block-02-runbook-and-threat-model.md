@@ -392,3 +392,15 @@ Next recommended microphase:
 ```text
 ACTIVE-NETWORK-BLOCK-03-DRY-RUN-CONTRACTS-DESIGN
 ```
+
+That dry-run contract design is documented in:
+
+```text
+docs/future/active-network-block-03-dry-run-contracts-design.md
+```
+
+Decision:
+
+```text
+ACTIVE_DRY_RUN_CONTRACTS_DESIGNED_NO_RUNTIME
+```

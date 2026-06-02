@@ -370,6 +370,18 @@ Decision:
 ACTIVE_RUNBOOK_THREAT_MODEL_FROZEN_NO_RUNTIME
 ```
 
+Dry-run contracts are documented in:
+
+```text
+docs/future/active-network-block-03-dry-run-contracts-design.md
+```
+
+Decision:
+
+```text
+ACTIVE_DRY_RUN_CONTRACTS_DESIGNED_NO_RUNTIME
+```
+
 ## P. No-Scope
 
 This microphase does not include:
