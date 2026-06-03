@@ -94,6 +94,8 @@ Passive Alpha implementation readiness plan decision: `PASSIVE_ALPHA_IMPLEMENTAT
 
 Passive Alpha open-source/self-hosted product framing decision: `PASSIVE_ALPHA_OPEN_SOURCE_SELF_HOSTED_FRAMING_ACCEPTED`. Future auth and ownership work is for local installs, self-hosted instances, private/internal team installs, and optional limited public/community convenience instances. It does not approve commercial SaaS, billing, subscription plans, tenant billing, enterprise multi-tenancy, scan-as-a-service, public Active/Nmap, or anonymous public uploads.
 
+Passive Alpha auth-boundary runtime plan decision: `PASSIVE_ALPHA_AUTH_BOUNDARY_RUNTIME_PLAN_ACCEPTED`. Future auth should protect uploads, file/job reads, job creation, reports, SBOM exports, Raw JSON, delete/reset actions, baseline target jobs, internal Active jobs, target histories, and admin/config surfaces. Trusted local no-auth remains localhost/dev only; `self_hosted_single_admin` with `single_user_auth` is the first recommended runtime shape. This decision is docs-only and does not implement auth, sessions/cookies, `owner_id`, migrations, billing, SaaS tenants, enterprise RBAC, Nmap, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

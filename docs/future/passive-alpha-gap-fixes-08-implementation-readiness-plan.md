@@ -10,6 +10,8 @@ Base retention cleanup reset design: `docs/future/passive-alpha-gap-fixes-04-ret
 
 Open-source/self-hosted framing: `docs/future/passive-alpha-p0-00-open-source-self-hosted-product-framing.md`
 
+Auth-boundary runtime plan: `docs/future/passive-alpha-p0-01-auth-boundary-design-to-runtime-plan.md`
+
 Commit scope: docs-only implementation readiness plan for future Passive Alpha P0/P1/P2 runtime work. This block orders future microphases, names dependencies, defines minimum test expectations, and keeps runtime work separate. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -230,10 +232,10 @@ These remain deferred:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-01-AUTH-BOUNDARY-DESIGN-TO-RUNTIME-PLAN
+PASSIVE-ALPHA-P0-02-OWNER-MODEL-AND-STORAGE-MIGRATION-PLAN
 ```
 
-Choose this if the product wants to move toward safer self-hosted, private/internal, dedicated-instance, or optional public/community use.
+The auth-boundary runtime plan is now accepted. Choose this next if the product wants to plan owner identifiers, default-operator migration behavior, storage scoping, and compatibility for safer self-hosted, private/internal, dedicated-instance, or optional public/community use.
 
 Alternative:
 

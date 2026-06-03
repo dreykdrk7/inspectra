@@ -41,6 +41,8 @@ The Passive Alpha implementation readiness plan decision is `PASSIVE_ALPHA_IMPLE
 
 The Passive Alpha open-source/self-hosted framing decision is `PASSIVE_ALPHA_OPEN_SOURCE_SELF_HOSTED_FRAMING_ACCEPTED`. It clarifies that future auth and ownership work is for local, self-hosted, private/internal, and optional limited public/community safety, not for billing, subscription plans, commercial tenants, enterprise SaaS, or scan-as-a-service behavior.
 
+The Passive Alpha auth-boundary runtime plan decision is `PASSIVE_ALPHA_AUTH_BOUNDARY_RUNTIME_PLAN_ACCEPTED`. It defines `trusted_local_no_auth`, `self_hosted_single_admin`, `private_team_lightweight_users`, and `public_community_limited_instance`; recommends `self_hosted_single_admin` with `single_user_auth` as the first runtime shape; and keeps billing, SaaS tenants, enterprise RBAC, Nmap, new Active behavior, and runtime changes out of scope.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.

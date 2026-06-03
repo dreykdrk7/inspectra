@@ -8,6 +8,8 @@ Base auth and user-isolation design: `docs/future/passive-alpha-gap-fixes-03-aut
 
 Base deployment threat model: `docs/future/passive-alpha-gap-fixes-02-deployment-threat-model.md`
 
+Auth-boundary runtime plan: `docs/future/passive-alpha-p0-01-auth-boundary-design-to-runtime-plan.md`
+
 Commit scope: docs-only product and deployment framing before future P0 auth/runtime planning. This block clarifies that Inspectra is open-source, altruistic, local-first, and self-hosted-first. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -152,13 +154,13 @@ Even with the non-SaaS framing:
 
 ## Implementation Roadmap Adjustment
 
-The next recommended block remains:
+The auth-boundary plan is now accepted. The next recommended block is:
 
 ```text
-PASSIVE-ALPHA-P0-01-AUTH-BOUNDARY-DESIGN-TO-RUNTIME-PLAN
+PASSIVE-ALPHA-P0-02-OWNER-MODEL-AND-STORAGE-MIGRATION-PLAN
 ```
 
-Its goal should be auth for self-hosted, local, private/internal, and optional public/community safety. It should not design billing, paid plans, commercial tenants, enterprise RBAC, sales workflows, or SaaS monetization.
+Its goal should be owner model and storage migration planning after the auth principal/default-operator boundary. It should keep the same self-hosted/open-source framing and should not design billing, paid plans, commercial tenants, enterprise RBAC, sales workflows, or SaaS monetization.
 
 ## No-Scope
 
@@ -194,16 +196,16 @@ Its goal should be auth for self-hosted, local, private/internal, and optional p
 - Commercial SaaS framing is explicitly avoided.
 - Auth rationale is reframed as safety for local, self-hosted, private/internal, and optional community use.
 - Public/community instance caveats are documented.
-- The next auth block remains valid and corrected.
+- The accepted auth block remains aligned with this framing.
 - No runtime or capability changes are made.
 
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-01-AUTH-BOUNDARY-DESIGN-TO-RUNTIME-PLAN
+PASSIVE-ALPHA-P0-02-OWNER-MODEL-AND-STORAGE-MIGRATION-PLAN
 ```
 
-Proceed to auth-boundary planning with this framing: self-hosted/open-source safety first, not SaaS commercialization.
+Proceed to owner model and storage migration planning with this framing: self-hosted/open-source safety first, not SaaS commercialization.
 
 ## Validation Commands
 
