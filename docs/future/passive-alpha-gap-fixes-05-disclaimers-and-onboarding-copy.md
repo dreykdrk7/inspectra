@@ -8,6 +8,8 @@ Base auth and isolation design: `docs/future/passive-alpha-gap-fixes-03-auth-and
 
 Base threat model: `docs/future/passive-alpha-gap-fixes-02-deployment-threat-model.md`
 
+Limits messaging and report polish: `docs/future/passive-alpha-gap-fixes-06-limits-messaging-and-report-polish.md`
+
 Commit scope: docs-only disclaimer, onboarding, authorized-use, report/export, and forbidden-copy design for future README/docs/UI reuse. This block does not change backend, frontend, runner, tests, fixtures, schemas, storage, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -343,10 +345,10 @@ Limits, file-size messaging, truncation explanations, severity/confidence copy, 
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-GAP-FIXES-06-LIMITS-MESSAGING-AND-REPORT-POLISH
+PASSIVE-ALPHA-GAP-FIXES-07-GAP-FIXES-CLOSEOUT
 ```
 
-Do not proceed directly to UI implementation, terms acceptance, runtime auth, cleanup runtime, storage migrations, Nmap, another Active capability, or a new passive analyzer implementation from this copy-design block.
+Limits messaging and report polish is now accepted as the next boundary. Proceed to a docs-only gap-fixes closeout. Do not proceed directly to UI implementation, terms acceptance, runtime auth, cleanup runtime, storage migrations, Nmap, another Active capability, or a new passive analyzer implementation from this copy-design block.
 
 ## Validation Commands
 

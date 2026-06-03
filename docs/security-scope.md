@@ -86,6 +86,8 @@ Passive Alpha retention, cleanup, and reset design decision: `PASSIVE_ALPHA_RETE
 
 Passive Alpha disclaimers and onboarding copy decision: `PASSIVE_ALPHA_DISCLAIMERS_ONBOARDING_COPY_ACCEPTED`. User-facing copy must explain trusted local alpha scope, local storage, best-effort redaction, heuristic findings, sensitive exports/Raw JSON, authorized baseline/Active target use, and unsupported production/public/multi-user modes. This decision is design-only and does not implement UI onboarding, terms acceptance, auth, cleanup, storage changes, public deployment approval, or new capabilities.
 
+Passive Alpha limits messaging and report-polish design decision: `PASSIVE_ALPHA_LIMITS_REPORT_POLISH_DESIGN_ACCEPTED`. Future UI/report/export copy must explain upload limits, bounded/truncated analysis, no-read sensitive files, severity/confidence caveats, no-findings states, failed/sparse/malformed payloads, Raw JSON sensitivity, SBOM sensitivity, and authorized target-output limits without promising complete coverage or changing runtime behavior.
+
 Tools used in this phase:
 
 - `pdfinfo`

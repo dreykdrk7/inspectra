@@ -33,6 +33,8 @@ The Passive Alpha retention, cleanup, and reset design decision is `PASSIVE_ALPH
 
 The Passive Alpha disclaimers and onboarding copy decision is `PASSIVE_ALPHA_DISCLAIMERS_ONBOARDING_COPY_ACCEPTED`. It standardizes trusted-local alpha copy for uploads, reports, exports, Raw JSON, retention caveats, authorized target flows, forbidden wording, and future acknowledgement prompts. It is docs-only and does not implement UI onboarding, terms acceptance, auth, cleanup, storage changes, or new capabilities.
 
+The Passive Alpha limits messaging and report-polish design decision is `PASSIVE_ALPHA_LIMITS_REPORT_POLISH_DESIGN_ACCEPTED`. It defines future copy for upload limits, bounded/truncated analysis, no-read sensitive files, severity/confidence meaning, no-findings states, failed/sparse/malformed payloads, Raw JSON, SBOMs, reports/exports, and target-based outputs without changing report/export runtime or adding capabilities.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
