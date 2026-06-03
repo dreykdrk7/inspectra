@@ -139,7 +139,7 @@ Residual risk from non-executed coverage:
 
 ## Next Recommendation
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-24-ACTIVE-ALPHA-README-LINKING-AND-COPY-POLISH

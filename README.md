@@ -93,15 +93,9 @@ Do not upload real secrets or production archives for demos. Inspectra redacts s
 
 Release notes for the local passive alpha tag `v0.1.0-passive-alpha` are available at `docs/releases/v0.1.0-passive-alpha.md`.
 
-Active dry-run v0 is closed as a no-network planning capability in `docs/future/active-network-block-10-dry-run-closeout.md`. It remains separate from Passive Alpha and does not add live probing, DNS, HTTP requests, sockets, subprocess probes, or Nmap.
+Active Alpha is internal and limited. It includes `active_network_dry_run` as no-network planning and `active_http_header_probe` as the only limited live capability: opt-in, disabled by default, explicitly authorized, double-confirmed, target-based, and capped to one HTTP `HEAD` request with no redirects and no response body read. It does not add Nmap, port scanning, crawling, custom headers, auth/cookies, fuzzing, exploitation, credential validation, production readiness, external-user readiness, policy relaxation, or additional Active capabilities.
 
-Authorized Active HTTP header probe v0 is closed as a limited live capability in `docs/future/active-network-block-18-authorized-http-header-probe-closeout.md`. It remains opt-in and disabled by default, requires explicit authorization plus live-traffic confirmation, sends at most one HTTP `HEAD` request, follows no redirects, reads no response body, and does not add Nmap, port scanning, crawling, custom headers, auth/cookies, credential validation, fuzzing, or exploit behavior.
-
-Limited Active internal alpha planning is recorded in `docs/future/active-network-block-21-active-alpha-checkpoint-release-planning.md`. It is an internal planning decision only, not production readiness, external-user readiness, policy relaxation, or approval for additional live Active capabilities.
-
-The limited Active operator guide is recorded in `docs/future/active-network-block-22-active-alpha-operator-guide.md`. It is internal guidance for trusted operators and does not add runtime behavior, external demo targets, bypasses, or additional live Active capabilities.
-
-The limited Active test-double smoke execution is recorded in `docs/future/active-network-block-23-limited-live-smoke-test-execution.md`. It passed runner, backend/API/reporting/export, and frontend mocked smoke subsets without external target traffic or new Active capability.
+Active Alpha references: operator guide `docs/future/active-network-block-22-active-alpha-operator-guide.md`, test-double smoke execution `docs/future/active-network-block-23-limited-live-smoke-test-execution.md`, and security scope `docs/security-scope.md`. The smoke record passed runner, backend/API/reporting/export, and frontend mocked subsets without external target traffic.
 
 ## Requirements
 
