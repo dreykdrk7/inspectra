@@ -10,6 +10,8 @@ Base open-source/self-hosted framing: `docs/future/passive-alpha-p0-00-open-sour
 
 Base implementation readiness plan: `docs/future/passive-alpha-gap-fixes-08-implementation-readiness-plan.md`
 
+Owner-scoped resources plan: `docs/future/passive-alpha-p0-04-owner-scoped-jobs-results-exports.md`
+
 Commit scope: docs-only API guard plan before future runtime implementation. This block defines deny-anonymous principles, deployment-mode behavior, protected surfaces, public-safe surfaces, error behavior, trusted-local compatibility, target-flow implications, and minimum tests. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -354,10 +356,10 @@ Future runtime implementation should test:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-04-OWNER-SCOPED-JOBS-RESULTS-EXPORTS
+PASSIVE-ALPHA-P0-05-RETENTION-DELETE-SEMANTICS-RUNTIME-PLAN
 ```
 
-Proceed to owner-scoped jobs, results, reports, exports, SBOM, Raw JSON, and target-history planning after anonymous API guard behavior is accepted.
+The owner-scoped resources plan is now accepted. Proceed to retention and delete semantics planning after anonymous access is denied and owner-scoped resources are defined.
 
 ## Validation Commands
 

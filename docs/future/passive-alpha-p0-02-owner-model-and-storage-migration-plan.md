@@ -14,6 +14,8 @@ Base auth and user-isolation design: `docs/future/passive-alpha-gap-fixes-03-aut
 
 Deny-anonymous API guards plan: `docs/future/passive-alpha-p0-03-deny-anonymous-reads-api-guards.md`
 
+Owner-scoped resources plan: `docs/future/passive-alpha-p0-04-owner-scoped-jobs-results-exports.md`
+
 Commit scope: docs-only owner model and storage migration plan before future runtime work. This block defines ownership principles, P0 owner concepts, legacy local data migration options, storage implications, API guard implications, retention/delete implications, and future test requirements. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -595,10 +597,10 @@ Future runtime implementation should test:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-04-OWNER-SCOPED-JOBS-RESULTS-EXPORTS
+PASSIVE-ALPHA-P0-05-RETENTION-DELETE-SEMANTICS-RUNTIME-PLAN
 ```
 
-The deny-anonymous API guards plan is now accepted. Proceed to owner-scoped jobs, results, reports, exports, SBOM, Raw JSON, and target-history planning after anonymous requests are denied for sensitive surfaces.
+The deny-anonymous API guards plan and owner-scoped resources plan are now accepted. Proceed to retention and delete semantics planning after anonymous requests are denied and sensitive resources are owner-scoped.
 
 ## Validation Commands
 

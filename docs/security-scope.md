@@ -100,6 +100,8 @@ Passive Alpha owner model and storage migration plan decision: `PASSIVE_ALPHA_OW
 
 Passive Alpha deny-anonymous API guards plan decision: `PASSIVE_ALPHA_DENY_ANONYMOUS_API_GUARDS_PLAN_ACCEPTED`. Future runtime should deny anonymous access before owner lookup for uploads, file list/detail/delete, file-based and target-based job creation, Active dry-run and one-HEAD jobs, job list/detail/results, frontend report data, report exports, SBOM exports, Raw JSON, delete/reset, and admin/config surfaces. Public-safe surfaces are limited to health, static frontend, login, onboarding/disclaimer, and docs/static assets when they expose no filenames, job IDs, targets, paths, errors, config details, feature flag details, or sensitive data. This decision is docs-only and does not implement auth, sessions/cookies, owner checks, API guards, migrations, billing, SaaS tenants, Nmap, or new capabilities.
 
+Passive Alpha owner-scoped resources plan decision: `PASSIVE_ALPHA_OWNER_SCOPED_RESOURCES_PLAN_ACCEPTED`. Future runtime should enforce owner checks after deny-anonymous guards: file/job lists are owner-filtered, direct file/job/result access checks owner, file-based job creation requires ownership of the source file, target-based jobs and target histories carry an owner even with `file_id: null`, reports and Markdown/HTML/XML/PDF/SBOM exports require job-owner authorization, Raw JSON follows job ownership, and background jobs preserve owner context. This decision is docs-only and does not implement owner checks, auth/session runtime, API guards, DB/storage migration, cleanup runtime, billing, SaaS tenants, Nmap, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

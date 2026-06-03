@@ -16,6 +16,8 @@ Owner model and storage migration plan: `docs/future/passive-alpha-p0-02-owner-m
 
 Deny-anonymous API guards plan: `docs/future/passive-alpha-p0-03-deny-anonymous-reads-api-guards.md`
 
+Owner-scoped resources plan: `docs/future/passive-alpha-p0-04-owner-scoped-jobs-results-exports.md`
+
 Commit scope: docs-only implementation readiness plan for future Passive Alpha P0/P1/P2 runtime work. This block orders future microphases, names dependencies, defines minimum test expectations, and keeps runtime work separate. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -236,10 +238,10 @@ These remain deferred:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-04-OWNER-SCOPED-JOBS-RESULTS-EXPORTS
+PASSIVE-ALPHA-P0-05-RETENTION-DELETE-SEMANTICS-RUNTIME-PLAN
 ```
 
-The auth-boundary runtime plan, owner model/storage migration plan, and deny-anonymous API guards plan are now accepted. Choose this next if the product wants to plan owner-scoped jobs, results, reports, exports, SBOM, Raw JSON, and target-history enforcement after anonymous access is denied.
+The auth-boundary runtime plan, owner model/storage migration plan, deny-anonymous API guards plan, and owner-scoped resources plan are now accepted. Choose this next if the product wants to plan delete source versus delete source plus derived results behavior, user deletion, admin cleanup, trusted local reset, retention windows, and cleanup boundaries.
 
 Alternative:
 
