@@ -31,6 +31,8 @@ The Passive Alpha auth and user-isolation design decision is `PASSIVE_ALPHA_AUTH
 
 The Passive Alpha retention, cleanup, and reset design decision is `PASSIVE_ALPHA_RETENTION_CLEANUP_RESET_DESIGN_ACCEPTED`. It treats source uploads, derived results, exports, SBOMs, Raw JSON, logs, temporary data, demo data, and target histories as sensitive retained data, and requires owner-scoped deletion, explicit reset boundaries, configurable future retention windows, redacted logs, and clear manual-download caveats before private/internal or hosted use. It is docs-only and does not implement cleanup, schedulers, storage migrations, delete/reset UI, or deployment approval.
 
+The Passive Alpha disclaimers and onboarding copy decision is `PASSIVE_ALPHA_DISCLAIMERS_ONBOARDING_COPY_ACCEPTED`. It standardizes trusted-local alpha copy for uploads, reports, exports, Raw JSON, retention caveats, authorized target flows, forbidden wording, and future acknowledgement prompts. It is docs-only and does not implement UI onboarding, terms acceptance, auth, cleanup, storage changes, or new capabilities.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.

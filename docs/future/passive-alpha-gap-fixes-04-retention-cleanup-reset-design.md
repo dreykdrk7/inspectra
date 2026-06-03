@@ -6,6 +6,8 @@ Base auth and isolation design: `docs/future/passive-alpha-gap-fixes-03-auth-and
 
 Base threat model: `docs/future/passive-alpha-gap-fixes-02-deployment-threat-model.md`
 
+Disclaimers and onboarding copy: `docs/future/passive-alpha-gap-fixes-05-disclaimers-and-onboarding-copy.md`
+
 Commit scope: docs-only retention, cleanup, reset, and deletion-semantics design for future private/internal or single-tenant hosted deployment. This block does not change backend, frontend, runner, tests, fixtures, schemas, storage, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -431,10 +433,10 @@ Onboarding and disclaimers must clearly explain:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-GAP-FIXES-05-DISCLAIMERS-AND-ONBOARDING-COPY
+PASSIVE-ALPHA-GAP-FIXES-06-LIMITS-MESSAGING-AND-REPORT-POLISH
 ```
 
-Do not proceed directly to cleanup runtime, schedulers, storage migrations, delete/reset UI, Nmap, another Active capability, or a new passive analyzer implementation from this design block.
+Disclaimers and onboarding copy is now accepted as the next boundary. Proceed to docs-first limits messaging and report polish. Do not proceed directly to cleanup runtime, schedulers, storage migrations, delete/reset UI, Nmap, another Active capability, or a new passive analyzer implementation from this design block.
 
 ## Validation Commands
 

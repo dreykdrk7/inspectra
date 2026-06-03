@@ -84,6 +84,8 @@ Passive Alpha auth and user-isolation design decision: `PASSIVE_ALPHA_AUTH_USER_
 
 Passive Alpha retention, cleanup, and reset design decision: `PASSIVE_ALPHA_RETENTION_CLEANUP_RESET_DESIGN_ACCEPTED`. Future non-local use requires explicit retention classes, owner-scoped deletion, safe reset boundaries, export and Raw JSON retention rules, redacted logs/audit entries, target-history retention, and clear caveats for manual downloads and backups. This decision is design-only and does not implement cleanup, schedulers, delete/reset UI, storage migrations, public deployment approval, or new capabilities.
 
+Passive Alpha disclaimers and onboarding copy decision: `PASSIVE_ALPHA_DISCLAIMERS_ONBOARDING_COPY_ACCEPTED`. User-facing copy must explain trusted local alpha scope, local storage, best-effort redaction, heuristic findings, sensitive exports/Raw JSON, authorized baseline/Active target use, and unsupported production/public/multi-user modes. This decision is design-only and does not implement UI onboarding, terms acceptance, auth, cleanup, storage changes, public deployment approval, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`
