@@ -237,10 +237,12 @@ The Authorized HTTP Header Probe frontend is accepted after E2E-style contract, 
 
 ## Next Microphase
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-18-AUTHORIZED-HTTP-HEADER-PROBE-DOCS-SMOKE-CLOSEOUT
 ```
 
-That block should close the first live header probe UI/backend path with documentation and a manual smoke checklist, without widening Active scope.
+Closeout record: `docs/future/active-network-block-18-authorized-http-header-probe-closeout.md`
+
+That block closes the first live header probe UI/backend path with documentation and a manual smoke checklist, without widening Active scope.

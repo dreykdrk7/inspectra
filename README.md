@@ -30,7 +30,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Starts authorized DNS baseline audit jobs for a single domain.
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
 - Starts opt-in Active network dry-run planning jobs with no network traffic when `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=true`.
-- Starts opt-in authorized Active HTTP header probe backend jobs when `INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED=true`; each permitted job sends at most one HTTP `HEAD` request after explicit live-traffic confirmation.
+- Starts opt-in authorized Active HTTP header probe jobs when `INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED=true`; each permitted job sends at most one HTTP `HEAD` request after explicit live-traffic confirmation.
 - Runs passive tools inside the `audit-tools` container.
 - Calculates file hashes inside the tool container.
 - Stores job state and results under `data/results/jobs`.
@@ -38,7 +38,7 @@ This project is intentionally small: a FastAPI backend, a containerized tool run
 - Exports job reports as Markdown, HTML, XML, and PDF.
 - Exports offline SBOMs as CycloneDX JSON and SPDX JSON from completed manifest and project-archive manifest jobs.
 - Deletes uploaded source files while keeping historical job results.
-- Provides a minimal React UI for uploads, web audits, filters, jobs, readable PDF/image/manifest/archive/project-archive/Django-config/Docker-config/secrets-review/Node-package-config/CI-CD-config/web reports, exports, and raw JSON results.
+- Provides a minimal React UI for uploads, web audits, Active dry-run/header-probe panels, filters, jobs, readable PDF/image/manifest/archive/project-archive/Django-config/Docker-config/secrets-review/Node-package-config/CI-CD-config/web reports, exports, and raw JSON results.
 - Provides a minimal React UI for archive-only passive config reports including Kubernetes, Terraform, Nginx, Compose, Database, and Redis.
 - Exposes OpenAPI docs at `http://localhost:8000/docs`.
 
@@ -94,6 +94,8 @@ Do not upload real secrets or production archives for demos. Inspectra redacts s
 Release notes for the local passive alpha tag `v0.1.0-passive-alpha` are available at `docs/releases/v0.1.0-passive-alpha.md`.
 
 Active dry-run v0 is closed as a no-network planning capability in `docs/future/active-network-block-10-dry-run-closeout.md`. It remains separate from Passive Alpha and does not add live probing, DNS, HTTP requests, sockets, subprocess probes, or Nmap.
+
+Authorized Active HTTP header probe v0 is closed as a limited live capability in `docs/future/active-network-block-18-authorized-http-header-probe-closeout.md`. It remains opt-in and disabled by default, requires explicit authorization plus live-traffic confirmation, sends at most one HTTP `HEAD` request, follows no redirects, reads no response body, and does not add Nmap, port scanning, crawling, custom headers, auth/cookies, credential validation, fuzzing, or exploit behavior.
 
 ## Requirements
 
