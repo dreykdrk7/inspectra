@@ -1,6 +1,8 @@
 # Active Network Block 07 Dry-Run Frontend Design
 
-Status: `ACTIVE_DRY_RUN_FRONTEND_DESIGNED_NO_UI_RUNTIME`.
+Status: `HISTORICAL_DESIGN_IMPLEMENTED_IN_BLOCK_08`.
+
+Implementation record: `docs/future/active-network-block-08-dry-run-frontend-implementation-no-network.md`
 
 Base backend integration: `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`
 
@@ -32,7 +34,7 @@ Implemented backend flag:
 INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false
 ```
 
-Current behavior:
+Current behavior at design time:
 
 - The endpoint is disabled by default.
 - Disabled endpoint calls return `403` and do not create jobs.
@@ -41,7 +43,7 @@ Current behavior:
 - `GET /jobs` includes active dry-run summaries.
 - `GET /jobs/{job_id}` returns redacted active dry-run results.
 - Markdown, HTML, XML, and PDF exports are integrated.
-- Frontend has no Active dry-run form, action, report component, catalog entry, or filter entry yet.
+- Frontend had no Active dry-run form, action, report component, catalog entry, or filter entry yet.
 - No network behavior exists.
 - Dry-run only.
 

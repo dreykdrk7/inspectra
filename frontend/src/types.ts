@@ -24,6 +24,7 @@ export type AuditType =
   | 'web_basic'
   | 'domain_basic'
   | 'subdomain_inventory_basic'
+  | 'active_network_dry_run'
   | 'django_config_basic'
   | 'docker_config_basic'
   | 'secrets_review_basic'
@@ -60,4 +61,21 @@ export type JobListItem = Omit<JobRecord, 'result' | 'error'> & {
 export type DeletedFileResponse = {
   deleted_file: FileRecord;
   associated_jobs_marked: number;
+};
+
+export type ActiveDryRunRequest = {
+  target: string;
+  authorization: {
+    confirmed: boolean;
+    statement: 'I confirm I own or am authorized to test this target.';
+    scope: 'single-target';
+  };
+  mode: 'dry_run';
+  profile: 'http_header_probe_preview';
+  limits: {
+    max_requests: 0;
+    timeout_seconds: 0;
+    max_redirects: 0;
+    response_size_bytes: 0;
+  };
 };

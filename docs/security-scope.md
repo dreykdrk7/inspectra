@@ -117,7 +117,7 @@ For subdomain inventory audits, Inspectra resolves only candidates explicitly su
 
 ## Active/Network Dry-Run Scope
 
-Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`, the docs-first runbook/threat model is recorded in `docs/future/active-network-block-02-runbook-and-threat-model.md`, the dry-run contract design is recorded in `docs/future/active-network-block-03-dry-run-contracts-design.md`, the separated no-network skeleton is recorded in `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`, the backend/job/storage/reporting contract design is recorded in `docs/future/active-network-block-05-dry-run-backend-contract-design.md`, the backend integration is recorded in `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`, and the frontend design is recorded in `docs/future/active-network-block-07-dry-run-frontend-design.md`.
+Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`, the docs-first runbook/threat model is recorded in `docs/future/active-network-block-02-runbook-and-threat-model.md`, the dry-run contract design is recorded in `docs/future/active-network-block-03-dry-run-contracts-design.md`, the separated no-network skeleton is recorded in `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`, the backend/job/storage/reporting contract design is recorded in `docs/future/active-network-block-05-dry-run-backend-contract-design.md`, the backend integration is recorded in `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`, the frontend design is recorded in `docs/future/active-network-block-07-dry-run-frontend-design.md`, and the frontend implementation is recorded in `docs/future/active-network-block-08-dry-run-frontend-implementation-no-network.md`.
 
 Current decision: `ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME`.
 
@@ -138,7 +138,8 @@ This means:
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
 - Active dry-run jobs use `active_network_dry_run`, are target-based, have no `file_id`, and preserve `network_requests_sent: 0`.
 - Active dry-run storage summaries, reporting sections, and Markdown/HTML/XML/PDF exports exist with defensive redaction.
-- Active frontend UI is designed but not implemented.
+- Active frontend UI now includes a separate dry-run panel, required authorization, `POST /active/network/dry-run` client call, catalog/filter label, job report, and redacted Raw JSON.
+- Active frontend UI is not an archive action and does not expose live probing, Nmap, DNS, socket, HTTP, or port-check controls.
 - No Nmap runtime exists yet.
 - The `tools/active_runner/` skeleton is backend-integrated only through a no-network dry-run service and performs no network, DNS, HTTP, subprocess, or Nmap behavior.
 - Dry-run design requires `network_requests_sent: 0`, no DNS resolution, no live data, no response headers, no status codes, and no Nmap output.

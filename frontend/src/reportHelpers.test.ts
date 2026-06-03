@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { buildActiveDryRunReport, redactActiveDryRunValue } from "./activeDryRunReport";
 import { buildArchiveAuditReport } from "./archiveReport";
 import { buildCiCdConfigAuditReport, redactCiCdConfigValue } from "./ciCdConfigReport";
 import { buildComposeConfigAuditReport, redactComposeConfigValue } from "./composeConfigReport";
@@ -304,6 +305,58 @@ describe("report helpers", () => {
     expect(report.candidates).toEqual([]);
     expect(report.results).toEqual([]);
     expect(report.findings).toEqual([]);
+  });
+
+  it("normalizes Active network dry-run reports and redacts legacy target secrets", () => {
+    const report = buildActiveDryRunReport({
+      ...baseJob,
+      audit_type: "active_network_dry_run",
+      file_id: null,
+      target_url: "https://example.test/",
+      error: "Authorization: Bearer token_should_never_render",
+      result: {
+        analyzer: "active_network_dry_run",
+        mode: "dry_run",
+        profile: "http_header_probe_preview",
+        summary: {
+          allowed: false,
+          planned_checks_count: 1,
+          blocked_reasons_count: 1,
+          network_requests_sent: 0
+        },
+        target: {
+          input: "http://user:pass@example.com/?token=token_should_never_render",
+          password: "super-secret-password"
+        },
+        authorization: { confirmed: true, authorization_header: "Authorization: Bearer token_should_never_render" },
+        policy: { allowed: false, reason: "token_should_never_render" },
+        limits: { max_requests: 0, timeout_seconds: 0 },
+        planned_checks: [{ id: "preview", target: "http://user:pass@example.com", header_value: "raw-api-key-123456" }],
+        blocked_reasons: [{ code: "blocked", reason: "PRIVATE KEY token_should_never_render" }],
+        audit_log: [{ event: "dry_run_created", raw: "raw-api-key-123456" }],
+        errors: ["PASSWORD=super-secret-password", "-----BEGIN PRIVATE KEY----- fixture -----END PRIVATE KEY-----"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(redactActiveDryRunValue({ result: report }));
+
+    expect(report.isActiveDryRun).toBe(true);
+    expect(report.allowed).toBe(false);
+    expect(report.networkRequestsSent).toBe(0);
+    expect(report.plannedChecks[0]).toMatchObject({ title: "preview" });
+    expect(report.blockedReasons[0]).toMatchObject({ title: "blocked" });
+    for (const secret of [
+      "super-secret-password",
+      "raw-api-key-123456",
+      "token_should_never_render",
+      "Authorization: Bearer token_should_never_render",
+      "http://user:pass@example.com",
+      "PRIVATE KEY"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
   });
 
   it("normalizes Django config detected files, signals, and redacted findings", () => {

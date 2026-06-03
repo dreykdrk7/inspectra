@@ -4,6 +4,7 @@ export type AuditCategoryId =
   | "file_basics"
   | "archive_structure"
   | "authorized_web_domain"
+  | "active_network"
   | "app_config"
   | "containers_wiring"
   | "infra_deployment"
@@ -12,7 +13,7 @@ export type AuditCategoryId =
   | "secrets"
   | "unknown";
 
-export type AuditSourceFamily = "file" | "archive" | "authorized_target" | "unknown";
+export type AuditSourceFamily = "file" | "archive" | "authorized_target" | "target" | "unknown";
 
 export type AuditTypeMetadata = {
   auditType: string;
@@ -32,6 +33,7 @@ export const AUDIT_TYPE_ORDER: AuditType[] = [
   "web_basic",
   "domain_basic",
   "subdomain_inventory_basic",
+  "active_network_dry_run",
   "django_config_basic",
   "docker_config_basic",
   "secrets_review_basic",
@@ -50,6 +52,7 @@ const CATEGORY_LABELS: Record<AuditCategoryId, string> = {
   file_basics: "File basics",
   archive_structure: "Archive structure",
   authorized_web_domain: "Authorized web/domain",
+  active_network: "Active / Network",
   app_config: "App config",
   containers_wiring: "Containers & wiring",
   infra_deployment: "Infrastructure & deployment",
@@ -96,6 +99,13 @@ export const AUDIT_TYPE_CATALOG: Record<AuditType, AuditTypeMetadata> = {
     "authorized_web_domain",
     "authorized_target",
     "Authorized subdomain inventory review."
+  ),
+  active_network_dry_run: metadata(
+    "active_network_dry_run",
+    "Active network dry-run",
+    "active_network",
+    "target",
+    "Dry-run planning for explicitly authorized targets; no network traffic."
   ),
   django_config_basic: metadata("django_config_basic", "Django config", "app_config", "archive", "Passive Django config review."),
   docker_config_basic: metadata("docker_config_basic", "Docker config", "containers_wiring", "archive", "Passive Docker config review."),

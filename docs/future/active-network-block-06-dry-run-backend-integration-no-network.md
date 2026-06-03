@@ -240,7 +240,7 @@ The prompt-requested pytest expression `active_network or active dry run or dry_
 ## Residual Risks
 
 - This is still dry-run planning only, not an Active scanner.
-- There is no frontend UI yet.
+- At this backend-only block, there was no frontend UI yet.
 - The endpoint is disabled by default and requires explicit environment opt-in.
 - Authorization is an explicit user assertion, not ownership proof.
 - Redaction is defensive best-effort for legacy payloads.

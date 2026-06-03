@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
@@ -154,6 +154,26 @@ describe("App", () => {
                 status: "queued",
                 created_at: "2026-05-26T10:08:00Z",
                 updated_at: "2026-05-26T10:08:00Z",
+                source_file_deleted_at: null,
+                result: null,
+                error: null
+              },
+              202
+            )
+          );
+        }
+        if (url.endsWith("/active/network/dry-run")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-active-dry-run-1",
+                audit_type: "active_network_dry_run",
+                file_id: null,
+                target_url: "https://example.test/",
+                target_domain: null,
+                status: "queued",
+                created_at: "2026-05-26T10:08:30Z",
+                updated_at: "2026-05-26T10:08:30Z",
                 source_file_deleted_at: null,
                 result: null,
                 error: null
@@ -438,6 +458,7 @@ describe("App", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.unstubAllGlobals();
   });
 
@@ -450,6 +471,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Web Audit" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Domain Baseline" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Subdomain Inventory" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Active / Network dry-run" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Jobs" })).toBeInTheDocument();
     const demoNote = screen.getByRole("note", { name: "Local alpha demo fixture note" });
@@ -722,6 +744,95 @@ describe("App", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  it("creates an Active network dry-run plan only after explicit authorization", async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalled();
+    });
+    vi.mocked(globalThis.fetch).mockClear();
+
+    const heading = screen.getByRole("heading", { name: "Active / Network dry-run" });
+    const panel = heading.closest("section");
+    expect(panel).not.toBeNull();
+    const scoped = within(panel as HTMLElement);
+    const panelText = panel?.textContent ?? "";
+    for (const forbidden of ["Run Nmap", "Scan", "Attack", "Exploit"]) {
+      expect(panelText).not.toContain(forbidden);
+    }
+
+    const targetInput = scoped.getByPlaceholderText("https://example.test");
+    const submit = scoped.getByRole("button", { name: /Create dry-run plan/i });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(targetInput, { target: { value: "https://example.test/" } });
+    expect(submit).toBeDisabled();
+
+    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
+    expect(submit).not.toBeDisabled();
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/active/network/dry-run",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    const request = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find(([input]) => String(input).endsWith("/active/network/dry-run"))?.[1] as RequestInit | undefined;
+    expect(request).toBeDefined();
+    expect(JSON.parse(String(request?.body))).toEqual({
+      target: "https://example.test/",
+      authorization: {
+        confirmed: true,
+        statement: "I confirm I own or am authorized to test this target.",
+        scope: "single-target"
+      },
+      mode: "dry_run",
+      profile: "http_header_probe_preview",
+      limits: {
+        max_requests: 0,
+        timeout_seconds: 0,
+        max_redirects: 0,
+        response_size_bytes: 0
+      }
+    });
+  });
+
+  it("shows the Active dry-run disabled backend message without env-file guidance", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files") || url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/active/network/dry-run")) {
+          return Promise.resolve(jsonResponse({ detail: "Active dry-run checks are disabled in this environment." }, 403));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    render(<App />);
+
+    const heading = await screen.findByRole("heading", { name: "Active / Network dry-run" });
+    const panel = heading.closest("section");
+    expect(panel).not.toBeNull();
+    const scoped = within(panel as HTMLElement);
+    fireEvent.change(scoped.getByPlaceholderText("https://example.test"), { target: { value: "https://example.test/" } });
+    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
+    fireEvent.click(scoped.getByRole("button", { name: /Create dry-run plan/i }));
+
+    expect(await scoped.findByText(/Active dry-run checks are disabled in this environment/i)).toBeInTheDocument();
+    expect(scoped.getByText(/Ask an administrator to enable the Active dry-run backend flag/i)).toBeInTheDocument();
+    expect(panel?.textContent).not.toContain(".env");
+  });
+
   it("groups archive passive actions by category without adding a run-all action", async () => {
     render(<App />);
 
@@ -741,6 +852,8 @@ describe("App", () => {
     expect(archiveRow?.textContent).toContain("Web edge");
     expect(archiveRow?.textContent).toContain("Data layer");
     expect(archiveRow?.textContent).not.toContain("Run all recommended passive checks");
+    expect(archiveRow?.textContent).not.toContain("Active network dry-run");
+    expect(archiveRow?.textContent).not.toContain("Create dry-run plan");
     expect(pdfRow?.textContent).not.toContain("Start here");
     expect(pdfRow?.textContent).not.toContain("Data layer");
 

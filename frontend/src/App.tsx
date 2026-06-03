@@ -2,6 +2,7 @@ import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, use
 import { Activity, Download, Eye, FilePlus2, Globe2, Network, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 
 import { api } from "./api";
+import { ActiveDryRunJobReport } from "./ActiveDryRunJobReport";
 import {
   auditTypeCategoryLabel,
   auditTypeLabel,
@@ -35,7 +36,7 @@ import { SqlDatabaseConfigJobReport } from "./SqlDatabaseConfigJobReport";
 import { SubdomainJobReport } from "./SubdomainJobReport";
 import { TerraformConfigJobReport } from "./TerraformConfigJobReport";
 import { WebJobReport } from "./WebJobReport";
-import type { FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat, SbomFormat } from "./types";
+import type { ActiveDryRunRequest, FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat, SbomFormat } from "./types";
 import { inspectWebUrlQuery } from "./webUrl";
 
 type LoadState = {
@@ -50,6 +51,7 @@ const LOCAL_ALPHA_DEMO_COPY =
   "Local alpha demo: use the synthetic fixtures under tests/fixtures/demo/passive-alpha/ to smoke uploads, grouped archive actions, reports, exports, and redaction. Do not upload real secrets or production archives for demos.";
 const LOCAL_ALPHA_DEMO_REDACTION_COPY =
   "Results, exports, and Raw JSON are redacted with [REDACTED]; this does not sanitize the original uploaded file.";
+const ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT = "I confirm I own or am authorized to test this target.";
 
 type ArchiveAction = {
   label: string;
@@ -88,6 +90,9 @@ export function App() {
   const [subdomainCandidates, setSubdomainCandidates] = useState("");
   const [subdomainAuthorizationConfirmed, setSubdomainAuthorizationConfirmed] = useState(false);
   const [subdomainAuditState, setSubdomainAuditState] = useState<LoadState>(initialLoadState);
+  const [activeDryRunTarget, setActiveDryRunTarget] = useState("");
+  const [activeDryRunAuthorizationConfirmed, setActiveDryRunAuthorizationConfirmed] = useState(false);
+  const [activeDryRunState, setActiveDryRunState] = useState<LoadState>(initialLoadState);
 
   const refreshHealth = useCallback(async () => {
     setHealthState({ loading: true, error: null });
@@ -147,6 +152,8 @@ export function App() {
     [files, selectedJob]
   );
   const webQueryInspection = useMemo(() => inspectWebUrlQuery(webUrl), [webUrl]);
+  const activeDryRunQueryInspection = useMemo(() => inspectWebUrlQuery(activeDryRunTarget), [activeDryRunTarget]);
+  const activeDryRunHasUserinfo = useMemo(() => targetHasUserinfo(activeDryRunTarget), [activeDryRunTarget]);
 
   useEffect(() => {
     if (!hasActiveJobs) {
@@ -403,6 +410,43 @@ export function App() {
     }
   }
 
+  async function launchActiveDryRun(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setActionError(null);
+    setActiveDryRunState({ loading: true, error: null });
+    const request: ActiveDryRunRequest = {
+      target: activeDryRunTarget,
+      authorization: {
+        confirmed: activeDryRunAuthorizationConfirmed,
+        statement: ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT,
+        scope: "single-target"
+      },
+      mode: "dry_run",
+      profile: "http_header_probe_preview",
+      limits: {
+        max_requests: 0,
+        timeout_seconds: 0,
+        max_redirects: 0,
+        response_size_bytes: 0
+      }
+    };
+    try {
+      const job = await api.createActiveNetworkDryRun(request);
+      setSelectedJob(job);
+      setActiveDryRunTarget("");
+      setActiveDryRunAuthorizationConfirmed(false);
+      await refreshJobs();
+      setActiveDryRunState({ loading: false, error: null });
+    } catch (error) {
+      const message = toErrorMessage(error);
+      const disabledMessage =
+        message === "Active dry-run checks are disabled in this environment."
+          ? `${message} Ask an administrator to enable the Active dry-run backend flag for this deployment.`
+          : message;
+      setActiveDryRunState({ loading: false, error: disabledMessage });
+    }
+  }
+
   async function deleteFile(fileId: string) {
     setActionError(null);
     try {
@@ -641,6 +685,58 @@ export function App() {
           </form>
           {subdomainAuditState.error ? <p className="error-text">{subdomainAuditState.error}</p> : null}
         </Panel>
+
+        <Panel title="Active / Network dry-run" icon={<Network size={18} aria-hidden="true" />}>
+          <form className="web-audit-form" onSubmit={(event) => void launchActiveDryRun(event)}>
+            <p className="muted">Create a dry-run plan for an explicitly authorized target. No network traffic is sent.</p>
+            <input
+              className="search-input"
+              type="text"
+              placeholder="https://example.test"
+              value={activeDryRunTarget}
+              onChange={(event) => setActiveDryRunTarget(event.target.value)}
+              required
+            />
+            {activeDryRunHasUserinfo ? (
+              <div className="query-warning" role="status">
+                URL credentials are not accepted. Remove userinfo before creating a dry-run plan.
+              </div>
+            ) : activeDryRunQueryInspection.hasQueryString ? (
+              <div className="query-warning" role="status">
+                {activeDryRunQueryInspection.sensitiveParams.length > 0 ? (
+                  <>
+                    Sensitive query parameters will be redacted in results and exports:{" "}
+                    <span className="mono">{activeDryRunQueryInspection.sensitiveParams.join(", ")}</span>
+                  </>
+                ) : (
+                  "Query string present. Sensitive parameter names are redacted in results and exports. Avoid entering secrets."
+                )}
+              </div>
+            ) : null}
+            <dl className="summary-list">
+              <dt>Mode</dt>
+              <dd>dry_run / Dry-run only</dd>
+              <dt>Profile</dt>
+              <dd>HTTP header preview plan</dd>
+              <dt>Limits</dt>
+              <dd className="mono">max_requests=0, timeout_seconds=0, max_redirects=0, response_size_bytes=0</dd>
+            </dl>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={activeDryRunAuthorizationConfirmed}
+                onChange={(event) => setActiveDryRunAuthorizationConfirmed(event.target.checked)}
+              />
+              {ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT}
+            </label>
+            <p className="muted">I understand this dry-run sends no network traffic. Do not use this against third-party systems without permission.</p>
+            <button type="submit" disabled={activeDryRunState.loading || !activeDryRunTarget.trim() || !activeDryRunAuthorizationConfirmed}>
+              <Play size={16} aria-hidden="true" />
+              {activeDryRunState.loading ? "Creating plan" : "Create dry-run plan"}
+            </button>
+          </form>
+          {activeDryRunState.error ? <p className="error-text">{activeDryRunState.error}</p> : null}
+        </Panel>
       </section>
 
       <section className="content-grid">
@@ -788,7 +884,7 @@ export function App() {
                         {auditTypeLabel(job.audit_type)}
                         <span className="subtle-id">{auditTypeCategoryLabel(job.audit_type)}</span>
                       </td>
-                      <td className="mono">{job.file_id ? shortId(job.file_id) : job.target_url ?? job.target_domain ?? "N/A"}</td>
+                      <td className="mono">{jobTargetDisplay(job)}</td>
                       <td>{formatDate(job.updated_at)}</td>
                       <td>{summarizeJob(job)}</td>
                       <td>
@@ -823,6 +919,8 @@ export function App() {
               <DomainJobReport job={selectedJob} />
             ) : selectedJob.audit_type === "subdomain_inventory_basic" ? (
               <SubdomainJobReport job={selectedJob} />
+            ) : selectedJob.audit_type === "active_network_dry_run" ? (
+              <ActiveDryRunJobReport job={selectedJob} />
             ) : selectedJob.audit_type === "django_config_basic" ? (
               <DjangoConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "docker_config_basic" ? (
@@ -965,6 +1063,15 @@ function parseSubdomainCandidates(value: string): string[] {
     .filter(Boolean);
 }
 
+function targetHasUserinfo(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return Boolean(parsed.username || parsed.password);
+  } catch {
+    return /^[a-z][a-z0-9+.-]*:\/\/[^/\s@]+:[^/\s@]+@/i.test(value);
+  }
+}
+
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
@@ -988,6 +1095,14 @@ function shortHash(value: string): string {
 
 function shortId(value: string): string {
   return value.slice(0, 10);
+}
+
+function jobTargetDisplay(job: JobListItem): string {
+  const summaryTarget = typeof job.summary?.target_display === "string" ? job.summary.target_display : null;
+  if (job.file_id) {
+    return shortId(job.file_id);
+  }
+  return summaryTarget ?? job.target_url ?? job.target_domain ?? "N/A";
 }
 
 function acceptForKind(kind: FileRecord["kind"]): string {
@@ -1088,6 +1203,13 @@ function summarizeJob(job: JobListItem): string {
     const resolvedCount = typeof job.summary.resolved_count === "number" ? job.summary.resolved_count : 0;
     const acceptedCount = typeof job.summary.candidates_accepted === "number" ? job.summary.candidates_accepted : 0;
     return `${resolvedCount}/${acceptedCount} resolved, ${findingsCount ?? 0} findings`;
+  }
+  if (job.audit_type === "active_network_dry_run") {
+    const allowed = typeof job.summary.allowed === "boolean" ? job.summary.allowed : null;
+    const plannedChecks = typeof job.summary.planned_checks_count === "number" ? job.summary.planned_checks_count : 0;
+    const blockedReasons = typeof job.summary.blocked_reasons_count === "number" ? job.summary.blocked_reasons_count : 0;
+    const networkRequestsSent = typeof job.summary.network_requests_sent === "number" ? job.summary.network_requests_sent : 0;
+    return `${allowed === false ? "blocked" : "dry-run"}, ${plannedChecks} planned, ${blockedReasons} blocked, ${networkRequestsSent} network requests`;
   }
   if (job.audit_type === "django_config_basic") {
     const filesRead = typeof job.summary.files_read === "number" ? job.summary.files_read : 0;

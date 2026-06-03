@@ -287,6 +287,18 @@ const jobs: JobListItem[] = [
     updated_at: "2026-05-26T10:42:00Z",
     source_file_deleted_at: null,
     summary: null
+  },
+  {
+    id: "job-active-dry-run-completed",
+    audit_type: "active_network_dry_run",
+    file_id: null,
+    target_url: "https://active-dry-run.test/",
+    target_domain: null,
+    status: "completed",
+    created_at: "2026-05-26T10:43:00Z",
+    updated_at: "2026-05-26T10:44:00Z",
+    source_file_deleted_at: null,
+    summary: { allowed: true, planned_checks_count: 1, blocked_reasons_count: 0, network_requests_sent: 0 }
   }
 ];
 
@@ -324,6 +336,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "database_config_basic", "")).toEqual([jobs[17]]);
     expect(filterJobs(jobs, "all", "redis_config_basic", "")).toEqual([jobs[18]]);
     expect(filterJobs(jobs, "all", "sql_database_config_basic", "")).toEqual([jobs[19]]);
+    expect(filterJobs(jobs, "all", "active_network_dry_run", "")).toEqual([jobs[20]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
@@ -348,11 +361,14 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "COMPOSE_CONFIG")).toEqual([jobs[16]]);
     expect(filterJobs(jobs, "all", "all", "DATABASE_CONFIG")).toEqual([jobs[17], jobs[19]]);
     expect(filterJobs(jobs, "all", "all", "REDIS_CONFIG")).toEqual([jobs[18]]);
+    expect(filterJobs(jobs, "all", "all", "ACTIVE_NETWORK")).toEqual([jobs[20]]);
   });
 
   it("searches jobs by human audit label and category", () => {
     expect(filterJobs(jobs, "all", "all", "SQL DB config")).toEqual([jobs[19]]);
     expect(filterJobs(jobs, "all", "all", "Data layer")).toEqual([jobs[17], jobs[18], jobs[19]]);
+    expect(filterJobs(jobs, "all", "all", "Active network dry-run")).toEqual([jobs[20]]);
+    expect(filterJobs(jobs, "all", "all", "Active / Network")).toEqual([jobs[20]]);
     expect(filterJobs(jobs, "all", "all", "Infrastructure & deployment")).toEqual([jobs[12], jobs[13], jobs[14]]);
   });
 
@@ -363,8 +379,8 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 20,
-      completedJobs: 17,
+      totalJobs: 21,
+      completedJobs: 18,
       failedJobs: 1,
       activeJobs: 2
     });
@@ -408,8 +424,10 @@ describe("dashboard filters", () => {
   it("labels Redis and SQL database config jobs for the dashboard filter", () => {
     expect(auditTypeLabel("redis_config_basic")).toBe("Redis config");
     expect(auditTypeLabel("sql_database_config_basic")).toBe("SQL DB config");
+    expect(auditTypeLabel("active_network_dry_run")).toBe("Active network dry-run");
     expect(auditTypeCategoryLabel("redis_config_basic")).toBe("Data layer");
     expect(auditTypeCategoryLabel("sql_database_config_basic")).toBe("Data layer");
+    expect(auditTypeCategoryLabel("active_network_dry_run")).toBe("Active / Network");
   });
 
   it("keeps a stable fallback for unknown audit types", () => {

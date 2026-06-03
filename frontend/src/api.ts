@@ -1,4 +1,13 @@
-import type { DeletedFileResponse, FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat, SbomFormat } from './types';
+import type {
+  ActiveDryRunRequest,
+  DeletedFileResponse,
+  FileRecord,
+  HealthResponse,
+  JobListItem,
+  JobRecord,
+  ReportFormat,
+  SbomFormat
+} from './types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
 
@@ -221,6 +230,15 @@ export async function launchSubdomainInventoryAudit(rootDomain: string, subdomai
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function createActiveNetworkDryRun(request: ActiveDryRunRequest): Promise<JobRecord> {
+  const response = await fetch(`${API_BASE_URL}/active/network/dry-run`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function listJobs(): Promise<JobListItem[]> {
   const response = await fetch(`${API_BASE_URL}/jobs`);
   return parseJsonResponse<JobListItem[]>(response);
@@ -268,6 +286,7 @@ export const api = {
   launchWebBasicAudit,
   launchDomainBasicAudit,
   launchSubdomainInventoryAudit,
+  createActiveNetworkDryRun,
   listJobs,
   getJob,
   jobExportUrl,
