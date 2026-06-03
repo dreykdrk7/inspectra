@@ -49,6 +49,7 @@ The Active scope, runbook/threat model, dry-run contracts, skeleton, and backend
 - `docs/future/active-network-block-20-limited-live-smoke-run-local.md`
 - `docs/future/active-network-block-21-active-alpha-checkpoint-release-planning.md`
 - `docs/future/active-network-block-22-active-alpha-operator-guide.md`
+- `docs/future/active-network-block-23-limited-live-smoke-test-execution.md`
 
 The dry-run contract requires Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. The implemented backend endpoint is `POST /active/network/dry-run`, gated by `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false` by default. It creates `active_network_dry_run` target-based jobs with no `file_id`, uses existing job statuses, represents blocked dry-runs inside `result.policy`, and applies defensive redaction to storage, public API responses, errors, summaries, and Markdown/HTML/XML/PDF exports. The frontend now provides a separate `Active / Network dry-run` panel, required authorization checkbox, dry-run-only request body, catalog/filter entry, redacted job-table target display, and redacted report view; it does not add archive actions or live probing controls. The closeout decision is `ACTIVE_DRY_RUN_V0_CLOSED_NO_NETWORK`; the hardening review decision is `ACTIVE_DRY_RUN_HARDENING_ACCEPTED_FOR_LIVE_PROBE_DESIGN`, which clears docs-first design only and does not approve live runtime. Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
 
@@ -71,6 +72,8 @@ The limited live local smoke decision is `ACTIVE_LIMITED_LIVE_LOCAL_SMOKE_METHOD
 The limited live internal alpha planning decision is `ACTIVE_LIMITED_LIVE_INTERNAL_ALPHA_PLANNING_ACCEPTED`. It accepts planning for an internal alpha only: trusted operators, feature-flag-gated enablement, clear no-scope copy, the Block 20 test-double smoke method, and no production/external-user readiness, no policy relaxation, and no additional live Active capability.
 
 The limited live operator guide decision is `ACTIVE_LIMITED_LIVE_OPERATOR_GUIDE_ACCEPTED`. It gives trusted internal operators language for safe enablement, result interpretation, redaction caveats, and no-scope boundaries without adding runtime behavior, external demo targets, bypasses, or additional Active capability.
+
+The limited live smoke execution decision is `ACTIVE_LIMITED_LIVE_TEST_DOUBLE_SMOKE_EXECUTED`. It records successful runner, backend/API/reporting/export, and frontend mocked test-double smoke results without external target traffic, production policy relaxation, local-lab mode, Nmap, port scanning, crawling, or new Active capability.
 
 ## Components
 

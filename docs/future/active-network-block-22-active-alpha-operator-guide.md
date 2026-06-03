@@ -267,7 +267,7 @@ This guide is accepted when it:
 
 ## Next Recommendation
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-23-LIMITED-LIVE-SMOKE-TEST-EXECUTION

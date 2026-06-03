@@ -101,6 +101,8 @@ Limited Active internal alpha planning is recorded in `docs/future/active-networ
 
 The limited Active operator guide is recorded in `docs/future/active-network-block-22-active-alpha-operator-guide.md`. It is internal guidance for trusted operators and does not add runtime behavior, external demo targets, bypasses, or additional live Active capabilities.
 
+The limited Active test-double smoke execution is recorded in `docs/future/active-network-block-23-limited-live-smoke-test-execution.md`. It passed runner, backend/API/reporting/export, and frontend mocked smoke subsets without external target traffic or new Active capability.
+
 ## Requirements
 
 - Docker
