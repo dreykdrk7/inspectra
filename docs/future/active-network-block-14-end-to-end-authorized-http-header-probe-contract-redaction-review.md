@@ -205,10 +205,12 @@ The feature remains disabled by default, limited to one authorized HEAD request,
 
 ## Next Microphase
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-15-AUTHORIZED-HTTP-HEADER-PROBE-FRONTEND-DESIGN-NO-RUNTIME
 ```
 
-That block should be docs-first and UI-design-only unless explicitly approved otherwise.
+Design record: `docs/future/active-network-block-15-authorized-http-header-probe-frontend-design.md`
+
+That block is docs-first and UI-design-only. It does not add frontend runtime, backend changes, runner changes, endpoint calls, or live traffic.
