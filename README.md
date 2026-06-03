@@ -91,6 +91,8 @@ Do not upload real secrets or production archives for demos. Inspectra redacts s
 
 Release notes for the local passive alpha tag `v0.1.0-passive-alpha` are available at `docs/releases/v0.1.0-passive-alpha.md`.
 
+Active dry-run v0 is closed as a no-network planning capability in `docs/future/active-network-block-10-dry-run-closeout.md`. It remains separate from Passive Alpha and does not add live probing, DNS, HTTP requests, sockets, subprocess probes, or Nmap.
+
 ## Requirements
 
 - Docker

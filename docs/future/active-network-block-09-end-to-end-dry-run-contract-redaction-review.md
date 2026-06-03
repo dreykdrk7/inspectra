@@ -171,4 +171,10 @@ Recommended next microphase:
 ACTIVE-NETWORK-BLOCK-10-DRY-RUN-CLOSEOUT
 ```
 
+Closeout record:
+
+```text
+docs/future/active-network-block-10-dry-run-closeout.md
+```
+
 Do not proceed to live HTTP header probing, DNS, Nmap, or local-lab behavior until a separate docs-first design block is opened and reviewed.
