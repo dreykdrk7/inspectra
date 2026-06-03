@@ -6,6 +6,8 @@ Base disclaimers and onboarding copy: `docs/future/passive-alpha-gap-fixes-05-di
 
 Base retention cleanup reset design: `docs/future/passive-alpha-gap-fixes-04-retention-cleanup-reset-design.md`
 
+Gap fixes closeout: `docs/future/passive-alpha-gap-fixes-07-closeout.md`
+
 Commit scope: docs-only limits messaging, truncation copy, no-read explanation, severity/confidence wording, report/export polish criteria, and future implementation candidates. This block does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -393,10 +395,10 @@ Do not implement these in this block.
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-GAP-FIXES-07-GAP-FIXES-CLOSEOUT
+PASSIVE-ALPHA-GAP-FIXES-08-IMPLEMENTATION-READINESS-PLAN
 ```
 
-All planned gap-fix design blocks in the `PASSIVE-ALPHA-GAP-FIXES-01` sequence are now defined docs-first. The next step should close the gap-fixes design line, summarize accepted decisions, list implementation candidates, and keep runtime work separate.
+The gap-fixes closeout is now accepted. The next step should order the P0/P1 implementation sequence, define safe implementation boundaries, identify minimum tests for each runtime control, and keep code changes out of the planning block.
 
 Do not proceed directly to UI implementation, report/export implementation, runtime auth, cleanup runtime, storage migrations, Nmap, another Active capability, or a new passive analyzer implementation from this polish-design block.
 

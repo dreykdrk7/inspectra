@@ -88,6 +88,8 @@ Passive Alpha disclaimers and onboarding copy decision: `PASSIVE_ALPHA_DISCLAIME
 
 Passive Alpha limits messaging and report-polish design decision: `PASSIVE_ALPHA_LIMITS_REPORT_POLISH_DESIGN_ACCEPTED`. Future UI/report/export copy must explain upload limits, bounded/truncated analysis, no-read sensitive files, severity/confidence caveats, no-findings states, failed/sparse/malformed payloads, Raw JSON sensitivity, SBOM sensitivity, and authorized target-output limits without promising complete coverage or changing runtime behavior.
 
+Passive Alpha gap-fixes closeout decision: `PASSIVE_ALPHA_GAP_FIXES_DESIGN_LINE_CLOSED`. The public/external readiness should-fix line is closed at the docs-first design level only. Trusted local Passive Alpha remains accepted, but public/external runtime remains blocked until auth, ownership enforcement, retention/deletion controls, deployment hardening, visible limits, onboarding/disclaimers, and security review are implemented.
+
 Tools used in this phase:
 
 - `pdfinfo`
