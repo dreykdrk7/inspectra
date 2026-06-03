@@ -6,6 +6,8 @@ Base skeleton: `docs/future/active-network-block-04-dry-run-skeleton-no-network.
 
 Base backend contract: `docs/future/active-network-block-05-dry-run-backend-contract-design.md`
 
+End-to-end review: `docs/future/active-network-block-09-end-to-end-dry-run-contract-redaction-review.md`
+
 Commit scope: backend endpoint, job/storage/reporting integration, defensive redaction, and backend tests.
 
 Frontend design note: future UI/UX for this backend surface is designed in `docs/future/active-network-block-07-dry-run-frontend-design.md`.

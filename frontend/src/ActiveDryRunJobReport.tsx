@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { buildActiveDryRunReport, type ActiveDryRunListItem } from "./activeDryRunReport";
+import { buildActiveDryRunReport, redactActiveDryRunText, type ActiveDryRunListItem } from "./activeDryRunReport";
 import type { MetadataEntry } from "./pdfReport";
 import type { JobRecord, JobStatus } from "./types";
 
@@ -43,7 +43,7 @@ export function ActiveDryRunJobReport({ job }: { job: JobRecord }) {
           <MetadataRow label="Category" value="Active / Network" />
           <MetadataRow label="Analyzer" value={report.analyzer ?? "Not available"} />
           <MetadataRow label="Job ID" value={job.id} mono />
-          <MetadataRow label="Target" value={job.target_url ?? "Not available"} mono />
+          <MetadataRow label="Target" value={job.target_url ? redactActiveDryRunText(job.target_url) : "Not available"} mono />
           <MetadataRow label="Created" value={formatDate(job.created_at)} />
           <MetadataRow label="Updated" value={formatDate(job.updated_at)} />
         </dl>

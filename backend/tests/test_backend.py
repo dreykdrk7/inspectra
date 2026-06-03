@@ -2208,8 +2208,16 @@ async def test_active_network_dry_run_url_credentials_redacted(monkeypatch, tmp_
         job_id = create_response.json()["id"]
         job_response = await client.get(f"/jobs/{job_id}")
         jobs_response = await client.get("/jobs")
+        exports = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
 
     combined = json.dumps({"create": create_response.json(), "job": job_response.json(), "jobs": jobs_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in exports.items()
+    )
     assert "http://user:pass@example.com" not in combined
     assert "user:pass" not in combined
     assert "[REDACTED]" in combined
@@ -2232,6 +2240,8 @@ async def test_active_network_dry_run_exports_render_sections_and_redact(monkeyp
             json=make_active_dry_run_payload("https://example.test/?token=token_should_never_render"),
         )
         job_id = create_response.json()["id"]
+        job_response = await client.get(f"/jobs/{job_id}")
+        jobs_response = await client.get("/jobs")
         responses = {
             report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
             for report_format in ("markdown", "html", "xml", "pdf")
@@ -2244,6 +2254,7 @@ async def test_active_network_dry_run_exports_render_sections_and_redact(monkeyp
         response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
         for report_format, response in responses.items()
     )
+    combined += "\n" + json.dumps({"job": job_response.json(), "jobs": jobs_response.json()}, sort_keys=True)
     assert "No network traffic was sent" in combined
     assert "This dry run records planned checks after authorization and target validation" in combined
     assert "Do not scan third-party systems without permission" in combined

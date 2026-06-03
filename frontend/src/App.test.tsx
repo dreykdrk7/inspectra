@@ -833,6 +833,118 @@ describe("App", () => {
     expect(panel?.textContent).not.toContain(".env");
   });
 
+  it("renders Active dry-run jobs with redacted target table and report payload", async () => {
+    const activeJob = {
+      id: "job-active-legacy-1",
+      audit_type: "active_network_dry_run",
+      file_id: null,
+      target_url: "http://user:pass@example.com/?token=token_should_never_render",
+      target_domain: null,
+      status: "completed",
+      created_at: "2026-05-26T10:21:00Z",
+      updated_at: "2026-05-26T10:22:00Z",
+      source_file_deleted_at: null,
+      summary: {
+        target_display: "http://user:pass@example.com/?token=token_should_never_render",
+        allowed: false,
+        planned_checks_count: 0,
+        blocked_reasons_count: 1,
+        network_requests_sent: 0
+      }
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/jobs/job-active-legacy-1")) {
+          return Promise.resolve(
+            jsonResponse({
+              ...activeJob,
+              summary: undefined,
+              result: {
+                analyzer: "active_network_dry_run",
+                mode: "dry_run",
+                profile: "http_header_probe_preview",
+                target: {
+                  raw: "http://user:pass@example.com/?token=token_should_never_render",
+                  password: "super-secret-password"
+                },
+                authorization: {
+                  confirmed: true,
+                  authorization_header: "Authorization: Bearer token_should_never_render"
+                },
+                policy: {
+                  allowed: false,
+                  reason: "url_credentials_rejected"
+                },
+                limits: {
+                  max_requests: 0,
+                  timeout_seconds: 0,
+                  max_redirects: 0,
+                  response_size_bytes: 0
+                },
+                planned_checks: [{ url: "http://user:pass@example.com/?password=super-secret-password" }],
+                blocked_reasons: [{ code: "url_credentials_rejected", message: "Authorization: Bearer token_should_never_render" }],
+                audit_log: [{ event: "dry_run_blocked", raw: "-----BEGIN PRIVATE KEY----- fixture -----END PRIVATE KEY-----" }],
+                errors: ["PRIVATE KEY token_should_never_render"],
+                summary: {
+                  allowed: false,
+                  planned_checks_count: 0,
+                  blocked_reasons_count: 1,
+                  network_requests_sent: 0
+                }
+              },
+              error: "Authorization: Bearer token_should_never_render"
+            })
+          );
+        }
+        if (url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse([activeJob]));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+
+    expect(await screen.findByText("Active network dry-run")).toBeInTheDocument();
+    let rendered = view.container.textContent ?? "";
+    for (const secret of [
+      "http://user:pass@example.com",
+      "user:pass",
+      "token_should_never_render",
+      "super-secret-password",
+      "Authorization: Bearer token_should_never_render",
+      "PRIVATE KEY"
+    ]) {
+      expect(rendered).not.toContain(secret);
+    }
+    expect(rendered).toContain("[REDACTED]");
+
+    fireEvent.click(screen.getByTitle("View job"));
+    expect(await screen.findByRole("heading", { name: "Active network dry-run" })).toBeInTheDocument();
+    rendered = view.container.textContent ?? "";
+    expect(rendered).toContain("url_credentials_rejected");
+    expect(rendered).toContain("network requests");
+    for (const secret of [
+      "http://user:pass@example.com",
+      "user:pass",
+      "token_should_never_render",
+      "super-secret-password",
+      "Authorization: Bearer token_should_never_render",
+      "PRIVATE KEY"
+    ]) {
+      expect(rendered).not.toContain(secret);
+    }
+    expect(rendered).toContain("[REDACTED]");
+  });
+
   it("groups archive passive actions by category without adding a run-all action", async () => {
     render(<App />);
 

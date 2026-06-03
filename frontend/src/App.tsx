@@ -3,6 +3,7 @@ import { Activity, Download, Eye, FilePlus2, Globe2, Network, Play, RefreshCw, T
 
 import { api } from "./api";
 import { ActiveDryRunJobReport } from "./ActiveDryRunJobReport";
+import { redactActiveDryRunText } from "./activeDryRunReport";
 import {
   auditTypeCategoryLabel,
   auditTypeLabel,
@@ -1099,10 +1100,14 @@ function shortId(value: string): string {
 
 function jobTargetDisplay(job: JobListItem): string {
   const summaryTarget = typeof job.summary?.target_display === "string" ? job.summary.target_display : null;
+  const target = summaryTarget ?? job.target_url ?? job.target_domain ?? "N/A";
   if (job.file_id) {
     return shortId(job.file_id);
   }
-  return summaryTarget ?? job.target_url ?? job.target_domain ?? "N/A";
+  if (job.audit_type === "active_network_dry_run") {
+    return redactActiveDryRunText(target);
+  }
+  return target;
 }
 
 function acceptForKind(kind: FileRecord["kind"]): string {

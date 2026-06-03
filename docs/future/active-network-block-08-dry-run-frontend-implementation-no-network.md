@@ -2,6 +2,8 @@
 
 Status: `ACTIVE_DRY_RUN_FRONTEND_IMPLEMENTED_NO_NETWORK`.
 
+End-to-end review: `docs/future/active-network-block-09-end-to-end-dry-run-contract-redaction-review.md`
+
 Base design: `docs/future/active-network-block-07-dry-run-frontend-design.md`
 
 Backend base: `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`
@@ -126,10 +128,10 @@ Backend and runner tests are not required for this block because backend and run
 
 ## Next Microphase
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-09-END-TO-END-DRY-RUN-CONTRACT-REDACTION-REVIEW
 ```
 
-The next block should verify the full dry-run contract across frontend, API, storage, reporting/export, disabled-state handling, and redaction without adding live network behavior.
+That block verifies the full dry-run contract across frontend, API, storage, reporting/export, disabled-state handling, and redaction without adding live network behavior.

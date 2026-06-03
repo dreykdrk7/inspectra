@@ -1,4 +1,6 @@
+import ast
 import json
+from pathlib import Path
 
 from active_runner import ActiveAuthorization, ActiveDryRunLimits, ActiveDryRunRequest, run_active_network_dry_run
 from active_runner.models import APPROVED_AUTHORIZATION_STATEMENT
@@ -214,6 +216,37 @@ def test_serialized_results_do_not_contain_fixture_secrets():
     for secret in FIXTURE_SECRETS:
         assert secret not in body
     assert "[REDACTED]" in body
+
+
+def test_active_runner_does_not_import_network_or_probe_runtime_modules():
+    forbidden_modules = {
+        "requests",
+        "httpx",
+        "aiohttp",
+        "socket",
+        "subprocess",
+        "nmap",
+        "dns",
+        "tools.runner.main",
+    }
+    active_runner_dir = Path(__file__).resolve().parents[1] / "active_runner"
+
+    for path in active_runner_dir.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported = {alias.name for alias in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                imported = {node.module or ""}
+            else:
+                continue
+            blocked = {
+                module
+                for module in imported
+                for forbidden in forbidden_modules
+                if module == forbidden or module.startswith(f"{forbidden}.")
+            }
+            assert not blocked, f"{path} imports forbidden active runtime module(s): {blocked}"
 
 
 def test_from_mapping_rejects_unknown_fields():
