@@ -192,6 +192,12 @@ Recommended next microphase:
 ACTIVE-NETWORK-BLOCK-12-AUTHORIZED-HTTP-HEADER-PROBE-DESIGN-DOCS-FIRST
 ```
 
+Design record:
+
+```text
+docs/future/active-network-block-12-authorized-http-header-probe-design.md
+```
+
 If the product chooses to fix hardening items before design instead, use:
 
 ```text

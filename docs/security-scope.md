@@ -117,7 +117,7 @@ For subdomain inventory audits, Inspectra resolves only candidates explicitly su
 
 ## Active/Network Dry-Run Scope
 
-Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`, the docs-first runbook/threat model is recorded in `docs/future/active-network-block-02-runbook-and-threat-model.md`, the dry-run contract design is recorded in `docs/future/active-network-block-03-dry-run-contracts-design.md`, the separated no-network skeleton is recorded in `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`, the backend/job/storage/reporting contract design is recorded in `docs/future/active-network-block-05-dry-run-backend-contract-design.md`, the backend integration is recorded in `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`, the frontend design is recorded in `docs/future/active-network-block-07-dry-run-frontend-design.md`, the frontend implementation is recorded in `docs/future/active-network-block-08-dry-run-frontend-implementation-no-network.md`, the end-to-end contract/redaction review is recorded in `docs/future/active-network-block-09-end-to-end-dry-run-contract-redaction-review.md`, the v0 dry-run closeout is recorded in `docs/future/active-network-block-10-dry-run-closeout.md`, and the dry-run hardening review before live design is recorded in `docs/future/active-network-block-11-dry-run-hardening-review.md`.
+Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`, the docs-first runbook/threat model is recorded in `docs/future/active-network-block-02-runbook-and-threat-model.md`, the dry-run contract design is recorded in `docs/future/active-network-block-03-dry-run-contracts-design.md`, the separated no-network skeleton is recorded in `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`, the backend/job/storage/reporting contract design is recorded in `docs/future/active-network-block-05-dry-run-backend-contract-design.md`, the backend integration is recorded in `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`, the frontend design is recorded in `docs/future/active-network-block-07-dry-run-frontend-design.md`, the frontend implementation is recorded in `docs/future/active-network-block-08-dry-run-frontend-implementation-no-network.md`, the end-to-end contract/redaction review is recorded in `docs/future/active-network-block-09-end-to-end-dry-run-contract-redaction-review.md`, the v0 dry-run closeout is recorded in `docs/future/active-network-block-10-dry-run-closeout.md`, the dry-run hardening review before live design is recorded in `docs/future/active-network-block-11-dry-run-hardening-review.md`, and the first live HTTP header probe design is recorded in `docs/future/active-network-block-12-authorized-http-header-probe-design.md`.
 
 Current decision: `ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME`.
 
@@ -137,6 +137,8 @@ Closeout decision: `ACTIVE_DRY_RUN_V0_CLOSED_NO_NETWORK`.
 
 Hardening review decision: `ACTIVE_DRY_RUN_HARDENING_ACCEPTED_FOR_LIVE_PROBE_DESIGN`.
 
+HTTP header probe design decision: `ACTIVE_HTTP_HEADER_PROBE_DESIGNED_NO_RUNTIME`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
@@ -151,6 +153,8 @@ This means:
 - The Active block must preserve audit logs without storing secrets, use controlled failure states, and fail closed on ambiguous targets.
 - Active code must not be added to the passive runner monolith in `tools/runner/main.py`.
 - Passive archive/file analyzers keep their no-network guarantee.
+- The HTTP header probe is currently design-only. No live HTTP probe endpoint, runner, frontend control, DNS runtime, or socket behavior is implemented by that design document.
+- The designed HTTP header probe would require a separate `INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED=false` flag, explicit live authorization, one `HEAD` request, no redirects, no body read, bounded DNS safety checks, redacted headers, and no Nmap.
 
 The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.
 

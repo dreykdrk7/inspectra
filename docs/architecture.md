@@ -38,8 +38,11 @@ The Active scope, runbook/threat model, dry-run contracts, skeleton, and backend
 - `docs/future/active-network-block-09-end-to-end-dry-run-contract-redaction-review.md`
 - `docs/future/active-network-block-10-dry-run-closeout.md`
 - `docs/future/active-network-block-11-dry-run-hardening-review.md`
+- `docs/future/active-network-block-12-authorized-http-header-probe-design.md`
 
 The dry-run contract requires Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. The implemented backend endpoint is `POST /active/network/dry-run`, gated by `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false` by default. It creates `active_network_dry_run` target-based jobs with no `file_id`, uses existing job statuses, represents blocked dry-runs inside `result.policy`, and applies defensive redaction to storage, public API responses, errors, summaries, and Markdown/HTML/XML/PDF exports. The frontend now provides a separate `Active / Network dry-run` panel, required authorization checkbox, dry-run-only request body, catalog/filter entry, redacted job-table target display, and redacted report view; it does not add archive actions or live probing controls. The closeout decision is `ACTIVE_DRY_RUN_V0_CLOSED_NO_NETWORK`; the hardening review decision is `ACTIVE_DRY_RUN_HARDENING_ACCEPTED_FOR_LIVE_PROBE_DESIGN`, which clears docs-first design only and does not approve live runtime. Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
+
+The first proposed live Active capability is designed, not implemented, in `docs/future/active-network-block-12-authorized-http-header-probe-design.md`. The design decision is `ACTIVE_HTTP_HEADER_PROBE_DESIGNED_NO_RUNTIME`: one explicitly authorized HTTP `HEAD` request, separate feature flag, bounded DNS safety check, no redirects, no body read, redacted headers, no Nmap, and no runtime changes yet.
 
 ## Components
 
