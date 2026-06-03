@@ -12,6 +12,8 @@ Base retention cleanup reset design: `docs/future/passive-alpha-gap-fixes-04-ret
 
 Base auth and user-isolation design: `docs/future/passive-alpha-gap-fixes-03-auth-and-user-isolation-design.md`
 
+Deny-anonymous API guards plan: `docs/future/passive-alpha-p0-03-deny-anonymous-reads-api-guards.md`
+
 Commit scope: docs-only owner model and storage migration plan before future runtime work. This block defines ownership principles, P0 owner concepts, legacy local data migration options, storage implications, API guard implications, retention/delete implications, and future test requirements. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -593,10 +595,10 @@ Future runtime implementation should test:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-03-DENY-ANONYMOUS-READS-API-GUARDS
+PASSIVE-ALPHA-P0-04-OWNER-SCOPED-JOBS-RESULTS-EXPORTS
 ```
 
-Proceed to API guard planning after the owner model, default local operator strategy, and legacy migration posture are accepted.
+The deny-anonymous API guards plan is now accepted. Proceed to owner-scoped jobs, results, reports, exports, SBOM, Raw JSON, and target-history planning after anonymous requests are denied for sensitive surfaces.
 
 ## Validation Commands
 
