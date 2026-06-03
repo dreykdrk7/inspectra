@@ -67,6 +67,13 @@ BLOCKED_REASON_MESSAGES = {
     "live_mode_not_available": "Live active checks are not available in this phase.",
     "limits_exceed_dry_run": "Dry-run limits must not allow network requests.",
     "nmap_not_allowed": "Nmap runtime is not enabled for this phase.",
+    "live_traffic_confirmation_missing": "Live HTTP header probes require explicit confirmation that one HTTP HEAD request will be sent.",
+    "live_url_required": "Live HTTP header probes require one explicit http or https URL.",
+    "live_header_probe_mode_required": "This active mode is not available for the HTTP header probe.",
+    "limits_exceed_http_header_probe": "HTTP header probe limits exceed the v0 safety policy.",
+    "dns_resolution_failed": "DNS resolution failed before any HTTP request was sent.",
+    "dns_answers_limit_exceeded": "DNS answers exceeded the active probe limit.",
+    "resolved_ip_blocked": "A resolved address is blocked by the active safety policy.",
 }
 
 

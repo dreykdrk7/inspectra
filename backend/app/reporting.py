@@ -230,6 +230,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_redis_config_sections(result))
     elif job.audit_type == "active_network_dry_run":
         sections.extend(build_active_network_dry_run_sections(result))
+    elif job.audit_type == "active_http_header_probe":
+        sections.extend(build_active_http_header_probe_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -616,6 +618,38 @@ def build_active_network_dry_run_sections(result: dict[str, Any]) -> list[Report
         ReportSection("Authorization Summary", flatten_mapping(as_dict(public_result.get("authorization")))),
         ReportSection("Policy Decision", flatten_mapping(as_dict(public_result.get("policy")))),
         ReportSection("Planned Checks", flatten_list(public_result.get("planned_checks"))),
+        ReportSection("Blocked Reasons", flatten_list(public_result.get("blocked_reasons"))),
+        ReportSection("Limits", flatten_mapping(as_dict(public_result.get("limits")))),
+        ReportSection("Audit Log", flatten_list(public_result.get("audit_log"))),
+        ReportSection("Errors", flatten_list(public_result.get("errors"))),
+        ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
+    ]
+
+
+def build_active_http_header_probe_sections(result: dict[str, Any]) -> list[ReportSection]:
+    public_result = as_dict(redact_active_config_value(result))
+    summary = as_dict(public_result.get("summary"))
+    request_sent = int(summary.get("network_requests_sent") or 0)
+    raw_json = json.dumps(public_result, indent=2, sort_keys=True)
+    scope_notice = "One authorized HTTP HEAD request was sent." if request_sent else "No HTTP request was sent."
+    return [
+        ReportSection(
+            "Active Scope Notice",
+            [
+                ("Live probe scope", scope_notice),
+                ("Response body", "Response body was not read."),
+                ("Execution model", "Authorized single-target HTTP HEAD header probe; no Nmap, no subprocess, no redirects."),
+                ("Authorization reminder", "Do not test third-party systems without permission."),
+            ],
+        ),
+        ReportSection("Target Summary", flatten_mapping(as_dict(public_result.get("target")))),
+        ReportSection("Authorization Summary", flatten_mapping(as_dict(public_result.get("authorization")))),
+        ReportSection("Policy Decision", flatten_mapping(as_dict(public_result.get("policy")))),
+        ReportSection("DNS Policy Summary", flatten_mapping(as_dict(public_result.get("dns")))),
+        ReportSection("Request Sent", flatten_mapping(as_dict(public_result.get("request")))),
+        ReportSection("Response Headers", flatten_list(as_dict(public_result.get("response")).get("headers"))),
+        ReportSection("Observations", flatten_list(public_result.get("observations"))),
+        ReportSection("Findings", flatten_list(public_result.get("findings"))),
         ReportSection("Blocked Reasons", flatten_list(public_result.get("blocked_reasons"))),
         ReportSection("Limits", flatten_mapping(as_dict(public_result.get("limits")))),
         ReportSection("Audit Log", flatten_list(public_result.get("audit_log"))),
@@ -1169,7 +1203,7 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
         data["errors_count"] = len(result.get("errors") or [])
-    elif job.audit_type == "active_network_dry_run":
+    elif job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         target = as_dict(result.get("target"))
         policy = as_dict(result.get("policy"))
         blocked_reasons = result.get("blocked_reasons")
@@ -1183,6 +1217,13 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["planned_checks_count"] = summary.get("planned_checks_count", "N/A")
         data["blocked_reasons_count"] = summary.get("blocked_reasons_count", "N/A")
         data["network_requests_sent"] = summary.get("network_requests_sent", "N/A")
+        data["redirects_followed"] = summary.get("redirects_followed", "N/A")
+        data["body_bytes_read"] = summary.get("body_bytes_read", "N/A")
+        data["headers_received_count"] = summary.get("headers_received_count", "N/A")
+        data["redacted_headers_count"] = summary.get("redacted_headers_count", "N/A")
+        data["truncated_headers_count"] = summary.get("truncated_headers_count", "N/A")
+        errors = result.get("errors")
+        data["errors_count"] = len(errors) if isinstance(errors, list) else 1 if errors else 0
         data["blocked_reason_codes"] = [
             reason.get("code")
             for reason in blocked_reasons
@@ -1242,7 +1283,7 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_sql_database_config_value(result))
     if job.audit_type == "redis_config_basic":
         return as_dict(redact_redis_config_value(result))
-    if job.audit_type == "active_network_dry_run":
+    if job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         return as_dict(redact_active_config_value(result))
     return result
 
@@ -1250,7 +1291,7 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
 def public_job_target_url(job: JobRecord) -> str:
     if not job.target_url:
         return ""
-    if job.audit_type == "active_network_dry_run":
+    if job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         return redact_active_secret_text(job.target_url)
     return redact_url_query(job.target_url)
 
@@ -1284,7 +1325,7 @@ def public_job_error(job: JobRecord) -> str:
         return redact_sql_database_secret_text(job.error)
     if job.audit_type == "redis_config_basic":
         return redact_redis_secret_text(job.error)
-    if job.audit_type == "active_network_dry_run":
+    if job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         return redact_active_secret_text(job.error)
     return job.error
 
@@ -2036,7 +2077,8 @@ def redact_active_config_value(value: Any) -> Any:
         secret_named_value = active_record_has_secret_name(value)
         return {
             key: "[REDACTED]"
-            if is_active_secret_mapping_key(str(key))
+            if str(key).lower().replace("-", "_") in {"body", "response_body", "body_text"}
+            or is_active_secret_mapping_key(str(key))
             or (secret_named_value and str(key).lower() in {"value", "raw_value", "default", "data", "content", "authorization"})
             else redact_active_config_value(item)
             for key, item in value.items()

@@ -337,6 +337,9 @@ class JobStore:
     def create_active_network_dry_run_job(self, target_display: str) -> JobRecord:
         return self._create_job(None, "active_network_dry_run", target_url=target_display)
 
+    def create_active_http_header_probe_job(self, target_display: str) -> JobRecord:
+        return self._create_job(None, "active_http_header_probe", target_url=target_display)
+
     def _create_job(
         self,
         file_id: str | None,
@@ -430,7 +433,7 @@ class JobStore:
 
     def _to_list_item(self, record: JobRecord) -> JobListItem:
         target_url = record.target_url
-        if record.audit_type == "active_network_dry_run" and target_url:
+        if record.audit_type in {"active_network_dry_run", "active_http_header_probe"} and target_url:
             target_url = _redact_active_summary_text(target_url)
         return JobListItem(
             id=record.id,
@@ -754,7 +757,7 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
             summary["truncated"] = manifest_summary.get("truncated")
             summary["errors_count"] = len(record.result.get("errors") or [])
-        if record.audit_type == "active_network_dry_run":
+        if record.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
             target = record.result.get("target")
             policy = record.result.get("policy")
             blocked_reasons = record.result.get("blocked_reasons")
@@ -772,6 +775,12 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["planned_checks_count"] = manifest_summary.get("planned_checks_count")
             summary["blocked_reasons_count"] = manifest_summary.get("blocked_reasons_count")
             summary["network_requests_sent"] = manifest_summary.get("network_requests_sent")
+            summary["redirects_followed"] = manifest_summary.get("redirects_followed")
+            summary["body_bytes_read"] = manifest_summary.get("body_bytes_read")
+            summary["headers_received_count"] = manifest_summary.get("headers_received_count")
+            summary["redacted_headers_count"] = manifest_summary.get("redacted_headers_count")
+            summary["truncated_headers_count"] = manifest_summary.get("truncated_headers_count")
+            summary["errors_count"] = len(record.result.get("errors") or [])
             summary["blocked_reason_codes"] = [
                 str(reason.get("code"))
                 for reason in blocked_reasons

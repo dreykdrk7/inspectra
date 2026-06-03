@@ -2,7 +2,17 @@ import ast
 import json
 from pathlib import Path
 
-from active_runner import ActiveAuthorization, ActiveDryRunLimits, ActiveDryRunRequest, run_active_network_dry_run
+from active_runner import (
+    ActiveAuthorization,
+    ActiveDryRunLimits,
+    ActiveDryRunRequest,
+    ActiveHttpHeaderProbeAuthorization,
+    ActiveHttpHeaderProbeLimits,
+    ActiveHttpHeaderProbeRequest,
+    HeadResponse,
+    run_active_network_dry_run,
+    run_authorized_http_header_probe,
+)
 from active_runner.models import APPROVED_AUTHORIZATION_STATEMENT
 
 
@@ -30,6 +40,30 @@ def make_request(
         mode=mode,
         profile=profile,
         limits=limits or ActiveDryRunLimits(),
+    )
+
+
+def make_header_probe_request(
+    target: str = "https://public.example/path?ok=value",
+    *,
+    confirmed: bool = True,
+    live_traffic_confirmed: bool = True,
+    statement: str = APPROVED_AUTHORIZATION_STATEMENT,
+    mode: str = "live_header_probe",
+    profile: str = "http_header_probe",
+    limits: ActiveHttpHeaderProbeLimits | None = None,
+) -> ActiveHttpHeaderProbeRequest:
+    return ActiveHttpHeaderProbeRequest(
+        target=target,
+        authorization=ActiveHttpHeaderProbeAuthorization(
+            confirmed=confirmed,
+            live_traffic_confirmed=live_traffic_confirmed,
+            statement=statement,
+            scope="single-target",
+        ),
+        mode=mode,
+        profile=profile,
+        limits=limits or ActiveHttpHeaderProbeLimits(),
     )
 
 
@@ -223,7 +257,6 @@ def test_active_runner_does_not_import_network_or_probe_runtime_modules():
         "requests",
         "httpx",
         "aiohttp",
-        "socket",
         "subprocess",
         "nmap",
         "dns",
@@ -246,6 +279,8 @@ def test_active_runner_does_not_import_network_or_probe_runtime_modules():
                 for forbidden in forbidden_modules
                 if module == forbidden or module.startswith(f"{forbidden}.")
             }
+            if path.name != "http_header_probe.py":
+                blocked.update(module for module in imported if module == "socket")
             assert not blocked, f"{path} imports forbidden active runtime module(s): {blocked}"
 
 
@@ -263,5 +298,157 @@ def test_from_mapping_rejects_unknown_fields():
         ActiveDryRunRequest.from_mapping(payload)
     except ValueError as exc:
         assert "Unknown request field" in str(exc)
+    else:
+        raise AssertionError("unknown fields should be rejected")
+
+
+def test_http_header_probe_valid_request_sends_one_head_and_redacts_headers():
+    calls: list[tuple[str, int, dict[str, str]]] = []
+
+    def resolver(host: str, port: int, timeout: int, max_answers: int) -> list[str]:
+        assert host == "public.example"
+        assert port == 443
+        assert timeout == 3
+        assert max_answers == 8
+        return ["93.184.216.34"]
+
+    def head_request(url: str, timeout: int, headers: dict[str, str]) -> HeadResponse:
+        calls.append((url, timeout, headers))
+        return HeadResponse(
+            status_code=200,
+            headers=[
+                ("Server", "nginx"),
+                ("Set-Cookie", "sessionid=super-secret-password"),
+                ("Authorization", "Bearer token_should_never_render"),
+            ],
+        )
+
+    result = run_authorized_http_header_probe(make_header_probe_request(), resolver=resolver, head_request=head_request)
+    body = serialized(result)
+
+    assert result["analyzer"] == "active_http_header_probe"
+    assert result["mode"] == "live_header_probe"
+    assert result["profile"] == "http_header_probe"
+    assert result["policy"]["allowed"] is True
+    assert result["summary"]["network_requests_sent"] == 1
+    assert result["summary"]["headers_received_count"] == 3
+    assert result["summary"]["redacted_headers_count"] == 2
+    assert result["response"]["body_read"] is False
+    assert result["response"]["body_bytes_read"] == 0
+    assert result["response"]["redirect_followed"] is False
+    assert calls == [
+        (
+            "https://public.example/path?ok=value",
+            3,
+            {"User-Agent": "Inspectra active-header-probe", "Accept": "*/*"},
+        )
+    ]
+    assert "server_header_present_info" in {item["code"] for item in result["observations"]}
+    for secret in FIXTURE_SECRETS + ("sessionid=super-secret-password",):
+        assert secret not in body
+    assert "[REDACTED]" in body
+
+
+def test_http_header_probe_blocks_before_request_for_url_credentials_and_private_resolution():
+    def forbidden_resolver(host: str, port: int, timeout: int, max_answers: int) -> list[str]:
+        raise AssertionError("resolver should not be called")
+
+    def forbidden_head(url: str, timeout: int, headers: dict[str, str]) -> HeadResponse:
+        raise AssertionError("HEAD should not be sent")
+
+    credential_result = run_authorized_http_header_probe(
+        make_header_probe_request("http://user:pass@example.com"),
+        resolver=forbidden_resolver,
+        head_request=forbidden_head,
+    )
+    assert credential_result["summary"]["network_requests_sent"] == 0
+    assert "url_credentials_rejected" in reason_codes(credential_result)
+    assert "user:pass" not in serialized(credential_result)
+
+    def private_resolver(host: str, port: int, timeout: int, max_answers: int) -> list[str]:
+        return ["10.0.0.1"]
+
+    private_result = run_authorized_http_header_probe(
+        make_header_probe_request("https://public.example/"),
+        resolver=private_resolver,
+        head_request=forbidden_head,
+    )
+    assert private_result["summary"]["network_requests_sent"] == 0
+    assert "resolved_ip_blocked" in reason_codes(private_result)
+    assert private_result["dns"]["blocked_answers_count"] == 1
+
+
+def test_http_header_probe_policy_validation_blocks_without_dns_or_http():
+    def forbidden_resolver(host: str, port: int, timeout: int, max_answers: int) -> list[str]:
+        raise AssertionError("resolver should not be called")
+
+    def forbidden_head(url: str, timeout: int, headers: dict[str, str]) -> HeadResponse:
+        raise AssertionError("HEAD should not be sent")
+
+    cases = [
+        (make_header_probe_request(confirmed=False), "authorization_missing"),
+        (make_header_probe_request(live_traffic_confirmed=False), "live_traffic_confirmation_missing"),
+        (make_header_probe_request(mode="dry_run"), "live_header_probe_mode_required"),
+        (make_header_probe_request(profile="nmap_plan"), "nmap_not_allowed"),
+        (make_header_probe_request(limits=ActiveHttpHeaderProbeLimits(max_requests=2)), "limits_exceed_http_header_probe"),
+        (make_header_probe_request("public.example"), "live_url_required"),
+    ]
+    for request, reason_code in cases:
+        result = run_authorized_http_header_probe(request, resolver=forbidden_resolver, head_request=forbidden_head)
+        assert result["policy"]["allowed"] is False
+        assert result["summary"]["network_requests_sent"] == 0
+        assert reason_code in reason_codes(result)
+
+
+def test_http_header_probe_no_get_fallback_and_redirect_not_followed():
+    calls = []
+
+    def resolver(host: str, port: int, timeout: int, max_answers: int) -> list[str]:
+        return ["93.184.216.34"]
+
+    def head_405(url: str, timeout: int, headers: dict[str, str]) -> HeadResponse:
+        calls.append(url)
+        return HeadResponse(status_code=405, headers=[("Allow", "GET")])
+
+    method_result = run_authorized_http_header_probe(make_header_probe_request(), resolver=resolver, head_request=head_405)
+    assert calls == ["https://public.example/path?ok=value"]
+    assert method_result["summary"]["network_requests_sent"] == 1
+    assert "head_not_allowed" in {error["code"] for error in method_result["errors"]}
+
+    def head_redirect(url: str, timeout: int, headers: dict[str, str]) -> HeadResponse:
+        return HeadResponse(
+            status_code=302,
+            headers=[("Location", "https://redirect.example/?token=token_should_never_render")],
+        )
+
+    redirect_result = run_authorized_http_header_probe(make_header_probe_request(), resolver=resolver, head_request=head_redirect)
+    body = serialized(redirect_result)
+    assert redirect_result["summary"]["network_requests_sent"] == 1
+    assert redirect_result["summary"]["redirects_followed"] == 0
+    assert redirect_result["response"]["redirect_presented"] is True
+    assert redirect_result["response"]["redirect_followed"] is False
+    assert "redirect_not_followed" in {error["code"] for error in redirect_result["errors"]}
+    assert "token_should_never_render" not in body
+    assert "token=REDACTED" in body
+
+
+def test_http_header_probe_from_mapping_rejects_unknown_fields():
+    payload = {
+        "target": "https://public.example/",
+        "authorization": {
+            "confirmed": True,
+            "live_traffic_confirmed": True,
+            "statement": APPROVED_AUTHORIZATION_STATEMENT,
+            "scope": "single-target",
+        },
+        "mode": "live_header_probe",
+        "profile": "http_header_probe",
+        "limits": {"max_targets": 1, "max_requests": 1, "unexpected": 0},
+    }
+
+    try:
+        ActiveHttpHeaderProbeRequest.from_mapping(payload)
+    except ValueError as exc:
+        assert "Unknown limits field" in str(exc)
     else:
         raise AssertionError("unknown fields should be rejected")

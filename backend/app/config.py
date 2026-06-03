@@ -51,6 +51,7 @@ DEFAULT_REDIS_CONFIG_MAX_FILES = 100
 DEFAULT_REDIS_CONFIG_MAX_FILE_BYTES = 524_288
 DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_ACTIVE_DRY_RUN_ENABLED = False
+DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED = False
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ class Settings:
     redis_config_max_file_bytes: int = DEFAULT_REDIS_CONFIG_MAX_FILE_BYTES
     redis_config_max_total_bytes: int = DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES
     active_dry_run_enabled: bool = DEFAULT_ACTIVE_DRY_RUN_ENABLED
+    active_http_header_probe_enabled: bool = DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED
 
     @property
     def upload_dir(self) -> Path:
@@ -294,6 +296,10 @@ def load_settings() -> Settings:
         DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES,
     )
     active_dry_run_enabled = _bool_from_env("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", DEFAULT_ACTIVE_DRY_RUN_ENABLED)
+    active_http_header_probe_enabled = _bool_from_env(
+        "INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED",
+        DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -345,6 +351,7 @@ def load_settings() -> Settings:
         redis_config_max_file_bytes=redis_config_max_file_bytes,
         redis_config_max_total_bytes=redis_config_max_total_bytes,
         active_dry_run_enabled=active_dry_run_enabled,
+        active_http_header_probe_enabled=active_http_header_probe_enabled,
     )
 
 

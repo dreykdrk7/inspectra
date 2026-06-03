@@ -2,6 +2,10 @@
 
 Status: `ACTIVE_HTTP_HEADER_PROBE_DESIGNED_NO_RUNTIME`.
 
+Implementation note: the first runner/backend implementation was added later in
+`docs/future/active-network-block-13-authorized-http-header-probe-runner-backend-no-frontend.md`.
+This file remains the historical docs-first design reference.
+
 Base hardening review: `docs/future/active-network-block-11-dry-run-hardening-review.md`
 
 Commit scope: docs-first design only. This document does not implement backend, frontend, runner, jobs, HTTP clients, DNS resolution, sockets, subprocesses, Nmap, or live traffic.

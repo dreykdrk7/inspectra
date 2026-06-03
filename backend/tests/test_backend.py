@@ -18,6 +18,7 @@ from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
 from app.services import (
     ArchiveAuditService,
+    ActiveHttpHeaderProbeService,
     ActiveNetworkDryRunService,
     CiCdConfigAuditService,
     ComposeConfigAuditService,
@@ -121,6 +122,9 @@ class NoopAuditService:
     async def run_active_network_dry_run_analysis(self, job_id: str, active_request=None) -> None:
         return None
 
+    async def run_active_http_header_probe_analysis(self, job_id: str, active_request=None) -> None:
+        return None
+
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
         return None
 
@@ -187,6 +191,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.sql_database_config_audits = SqlDatabaseConfigAuditService(settings, file_store, job_store)
     app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
     app.state.active_network_dry_runs = ActiveNetworkDryRunService(settings, job_store)
+    app.state.active_http_header_probes = ActiveHttpHeaderProbeService(settings, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -2066,6 +2071,33 @@ def make_active_dry_run_payload(target: str = "https://example.test/path?ok=valu
     return payload
 
 
+def make_active_http_header_probe_payload(target: str = "https://example.test/path?ok=value", **overrides) -> dict:
+    payload = {
+        "target": target,
+        "authorization": {
+            "confirmed": True,
+            "live_traffic_confirmed": True,
+            "statement": "I confirm I own or am authorized to test this target.",
+            "scope": "single-target",
+        },
+        "mode": "live_header_probe",
+        "profile": "http_header_probe",
+        "limits": {
+            "max_targets": 1,
+            "max_requests": 1,
+            "timeout_seconds": 3,
+            "max_redirects": 0,
+            "response_body_bytes": 0,
+            "max_response_header_bytes": 32768,
+            "max_dns_answers": 8,
+            "retries": 0,
+            "concurrency": 1,
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
 @pytest.mark.anyio
 async def test_active_network_dry_run_disabled_by_default_no_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
@@ -2344,6 +2376,373 @@ async def test_active_network_dry_run_sparse_jobs_export_without_breaking(monkey
             created_at=now,
             updated_at=now,
             result={"analyzer": "active_network_dry_run", "summary": None, "target": "malformed", "policy": None},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            job_response = await client.get(f"/jobs/{job.id}")
+            assert job_response.status_code == 200
+            for report_format in ("markdown", "html", "xml", "pdf"):
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+                assert response.status_code == 200
+                body = response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+                assert "token_should_never_render" not in body
+
+
+@pytest.mark.anyio
+async def test_active_http_header_probe_disabled_by_default_no_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    payload = make_active_http_header_probe_payload("https://example.test/?token=token_should_never_render")
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/http-header-probe", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Active HTTP header probe is disabled in this environment."
+    assert "token_should_never_render" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_http_header_probe_enabled_creates_job_and_summary(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_runner(active_request):
+        calls.append(active_request)
+        return {
+            "analyzer": "active_http_header_probe",
+            "mode": "live_header_probe",
+            "profile": "http_header_probe",
+            "target": {
+                "raw": active_request.target,
+                "normalized": "https://example.test/path?ok=value",
+                "scheme": "https",
+                "host": "example.test",
+                "port": 443,
+                "classification": "public_hostname",
+            },
+            "authorization": {
+                "confirmed": True,
+                "live_traffic_confirmed": True,
+                "statement_version": "active-authorization-v1",
+                "live_statement_version": "active-live-head-v1",
+                "scope": "single-target",
+            },
+            "policy": {
+                "allowed": True,
+                "policy_version": "active-network-v1-http-header-probe",
+                "blocked_reasons": [],
+                "warnings": [],
+            },
+            "limits": active_request.limits.to_result(),
+            "dns": {"resolved": True, "answers_count": 1, "all_answers_allowed": True, "blocked_answers_count": 0},
+            "request": {
+                "method": "HEAD",
+                "url": "https://example.test/path?ok=value",
+                "headers_sent": {"User-Agent": "Inspectra active-header-probe", "Accept": "*/*"},
+                "body_sent": False,
+            },
+            "response": {
+                "status_code": 200,
+                "headers": [
+                    {"name": "Server", "value": "example"},
+                    {"name": "Set-Cookie", "value": "[REDACTED]"},
+                    {"name": "Authorization", "value": "[REDACTED]"},
+                ],
+                "headers_bytes": 64,
+                "body_read": False,
+                "body_bytes_read": 0,
+                "redirect_presented": False,
+                "redirect_followed": False,
+            },
+            "observations": [{"code": "server_header_present_info", "title": "Server header present", "level": "info"}],
+            "findings": [],
+            "blocked_reasons": [],
+            "audit_log": [{"event": "http_head_request_completed"}],
+            "errors": [],
+            "summary": {
+                "allowed": True,
+                "network_requests_sent": 1,
+                "redirects_followed": 0,
+                "body_bytes_read": 0,
+                "headers_received_count": 3,
+                "redacted_headers_count": 2,
+                "truncated_headers_count": 0,
+            },
+        }
+
+    monkeypatch.setattr(audit_services, "run_authorized_http_header_probe", fake_runner)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post("/active/network/http-header-probe", json=make_active_http_header_probe_payload())
+        job_id = create_response.json()["id"]
+        job_response = await client.get(f"/jobs/{job_id}")
+        jobs_response = await client.get("/jobs")
+
+    assert create_response.status_code == 202
+    assert create_response.json()["audit_type"] == "active_http_header_probe"
+    assert create_response.json()["file_id"] is None
+    assert len(calls) == 1
+    assert calls[0].mode == "live_header_probe"
+    assert calls[0].profile == "http_header_probe"
+    public_job = job_response.json()
+    assert public_job["status"] == "completed"
+    assert public_job["result"]["analyzer"] == "active_http_header_probe"
+    assert public_job["result"]["summary"]["network_requests_sent"] == 1
+    assert public_job["result"]["response"]["body_read"] is False
+    assert public_job["result"]["response"]["body_bytes_read"] == 0
+    assert public_job["result"]["response"]["headers"][1]["value"] == "[REDACTED]"
+    summary = next(item for item in jobs_response.json() if item["id"] == job_id)["summary"]
+    assert summary["analyzer"] == "active_http_header_probe"
+    assert summary["target_display"] == "https://example.test/path?ok=value"
+    assert summary["mode"] == "live_header_probe"
+    assert summary["profile"] == "http_header_probe"
+    assert summary["allowed"] is True
+    assert summary["network_requests_sent"] == 1
+    assert summary["redirects_followed"] == 0
+    assert summary["body_bytes_read"] == 0
+    assert summary["headers_received_count"] == 3
+    assert summary["redacted_headers_count"] == 2
+    assert summary["policy_version"] == "active-network-v1-http-header-probe"
+
+
+@pytest.mark.anyio
+async def test_active_http_header_probe_policy_blocks_before_http(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    cases = [
+        (make_active_http_header_probe_payload("http://user:pass@example.com"), "url_credentials_rejected"),
+        (make_active_http_header_probe_payload("http://10.0.0.1/"), "private_range_blocked"),
+        (make_active_http_header_probe_payload("example.test"), "live_url_required"),
+        (make_active_http_header_probe_payload(profile="nmap_plan"), "nmap_not_allowed"),
+    ]
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for payload, reason_code in cases:
+            create_response = await client.post("/active/network/http-header-probe", json=payload)
+            job_response = await client.get(f"/jobs/{create_response.json()['id']}")
+            result = job_response.json()["result"]
+
+            assert create_response.status_code == 202
+            assert job_response.json()["status"] == "completed"
+            assert result["policy"]["allowed"] is False
+            assert result["summary"]["network_requests_sent"] == 0
+            assert reason_code in {reason["code"] for reason in result["blocked_reasons"]}
+
+
+@pytest.mark.anyio
+async def test_active_http_header_probe_rejects_unknown_fields_without_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_http_header_probe_payload()
+    payload["unexpected"] = "token_should_never_render"
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/http-header-probe", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 400
+    assert "Unknown request field" in response.json()["detail"]
+    assert "token_should_never_render" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_http_header_probe_exports_render_sections_and_redact(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+
+    def fake_runner(active_request):
+        return {
+            "analyzer": "active_http_header_probe",
+            "mode": "live_header_probe",
+            "profile": "http_header_probe",
+            "target": {
+                "raw": active_request.target,
+                "normalized": "https://example.test/path?token=token_should_never_render",
+                "scheme": "https",
+                "host": "example.test",
+                "port": 443,
+                "classification": "public_hostname",
+            },
+            "authorization": {
+                "confirmed": True,
+                "live_traffic_confirmed": True,
+                "statement_version": "active-authorization-v1",
+                "live_statement_version": "active-live-head-v1",
+                "scope": "single-target",
+            },
+            "policy": {"allowed": True, "policy_version": "active-network-v1-http-header-probe", "blocked_reasons": []},
+            "limits": active_request.limits.to_result(),
+            "dns": {"resolved": True, "answers_count": 1, "all_answers_allowed": True, "blocked_answers_count": 0},
+            "request": {"method": "HEAD", "url": active_request.target, "headers_sent": {"User-Agent": "Inspectra active-header-probe", "Accept": "*/*"}, "body_sent": False},
+            "response": {
+                "status_code": 302,
+                "headers": [
+                    {"name": "Location", "value": "https://example.test/callback?token=token_should_never_render"},
+                    {"name": "Set-Cookie", "value": "sessionid=secret-session-cookie"},
+                    {"name": "Authorization", "value": "Authorization: Bearer token_should_never_render"},
+                ],
+                "headers_bytes": 128,
+                "body_read": False,
+                "body_bytes_read": 0,
+                "redirect_presented": True,
+                "redirect_followed": False,
+            },
+            "observations": [{"code": "redirect_present_not_followed_info", "evidence": "Location token=token_should_never_render"}],
+            "findings": [{"code": "header_observation", "evidence": "Authorization: Bearer token_should_never_render"}],
+            "blocked_reasons": [],
+            "audit_log": [{"details": {"Authorization": "Bearer token_should_never_render"}}],
+            "errors": ["-----BEGIN PRIVATE KEY----- secret material -----END PRIVATE KEY-----"],
+            "summary": {
+                "allowed": True,
+                "network_requests_sent": 1,
+                "redirects_followed": 0,
+                "body_bytes_read": 0,
+                "headers_received_count": 3,
+                "redacted_headers_count": 2,
+                "truncated_headers_count": 0,
+            },
+        }
+
+    monkeypatch.setattr(audit_services, "run_authorized_http_header_probe", fake_runner)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post(
+            "/active/network/http-header-probe",
+            json=make_active_http_header_probe_payload("https://example.test/path?token=token_should_never_render"),
+        )
+        job_id = create_response.json()["id"]
+        job_response = await client.get(f"/jobs/{job_id}")
+        jobs_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    for response in responses.values():
+        assert response.status_code == 200
+
+    combined = json.dumps({"job": job_response.json(), "jobs": jobs_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in responses.items()
+    )
+    assert "One authorized HTTP HEAD request was sent" in combined
+    assert "Response body was not read" in combined
+    assert "DNS Policy Summary" in combined
+    assert "Response Headers" in combined
+    for secret in (
+        "token_should_never_render",
+        "Authorization: Bearer token_should_never_render",
+        "secret-session-cookie",
+        "PRIVATE KEY",
+    ):
+        assert secret not in combined
+    assert "[REDACTED]" in combined
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "active_http_header_probe"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_active_http_header_probe_legacy_payload_redacted_in_api_and_exports(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    job = JobRecord(
+        id="c" * 31 + "1",
+        audit_type="active_http_header_probe",
+        file_id=None,
+        target_url="http://user:pass@example.com/?token=token_should_never_render",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "active_http_header_probe",
+            "mode": "live_header_probe",
+            "profile": "http_header_probe",
+            "target": {"raw": "http://user:pass@example.com/?token=token_should_never_render"},
+            "authorization": {"confirmed": True, "live_traffic_confirmed": True, "statement": "Authorization: Bearer token_should_never_render"},
+            "policy": {"allowed": False, "policy_version": "active-network-v1-http-header-probe"},
+            "dns": {"answers": ["10.0.0.1"]},
+            "request": {"url": "http://user:pass@example.com/?password=super-secret-password", "headers_sent": {"Authorization": "Bearer token_should_never_render"}},
+            "response": {
+                "headers": [
+                    {"name": "Set-Cookie", "value": "sessionid=secret-session-cookie"},
+                    {"name": "Authorization", "value": "Authorization: Bearer token_should_never_render"},
+                ],
+                "body": "body_should_not_render",
+                "body_read": False,
+            },
+            "observations": [{"evidence": "token_should_never_render"}],
+            "findings": [{"evidence": "http://user:pass@example.com/?api_key=raw-api-key-123456"}],
+            "blocked_reasons": [{"code": "url_credentials_rejected", "message": "http://user:pass@example.com"}],
+            "audit_log": [{"details": {"secret": "super-secret-password"}}],
+            "errors": ["-----BEGIN PRIVATE KEY----- secret material -----END PRIVATE KEY-----"],
+            "summary": {"allowed": False, "network_requests_sent": 0, "redirects_followed": 0, "body_bytes_read": 0},
+        },
+        error="PRIVATE KEY token_should_never_render",
+    )
+    app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
+        jobs_response = await client.get("/jobs")
+        exports = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    combined = json.dumps({"api": api_response.json(), "jobs": jobs_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in exports.items()
+    )
+    for secret in (
+        "http://user:pass@example.com",
+        "user:pass",
+        "token_should_never_render",
+        "Authorization: Bearer token_should_never_render",
+        "sessionid=secret-session-cookie",
+        "raw-api-key-123456",
+        "PRIVATE KEY",
+        "super-secret-password",
+        "body_should_not_render",
+    ):
+        assert secret not in combined
+    assert "[REDACTED]" in combined
+    summary = next(item for item in jobs_response.json() if item["id"] == job.id)["summary"]
+    assert summary["network_requests_sent"] == 0
+    assert summary["blocked_reason_codes"] == ["url_credentials_rejected"]
+
+
+@pytest.mark.anyio
+async def test_active_http_header_probe_sparse_jobs_export_without_breaking(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    jobs = [
+        JobRecord(id="d" * 31 + "1", audit_type="active_http_header_probe", status="queued", created_at=now, updated_at=now),
+        JobRecord(id="d" * 31 + "2", audit_type="active_http_header_probe", status="running", created_at=now, updated_at=now),
+        JobRecord(id="d" * 31 + "3", audit_type="active_http_header_probe", status="failed", created_at=now, updated_at=now, error="token_should_never_render"),
+        JobRecord(
+            id="d" * 31 + "4",
+            audit_type="active_http_header_probe",
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "active_http_header_probe", "summary": None, "target": "malformed", "policy": None},
         ),
     ]
     for job in jobs:
