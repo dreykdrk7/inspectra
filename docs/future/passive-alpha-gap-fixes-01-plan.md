@@ -10,6 +10,8 @@ Packaging readiness: `docs/future/passive-alpha-packaging-readiness.md`
 
 Backlog triage: `docs/future/post-alpha-readiness-backlog-triage.md`
 
+Deployment threat model: `docs/future/passive-alpha-gap-fixes-02-deployment-threat-model.md`
+
 Commit scope: docs-only planning for public/external readiness gap fixes. This block does not change backend, frontend, runner, tests, fixtures, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -103,7 +105,7 @@ This sequence keeps implementation pressure low until product/security boundarie
 
 ## First Recommended Microphase
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 PASSIVE-ALPHA-GAP-FIXES-02-DEPLOYMENT-THREAT-MODEL
@@ -156,7 +158,7 @@ Rationale:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-GAP-FIXES-02-DEPLOYMENT-THREAT-MODEL
+PASSIVE-ALPHA-GAP-FIXES-03-AUTH-AND-USER-ISOLATION-DESIGN
 ```
 
 Do not proceed directly to runtime auth, multi-user storage changes, Nmap, another Active capability, or a new passive analyzer implementation from this planning block.

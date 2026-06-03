@@ -25,6 +25,8 @@ The trusted local Passive Alpha closeout/release-candidate decision is `PASSIVE_
 
 The Passive Alpha gap-fixes planning decision is `PASSIVE_ALPHA_GAP_FIXES_01_PLAN_ACCEPTED`. It prioritizes public/external readiness hardening and recommends starting with `PASSIVE-ALPHA-GAP-FIXES-02-DEPLOYMENT-THREAT-MODEL` before auth, isolation, retention, onboarding, limits messaging, or report/export polish implementation.
 
+The Passive Alpha deployment threat-model decision is `PASSIVE_ALPHA_DEPLOYMENT_THREAT_MODEL_ACCEPTED`. It keeps supported use to trusted local single-operator workstations and local demos with synthetic data, marks public unauthenticated use, multi-tenant SaaS, arbitrary external users, and public Active/Nmap service use as unsupported, and requires auth, authorization, file/job ownership, multi-user isolation, retention/cleanup/reset, deployment hardening, disclaimers, log redaction, and secure export handling before public or external deployment.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.

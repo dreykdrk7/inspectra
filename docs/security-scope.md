@@ -78,6 +78,8 @@ Trusted local Passive Alpha closeout/release-candidate decision: `PASSIVE_ALPHA_
 
 Passive Alpha gap-fixes planning decision: `PASSIVE_ALPHA_GAP_FIXES_01_PLAN_ACCEPTED`. Public/external readiness work starts with deployment threat modeling; this does not add runtime auth, new analyzers, Active capability, Nmap, or policy relaxation.
 
+Passive Alpha deployment threat-model decision: `PASSIVE_ALPHA_DEPLOYMENT_THREAT_MODEL_ACCEPTED`. Supported use remains trusted local single-operator workstations and local demos with synthetic data. Public unauthenticated deployment, multi-tenant SaaS, untrusted arbitrary external users, regulated/highly sensitive customer processing without extra controls, and public Active/Nmap service use remain unsupported until separate auth, authorization, isolation, retention, cleanup, deployment-hardening, disclaimer, log-redaction, and export-handling controls are designed and implemented.
+
 Tools used in this phase:
 
 - `pdfinfo`
