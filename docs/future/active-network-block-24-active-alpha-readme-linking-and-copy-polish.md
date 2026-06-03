@@ -8,6 +8,8 @@ Operator guide: `docs/future/active-network-block-22-active-alpha-operator-guide
 
 Internal alpha planning: `docs/future/active-network-block-21-active-alpha-checkpoint-release-planning.md`
 
+Closeout: `docs/future/active-network-block-25-active-alpha-closeout.md`
+
 Commit scope: docs-only copy/linking polish for README, architecture, and security scope. This block does not change backend, frontend, runner, tests, fixtures, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -118,7 +120,7 @@ No dangerous positive claims are accepted by this block. Any future forbidden-co
 
 ## Next Recommendation
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-25-ACTIVE-ALPHA-CLOSEOUT
