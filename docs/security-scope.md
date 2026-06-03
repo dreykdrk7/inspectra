@@ -76,6 +76,8 @@ For modules that mark `.env`, credential files, dumps, backups, data files, ACL 
 
 Trusted local Passive Alpha closeout/release-candidate decision: `PASSIVE_ALPHA_TRUSTED_LOCAL_RELEASE_CANDIDATE_ACCEPTED`. This accepts the local/passive documentation package only; it does not approve production, external-user, multi-tenant, Nmap, broader Active, or new analyzer work.
 
+Passive Alpha gap-fixes planning decision: `PASSIVE_ALPHA_GAP_FIXES_01_PLAN_ACCEPTED`. Public/external readiness work starts with deployment threat modeling; this does not add runtime auth, new analyzers, Active capability, Nmap, or policy relaxation.
+
 Tools used in this phase:
 
 - `pdfinfo`

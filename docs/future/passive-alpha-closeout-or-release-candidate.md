@@ -4,6 +4,8 @@ Status: `PASSIVE_ALPHA_TRUSTED_LOCAL_RELEASE_CANDIDATE_ACCEPTED`.
 
 Base recheck: `docs/future/active-network-block-26-passive-alpha-readiness-recheck.md`
 
+Gap fixes plan: `docs/future/passive-alpha-gap-fixes-01-plan.md`
+
 Passive suite closeout: `docs/future/passive-suite-alpha-transversal-closeout.md`
 
 Packaging readiness: `docs/future/passive-alpha-packaging-readiness.md`
@@ -208,7 +210,7 @@ That decision must cover product need, authorization, safety, threat model, targ
 
 ## Next Recommendation
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 PASSIVE-ALPHA-GAP-FIXES-01

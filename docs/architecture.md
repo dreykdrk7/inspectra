@@ -23,6 +23,8 @@ Redaction is layered: runner output, backend storage/reporting, public API paylo
 
 The trusted local Passive Alpha closeout/release-candidate decision is `PASSIVE_ALPHA_TRUSTED_LOCAL_RELEASE_CANDIDATE_ACCEPTED`. It accepts the current passive/local documentation package while keeping production, external-user, multi-tenant, Nmap, broader Active, and new analyzer work out of scope until separately re-scoped.
 
+The Passive Alpha gap-fixes planning decision is `PASSIVE_ALPHA_GAP_FIXES_01_PLAN_ACCEPTED`. It prioritizes public/external readiness hardening and recommends starting with `PASSIVE-ALPHA-GAP-FIXES-02-DEPLOYMENT-THREAT-MODEL` before auth, isolation, retention, onboarding, limits messaging, or report/export polish implementation.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
