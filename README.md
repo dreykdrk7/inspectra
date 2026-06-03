@@ -99,6 +99,8 @@ Authorized Active HTTP header probe v0 is closed as a limited live capability in
 
 Limited Active internal alpha planning is recorded in `docs/future/active-network-block-21-active-alpha-checkpoint-release-planning.md`. It is an internal planning decision only, not production readiness, external-user readiness, policy relaxation, or approval for additional live Active capabilities.
 
+The limited Active operator guide is recorded in `docs/future/active-network-block-22-active-alpha-operator-guide.md`. It is internal guidance for trusted operators and does not add runtime behavior, external demo targets, bypasses, or additional live Active capabilities.
+
 ## Requirements
 
 - Docker

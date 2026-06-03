@@ -173,7 +173,7 @@ This block does not:
 
 ## Next Recommendation
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-22-ACTIVE-ALPHA-OPERATOR-GUIDE
