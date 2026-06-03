@@ -12,6 +12,8 @@ Base retention cleanup reset design: `docs/future/passive-alpha-gap-fixes-04-ret
 
 Base implementation readiness plan: `docs/future/passive-alpha-gap-fixes-08-implementation-readiness-plan.md`
 
+Deployment hardening checklist: `docs/future/passive-alpha-p0-06-deployment-hardening-checklist.md`
+
 Commit scope: docs-only retention and delete runtime plan for future Passive Alpha P0 work. This block defines future semantics and sequencing for owner-scoped delete and retention behavior. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -649,9 +651,9 @@ Runtime implementation should test:
 - partial deletion returns controlled errors and supports retry;
 - redaction regression passes after delete/retention changes.
 
-## Relationship To P0-06
+## Relationship To P0-06 And P0-07
 
-The next recommended block is:
+The deployment hardening checklist is now accepted:
 
 ```text
 PASSIVE-ALPHA-P0-06-DEPLOYMENT-HARDENING-CHECKLIST
@@ -669,6 +671,14 @@ P0-06 should turn this retention/delete policy into deployment hardening questio
 - secrets/config handling;
 - manual cleanup guidance for trusted local deployments;
 - warning copy for downloads, exports, SBOMs, and Raw JSON.
+
+The next recommended block is:
+
+```text
+PASSIVE-ALPHA-P0-07-P0-RUNTIME-PLANNING-CLOSEOUT
+```
+
+Close the P0 planning line before beginning runtime implementation slices.
 
 ## Open Questions
 
@@ -769,10 +779,10 @@ P0-06 should turn this retention/delete policy into deployment hardening questio
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-06-DEPLOYMENT-HARDENING-CHECKLIST
+PASSIVE-ALPHA-P0-07-P0-RUNTIME-PLANNING-CLOSEOUT
 ```
 
-Proceed to deployment hardening checklist planning after retention/delete semantics are accepted.
+Close the P0 planning line before starting runtime implementation.
 
 ## Validation Commands
 

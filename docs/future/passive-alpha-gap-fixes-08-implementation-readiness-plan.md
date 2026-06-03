@@ -20,6 +20,8 @@ Owner-scoped resources plan: `docs/future/passive-alpha-p0-04-owner-scoped-jobs-
 
 Retention/delete runtime plan: `docs/future/passive-alpha-p0-05-retention-delete-semantics-runtime-plan.md`
 
+Deployment hardening checklist: `docs/future/passive-alpha-p0-06-deployment-hardening-checklist.md`
+
 Commit scope: docs-only implementation readiness plan for future Passive Alpha P0/P1/P2 runtime work. This block orders future microphases, names dependencies, defines minimum test expectations, and keeps runtime work separate. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -101,6 +103,7 @@ Future runtime work should follow these principles:
 6. `PASSIVE-ALPHA-P0-06-DEPLOYMENT-HARDENING-CHECKLIST`
    - Document deployment controls for host binding, TLS/reverse proxy, secure cookies/sessions, CORS/CSRF, secrets, logs, backups, storage permissions, and admin access.
    - Require review before any public/external runtime.
+   - Accepted docs-first decision: `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_CHECKLIST_ACCEPTED`.
 
 ### P1 Sequence
 
@@ -241,18 +244,26 @@ These remain deferred:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-06-DEPLOYMENT-HARDENING-CHECKLIST
+PASSIVE-ALPHA-P0-07-P0-RUNTIME-PLANNING-CLOSEOUT
 ```
 
-The auth-boundary runtime plan, owner model/storage migration plan, deny-anonymous API guards plan, owner-scoped resources plan, and retention/delete runtime plan are now accepted. Choose this next if the product wants to plan deployment hardening around storage permissions, backups, logs, retention config, admin access, cleanup processes, no-auth exposure checks, and external-use blockers.
+The auth-boundary runtime plan, owner model/storage migration plan, deny-anonymous API guards plan, owner-scoped resources plan, retention/delete runtime plan, and deployment hardening checklist are now accepted. Choose this next if the product wants to close the P0 planning line before starting runtime implementation slices.
 
-Alternative:
+Implementation alternative:
+
+```text
+PASSIVE-ALPHA-P0-07-AUTH-RUNTIME-FIRST-SLICE-PLAN
+```
+
+Choose this only if the product wants to begin implementation planning immediately instead of doing the P0 closeout first.
+
+Release-copy alternative:
 
 ```text
 PASSIVE-ALPHA-TRUSTED-LOCAL-RELEASE-NOTES
 ```
 
-Choose this if the product wants to publish or polish trusted local release copy before any P0 planning.
+Choose this if the product wants to publish or polish trusted local release copy before runtime implementation.
 
 ## No-Scope
 
