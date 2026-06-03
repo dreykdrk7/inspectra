@@ -8,7 +8,9 @@ Base plan: `docs/future/passive-alpha-gap-fixes-01-plan.md`
 
 Retention cleanup reset design: `docs/future/passive-alpha-gap-fixes-04-retention-cleanup-reset-design.md`
 
-Commit scope: docs-only authentication, authorization, ownership, and user-isolation design for future private/internal or single-tenant hosted deployment. This block does not change backend, frontend, runner, tests, fixtures, schemas, storage, feature flags, target policy, tags, releases, or runtime behavior.
+Open-source/self-hosted framing: `docs/future/passive-alpha-p0-00-open-source-self-hosted-product-framing.md`
+
+Commit scope: docs-only authentication, authorization, ownership, and user-isolation design for future private/internal, self-hosted, dedicated-instance, or optional public/community deployment. This block does not change backend, frontend, runner, tests, fixtures, schemas, storage, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
 
@@ -18,11 +20,11 @@ PASSIVE_ALPHA_AUTH_USER_ISOLATION_DESIGN_ACCEPTED
 
 Inspectra should not move beyond trusted local use until every uploaded file, audit job, job result, report/export, Raw JSON view, and target-based job has an explicit ownership and authorization model.
 
-The recommended first non-local auth shape is a single-tenant authenticated deployment with explicit users, authenticated sessions, no anonymous access to sensitive resources, and a separate operator/admin role. Multi-tenant SaaS remains outside the current design.
+The recommended first non-local auth shape is a self-hosted or dedicated single-instance deployment with explicit users, authenticated sessions, no anonymous access to sensitive resources, and a separate operator/admin role. Auth is for safety in local, self-hosted, private/internal, and optional public/community installs; it is not a SaaS, billing, plan, or enterprise tenant design. Multi-tenant SaaS remains outside the current design.
 
 ## Objective
 
-This block does not implement authentication. It defines the boundaries that future runtime work must satisfy before Inspectra can support private/internal team use or single-tenant hosted use.
+This block does not implement authentication. It defines the boundaries that future runtime work must satisfy before Inspectra can support private/internal team use, self-hosted server use, dedicated single-instance hosted use, or an optional limited public/community instance.
 
 The design answers:
 
@@ -42,12 +44,16 @@ Supported now:
 Future target:
 
 - private/internal team deployment;
-- single-tenant hosted deployment.
+- self-hosted single-instance server;
+- dedicated single-instance hosted deployment controlled by the operator;
+- optional limited public/community instance.
 
 Still unsupported:
 
 - public unauthenticated deployment;
+- commercial SaaS by subscription;
 - multi-tenant SaaS;
+- broad enterprise tenant platform;
 - arbitrary untrusted external users;
 - processing regulated or highly sensitive customer data without additional controls;
 - public Active, Nmap, network-scan, or scan-as-a-service deployment.
@@ -56,7 +62,7 @@ Still unsupported:
 
 The first auth model should be:
 
-- single-tenant authenticated users;
+- self-hosted or dedicated-instance authenticated users;
 - authenticated browser sessions;
 - no anonymous access to uploads, files, jobs, results, reports, exports, Raw JSON, baseline target history, or internal Active target history;
 - an authenticated user/reviewer role for normal upload/review work;
@@ -66,7 +72,7 @@ The first auth model should be:
 
 The local single-user mode must not be described as public, production, or internet-safe. It is a compatibility bridge for trusted local development and demos, not an auth substitute for deployed use.
 
-Do not design full multi-tenant SaaS in this block. If team/workspace concepts are added later, they should serve single-tenant or private-team isolation first.
+Do not design commercial SaaS, billing, subscription plans, or full multi-tenant enterprise SaaS in this block. If team/workspace concepts are added later, they should serve self-hosted, dedicated-instance, public/community safety, or private-team isolation first.
 
 ## Roles
 
@@ -123,7 +129,7 @@ Can:
 - view system health and operational status;
 - perform system cleanup/reset according to documented retention policy;
 - investigate failures with redacted logs and controlled access;
-- optionally view all tenant resources if the product explicitly accepts that admin boundary.
+- optionally view all instance resources if the product explicitly accepts that admin boundary.
 
 Cannot:
 
@@ -158,7 +164,7 @@ Every sensitive resource must be owned before Inspectra supports more than one u
 
 ### Uploaded Files
 
-- Each uploaded file should have an `owner_id` or belong to a workspace/single-tenant boundary.
+- Each uploaded file should have an `owner_id` or belong to an accepted workspace or dedicated-instance boundary.
 - File listing and metadata reads must filter by owner unless admin access is explicitly designed.
 - Source-file deletion must verify ownership and preserve any documented historical job behavior.
 
@@ -287,7 +293,7 @@ Local trusted mode must remain documented as:
 - not anonymous internet-safe;
 - not production-ready;
 - not multi-user isolation;
-- not a substitute for auth in private/internal or hosted deployment.
+- not a substitute for auth in private/internal, self-hosted, dedicated-instance, or optional public/community deployment.
 
 If a future runtime adds auth, local trusted mode should still make the storage caveat visible: uploaded originals and job results remain locally stored and are not sanitized by report redaction.
 

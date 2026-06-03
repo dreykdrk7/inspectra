@@ -8,6 +8,8 @@ Trusted local closeout: `docs/future/passive-alpha-closeout-or-release-candidate
 
 Auth and user isolation design: `docs/future/passive-alpha-gap-fixes-03-auth-and-user-isolation-design.md`
 
+Open-source/self-hosted framing: `docs/future/passive-alpha-p0-00-open-source-self-hosted-product-framing.md`
+
 Commit scope: docs-only deployment threat model for public/external readiness gap fixes. This block does not change backend, frontend, runner, tests, fixtures, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -18,7 +20,7 @@ PASSIVE_ALPHA_DEPLOYMENT_THREAT_MODEL_ACCEPTED
 
 Inspectra Passive Alpha remains accepted for trusted local use only. The deployment threat model is now the guiding boundary for the next public/external readiness design blocks: authentication and user isolation, retention/cleanup/reset, disclaimers/onboarding, and limits/report polish.
 
-This decision does not approve production deployment, public external-user access, multi-tenant SaaS, Nmap, broader Active behavior, new passive analyzers, or any runtime implementation.
+This decision does not approve production deployment, public external-user access, commercial SaaS, subscription plans, multi-tenant SaaS, Nmap, broader Active behavior, new passive analyzers, or any runtime implementation.
 
 ## Deployment Modes
 
@@ -32,14 +34,20 @@ These modes assume the operator controls the local machine, understands that upl
 ### Conditionally Future
 
 - Private team or internal network deployment.
-- Single-tenant hosted deployment.
+- Self-hosted single-instance server.
+- Dedicated single-instance hosted deployment controlled by the operator.
+- Optional public/community hosted instance with strict limits and disclaimers.
 
 These modes are possible only after explicit controls are designed and implemented for authentication, authorization, file/job ownership, user isolation, retention, cleanup, deployment hardening, audit/log redaction, and secure export handling.
+
+In this document, "hosted" and "public/external" do not mean commercial SaaS. They mean usage beyond a trusted local operator boundary, such as an operator-run self-hosted server, a private/internal install, or an optional public/community convenience instance.
 
 ### Unsupported Now
 
 - Public unauthenticated internet deployment.
+- Commercial SaaS by subscription.
 - Multi-tenant SaaS.
+- Broad enterprise tenant platform.
 - Untrusted arbitrary external users.
 - Processing regulated or highly sensitive customer data without additional controls.
 - Public Active, Nmap, network-scan, or scan-as-a-service deployment.
@@ -185,7 +193,7 @@ Make limits, truncation, no-read behavior, redaction notes, confidence/severity 
 ## Open Questions
 
 - Should the next auth model be single-user with simple authentication or real multi-user from the start?
-- Should future deployment support be self-hosted only, hosted single-tenant, or both?
+- Should future deployment support be self-hosted only, dedicated single-instance hosting, optional public/community hosting, or a staged combination?
 - How long should uploads, job results, generated exports, logs, and deleted-file records be retained?
 - Who can see, delete, rerun, or export jobs?
 - Should report sharing be supported, and if so should it use authenticated links, expiring links, or manual file exports only?

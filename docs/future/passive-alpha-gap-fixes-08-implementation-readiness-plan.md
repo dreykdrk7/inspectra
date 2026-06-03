@@ -8,6 +8,8 @@ Base auth and user-isolation design: `docs/future/passive-alpha-gap-fixes-03-aut
 
 Base retention cleanup reset design: `docs/future/passive-alpha-gap-fixes-04-retention-cleanup-reset-design.md`
 
+Open-source/self-hosted framing: `docs/future/passive-alpha-p0-00-open-source-self-hosted-product-framing.md`
+
 Commit scope: docs-only implementation readiness plan for future Passive Alpha P0/P1/P2 runtime work. This block orders future microphases, names dependencies, defines minimum test expectations, and keeps runtime work separate. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -41,20 +43,28 @@ Future runtime work should follow these principles:
 - Ownership before multi-user behavior.
 - No anonymous reads for sensitive resources.
 - Preserve trusted local compatibility through an explicit default local operator model.
+- Keep auth scoped to local, self-hosted, private/internal, and optional public/community safety.
+- Do not design billing, subscription tiers, commercial tenants, or enterprise SaaS.
 - Do not add broad Active, Nmap, new analyzers, or scan-as-a-service behavior.
 - Keep redaction layered across runner output, backend storage/reporting, API payloads, exports, frontend reports, and Raw JSON.
 - Keep migrations small and reversible where practical.
 - Test controls before claiming readiness.
-- Treat legacy local data explicitly instead of assuming it is safe for hosted use.
+- Treat legacy local data explicitly instead of assuming it is safe for self-hosted or public/community use.
 - Keep backend authorization authoritative; frontend guards are UX only.
 
 ## Recommended Implementation Sequence
 
 ### P0 Runtime Sequence
 
+0. `PASSIVE-ALPHA-P0-00-OPEN-SOURCE-SELF-HOSTED-PRODUCT-FRAMING`
+   - Clarify that Inspectra is open-source, local-first, and self-hosted-first.
+   - Keep optional public/community hosting limited and non-commercial.
+   - Avoid SaaS, billing, subscription, and enterprise tenant framing.
+
 1. `PASSIVE-ALPHA-P0-01-AUTH-BOUNDARY-DESIGN-TO-RUNTIME-PLAN`
    - Choose the first auth/session mechanism.
    - Define trusted local default operator compatibility.
+   - Target self-hosted, dedicated-instance, private/internal, and optional public/community safety.
    - Decide admin/operator shape.
    - Keep code changes out of this planning block unless separately scoped later.
 
@@ -84,7 +94,7 @@ Future runtime work should follow these principles:
 ### P1 Sequence
 
 1. `PASSIVE-ALPHA-P1-01-ONBOARDING-DISCLAIMER-UI`
-   - Surface trusted-local and future hosted disclaimers.
+   - Surface trusted-local, self-hosted, and optional public/community disclaimers.
    - Keep wording aligned with Block 05.
 
 2. `PASSIVE-ALPHA-P1-02-UPLOAD-ACKNOWLEDGEMENT`
@@ -223,7 +233,7 @@ These remain deferred:
 PASSIVE-ALPHA-P0-01-AUTH-BOUNDARY-DESIGN-TO-RUNTIME-PLAN
 ```
 
-Choose this if the product wants to move toward private/internal or single-tenant hosted use.
+Choose this if the product wants to move toward safer self-hosted, private/internal, dedicated-instance, or optional public/community use.
 
 Alternative:
 
