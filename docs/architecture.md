@@ -37,6 +37,8 @@ The Passive Alpha limits messaging and report-polish design decision is `PASSIVE
 
 The Passive Alpha gap-fixes closeout decision is `PASSIVE_ALPHA_GAP_FIXES_DESIGN_LINE_CLOSED`. It closes the public/external readiness should-fix line at the docs-first design level, summarizes accepted decisions, prioritizes P0/P1/P2 implementation candidates, and keeps public/external runtime blocked until auth, ownership enforcement, retention/deletion controls, deployment hardening, visible limits, onboarding/disclaimers, and security review are implemented.
 
+The Passive Alpha implementation readiness plan decision is `PASSIVE_ALPHA_IMPLEMENTATION_READINESS_PLAN_ACCEPTED`. It orders future P0/P1/P2 runtime work, recommends starting with `PASSIVE-ALPHA-P0-01-AUTH-BOUNDARY-DESIGN-TO-RUNTIME-PLAN`, and defines dependency and test expectations without implementing auth, ownership, cleanup, UI, reports, exports, or new capabilities.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.

@@ -90,6 +90,8 @@ Passive Alpha limits messaging and report-polish design decision: `PASSIVE_ALPHA
 
 Passive Alpha gap-fixes closeout decision: `PASSIVE_ALPHA_GAP_FIXES_DESIGN_LINE_CLOSED`. The public/external readiness should-fix line is closed at the docs-first design level only. Trusted local Passive Alpha remains accepted, but public/external runtime remains blocked until auth, ownership enforcement, retention/deletion controls, deployment hardening, visible limits, onboarding/disclaimers, and security review are implemented.
 
+Passive Alpha implementation readiness plan decision: `PASSIVE_ALPHA_IMPLEMENTATION_READINESS_PLAN_ACCEPTED`. Future runtime work should start with the auth/session boundary, then owner model, deny-anonymous API guards, owner-scoped jobs/results/exports, retention/delete semantics, and deployment hardening. This decision is docs-only and does not implement auth, ownership, cleanup, UI, reports, exports, public deployment approval, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

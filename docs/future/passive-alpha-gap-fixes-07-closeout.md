@@ -6,6 +6,8 @@ Base limits messaging and report polish: `docs/future/passive-alpha-gap-fixes-06
 
 Base gap-fixes plan: `docs/future/passive-alpha-gap-fixes-01-plan.md`
 
+Implementation readiness plan: `docs/future/passive-alpha-gap-fixes-08-implementation-readiness-plan.md`
+
 Commit scope: docs-only closeout for the Passive Alpha public/external readiness gap-fixes design line. This block summarizes accepted decisions, design-level gaps, implementation candidates, remaining blockers, residual risks, and the recommended next product path. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -182,15 +184,14 @@ The design line is closed, but public or external runtime use remains blocked un
 Recommended next microphase:
 
 ```text
-PASSIVE-ALPHA-GAP-FIXES-08-IMPLEMENTATION-READINESS-PLAN
+PASSIVE-ALPHA-P0-01-AUTH-BOUNDARY-DESIGN-TO-RUNTIME-PLAN
 ```
 
-This should order the P0/P1 implementation sequence, define safe implementation boundaries, identify the minimum tests for each runtime control, and keep code changes out of the planning block.
+The implementation readiness plan is now accepted. The next step should define the auth/session boundary and trusted local default-operator compatibility before storage ownership, API guards, delete semantics, or public/external runtime claims.
 
 Alternative future paths:
 
-- `PASSIVE-ALPHA-TRUSTED-LOCAL-RELEASE-NOTES` if the product wants to prepare local/trusted release copy before implementation planning.
-- `PASSIVE-ALPHA-P0-AUTH-IMPLEMENTATION-PLAN-DOCS-FIRST` if the product wants to focus immediately on auth/ownership design details.
+- `PASSIVE-ALPHA-TRUSTED-LOCAL-RELEASE-NOTES` if the product wants to prepare local/trusted release copy before P0 implementation planning.
 
 Do not proceed directly to runtime auth, migrations, cleanup runtime, report/export implementation, Nmap, another Active capability, or a new passive analyzer from this closeout.
 
