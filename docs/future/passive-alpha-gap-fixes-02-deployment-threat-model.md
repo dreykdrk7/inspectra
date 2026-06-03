@@ -6,6 +6,8 @@ Base plan: `docs/future/passive-alpha-gap-fixes-01-plan.md`
 
 Trusted local closeout: `docs/future/passive-alpha-closeout-or-release-candidate.md`
 
+Auth and user isolation design: `docs/future/passive-alpha-gap-fixes-03-auth-and-user-isolation-design.md`
+
 Commit scope: docs-only deployment threat model for public/external readiness gap fixes. This block does not change backend, frontend, runner, tests, fixtures, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -235,10 +237,10 @@ Make limits, truncation, no-read behavior, redaction notes, confidence/severity 
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-GAP-FIXES-03-AUTH-AND-USER-ISOLATION-DESIGN
+PASSIVE-ALPHA-GAP-FIXES-04-RETENTION-CLEANUP-RESET-DESIGN
 ```
 
-Start with docs-first auth and isolation design. Do not proceed directly to runtime auth, storage migrations, Nmap, another Active capability, or a new passive analyzer implementation from this threat-model block.
+Auth and user isolation design is now accepted as the next boundary. Proceed to docs-first retention, cleanup, and reset design. Do not proceed directly to runtime auth, storage migrations, Nmap, another Active capability, or a new passive analyzer implementation from this threat-model block.
 
 ## Validation Commands
 

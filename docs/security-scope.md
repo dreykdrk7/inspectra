@@ -80,6 +80,8 @@ Passive Alpha gap-fixes planning decision: `PASSIVE_ALPHA_GAP_FIXES_01_PLAN_ACCE
 
 Passive Alpha deployment threat-model decision: `PASSIVE_ALPHA_DEPLOYMENT_THREAT_MODEL_ACCEPTED`. Supported use remains trusted local single-operator workstations and local demos with synthetic data. Public unauthenticated deployment, multi-tenant SaaS, untrusted arbitrary external users, regulated/highly sensitive customer processing without extra controls, and public Active/Nmap service use remain unsupported until separate auth, authorization, isolation, retention, cleanup, deployment-hardening, disclaimer, log-redaction, and export-handling controls are designed and implemented.
 
+Passive Alpha auth and user-isolation design decision: `PASSIVE_ALPHA_AUTH_USER_ISOLATION_DESIGN_ACCEPTED`. Future private/internal or single-tenant hosted use requires authenticated sessions, no anonymous reads, owner-scoped uploads/jobs/results/exports/Raw JSON, explicit admin/operator boundaries, service/background job context isolation, and redacted logs/errors. This decision is design-only and does not implement auth, cookies, sessions, login UI, storage migrations, public deployment approval, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

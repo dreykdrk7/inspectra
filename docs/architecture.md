@@ -27,6 +27,8 @@ The Passive Alpha gap-fixes planning decision is `PASSIVE_ALPHA_GAP_FIXES_01_PLA
 
 The Passive Alpha deployment threat-model decision is `PASSIVE_ALPHA_DEPLOYMENT_THREAT_MODEL_ACCEPTED`. It keeps supported use to trusted local single-operator workstations and local demos with synthetic data, marks public unauthenticated use, multi-tenant SaaS, arbitrary external users, and public Active/Nmap service use as unsupported, and requires auth, authorization, file/job ownership, multi-user isolation, retention/cleanup/reset, deployment hardening, disclaimers, log redaction, and secure export handling before public or external deployment.
 
+The Passive Alpha auth and user-isolation design decision is `PASSIVE_ALPHA_AUTH_USER_ISOLATION_DESIGN_ACCEPTED`. It recommends a future single-tenant authenticated model with no anonymous access to uploads, jobs, results, reports, exports, Raw JSON, or target-based history; owner-scoped files and jobs; explicit operator/admin boundaries; and service/background execution limited to already authorized jobs. It is docs-only and does not implement auth, schema changes, storage migrations, login UI, or deployment approval.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
