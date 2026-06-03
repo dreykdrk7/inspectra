@@ -97,6 +97,8 @@ Active dry-run v0 is closed as a no-network planning capability in `docs/future/
 
 Authorized Active HTTP header probe v0 is closed as a limited live capability in `docs/future/active-network-block-18-authorized-http-header-probe-closeout.md`. It remains opt-in and disabled by default, requires explicit authorization plus live-traffic confirmation, sends at most one HTTP `HEAD` request, follows no redirects, reads no response body, and does not add Nmap, port scanning, crawling, custom headers, auth/cookies, credential validation, fuzzing, or exploit behavior.
 
+Limited Active internal alpha planning is recorded in `docs/future/active-network-block-21-active-alpha-checkpoint-release-planning.md`. It is an internal planning decision only, not production readiness, external-user readiness, policy relaxation, or approval for additional live Active capabilities.
+
 ## Requirements
 
 - Docker

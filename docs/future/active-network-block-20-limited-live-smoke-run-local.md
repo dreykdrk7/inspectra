@@ -200,7 +200,7 @@ The local smoke method is accepted when:
 
 ## Next Product Recommendation
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-21-ACTIVE-ALPHA-CHECKPOINT-RELEASE-PLANNING
