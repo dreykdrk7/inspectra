@@ -18,6 +18,8 @@ Deny-anonymous API guards plan: `docs/future/passive-alpha-p0-03-deny-anonymous-
 
 Owner-scoped resources plan: `docs/future/passive-alpha-p0-04-owner-scoped-jobs-results-exports.md`
 
+Retention/delete runtime plan: `docs/future/passive-alpha-p0-05-retention-delete-semantics-runtime-plan.md`
+
 Commit scope: docs-only implementation readiness plan for future Passive Alpha P0/P1/P2 runtime work. This block orders future microphases, names dependencies, defines minimum test expectations, and keeps runtime work separate. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -94,6 +96,7 @@ Future runtime work should follow these principles:
    - Decide delete source versus delete source plus derived results behavior.
    - Define user deletion, admin cleanup, trusted local reset, and retention windows.
    - Defer scheduler implementation until policy is accepted.
+   - Accepted docs-first decision: `PASSIVE_ALPHA_RETENTION_DELETE_RUNTIME_PLAN_ACCEPTED`.
 
 6. `PASSIVE-ALPHA-P0-06-DEPLOYMENT-HARDENING-CHECKLIST`
    - Document deployment controls for host binding, TLS/reverse proxy, secure cookies/sessions, CORS/CSRF, secrets, logs, backups, storage permissions, and admin access.
@@ -238,10 +241,10 @@ These remain deferred:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-05-RETENTION-DELETE-SEMANTICS-RUNTIME-PLAN
+PASSIVE-ALPHA-P0-06-DEPLOYMENT-HARDENING-CHECKLIST
 ```
 
-The auth-boundary runtime plan, owner model/storage migration plan, deny-anonymous API guards plan, and owner-scoped resources plan are now accepted. Choose this next if the product wants to plan delete source versus delete source plus derived results behavior, user deletion, admin cleanup, trusted local reset, retention windows, and cleanup boundaries.
+The auth-boundary runtime plan, owner model/storage migration plan, deny-anonymous API guards plan, owner-scoped resources plan, and retention/delete runtime plan are now accepted. Choose this next if the product wants to plan deployment hardening around storage permissions, backups, logs, retention config, admin access, cleanup processes, no-auth exposure checks, and external-use blockers.
 
 Alternative:
 

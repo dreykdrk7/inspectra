@@ -10,6 +10,8 @@ Base auth-boundary runtime plan: `docs/future/passive-alpha-p0-01-auth-boundary-
 
 Base implementation readiness plan: `docs/future/passive-alpha-gap-fixes-08-implementation-readiness-plan.md`
 
+Retention/delete runtime plan: `docs/future/passive-alpha-p0-05-retention-delete-semantics-runtime-plan.md`
+
 Commit scope: docs-only owner-scoped enforcement plan before future runtime implementation. This block defines owner-scoped rules for files, jobs, results, reports, exports, SBOMs, Raw JSON, target histories, background job context, legacy data, and admin/operator boundaries. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -321,9 +323,9 @@ Future runtime implementation should test:
 - Should target histories have a separate retention class from job results?
 - Should an admin cleanup action be able to delete all users' export artifacts?
 
-## Relationship To P0-05
+## Relationship To P0-05 And P0-06
 
-The next recommended block is:
+The retention/delete runtime plan is now accepted:
 
 ```text
 PASSIVE-ALPHA-P0-05-RETENTION-DELETE-SEMANTICS-RUNTIME-PLAN
@@ -341,6 +343,14 @@ Implications:
 - Raw JSON disappears or becomes inaccessible according to job/result deletion policy;
 - admin cleanup must have explicit scope;
 - demo reset must not infer demo resources from filenames alone.
+
+The next recommended block is:
+
+```text
+PASSIVE-ALPHA-P0-06-DEPLOYMENT-HARDENING-CHECKLIST
+```
+
+Proceed to deployment hardening checklist planning after owner-scoped resources and retention/delete semantics are accepted.
 
 ## Out Of Scope
 
@@ -420,10 +430,10 @@ Implications:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-05-RETENTION-DELETE-SEMANTICS-RUNTIME-PLAN
+PASSIVE-ALPHA-P0-06-DEPLOYMENT-HARDENING-CHECKLIST
 ```
 
-Proceed to retention and delete semantics planning after owner-scoped resources are accepted.
+Proceed to deployment hardening checklist planning after retention and delete semantics are accepted.
 
 ## Validation Commands
 
