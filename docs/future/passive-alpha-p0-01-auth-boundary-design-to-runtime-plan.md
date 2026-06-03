@@ -8,6 +8,8 @@ Base implementation readiness plan: `docs/future/passive-alpha-gap-fixes-08-impl
 
 Base auth and user-isolation design: `docs/future/passive-alpha-gap-fixes-03-auth-and-user-isolation-design.md`
 
+Owner model and storage migration plan: `docs/future/passive-alpha-p0-02-owner-model-and-storage-migration-plan.md`
+
 Commit scope: docs-only authentication/session boundary plan before any future auth runtime. This block defines supported auth modes, first runtime shape, boundary rules, protected surfaces, tests, and migration implications. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -443,10 +445,10 @@ Implications:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-02-OWNER-MODEL-AND-STORAGE-MIGRATION-PLAN
+PASSIVE-ALPHA-P0-03-DENY-ANONYMOUS-READS-API-GUARDS
 ```
 
-Proceed to owner model and migration planning after the auth principal/default-operator boundary is accepted.
+The owner model and storage migration plan is now accepted. Proceed to deny-anonymous API guard planning after the auth principal/default-operator boundary and owner metadata strategy are accepted.
 
 ## Validation Commands
 

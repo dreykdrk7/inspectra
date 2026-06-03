@@ -96,6 +96,8 @@ Passive Alpha open-source/self-hosted product framing decision: `PASSIVE_ALPHA_O
 
 Passive Alpha auth-boundary runtime plan decision: `PASSIVE_ALPHA_AUTH_BOUNDARY_RUNTIME_PLAN_ACCEPTED`. Future auth should protect uploads, file/job reads, job creation, reports, SBOM exports, Raw JSON, delete/reset actions, baseline target jobs, internal Active jobs, target histories, and admin/config surfaces. Trusted local no-auth remains localhost/dev only; `self_hosted_single_admin` with `single_user_auth` is the first recommended runtime shape. This decision is docs-only and does not implement auth, sessions/cookies, `owner_id`, migrations, billing, SaaS tenants, enterprise RBAC, Nmap, or new capabilities.
 
+Passive Alpha owner model and storage migration plan decision: `PASSIVE_ALPHA_OWNER_MODEL_STORAGE_MIGRATION_PLAN_ACCEPTED`. Future ownership should cover uploads, file metadata, audit jobs, stored results, reports, Markdown/HTML/XML/PDF exports, SBOM exports, Raw JSON, delete/reset operations, authorized baseline target jobs, internal Active jobs, target histories, logs/audit entries where applicable, and demo/synthetic data. The P0 minimum model uses a default local/admin principal, owner-scoped files/jobs/results, inherited ownership for reports/exports/Raw JSON, owner metadata for target jobs with `file_id: null`, and trusted local legacy mapping to the default operator for self-hosted single-admin use. This decision is docs-only and does not implement `owner_id`, migrations, schema/storage changes, API guards, auth runtime, billing, SaaS tenants, Nmap, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

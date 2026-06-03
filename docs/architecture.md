@@ -43,6 +43,8 @@ The Passive Alpha open-source/self-hosted framing decision is `PASSIVE_ALPHA_OPE
 
 The Passive Alpha auth-boundary runtime plan decision is `PASSIVE_ALPHA_AUTH_BOUNDARY_RUNTIME_PLAN_ACCEPTED`. It defines `trusted_local_no_auth`, `self_hosted_single_admin`, `private_team_lightweight_users`, and `public_community_limited_instance`; recommends `self_hosted_single_admin` with `single_user_auth` as the first runtime shape; and keeps billing, SaaS tenants, enterprise RBAC, Nmap, new Active behavior, and runtime changes out of scope.
 
+The Passive Alpha owner model and storage migration plan decision is `PASSIVE_ALPHA_OWNER_MODEL_STORAGE_MIGRATION_PLAN_ACCEPTED`. It defines owner principles and a P0 minimum model for uploads, file metadata, jobs, results, reports, exports, SBOMs, Raw JSON, delete/reset operations, target histories, and target-based jobs with `file_id: null`; recommends mapping trusted local legacy data to a default local/admin operator for self-hosted single-admin use; and keeps `owner_id` implementation, migrations, schema changes, API guards, billing, SaaS tenants, Nmap, new Active behavior, and runtime changes out of scope.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
