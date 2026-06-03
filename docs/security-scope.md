@@ -117,7 +117,7 @@ For subdomain inventory audits, Inspectra resolves only candidates explicitly su
 
 ## Active/Network Dry-Run Scope
 
-Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`, the docs-first runbook/threat model is recorded in `docs/future/active-network-block-02-runbook-and-threat-model.md`, the dry-run contract design is recorded in `docs/future/active-network-block-03-dry-run-contracts-design.md`, the separated no-network skeleton is recorded in `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`, the backend/job/storage/reporting contract design is recorded in `docs/future/active-network-block-05-dry-run-backend-contract-design.md`, the backend integration is recorded in `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`, the frontend design is recorded in `docs/future/active-network-block-07-dry-run-frontend-design.md`, the frontend implementation is recorded in `docs/future/active-network-block-08-dry-run-frontend-implementation-no-network.md`, the end-to-end contract/redaction review is recorded in `docs/future/active-network-block-09-end-to-end-dry-run-contract-redaction-review.md`, and the v0 dry-run closeout is recorded in `docs/future/active-network-block-10-dry-run-closeout.md`.
+Active/Nmap/network work is not part of the Passive Technical Alpha. The first post-alpha Active scope decision is recorded in `docs/future/active-network-block-01-docs-first-scope.md`, the docs-first runbook/threat model is recorded in `docs/future/active-network-block-02-runbook-and-threat-model.md`, the dry-run contract design is recorded in `docs/future/active-network-block-03-dry-run-contracts-design.md`, the separated no-network skeleton is recorded in `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`, the backend/job/storage/reporting contract design is recorded in `docs/future/active-network-block-05-dry-run-backend-contract-design.md`, the backend integration is recorded in `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`, the frontend design is recorded in `docs/future/active-network-block-07-dry-run-frontend-design.md`, the frontend implementation is recorded in `docs/future/active-network-block-08-dry-run-frontend-implementation-no-network.md`, the end-to-end contract/redaction review is recorded in `docs/future/active-network-block-09-end-to-end-dry-run-contract-redaction-review.md`, the v0 dry-run closeout is recorded in `docs/future/active-network-block-10-dry-run-closeout.md`, and the dry-run hardening review before live design is recorded in `docs/future/active-network-block-11-dry-run-hardening-review.md`.
 
 Current decision: `ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME`.
 
@@ -134,6 +134,8 @@ Backend integration decision: `ACTIVE_DRY_RUN_BACKEND_INTEGRATED_NO_NETWORK`.
 Frontend design decision: `ACTIVE_DRY_RUN_FRONTEND_DESIGNED_NO_UI_RUNTIME`.
 
 Closeout decision: `ACTIVE_DRY_RUN_V0_CLOSED_NO_NETWORK`.
+
+Hardening review decision: `ACTIVE_DRY_RUN_HARDENING_ACCEPTED_FOR_LIVE_PROBE_DESIGN`.
 
 This means:
 

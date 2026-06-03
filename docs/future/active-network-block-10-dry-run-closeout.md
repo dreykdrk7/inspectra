@@ -164,10 +164,16 @@ Manual/API smoke for trusted local validation:
 
 Do not proceed to live HTTP probing without a separate docs-first design. Do not proceed to Nmap without a separate docs-first design. Any future Active capability must keep explicit authorization, fail-closed target policy, bounded limits, audit logging, redaction, and clear no-scope copy.
 
-Recommended next microphase:
+Original live-design recommendation:
 
 ```text
 ACTIVE-NETWORK-BLOCK-11-AUTHORIZED-HTTP-HEADER-PROBE-DESIGN-DOCS-FIRST
+```
+
+Before opening live-design work, the product chose a dry-run hardening review:
+
+```text
+docs/future/active-network-block-11-dry-run-hardening-review.md
 ```
 
 If the product priority is hardening instead of Active expansion, use:
