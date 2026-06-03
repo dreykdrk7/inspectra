@@ -1,5 +1,6 @@
 import type {
   ActiveDryRunRequest,
+  ActiveHttpHeaderProbeRequest,
   DeletedFileResponse,
   FileRecord,
   HealthResponse,
@@ -239,6 +240,15 @@ export async function createActiveNetworkDryRun(request: ActiveDryRunRequest): P
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function createActiveHttpHeaderProbe(request: ActiveHttpHeaderProbeRequest): Promise<JobRecord> {
+  const response = await fetch(`${API_BASE_URL}/active/network/http-header-probe`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function listJobs(): Promise<JobListItem[]> {
   const response = await fetch(`${API_BASE_URL}/jobs`);
   return parseJsonResponse<JobListItem[]>(response);
@@ -287,6 +297,7 @@ export const api = {
   launchDomainBasicAudit,
   launchSubdomainInventoryAudit,
   createActiveNetworkDryRun,
+  createActiveHttpHeaderProbe,
   listJobs,
   getJob,
   jobExportUrl,

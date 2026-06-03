@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildActiveDryRunReport, redactActiveDryRunValue } from "./activeDryRunReport";
+import { buildActiveHttpHeaderProbeReport, redactActiveHttpHeaderProbeValue } from "./activeHttpHeaderProbeReport";
 import { buildArchiveAuditReport } from "./archiveReport";
 import { buildCiCdConfigAuditReport, redactCiCdConfigValue } from "./ciCdConfigReport";
 import { buildComposeConfigAuditReport, redactComposeConfigValue } from "./composeConfigReport";
@@ -351,6 +352,80 @@ describe("report helpers", () => {
       "token_should_never_render",
       "Authorization: Bearer token_should_never_render",
       "http://user:pass@example.com",
+      "PRIVATE KEY"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+      expect(redactedRaw).not.toContain(secret);
+    }
+    expect(serializedReport).toContain("REDACTED");
+  });
+
+  it("normalizes Active HTTP header probe reports and redacts legacy header secrets", () => {
+    const report = buildActiveHttpHeaderProbeReport({
+      ...baseJob,
+      audit_type: "active_http_header_probe",
+      file_id: null,
+      target_url: "http://user:pass@example.com/?token=token_should_never_render",
+      error: "Authorization: Bearer token_should_never_render",
+      result: {
+        analyzer: "active_http_header_probe",
+        mode: "live_header_probe",
+        profile: "http_header_probe",
+        summary: {
+          allowed: true,
+          network_requests_sent: 1,
+          body_bytes_read: 0,
+          redirects_followed: 0
+        },
+        target: {
+          input: "http://user:pass@example.com/?token=token_should_never_render",
+          password: "super-secret-password"
+        },
+        authorization: {
+          confirmed: true,
+          live_traffic_confirmed: true,
+          authorization_header: "Authorization: Bearer token_should_never_render"
+        },
+        policy: { allowed: true },
+        dns: { answers_count: 1, blocked_answers_count: 0 },
+        request: { method: "HEAD", network_requests_sent: 1 },
+        response: {
+          status_code: 200,
+          body_read: false,
+          body_bytes_read: 0,
+          redirects_followed: 0,
+          headers: [
+            { name: "Server", value: "nginx", truncated: false },
+            { name: "Set-Cookie", value: "session_should_not_render=cookie_should_not_render", truncated: false },
+            { name: "Authorization", value: "Authorization: Bearer token_should_never_render", truncated: false },
+            { name: "Location", value: "https://example.test/?api_key=raw-api-key-123456", truncated: false }
+          ]
+        },
+        observations: [{ code: "redirect_present_not_followed_info", evidence: "token_should_never_render" }],
+        findings: [{ id: "header_review", evidence: "PRIVATE KEY token_should_never_render" }],
+        blocked_reasons: [],
+        limits: { max_requests: 1, max_redirects: 0, response_body_bytes: 0 },
+        audit_log: [{ event: "head_request", raw: "raw-api-key-123456" }],
+        errors: ["PASSWORD=super-secret-password", "-----BEGIN PRIVATE KEY----- fixture -----END PRIVATE KEY-----"]
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+    const redactedRaw = JSON.stringify(redactActiveHttpHeaderProbeValue({ result: report }));
+
+    expect(report.isActiveHttpHeaderProbe).toBe(true);
+    expect(report.networkRequestsSent).toBe(1);
+    expect(report.bodyBytesRead).toBe(0);
+    expect(report.redirectsFollowed).toBe(0);
+    expect(report.responseHeaders).toContainEqual({ name: "Server", value: "nginx", truncated: false });
+    expect(report.responseHeaders.find((header) => header.name === "Set-Cookie")?.value).toBe("[REDACTED]");
+    for (const secret of [
+      "super-secret-password",
+      "raw-api-key-123456",
+      "token_should_never_render",
+      "Authorization: Bearer token_should_never_render",
+      "http://user:pass@example.com",
+      "session_should_not_render",
+      "cookie_should_not_render",
       "PRIVATE KEY"
     ]) {
       expect(serializedReport).not.toContain(secret);

@@ -25,6 +25,7 @@ export type AuditType =
   | 'domain_basic'
   | 'subdomain_inventory_basic'
   | 'active_network_dry_run'
+  | 'active_http_header_probe'
   | 'django_config_basic'
   | 'docker_config_basic'
   | 'secrets_review_basic'
@@ -77,5 +78,28 @@ export type ActiveDryRunRequest = {
     timeout_seconds: 0;
     max_redirects: 0;
     response_size_bytes: 0;
+  };
+};
+
+export type ActiveHttpHeaderProbeRequest = {
+  target: string;
+  authorization: {
+    confirmed: boolean;
+    live_traffic_confirmed: boolean;
+    statement: 'I confirm I own or am authorized to test this target.';
+    scope: 'single-target';
+  };
+  mode: 'live_header_probe';
+  profile: 'http_header_probe';
+  limits: {
+    max_targets: 1;
+    max_requests: 1;
+    timeout_seconds: 3;
+    max_redirects: 0;
+    response_body_bytes: 0;
+    max_response_header_bytes: 32768;
+    max_dns_answers: 8;
+    retries: 0;
+    concurrency: 1;
   };
 };

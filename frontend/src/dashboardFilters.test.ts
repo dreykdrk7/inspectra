@@ -299,6 +299,18 @@ const jobs: JobListItem[] = [
     updated_at: "2026-05-26T10:44:00Z",
     source_file_deleted_at: null,
     summary: { allowed: true, planned_checks_count: 1, blocked_reasons_count: 0, network_requests_sent: 0 }
+  },
+  {
+    id: "job-active-http-header-probe-completed",
+    audit_type: "active_http_header_probe",
+    file_id: null,
+    target_url: "https://active-header.test/",
+    target_domain: null,
+    status: "completed",
+    created_at: "2026-05-26T10:45:00Z",
+    updated_at: "2026-05-26T10:46:00Z",
+    source_file_deleted_at: null,
+    summary: { allowed: true, network_requests_sent: 1, redirects_followed: 0, body_bytes_read: 0 }
   }
 ];
 
@@ -337,6 +349,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "redis_config_basic", "")).toEqual([jobs[18]]);
     expect(filterJobs(jobs, "all", "sql_database_config_basic", "")).toEqual([jobs[19]]);
     expect(filterJobs(jobs, "all", "active_network_dry_run", "")).toEqual([jobs[20]]);
+    expect(filterJobs(jobs, "all", "active_http_header_probe", "")).toEqual([jobs[21]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
@@ -362,13 +375,15 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "DATABASE_CONFIG")).toEqual([jobs[17], jobs[19]]);
     expect(filterJobs(jobs, "all", "all", "REDIS_CONFIG")).toEqual([jobs[18]]);
     expect(filterJobs(jobs, "all", "all", "ACTIVE_NETWORK")).toEqual([jobs[20]]);
+    expect(filterJobs(jobs, "all", "all", "ACTIVE_HTTP_HEADER")).toEqual([jobs[21]]);
   });
 
   it("searches jobs by human audit label and category", () => {
     expect(filterJobs(jobs, "all", "all", "SQL DB config")).toEqual([jobs[19]]);
     expect(filterJobs(jobs, "all", "all", "Data layer")).toEqual([jobs[17], jobs[18], jobs[19]]);
     expect(filterJobs(jobs, "all", "all", "Active network dry-run")).toEqual([jobs[20]]);
-    expect(filterJobs(jobs, "all", "all", "Active / Network")).toEqual([jobs[20]]);
+    expect(filterJobs(jobs, "all", "all", "Authorized HTTP header probe")).toEqual([jobs[21]]);
+    expect(filterJobs(jobs, "all", "all", "Active / Network")).toEqual([jobs[20], jobs[21]]);
     expect(filterJobs(jobs, "all", "all", "Infrastructure & deployment")).toEqual([jobs[12], jobs[13], jobs[14]]);
   });
 
@@ -379,8 +394,8 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 21,
-      completedJobs: 18,
+      totalJobs: 22,
+      completedJobs: 19,
       failedJobs: 1,
       activeJobs: 2
     });
@@ -425,9 +440,15 @@ describe("dashboard filters", () => {
     expect(auditTypeLabel("redis_config_basic")).toBe("Redis config");
     expect(auditTypeLabel("sql_database_config_basic")).toBe("SQL DB config");
     expect(auditTypeLabel("active_network_dry_run")).toBe("Active network dry-run");
+    expect(auditTypeLabel("active_http_header_probe")).toBe("Authorized HTTP header probe");
     expect(auditTypeCategoryLabel("redis_config_basic")).toBe("Data layer");
     expect(auditTypeCategoryLabel("sql_database_config_basic")).toBe("Data layer");
     expect(auditTypeCategoryLabel("active_network_dry_run")).toBe("Active / Network");
+    expect(auditTypeCategoryLabel("active_http_header_probe")).toBe("Active / Network");
+    expect(getAuditTypeMetadata("active_http_header_probe")).toMatchObject({
+      sourceFamily: "target",
+      shortDescription: "Sends one authorized HTTP HEAD request and records redacted headers; no redirects or body read."
+    });
   });
 
   it("keeps a stable fallback for unknown audit types", () => {

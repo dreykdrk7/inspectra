@@ -4,6 +4,8 @@ import { Activity, Download, Eye, FilePlus2, Globe2, Network, Play, RefreshCw, T
 import { api } from "./api";
 import { ActiveDryRunJobReport } from "./ActiveDryRunJobReport";
 import { redactActiveDryRunText } from "./activeDryRunReport";
+import { ActiveHttpHeaderProbeJobReport } from "./ActiveHttpHeaderProbeJobReport";
+import { redactActiveHttpHeaderProbeText } from "./activeHttpHeaderProbeReport";
 import {
   auditTypeCategoryLabel,
   auditTypeLabel,
@@ -37,7 +39,16 @@ import { SqlDatabaseConfigJobReport } from "./SqlDatabaseConfigJobReport";
 import { SubdomainJobReport } from "./SubdomainJobReport";
 import { TerraformConfigJobReport } from "./TerraformConfigJobReport";
 import { WebJobReport } from "./WebJobReport";
-import type { ActiveDryRunRequest, FileRecord, HealthResponse, JobListItem, JobRecord, ReportFormat, SbomFormat } from "./types";
+import type {
+  ActiveDryRunRequest,
+  ActiveHttpHeaderProbeRequest,
+  FileRecord,
+  HealthResponse,
+  JobListItem,
+  JobRecord,
+  ReportFormat,
+  SbomFormat
+} from "./types";
 import { inspectWebUrlQuery } from "./webUrl";
 
 type LoadState = {
@@ -53,6 +64,7 @@ const LOCAL_ALPHA_DEMO_COPY =
 const LOCAL_ALPHA_DEMO_REDACTION_COPY =
   "Results, exports, and Raw JSON are redacted with [REDACTED]; this does not sanitize the original uploaded file.";
 const ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT = "I confirm I own or am authorized to test this target.";
+const ACTIVE_HTTP_HEADER_PROBE_LIVE_TRAFFIC_STATEMENT = "I understand this will send one HTTP HEAD request to the target.";
 
 type ArchiveAction = {
   label: string;
@@ -94,6 +106,10 @@ export function App() {
   const [activeDryRunTarget, setActiveDryRunTarget] = useState("");
   const [activeDryRunAuthorizationConfirmed, setActiveDryRunAuthorizationConfirmed] = useState(false);
   const [activeDryRunState, setActiveDryRunState] = useState<LoadState>(initialLoadState);
+  const [activeHttpHeaderProbeTarget, setActiveHttpHeaderProbeTarget] = useState("");
+  const [activeHttpHeaderProbeAuthorizationConfirmed, setActiveHttpHeaderProbeAuthorizationConfirmed] = useState(false);
+  const [activeHttpHeaderProbeLiveTrafficConfirmed, setActiveHttpHeaderProbeLiveTrafficConfirmed] = useState(false);
+  const [activeHttpHeaderProbeState, setActiveHttpHeaderProbeState] = useState<LoadState>(initialLoadState);
 
   const refreshHealth = useCallback(async () => {
     setHealthState({ loading: true, error: null });
@@ -155,6 +171,8 @@ export function App() {
   const webQueryInspection = useMemo(() => inspectWebUrlQuery(webUrl), [webUrl]);
   const activeDryRunQueryInspection = useMemo(() => inspectWebUrlQuery(activeDryRunTarget), [activeDryRunTarget]);
   const activeDryRunHasUserinfo = useMemo(() => targetHasUserinfo(activeDryRunTarget), [activeDryRunTarget]);
+  const activeHttpHeaderProbeQueryInspection = useMemo(() => inspectWebUrlQuery(activeHttpHeaderProbeTarget), [activeHttpHeaderProbeTarget]);
+  const activeHttpHeaderProbeHasUserinfo = useMemo(() => targetHasUserinfo(activeHttpHeaderProbeTarget), [activeHttpHeaderProbeTarget]);
 
   useEffect(() => {
     if (!hasActiveJobs) {
@@ -448,6 +466,50 @@ export function App() {
     }
   }
 
+  async function launchActiveHttpHeaderProbe(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setActionError(null);
+    setActiveHttpHeaderProbeState({ loading: true, error: null });
+    const request: ActiveHttpHeaderProbeRequest = {
+      target: activeHttpHeaderProbeTarget,
+      authorization: {
+        confirmed: activeHttpHeaderProbeAuthorizationConfirmed,
+        live_traffic_confirmed: activeHttpHeaderProbeLiveTrafficConfirmed,
+        statement: ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT,
+        scope: "single-target"
+      },
+      mode: "live_header_probe",
+      profile: "http_header_probe",
+      limits: {
+        max_targets: 1,
+        max_requests: 1,
+        timeout_seconds: 3,
+        max_redirects: 0,
+        response_body_bytes: 0,
+        max_response_header_bytes: 32768,
+        max_dns_answers: 8,
+        retries: 0,
+        concurrency: 1
+      }
+    };
+    try {
+      const job = await api.createActiveHttpHeaderProbe(request);
+      setSelectedJob(job);
+      setActiveHttpHeaderProbeTarget("");
+      setActiveHttpHeaderProbeAuthorizationConfirmed(false);
+      setActiveHttpHeaderProbeLiveTrafficConfirmed(false);
+      await refreshJobs();
+      setActiveHttpHeaderProbeState({ loading: false, error: null });
+    } catch (error) {
+      const message = toErrorMessage(error);
+      const disabledMessage =
+        message === "Active HTTP header probe is disabled in this environment."
+          ? `${message} This deployment has not enabled live header probes.`
+          : message;
+      setActiveHttpHeaderProbeState({ loading: false, error: disabledMessage });
+    }
+  }
+
   async function deleteFile(fileId: string) {
     setActionError(null);
     try {
@@ -738,6 +800,94 @@ export function App() {
           </form>
           {activeDryRunState.error ? <p className="error-text">{activeDryRunState.error}</p> : null}
         </Panel>
+
+        <Panel title="Authorized HTTP Header Probe" icon={<Network size={18} aria-hidden="true" />}>
+          <form className="web-audit-form" onSubmit={(event) => void launchActiveHttpHeaderProbe(event)}>
+            <div className="badge-row">
+              <span className="status-pill">Live request</span>
+              <span className="status-pill">One HTTP HEAD request</span>
+              <span className="status-pill">No body read</span>
+              <span className="status-pill">Redirects not followed</span>
+            </div>
+            <p className="muted">
+              Create a job for one authorized HTTP HEAD request to one explicit URL. This may be logged by the target. No redirects are followed
+              and no response body is read.
+            </p>
+            <input
+              className="search-input"
+              type="text"
+              placeholder="https://example.test/"
+              value={activeHttpHeaderProbeTarget}
+              onChange={(event) => setActiveHttpHeaderProbeTarget(event.target.value)}
+              required
+            />
+            {activeHttpHeaderProbeHasUserinfo ? (
+              <div className="query-warning" role="status">
+                URL credentials are not accepted. Remove userinfo before creating an authorized header probe job.
+              </div>
+            ) : activeHttpHeaderProbeQueryInspection.hasQueryString ? (
+              <div className="query-warning" role="status">
+                {activeHttpHeaderProbeQueryInspection.sensitiveParams.length > 0 ? (
+                  <>
+                    Sensitive query parameters will be redacted in results and exports:{" "}
+                    <span className="mono">{activeHttpHeaderProbeQueryInspection.sensitiveParams.join(", ")}</span>
+                  </>
+                ) : (
+                  "Query string present. Sensitive parameter names are redacted in results and exports. Avoid entering secrets."
+                )}
+              </div>
+            ) : null}
+            <dl className="summary-list">
+              <dt>Mode</dt>
+              <dd>live_header_probe</dd>
+              <dt>Profile</dt>
+              <dd>http_header_probe</dd>
+              <dt>Method</dt>
+              <dd>HEAD only</dd>
+              <dt>Limits</dt>
+              <dd className="mono">
+                max_targets=1, max_requests=1, timeout_seconds=3, max_redirects=0, response_body_bytes=0,
+                max_response_header_bytes=32768, max_dns_answers=8, retries=0, concurrency=1
+              </dd>
+              <dt>Custom headers</dt>
+              <dd>none</dd>
+              <dt>Request body</dt>
+              <dd>none</dd>
+            </dl>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={activeHttpHeaderProbeAuthorizationConfirmed}
+                onChange={(event) => setActiveHttpHeaderProbeAuthorizationConfirmed(event.target.checked)}
+              />
+              {ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT}
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={activeHttpHeaderProbeLiveTrafficConfirmed}
+                onChange={(event) => setActiveHttpHeaderProbeLiveTrafficConfirmed(event.target.checked)}
+              />
+              {ACTIVE_HTTP_HEADER_PROBE_LIVE_TRAFFIC_STATEMENT}
+            </label>
+            <p className="muted">
+              Do not test third-party systems without permission. Authorization is a user assertion, not proof of ownership.
+            </p>
+            <button
+              type="submit"
+              disabled={
+                activeHttpHeaderProbeState.loading ||
+                !activeHttpHeaderProbeTarget.trim() ||
+                !activeHttpHeaderProbeAuthorizationConfirmed ||
+                !activeHttpHeaderProbeLiveTrafficConfirmed
+              }
+            >
+              <Play size={16} aria-hidden="true" />
+              {activeHttpHeaderProbeState.loading ? "Creating job" : "Create authorized header probe job"}
+            </button>
+          </form>
+          {activeHttpHeaderProbeState.error ? <p className="error-text">{activeHttpHeaderProbeState.error}</p> : null}
+        </Panel>
       </section>
 
       <section className="content-grid">
@@ -922,6 +1072,8 @@ export function App() {
               <SubdomainJobReport job={selectedJob} />
             ) : selectedJob.audit_type === "active_network_dry_run" ? (
               <ActiveDryRunJobReport job={selectedJob} />
+            ) : selectedJob.audit_type === "active_http_header_probe" ? (
+              <ActiveHttpHeaderProbeJobReport job={selectedJob} />
             ) : selectedJob.audit_type === "django_config_basic" ? (
               <DjangoConfigJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "docker_config_basic" ? (
@@ -1107,6 +1259,9 @@ function jobTargetDisplay(job: JobListItem): string {
   if (job.audit_type === "active_network_dry_run") {
     return redactActiveDryRunText(target);
   }
+  if (job.audit_type === "active_http_header_probe") {
+    return redactActiveHttpHeaderProbeText(target);
+  }
   return target;
 }
 
@@ -1215,6 +1370,13 @@ function summarizeJob(job: JobListItem): string {
     const blockedReasons = typeof job.summary.blocked_reasons_count === "number" ? job.summary.blocked_reasons_count : 0;
     const networkRequestsSent = typeof job.summary.network_requests_sent === "number" ? job.summary.network_requests_sent : 0;
     return `${allowed === false ? "blocked" : "dry-run"}, ${plannedChecks} planned, ${blockedReasons} blocked, ${networkRequestsSent} network requests`;
+  }
+  if (job.audit_type === "active_http_header_probe") {
+    const allowed = typeof job.summary.allowed === "boolean" ? job.summary.allowed : null;
+    const networkRequestsSent = typeof job.summary.network_requests_sent === "number" ? job.summary.network_requests_sent : 0;
+    const redirectsFollowed = typeof job.summary.redirects_followed === "number" ? job.summary.redirects_followed : 0;
+    const bodyBytesRead = typeof job.summary.body_bytes_read === "number" ? job.summary.body_bytes_read : 0;
+    return `${allowed === false || networkRequestsSent === 0 ? "blocked" : "HEAD sent"}, ${networkRequestsSent} request, ${redirectsFollowed} redirects, ${bodyBytesRead} body bytes`;
   }
   if (job.audit_type === "django_config_basic") {
     const filesRead = typeof job.summary.files_read === "number" ? job.summary.files_read : 0;

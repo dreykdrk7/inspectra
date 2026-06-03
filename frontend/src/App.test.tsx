@@ -182,6 +182,26 @@ describe("App", () => {
             )
           );
         }
+        if (url.endsWith("/active/network/http-header-probe")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-active-http-header-1",
+                audit_type: "active_http_header_probe",
+                file_id: null,
+                target_url: "https://example.test/",
+                target_domain: null,
+                status: "queued",
+                created_at: "2026-05-26T10:08:45Z",
+                updated_at: "2026-05-26T10:08:45Z",
+                source_file_deleted_at: null,
+                result: null,
+                error: null
+              },
+              202
+            )
+          );
+        }
         if (url.endsWith("/audits/django-config/file-archive-1")) {
           return Promise.resolve(
             jsonResponse(
@@ -472,6 +492,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Domain Baseline" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Subdomain Inventory" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Active / Network dry-run" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Authorized HTTP Header Probe" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Jobs" })).toBeInTheDocument();
     const demoNote = screen.getByRole("note", { name: "Local alpha demo fixture note" });
@@ -833,6 +854,110 @@ describe("App", () => {
     expect(panel?.textContent).not.toContain(".env");
   });
 
+  it("creates an authorized HTTP header probe only after both live confirmations", async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalled();
+    });
+    vi.mocked(globalThis.fetch).mockClear();
+
+    const heading = screen.getByRole("heading", { name: "Authorized HTTP Header Probe" });
+    const panel = heading.closest("section");
+    expect(panel).not.toBeNull();
+    const scoped = within(panel as HTMLElement);
+    const panelText = panel?.textContent ?? "";
+    expect(panelText).toContain("Live request");
+    expect(panelText).toContain("One HTTP HEAD request");
+    expect(panelText).toContain("No body read");
+    expect(panelText).toContain("Redirects not followed");
+    for (const forbidden of ["Scan", "Run Nmap", "Attack", "Exploit", "port scan", "crawl", "fuzz", "brute force"]) {
+      expect(panelText).not.toContain(forbidden);
+    }
+
+    const targetInput = scoped.getByPlaceholderText("https://example.test/");
+    const submit = scoped.getByRole("button", { name: /Create authorized header probe job/i });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(targetInput, { target: { value: "https://example.test/" } });
+    expect(submit).toBeDisabled();
+
+    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
+    expect(submit).toBeDisabled();
+
+    fireEvent.click(scoped.getByLabelText("I understand this will send one HTTP HEAD request to the target."));
+    expect(submit).not.toBeDisabled();
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/active/network/http-header-probe",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    const request = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find(([input]) => String(input).endsWith("/active/network/http-header-probe"))?.[1] as RequestInit | undefined;
+    expect(request).toBeDefined();
+    expect(JSON.parse(String(request?.body))).toEqual({
+      target: "https://example.test/",
+      authorization: {
+        confirmed: true,
+        live_traffic_confirmed: true,
+        statement: "I confirm I own or am authorized to test this target.",
+        scope: "single-target"
+      },
+      mode: "live_header_probe",
+      profile: "http_header_probe",
+      limits: {
+        max_targets: 1,
+        max_requests: 1,
+        timeout_seconds: 3,
+        max_redirects: 0,
+        response_body_bytes: 0,
+        max_response_header_bytes: 32768,
+        max_dns_answers: 8,
+        retries: 0,
+        concurrency: 1
+      }
+    });
+  });
+
+  it("shows the Active HTTP header probe disabled backend message without env-file guidance", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files") || url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/active/network/http-header-probe")) {
+          return Promise.resolve(jsonResponse({ detail: "Active HTTP header probe is disabled in this environment." }, 403));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    render(<App />);
+
+    const heading = await screen.findByRole("heading", { name: "Authorized HTTP Header Probe" });
+    const panel = heading.closest("section");
+    expect(panel).not.toBeNull();
+    const scoped = within(panel as HTMLElement);
+    fireEvent.change(scoped.getByPlaceholderText("https://example.test/"), { target: { value: "https://example.test/" } });
+    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
+    fireEvent.click(scoped.getByLabelText("I understand this will send one HTTP HEAD request to the target."));
+    fireEvent.click(scoped.getByRole("button", { name: /Create authorized header probe job/i }));
+
+    expect(await scoped.findByText(/Active HTTP header probe is disabled in this environment/i)).toBeInTheDocument();
+    expect(scoped.getByText(/This deployment has not enabled live header probes/i)).toBeInTheDocument();
+    expect(panel?.textContent).not.toContain(".env");
+    expect(panel?.textContent).not.toContain("DNS was attempted");
+  });
+
   it("renders Active dry-run jobs with redacted target table and report payload", async () => {
     const activeJob = {
       id: "job-active-legacy-1",
@@ -966,6 +1091,8 @@ describe("App", () => {
     expect(archiveRow?.textContent).not.toContain("Run all recommended passive checks");
     expect(archiveRow?.textContent).not.toContain("Active network dry-run");
     expect(archiveRow?.textContent).not.toContain("Create dry-run plan");
+    expect(archiveRow?.textContent).not.toContain("Authorized HTTP Header Probe");
+    expect(archiveRow?.textContent).not.toContain("Create authorized header probe job");
     expect(pdfRow?.textContent).not.toContain("Start here");
     expect(pdfRow?.textContent).not.toContain("Data layer");
 

@@ -439,10 +439,12 @@ The frontend design is accepted for a future implementation block. That next blo
 
 ## Next Microphase
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-16-AUTHORIZED-HTTP-HEADER-PROBE-FRONTEND-IMPLEMENTATION
 ```
 
-That block should implement the designed UI and tests without changing backend, runner, or the live probe contract.
+Implementation record: `docs/future/active-network-block-16-authorized-http-header-probe-frontend-implementation.md`
+
+That block implements the designed UI and tests without changing backend, runner, or the live probe contract.
