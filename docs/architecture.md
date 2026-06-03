@@ -21,6 +21,8 @@ The common archive-based config flow is:
 
 Redaction is layered: runner output, backend storage/reporting, public API payloads for sensitive modules, exports, frontend reports, and frontend raw JSON all apply defensive redaction for legacy or malformed payloads. Findings remain heuristic review indicators rather than confirmed vulnerabilities, live reachability checks, exploitability claims, breach claims, or proof of compromise.
 
+The trusted local Passive Alpha closeout/release-candidate decision is `PASSIVE_ALPHA_TRUSTED_LOCAL_RELEASE_CANDIDATE_ACCEPTED`. It accepts the current passive/local documentation package while keeping production, external-user, multi-tenant, Nmap, broader Active, and new analyzer work out of scope until separately re-scoped.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.

@@ -74,6 +74,8 @@ The passive technical alpha is closed for new module expansion. Its shared princ
 
 For modules that mark `.env`, credential files, dumps, backups, data files, ACL files, state files, or other sensitive adjacent files as no-read, Inspectra records safe context only and does not read those contents. Uploaded archive bytes may still contain secrets and are stored locally according to the MVP data model.
 
+Trusted local Passive Alpha closeout/release-candidate decision: `PASSIVE_ALPHA_TRUSTED_LOCAL_RELEASE_CANDIDATE_ACCEPTED`. This accepts the local/passive documentation package only; it does not approve production, external-user, multi-tenant, Nmap, broader Active, or new analyzer work.
+
 Tools used in this phase:
 
 - `pdfinfo`

@@ -87,7 +87,7 @@ The recommended next product block is UI/report polish and smoke-demo coherence,
 
 ## Local Technical Alpha Demo
 
-For trusted local alpha demos, use only the synthetic fixture pack under `tests/fixtures/demo/passive-alpha/` and follow `docs/future/passive-alpha-smoke-demo-checklist.md`. The packaging/readiness decision is documented in `docs/future/passive-alpha-packaging-readiness.md`.
+For trusted local alpha demos, use only the synthetic fixture pack under `tests/fixtures/demo/passive-alpha/` and follow `docs/future/passive-alpha-smoke-demo-checklist.md`. The packaging/readiness decision is documented in `docs/future/passive-alpha-packaging-readiness.md`, and the trusted local closeout/release-candidate record is documented in `docs/future/passive-alpha-closeout-or-release-candidate.md`.
 
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 

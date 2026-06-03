@@ -4,6 +4,8 @@ Status: `PASSIVE_ALPHA_READINESS_RECHECK_COMPLETED_AFTER_ACTIVE_CLOSEOUT`.
 
 Active Alpha closeout: `docs/future/active-network-block-25-active-alpha-closeout.md`
 
+Passive Alpha closeout/release candidate: `docs/future/passive-alpha-closeout-or-release-candidate.md`
+
 Passive suite closeout: `docs/future/passive-suite-alpha-transversal-closeout.md`
 
 Passive packaging readiness: `docs/future/passive-alpha-packaging-readiness.md`
@@ -197,7 +199,7 @@ NMAP-SCOPE-DECISION-DOCS-FIRST
 
 ## Next Recommendation
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 PASSIVE-ALPHA-CLOSEOUT-OR-RELEASE-CANDIDATE-DOCS-FIRST
