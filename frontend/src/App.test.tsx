@@ -899,7 +899,24 @@ describe("App", () => {
       .mocked(globalThis.fetch)
       .mock.calls.find(([input]) => String(input).endsWith("/active/network/http-header-probe"))?.[1] as RequestInit | undefined;
     expect(request).toBeDefined();
-    expect(JSON.parse(String(request?.body))).toEqual({
+    const requestBody = JSON.parse(String(request?.body));
+    expect(Object.keys(requestBody).sort()).toEqual(["authorization", "limits", "mode", "profile", "target"]);
+    expect(Object.keys(requestBody.authorization).sort()).toEqual(["confirmed", "live_traffic_confirmed", "scope", "statement"]);
+    expect(Object.keys(requestBody.limits).sort()).toEqual([
+      "concurrency",
+      "max_dns_answers",
+      "max_redirects",
+      "max_requests",
+      "max_response_header_bytes",
+      "max_targets",
+      "response_body_bytes",
+      "retries",
+      "timeout_seconds"
+    ]);
+    expect(JSON.stringify(requestBody)).not.toContain("file_id");
+    expect(JSON.stringify(requestBody)).not.toContain("headers");
+    expect(JSON.stringify(requestBody)).not.toContain("cookies");
+    expect(requestBody).toEqual({
       target: "https://example.test/",
       authorization: {
         confirmed: true,
@@ -947,15 +964,28 @@ describe("App", () => {
     const panel = heading.closest("section");
     expect(panel).not.toBeNull();
     const scoped = within(panel as HTMLElement);
-    fireEvent.change(scoped.getByPlaceholderText("https://example.test/"), { target: { value: "https://example.test/" } });
+    fireEvent.change(scoped.getByPlaceholderText("https://example.test/"), {
+      target: { value: "http://user:pass@example.com/?token=token_should_never_render" }
+    });
     fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
     fireEvent.click(scoped.getByLabelText("I understand this will send one HTTP HEAD request to the target."));
     fireEvent.click(scoped.getByRole("button", { name: /Create authorized header probe job/i }));
 
     expect(await scoped.findByText(/Active HTTP header probe is disabled in this environment/i)).toBeInTheDocument();
     expect(scoped.getByText(/This deployment has not enabled live header probes/i)).toBeInTheDocument();
-    expect(panel?.textContent).not.toContain(".env");
-    expect(panel?.textContent).not.toContain("DNS was attempted");
+    const rendered = panel?.textContent ?? "";
+    expect(rendered).not.toContain(".env");
+    expect(rendered).not.toContain("bypass");
+    expect(rendered).not.toContain("retry");
+    expect(rendered).not.toContain("DNS was attempted");
+    expect(rendered).not.toContain("HTTP was attempted");
+    expect(rendered).not.toContain("http://user:pass@example.com");
+    expect(rendered).not.toContain("token_should_never_render");
+    expect(
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.filter(([input]) => String(input).endsWith("/jobs"))
+    ).toHaveLength(1);
   });
 
   it("renders Active dry-run jobs with redacted target table and report payload", async () => {
@@ -1063,6 +1093,142 @@ describe("App", () => {
       "token_should_never_render",
       "super-secret-password",
       "Authorization: Bearer token_should_never_render",
+      "PRIVATE KEY"
+    ]) {
+      expect(rendered).not.toContain(secret);
+    }
+    expect(rendered).toContain("[REDACTED]");
+  });
+
+  it("renders Active HTTP header probe jobs with redacted target table and report payload", async () => {
+    const activeJob = {
+      id: "job-active-http-legacy-1",
+      audit_type: "active_http_header_probe",
+      file_id: null,
+      target_url: "http://user:pass@example.com/?token=token_should_never_render",
+      target_domain: null,
+      status: "completed",
+      created_at: "2026-05-26T10:23:00Z",
+      updated_at: "2026-05-26T10:24:00Z",
+      source_file_deleted_at: null,
+      summary: {
+        target_display: "http://user:pass@example.com/?token=token_should_never_render",
+        allowed: true,
+        network_requests_sent: 1,
+        body_bytes_read: 0,
+        redirects_followed: 0
+      }
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/jobs/job-active-http-legacy-1")) {
+          return Promise.resolve(
+            jsonResponse({
+              ...activeJob,
+              summary: undefined,
+              result: {
+                analyzer: "active_http_header_probe",
+                mode: "live_header_probe",
+                profile: "http_header_probe",
+                target: {
+                  raw: "http://user:pass@example.com/?token=token_should_never_render",
+                  password: "super-secret-password"
+                },
+                authorization: {
+                  confirmed: true,
+                  live_traffic_confirmed: true,
+                  authorization_header: "Authorization: Bearer token_should_never_render"
+                },
+                policy: {
+                  allowed: true,
+                  reason: "policy_allowed"
+                },
+                dns: {
+                  answers_count: 1,
+                  blocked_answers_count: 0
+                },
+                request: {
+                  method: "HEAD",
+                  network_requests_sent: 1
+                },
+                response: {
+                  body_read: false,
+                  body_bytes_read: 0,
+                  redirects_followed: 0,
+                  headers: [
+                    { name: "Set-Cookie", value: "session_should_not_render=cookie_should_not_render" },
+                    { name: "Authorization", value: "Authorization: Bearer token_should_never_render" },
+                    { name: "X-Api-Key", value: "raw-api-key-123456" },
+                    { name: "Location", value: "http://user:pass@example.com/?token=token_should_never_render" },
+                    { name: "X-Key", value: "-----BEGIN PRIVATE KEY----- fixture -----END PRIVATE KEY-----" }
+                  ]
+                },
+                observations: [{ code: "legacy_observation", evidence: "raw-api-key-123456" }],
+                findings: [{ id: "legacy_finding", evidence: "PRIVATE KEY token_should_never_render" }],
+                blocked_reasons: [],
+                limits: { max_requests: 1, max_redirects: 0, response_body_bytes: 0 },
+                audit_log: [{ event: "head_request_completed", raw: "raw-api-key-123456" }],
+                errors: ["PASSWORD=super-secret-password"],
+                summary: {
+                  allowed: true,
+                  network_requests_sent: 1,
+                  body_bytes_read: 0,
+                  redirects_followed: 0
+                }
+              },
+              error: "Authorization: Bearer token_should_never_render"
+            })
+          );
+        }
+        if (url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse([activeJob]));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+
+    expect(await screen.findByText("Authorized HTTP header probe")).toBeInTheDocument();
+    let rendered = view.container.textContent ?? "";
+    for (const secret of [
+      "http://user:pass@example.com",
+      "user:pass",
+      "token_should_never_render",
+      "super-secret-password",
+      "Authorization: Bearer token_should_never_render",
+      "raw-api-key-123456",
+      "session_should_not_render",
+      "cookie_should_not_render",
+      "PRIVATE KEY"
+    ]) {
+      expect(rendered).not.toContain(secret);
+    }
+    expect(rendered).toContain("[REDACTED]");
+
+    fireEvent.click(screen.getByTitle("View job"));
+    expect(await screen.findByRole("heading", { name: "Authorized HTTP header probe" })).toBeInTheDocument();
+    rendered = view.container.textContent ?? "";
+    expect(rendered).toContain("One authorized HTTP HEAD request was sent.");
+    expect(rendered).toContain("Response body was not read.");
+    expect(rendered).toContain("Redirects were not followed.");
+    for (const secret of [
+      "http://user:pass@example.com",
+      "user:pass",
+      "token_should_never_render",
+      "super-secret-password",
+      "Authorization: Bearer token_should_never_render",
+      "raw-api-key-123456",
+      "session_should_not_render",
+      "cookie_should_not_render",
       "PRIVATE KEY"
     ]) {
       expect(rendered).not.toContain(secret);

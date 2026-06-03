@@ -175,10 +175,12 @@ Backend pytest is not required for this block because backend and runner runtime
 
 ## Next Microphase
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-17-END-TO-END-AUTHORIZED-HTTP-HEADER-PROBE-FRONTEND-REVIEW
 ```
 
-That block should review the full frontend/API/reporting redaction path without changing backend, runner, Nmap scope, request limits, or live behavior.
+Review record: `docs/future/active-network-block-17-end-to-end-authorized-http-header-probe-frontend-review.md`
+
+That block reviews the full frontend/API/reporting redaction path without changing backend, runner, Nmap scope, request limits, or live behavior.

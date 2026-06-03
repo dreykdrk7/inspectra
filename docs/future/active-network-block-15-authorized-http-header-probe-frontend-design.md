@@ -447,4 +447,6 @@ ACTIVE-NETWORK-BLOCK-16-AUTHORIZED-HTTP-HEADER-PROBE-FRONTEND-IMPLEMENTATION
 
 Implementation record: `docs/future/active-network-block-16-authorized-http-header-probe-frontend-implementation.md`
 
-That block implements the designed UI and tests without changing backend, runner, or the live probe contract.
+Review record: `docs/future/active-network-block-17-end-to-end-authorized-http-header-probe-frontend-review.md`
+
+Those blocks implement and review the designed UI and tests without changing backend, runner, or the live probe contract.

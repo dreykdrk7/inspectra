@@ -43,6 +43,7 @@ The Active scope, runbook/threat model, dry-run contracts, skeleton, and backend
 - `docs/future/active-network-block-14-end-to-end-authorized-http-header-probe-contract-redaction-review.md`
 - `docs/future/active-network-block-15-authorized-http-header-probe-frontend-design.md`
 - `docs/future/active-network-block-16-authorized-http-header-probe-frontend-implementation.md`
+- `docs/future/active-network-block-17-end-to-end-authorized-http-header-probe-frontend-review.md`
 
 The dry-run contract requires Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. The implemented backend endpoint is `POST /active/network/dry-run`, gated by `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false` by default. It creates `active_network_dry_run` target-based jobs with no `file_id`, uses existing job statuses, represents blocked dry-runs inside `result.policy`, and applies defensive redaction to storage, public API responses, errors, summaries, and Markdown/HTML/XML/PDF exports. The frontend now provides a separate `Active / Network dry-run` panel, required authorization checkbox, dry-run-only request body, catalog/filter entry, redacted job-table target display, and redacted report view; it does not add archive actions or live probing controls. The closeout decision is `ACTIVE_DRY_RUN_V0_CLOSED_NO_NETWORK`; the hardening review decision is `ACTIVE_DRY_RUN_HARDENING_ACCEPTED_FOR_LIVE_PROBE_DESIGN`, which clears docs-first design only and does not approve live runtime. Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
 
@@ -53,6 +54,8 @@ The end-to-end backend-only review decision is `ACTIVE_HTTP_HEADER_PROBE_E2E_REV
 The frontend design decision is `ACTIVE_HTTP_HEADER_PROBE_FRONTEND_DESIGNED_NO_UI_RUNTIME`. It defines a future `Authorized HTTP Header Probe` panel in the `Active / Network` dashboard area, visually separated from dry-run and archive actions, with double authorization, live-request warnings, exact request-body constraints, redacted report UX, job catalog/filter metadata, and future tests. It does not implement frontend runtime or call the live endpoint.
 
 The frontend implementation adds the `Authorized HTTP Header Probe` panel, `POST /active/network/http-header-probe` client helper, exact one-HEAD request body, double-confirmation UI, `active_http_header_probe` catalog/filter metadata, target redaction in the job table, and `ActiveHttpHeaderProbeJobReport` with redacted report sections and Raw JSON. It does not add archive actions, run-all integration, backend changes, runner changes, Nmap, redirects, body reads, custom headers, auth, cookies, port checks, or crawling.
+
+The frontend E2E-style review decision is `ACTIVE_HTTP_HEADER_PROBE_FRONTEND_E2E_REVIEW_PASSED`. It verifies disabled-state copy, double-confirmation gating, exact request body, catalog/filter behavior, job-table/report/Raw JSON redaction, successful/blocked/failed/sparse report rendering, forbidden-copy absence, and no archive action integration.
 
 ## Components
 
