@@ -4,6 +4,8 @@ Status: `ACTIVE_ALPHA_V0_CLOSED_INTERNAL_LIMITED`.
 
 README/copy polish: `docs/future/active-network-block-24-active-alpha-readme-linking-and-copy-polish.md`
 
+Passive alpha readiness recheck: `docs/future/active-network-block-26-passive-alpha-readiness-recheck.md`
+
 Smoke execution: `docs/future/active-network-block-23-limited-live-smoke-test-execution.md`
 
 Operator guide: `docs/future/active-network-block-22-active-alpha-operator-guide.md`
@@ -203,7 +205,7 @@ No future Active block should infer permission from this closeout to add Nmap, b
 
 ## Next Recommendation
 
-Recommended next microphase:
+Completed next microphase:
 
 ```text
 ACTIVE-NETWORK-BLOCK-26-PASSIVE-ALPHA-READINESS-RECHECK

@@ -52,6 +52,7 @@ The Active scope, runbook/threat model, dry-run contracts, skeleton, and backend
 - `docs/future/active-network-block-23-limited-live-smoke-test-execution.md`
 - `docs/future/active-network-block-24-active-alpha-readme-linking-and-copy-polish.md`
 - `docs/future/active-network-block-25-active-alpha-closeout.md`
+- `docs/future/active-network-block-26-passive-alpha-readiness-recheck.md`
 
 The dry-run contract requires Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. The implemented backend endpoint is `POST /active/network/dry-run`, gated by `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false` by default. It creates `active_network_dry_run` target-based jobs with no `file_id`, uses existing job statuses, represents blocked dry-runs inside `result.policy`, and applies defensive redaction to storage, public API responses, errors, summaries, and Markdown/HTML/XML/PDF exports. The frontend now provides a separate `Active / Network dry-run` panel, required authorization checkbox, dry-run-only request body, catalog/filter entry, redacted job-table target display, and redacted report view; it does not add archive actions or live probing controls. The closeout decision is `ACTIVE_DRY_RUN_V0_CLOSED_NO_NETWORK`; the hardening review decision is `ACTIVE_DRY_RUN_HARDENING_ACCEPTED_FOR_LIVE_PROBE_DESIGN`, which clears docs-first design only and does not approve live runtime. Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
 
@@ -80,6 +81,8 @@ The limited live smoke execution decision is `ACTIVE_LIMITED_LIVE_TEST_DOUBLE_SM
 The Active Alpha copy polish decision is `ACTIVE_ALPHA_README_LINKING_AND_COPY_POLISH_ACCEPTED`. It aligns README, architecture, and security-scope references so Active Alpha is visible as internal, limited, and test-double-smoked without announcing production readiness, external-user readiness, broader live scanning, Nmap, policy relaxation, or new Active capability.
 
 The Active Alpha v0 closeout decision is `ACTIVE_ALPHA_V0_CLOSED_INTERNAL_LIMITED`. It closes the current Active line as an internal limited package with no-network dry-run, the opt-in one-HEAD header probe, operator guidance, accepted test-double smoke evidence, and explicit no-scope boundaries. It does not approve production readiness, external-user readiness, Nmap, local-lab mode, policy relaxation, or another Active capability.
+
+The Passive Alpha readiness recheck decision after Active closeout is `PASSIVE_ALPHA_READINESS_RECHECK_COMPLETED_AFTER_ACTIVE_CLOSEOUT`. It found no blocker for the current trusted local/passive alpha posture, keeps external-user and production hardening as should-fix work, and recommends product-level Passive Alpha closeout or release-candidate docs before any new Active, Nmap, or analyzer implementation.
 
 ## Components
 
