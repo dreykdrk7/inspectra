@@ -8,6 +8,8 @@ Base backend contract: `docs/future/active-network-block-05-dry-run-backend-cont
 
 Commit scope: backend endpoint, job/storage/reporting integration, defensive redaction, and backend tests.
 
+Frontend design note: future UI/UX for this backend surface is designed in `docs/future/active-network-block-07-dry-run-frontend-design.md`.
+
 This document records the first backend integration for the separated Active dry-run skeleton. It does not add frontend UI, run Nginx/Docker/Nmap, resolve DNS, open sockets, perform HTTP requests, call network services, start subprocess probes, add live checks, create tags, push releases, or mutate the Passive Alpha release line.
 
 ## Implemented Surface

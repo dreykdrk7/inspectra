@@ -33,8 +33,9 @@ The Active scope, runbook/threat model, dry-run contracts, skeleton, and backend
 - `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`
 - `docs/future/active-network-block-05-dry-run-backend-contract-design.md`
 - `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`
+- `docs/future/active-network-block-07-dry-run-frontend-design.md`
 
-The dry-run contract requires Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. The implemented backend endpoint is `POST /active/network/dry-run`, gated by `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false` by default. It creates `active_network_dry_run` target-based jobs with no `file_id`, uses existing job statuses, represents blocked dry-runs inside `result.policy`, and applies defensive redaction to storage, public API responses, errors, summaries, and Markdown/HTML/XML/PDF exports. Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
+The dry-run contract requires Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. The implemented backend endpoint is `POST /active/network/dry-run`, gated by `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false` by default. It creates `active_network_dry_run` target-based jobs with no `file_id`, uses existing job statuses, represents blocked dry-runs inside `result.policy`, and applies defensive redaction to storage, public API responses, errors, summaries, and Markdown/HTML/XML/PDF exports. Frontend UI is designed but not implemented. Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
 
 ## Components
 
