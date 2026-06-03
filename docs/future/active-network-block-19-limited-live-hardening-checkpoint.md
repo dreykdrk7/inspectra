@@ -195,13 +195,17 @@ The limited live line is accepted for the next docs-first step. The recommended 
 
 ## 6. Next Path Recommendation
 
-Recommended next path:
+Completed next path:
 
 ```text
 ACTIVE-NETWORK-BLOCK-20-LIMITED-LIVE-SMOKE-RUN-LOCAL
 ```
 
-Rationale:
+Smoke method record: `docs/future/active-network-block-20-limited-live-smoke-run-local.md`
+
+That block accepts a local test-double smoke method without relaxing production target policy.
+
+Original rationale:
 
 - It validates the first live path in a controlled way before designing more live behavior.
 - It can prove the feature flag, disabled state, double confirmation, job lifecycle, one-HEAD behavior, no-body/no-redirect behavior, report rendering, exports, and redaction with a local controlled target or approved mock/local harness.
