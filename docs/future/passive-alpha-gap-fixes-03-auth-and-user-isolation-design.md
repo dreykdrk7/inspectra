@@ -6,6 +6,8 @@ Base threat model: `docs/future/passive-alpha-gap-fixes-02-deployment-threat-mod
 
 Base plan: `docs/future/passive-alpha-gap-fixes-01-plan.md`
 
+Retention cleanup reset design: `docs/future/passive-alpha-gap-fixes-04-retention-cleanup-reset-design.md`
+
 Commit scope: docs-only authentication, authorization, ownership, and user-isolation design for future private/internal or single-tenant hosted deployment. This block does not change backend, frontend, runner, tests, fixtures, schemas, storage, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -405,10 +407,10 @@ Retention and cleanup must respect the ownership model defined here:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-GAP-FIXES-04-RETENTION-CLEANUP-RESET-DESIGN
+PASSIVE-ALPHA-GAP-FIXES-05-DISCLAIMERS-AND-ONBOARDING-COPY
 ```
 
-Do not proceed directly to runtime auth, migrations, login UI, Nmap, another Active capability, or a new passive analyzer implementation from this design block.
+Retention, cleanup, and reset design is now accepted as the next boundary. Proceed to docs-first disclaimers and onboarding copy. Do not proceed directly to runtime auth, migrations, login UI, cleanup runtime, Nmap, another Active capability, or a new passive analyzer implementation from this design block.
 
 ## Validation Commands
 

@@ -82,6 +82,8 @@ Passive Alpha deployment threat-model decision: `PASSIVE_ALPHA_DEPLOYMENT_THREAT
 
 Passive Alpha auth and user-isolation design decision: `PASSIVE_ALPHA_AUTH_USER_ISOLATION_DESIGN_ACCEPTED`. Future private/internal or single-tenant hosted use requires authenticated sessions, no anonymous reads, owner-scoped uploads/jobs/results/exports/Raw JSON, explicit admin/operator boundaries, service/background job context isolation, and redacted logs/errors. This decision is design-only and does not implement auth, cookies, sessions, login UI, storage migrations, public deployment approval, or new capabilities.
 
+Passive Alpha retention, cleanup, and reset design decision: `PASSIVE_ALPHA_RETENTION_CLEANUP_RESET_DESIGN_ACCEPTED`. Future non-local use requires explicit retention classes, owner-scoped deletion, safe reset boundaries, export and Raw JSON retention rules, redacted logs/audit entries, target-history retention, and clear caveats for manual downloads and backups. This decision is design-only and does not implement cleanup, schedulers, delete/reset UI, storage migrations, public deployment approval, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`
