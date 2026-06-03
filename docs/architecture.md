@@ -45,6 +45,7 @@ The Active scope, runbook/threat model, dry-run contracts, skeleton, and backend
 - `docs/future/active-network-block-16-authorized-http-header-probe-frontend-implementation.md`
 - `docs/future/active-network-block-17-end-to-end-authorized-http-header-probe-frontend-review.md`
 - `docs/future/active-network-block-18-authorized-http-header-probe-closeout.md`
+- `docs/future/active-network-block-19-limited-live-hardening-checkpoint.md`
 
 The dry-run contract requires Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. The implemented backend endpoint is `POST /active/network/dry-run`, gated by `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false` by default. It creates `active_network_dry_run` target-based jobs with no `file_id`, uses existing job statuses, represents blocked dry-runs inside `result.policy`, and applies defensive redaction to storage, public API responses, errors, summaries, and Markdown/HTML/XML/PDF exports. The frontend now provides a separate `Active / Network dry-run` panel, required authorization checkbox, dry-run-only request body, catalog/filter entry, redacted job-table target display, and redacted report view; it does not add archive actions or live probing controls. The closeout decision is `ACTIVE_DRY_RUN_V0_CLOSED_NO_NETWORK`; the hardening review decision is `ACTIVE_DRY_RUN_HARDENING_ACCEPTED_FOR_LIVE_PROBE_DESIGN`, which clears docs-first design only and does not approve live runtime. Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
 
@@ -59,6 +60,8 @@ The frontend implementation adds the `Authorized HTTP Header Probe` panel, `POST
 The frontend E2E-style review decision is `ACTIVE_HTTP_HEADER_PROBE_FRONTEND_E2E_REVIEW_PASSED`. It verifies disabled-state copy, double-confirmation gating, exact request body, catalog/filter behavior, job-table/report/Raw JSON redaction, successful/blocked/failed/sparse report rendering, forbidden-copy absence, and no archive action integration.
 
 The limited live v0 closeout decision is `ACTIVE_HTTP_HEADER_PROBE_V0_CLOSED_LIMITED_LIVE`. It closes the one-authorized-HEAD path with a manual smoke checklist and keeps future Active expansion gated behind separate docs-first review.
+
+The limited live hardening checkpoint decision is `ACTIVE_LIMITED_LIVE_HARDENING_ACCEPTED_FOR_NEXT_DESIGN`. It accepts only the next docs-first step and recommends a controlled local smoke block before designing another live capability.
 
 ## Components
 

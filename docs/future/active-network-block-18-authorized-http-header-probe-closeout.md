@@ -202,13 +202,21 @@ Use only explicitly authorized local or owned targets.
 
 ## Next Product Options
 
-Recommended next option:
+Completed hardening checkpoint:
 
 ```text
 ACTIVE-NETWORK-BLOCK-19-LIMITED-LIVE-HARDENING-CHECKPOINT-DOCS-FIRST
 ```
 
-That block should review feature-flag operations, local-only smoke discipline, logging/redaction expectations, target-policy wording, and readiness criteria before any additional live capability is designed.
+Checkpoint record: `docs/future/active-network-block-19-limited-live-hardening-checkpoint.md`
+
+That block reviews feature-flag operations, local-only smoke discipline, logging/redaction expectations, target-policy wording, and readiness criteria before any additional live capability is designed.
+
+Recommended next option after the checkpoint:
+
+```text
+ACTIVE-NETWORK-BLOCK-20-LIMITED-LIVE-SMOKE-RUN-LOCAL
+```
 
 Alternative options:
 
