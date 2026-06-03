@@ -18,9 +18,12 @@ from active_runner.models import APPROVED_AUTHORIZATION_STATEMENT
 
 FIXTURE_SECRETS = (
     "super-secret-password",
+    "raw-api-key-123456",
     "token_should_never_render",
     "http://user:pass@example.com",
     "Authorization: Bearer token_should_never_render",
+    "session_should_not_render",
+    "cookie_should_not_render",
     "PRIVATE KEY",
 )
 
@@ -284,6 +287,23 @@ def test_active_runner_does_not_import_network_or_probe_runtime_modules():
             assert not blocked, f"{path} imports forbidden active runtime module(s): {blocked}"
 
 
+def test_http_header_probe_runtime_does_not_read_body_or_request_get():
+    path = Path(__file__).resolve().parents[1] / "active_runner" / "http_header_probe.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    forbidden_reads: list[str] = []
+    request_methods: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in {"read", "recv"}:
+                forbidden_reads.append(node.func.attr)
+            if node.func.attr == "request" and node.args and isinstance(node.args[0], ast.Constant):
+                request_methods.append(str(node.args[0].value))
+
+    assert forbidden_reads == []
+    assert request_methods == ["HEAD"]
+
+
 def test_from_mapping_rejects_unknown_fields():
     payload = {
         "target": "https://example.test",
@@ -378,6 +398,69 @@ def test_http_header_probe_blocks_before_request_for_url_credentials_and_private
     assert private_result["dns"]["blocked_answers_count"] == 1
 
 
+def test_http_header_probe_dns_fail_closed_for_blocked_mixed_excess_and_failure():
+    head_calls: list[str] = []
+
+    def forbidden_head(url: str, timeout: int, headers: dict[str, str]) -> HeadResponse:
+        head_calls.append(url)
+        raise AssertionError("HEAD should not be sent")
+
+    cases = [
+        (lambda host, port, timeout, max_answers: ["127.0.0.1"], "resolved_ip_blocked", 1, None),
+        (lambda host, port, timeout, max_answers: ["169.254.169.254"], "resolved_ip_blocked", 1, None),
+        (lambda host, port, timeout, max_answers: ["93.184.216.34", "10.0.0.1"], "resolved_ip_blocked", 1, None),
+        (
+            lambda host, port, timeout, max_answers: [
+                "93.184.216.31",
+                "93.184.216.32",
+                "93.184.216.33",
+                "93.184.216.34",
+                "93.184.216.35",
+                "93.184.216.36",
+                "93.184.216.37",
+                "93.184.216.38",
+                "93.184.216.39",
+            ],
+            "dns_answers_limit_exceeded",
+            None,
+            "dns_answers_limit_exceeded",
+        ),
+        (lambda host, port, timeout, max_answers: [], "dns_resolution_failed", None, "dns_resolution_failed"),
+    ]
+
+    for resolver, reason_code, blocked_answers_count, error_code in cases:
+        result = run_authorized_http_header_probe(
+            make_header_probe_request("https://public.example/"),
+            resolver=resolver,
+            head_request=forbidden_head,
+        )
+        body = serialized(result).lower()
+
+        assert result["policy"]["allowed"] is False
+        assert result["summary"]["network_requests_sent"] == 0
+        assert reason_code in reason_codes(result)
+        if blocked_answers_count is not None:
+            assert result["dns"]["blocked_answers_count"] == blocked_answers_count
+        if error_code is not None:
+            assert error_code in {error["code"] for error in result["errors"]}
+        for forbidden in ("bypass", "evade", "scan anyway"):
+            assert forbidden not in body
+
+    def failing_resolver(host: str, port: int, timeout: int, max_answers: int) -> list[str]:
+        raise OSError("resolver unavailable")
+
+    failed = run_authorized_http_header_probe(
+        make_header_probe_request("https://public.example/"),
+        resolver=failing_resolver,
+        head_request=forbidden_head,
+    )
+
+    assert failed["summary"]["network_requests_sent"] == 0
+    assert "dns_resolution_failed" in reason_codes(failed)
+    assert "dns_resolution_failed" in {error["code"] for error in failed["errors"]}
+    assert head_calls == []
+
+
 def test_http_header_probe_policy_validation_blocks_without_dns_or_http():
     def forbidden_resolver(host: str, port: int, timeout: int, max_answers: int) -> list[str]:
         raise AssertionError("resolver should not be called")
@@ -395,6 +478,40 @@ def test_http_header_probe_policy_validation_blocks_without_dns_or_http():
     ]
     for request, reason_code in cases:
         result = run_authorized_http_header_probe(request, resolver=forbidden_resolver, head_request=forbidden_head)
+        assert result["policy"]["allowed"] is False
+        assert result["summary"]["network_requests_sent"] == 0
+        assert reason_code in reason_codes(result)
+
+
+def test_http_header_probe_target_rejections_happen_before_dns_or_http():
+    def forbidden_resolver(host: str, port: int, timeout: int, max_answers: int) -> list[str]:
+        raise AssertionError("resolver should not be called")
+
+    def forbidden_head(url: str, timeout: int, headers: dict[str, str]) -> HeadResponse:
+        raise AssertionError("HEAD should not be sent")
+
+    cases = [
+        ("http://user:pass@example.com", "url_credentials_rejected"),
+        ("10.0.0.0/8", "target_cidr_rejected"),
+        ("10.0.0.1-10.0.0.3", "target_range_rejected"),
+        ("*.example.test", "wildcard_rejected"),
+        ("ftp://example.test/", "unsupported_scheme"),
+        ("file:///etc/passwd", "unsupported_scheme"),
+        ("http://10.0.0.1/", "private_range_blocked"),
+        ("http://127.0.0.1/", "loopback_requires_local_lab"),
+        ("http://169.254.169.254/", "metadata_target_blocked"),
+        ("example.test; rm -rf /", "suspicious_target_input"),
+        ("https://example.test https://other.example", "target_parse_failed"),
+        ("example.test", "live_url_required"),
+    ]
+
+    for target, reason_code in cases:
+        result = run_authorized_http_header_probe(
+            make_header_probe_request(target),
+            resolver=forbidden_resolver,
+            head_request=forbidden_head,
+        )
+
         assert result["policy"]["allowed"] is False
         assert result["summary"]["network_requests_sent"] == 0
         assert reason_code in reason_codes(result)
@@ -430,6 +547,44 @@ def test_http_header_probe_no_get_fallback_and_redirect_not_followed():
     assert "redirect_not_followed" in {error["code"] for error in redirect_result["errors"]}
     assert "token_should_never_render" not in body
     assert "token=REDACTED" in body
+
+
+def test_http_header_probe_redacts_sensitive_response_header_values():
+    def resolver(host: str, port: int, timeout: int, max_answers: int) -> list[str]:
+        return ["93.184.216.34"]
+
+    def head_request(url: str, timeout: int, headers: dict[str, str]) -> HeadResponse:
+        assert set(headers) == {"User-Agent", "Accept"}
+        assert "Authorization" not in headers
+        assert "Cookie" not in headers
+        return HeadResponse(
+            status_code=200,
+            headers=[
+                ("Set-Cookie", "session_should_not_render=cookie_should_not_render"),
+                ("Cookie", "session_should_not_render=cookie_should_not_render"),
+                ("Authorization", "Authorization: Bearer token_should_never_render"),
+                ("Proxy-Authorization", "Basic token_should_never_render"),
+                ("X-Api-Key", "raw-api-key-123456"),
+                ("API-Key", "raw-api-key-123456"),
+                ("X-CSRF-Token", "token_should_never_render"),
+                ("Location", "https://example.test/callback?token=token_should_never_render&ok=value"),
+                ("X-Upstream", "http://user:pass@example.com"),
+                ("X-Key", "-----BEGIN PRIVATE KEY----- secret material -----END PRIVATE KEY-----"),
+            ],
+        )
+
+    result = run_authorized_http_header_probe(
+        make_header_probe_request("https://public.example/"),
+        resolver=resolver,
+        head_request=head_request,
+    )
+    body = serialized(result)
+
+    assert result["summary"]["network_requests_sent"] == 1
+    assert result["summary"]["redacted_headers_count"] >= 9
+    for secret in FIXTURE_SECRETS:
+        assert secret not in body
+    assert "[REDACTED]" in body
 
 
 def test_http_header_probe_from_mapping_rejects_unknown_fields():

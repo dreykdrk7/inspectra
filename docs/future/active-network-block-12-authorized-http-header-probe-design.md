@@ -4,6 +4,8 @@ Status: `ACTIVE_HTTP_HEADER_PROBE_DESIGNED_NO_RUNTIME`.
 
 Implementation note: the first runner/backend implementation was added later in
 `docs/future/active-network-block-13-authorized-http-header-probe-runner-backend-no-frontend.md`.
+The backend-only contract/redaction review was added later in
+`docs/future/active-network-block-14-end-to-end-authorized-http-header-probe-contract-redaction-review.md`.
 This file remains the historical docs-first design reference.
 
 Base hardening review: `docs/future/active-network-block-11-dry-run-hardening-review.md`

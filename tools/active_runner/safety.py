@@ -45,6 +45,7 @@ SECRET_ASSIGNMENT_PATTERN = re.compile(
 SHELL_LIKE_FRAGMENTS = ("&&", "||", "$(", "`", ";", "\n", "\r", "<", ">", "\\")
 
 BLOCKED_REASON_MESSAGES = {
+    "target_required": "A target is required for this active mode.",
     "authorization_missing": "Active checks require explicit confirmation that you own or are authorized to test the target.",
     "active_disabled": "Active checks are disabled in this environment.",
     "unsupported_scheme": "This target type is not supported for active checks.",

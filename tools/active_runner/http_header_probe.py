@@ -192,6 +192,9 @@ def normalize_live_url_target(raw_target: str) -> tuple[dict[str, Any], list[dic
     if not raw:
         return unknown_live_target(""), [blocked_reason("target_required")]
     if "://" not in raw:
+        target, reasons = normalize_target(raw)
+        if reasons:
+            return target, reasons
         return unknown_live_target(redact_sensitive_text(raw)), [blocked_reason("live_url_required")]
     target, reasons = normalize_target(raw)
     if reasons:

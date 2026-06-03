@@ -2,6 +2,8 @@
 
 Status: `ACTIVE_HTTP_HEADER_PROBE_RUNNER_BACKEND_IMPLEMENTED_NO_FRONTEND`.
 
+Follow-up review: `docs/future/active-network-block-14-end-to-end-authorized-http-header-probe-contract-redaction-review.md`.
+
 Base design: `docs/future/active-network-block-12-authorized-http-header-probe-design.md`
 
 Commit scope: runner/backend implementation, backend reporting, tests, and minimal documentation alignment.

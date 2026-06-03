@@ -2410,6 +2410,29 @@ async def test_active_http_header_probe_disabled_by_default_no_job(monkeypatch, 
 
 
 @pytest.mark.anyio
+async def test_active_http_header_probe_flag_is_independent_from_dry_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        dry_run_response = await client.post("/active/network/dry-run", json=make_active_dry_run_payload())
+        header_response = await client.post(
+            "/active/network/http-header-probe",
+            json=make_active_http_header_probe_payload("http://10.0.0.1/"),
+        )
+        header_job = await client.get(f"/jobs/{header_response.json()['id']}")
+        jobs_response = await client.get("/jobs")
+
+    assert dry_run_response.status_code == 403
+    assert dry_run_response.json()["detail"] == "Active dry-run checks are disabled in this environment."
+    assert header_response.status_code == 202
+    assert header_job.json()["result"]["summary"]["network_requests_sent"] == 0
+    assert "private_range_blocked" in {reason["code"] for reason in header_job.json()["result"]["blocked_reasons"]}
+    assert [job["audit_type"] for job in jobs_response.json()] == ["active_http_header_probe"]
+
+
+@pytest.mark.anyio
 async def test_active_http_header_probe_enabled_creates_job_and_summary(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
@@ -2644,6 +2667,16 @@ async def test_active_http_header_probe_exports_render_sections_and_redact(monke
     assert "Response body was not read" in combined
     assert "DNS Policy Summary" in combined
     assert "Response Headers" in combined
+    for forbidden_copy in (
+        "vulnerability confirmed",
+        "target is safe",
+        "credential valid",
+        "bypass",
+        "evade",
+        "live exploitability",
+        "nmap scan",
+    ):
+        assert forbidden_copy not in combined.lower()
     for secret in (
         "token_should_never_render",
         "Authorization: Bearer token_should_never_render",
