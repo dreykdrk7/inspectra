@@ -18,6 +18,7 @@ from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
 from app.services import (
     ArchiveAuditService,
+    ActiveNetworkDryRunService,
     CiCdConfigAuditService,
     ComposeConfigAuditService,
     DatabaseConfigAuditService,
@@ -117,6 +118,9 @@ class NoopAuditService:
     async def run_redis_config_analysis(self, job_id: str) -> None:
         return None
 
+    async def run_active_network_dry_run_analysis(self, job_id: str, active_request=None) -> None:
+        return None
+
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
         return None
 
@@ -182,6 +186,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.database_config_audits = DatabaseConfigAuditService(settings, file_store, job_store)
     app.state.sql_database_config_audits = SqlDatabaseConfigAuditService(settings, file_store, job_store)
     app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
+    app.state.active_network_dry_runs = ActiveNetworkDryRunService(settings, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -2038,6 +2043,311 @@ async def test_redis_config_service_records_runner_failure(monkeypatch, tmp_path
     updated = app.state.jobs.get(job.id)
     assert updated.status == "failed"
     assert updated.error == "Tool runner request failed: runner unavailable"
+
+
+def make_active_dry_run_payload(target: str = "https://example.test/path?ok=value", **overrides) -> dict:
+    payload = {
+        "target": target,
+        "authorization": {
+            "confirmed": True,
+            "statement": "I confirm I own or am authorized to test this target.",
+            "scope": "single-target",
+        },
+        "mode": "dry_run",
+        "profile": "http_header_probe_preview",
+        "limits": {
+            "max_requests": 0,
+            "timeout_seconds": 0,
+            "max_redirects": 0,
+            "response_size_bytes": 0,
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.anyio
+async def test_active_network_dry_run_disabled_by_default_no_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    payload = make_active_dry_run_payload("https://example.test/?token=token_should_never_render")
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dry-run", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Active dry-run checks are disabled in this environment."
+    assert "token_should_never_render" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_network_dry_run_enabled_creates_target_job_and_summary(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    original_runner = audit_services.run_active_network_dry_run
+    calls = []
+
+    def capturing_runner(active_request):
+        calls.append(active_request)
+        return original_runner(active_request)
+
+    monkeypatch.setattr(audit_services, "run_active_network_dry_run", capturing_runner)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post("/active/network/dry-run", json=make_active_dry_run_payload())
+        job_id = create_response.json()["id"]
+        job_response = await client.get(f"/jobs/{job_id}")
+        jobs_response = await client.get("/jobs")
+
+    assert create_response.status_code == 202
+    assert create_response.json()["audit_type"] == "active_network_dry_run"
+    assert create_response.json()["file_id"] is None
+    assert len(calls) == 1
+
+    public_job = job_response.json()
+    assert public_job["status"] == "completed"
+    assert public_job["result"]["analyzer"] == "active_network_dry_run"
+    assert public_job["result"]["summary"]["network_requests_sent"] == 0
+    assert public_job["result"]["authorization"]["confirmed"] is True
+    assert public_job["result"]["authorization"]["scope"] == "single-target"
+    assert public_job["result"]["policy"]["allowed"] is True
+    assert public_job["result"]["planned_checks"][0]["would_contact_target"] is False
+    assert public_job["result"]["planned_checks"][0]["network_disabled"] is True
+
+    summary = next(item for item in jobs_response.json() if item["id"] == job_id)["summary"]
+    assert summary["analyzer"] == "active_network_dry_run"
+    assert summary["target_display"] == "https://example.test/path?ok=value"
+    assert summary["mode"] == "dry_run"
+    assert summary["profile"] == "http_header_probe_preview"
+    assert summary["allowed"] is True
+    assert summary["planned_checks_count"] == 1
+    assert summary["blocked_reasons_count"] == 0
+    assert summary["network_requests_sent"] == 0
+    assert summary["blocked_reason_codes"] == []
+    assert summary["policy_version"] == "active-network-v0-dry-run"
+
+
+@pytest.mark.anyio
+async def test_active_network_dry_run_private_ip_completes_blocked(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post("/active/network/dry-run", json=make_active_dry_run_payload("10.0.0.1"))
+        job_id = create_response.json()["id"]
+        job_response = await client.get(f"/jobs/{job_id}")
+
+    result = job_response.json()["result"]
+    assert job_response.json()["status"] == "completed"
+    assert result["policy"]["allowed"] is False
+    assert result["summary"]["network_requests_sent"] == 0
+    assert result["planned_checks"] == []
+    assert "private_range_blocked" in {reason["code"] for reason in result["blocked_reasons"]}
+
+
+@pytest.mark.anyio
+async def test_active_network_dry_run_policy_validation_blocks_without_network(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    cases = [
+        (make_active_dry_run_payload(authorization={"confirmed": False}), "authorization_missing"),
+        (make_active_dry_run_payload(mode="live"), "live_mode_not_available"),
+        (make_active_dry_run_payload(profile="nmap_plan"), "nmap_not_allowed"),
+        (
+            make_active_dry_run_payload(
+                limits={"max_requests": 1, "timeout_seconds": 0, "max_redirects": 0, "response_size_bytes": 0}
+            ),
+            "limits_exceed_dry_run",
+        ),
+    ]
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for payload, reason_code in cases:
+            create_response = await client.post("/active/network/dry-run", json=payload)
+            job_response = await client.get(f"/jobs/{create_response.json()['id']}")
+            result = job_response.json()["result"]
+
+            assert create_response.status_code == 202
+            assert job_response.json()["status"] == "completed"
+            assert result["policy"]["allowed"] is False
+            assert result["summary"]["network_requests_sent"] == 0
+            assert reason_code in {reason["code"] for reason in result["blocked_reasons"]}
+
+
+@pytest.mark.anyio
+async def test_active_network_dry_run_rejects_unknown_fields_without_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_dry_run_payload()
+    payload["unexpected"] = "token_should_never_render"
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dry-run", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 400
+    assert "Unknown request field" in response.json()["detail"]
+    assert "token_should_never_render" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_network_dry_run_url_credentials_redacted(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post("/active/network/dry-run", json=make_active_dry_run_payload("http://user:pass@example.com"))
+        job_id = create_response.json()["id"]
+        job_response = await client.get(f"/jobs/{job_id}")
+        jobs_response = await client.get("/jobs")
+
+    combined = json.dumps({"create": create_response.json(), "job": job_response.json(), "jobs": jobs_response.json()}, sort_keys=True)
+    assert "http://user:pass@example.com" not in combined
+    assert "user:pass" not in combined
+    assert "[REDACTED]" in combined
+    result = job_response.json()["result"]
+    assert result["policy"]["allowed"] is False
+    assert "url_credentials_rejected" in {reason["code"] for reason in result["blocked_reasons"]}
+    summary = next(item for item in jobs_response.json() if item["id"] == job_id)["summary"]
+    assert "user:pass" not in json.dumps(summary)
+
+
+@pytest.mark.anyio
+async def test_active_network_dry_run_exports_render_sections_and_redact(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post(
+            "/active/network/dry-run",
+            json=make_active_dry_run_payload("https://example.test/?token=token_should_never_render"),
+        )
+        job_id = create_response.json()["id"]
+        responses = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    for response in responses.values():
+        assert response.status_code == 200
+
+    combined = "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in responses.items()
+    )
+    assert "No network traffic was sent" in combined
+    assert "This dry run records planned checks after authorization and target validation" in combined
+    assert "Do not scan third-party systems without permission" in combined
+    assert "Planned Checks" in combined
+    assert "Blocked Reasons" in combined
+    assert "token_should_never_render" not in combined
+    assert "vulnerability confirmed" not in combined.lower()
+    assert "target is safe" not in combined.lower()
+    assert "credential valid" not in combined.lower()
+    assert "bypass" not in combined.lower()
+    assert "evade" not in combined.lower()
+    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "active_network_dry_run"
+    assert responses["pdf"].content.startswith(b"%PDF")
+
+
+@pytest.mark.anyio
+async def test_active_network_dry_run_legacy_payload_redacted_in_api_and_exports(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    job = JobRecord(
+        id="a" * 31 + "1",
+        audit_type="active_network_dry_run",
+        file_id=None,
+        target_url="http://user:pass@example.com/?token=token_should_never_render",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "active_network_dry_run",
+            "mode": "dry_run",
+            "profile": "http_header_probe_preview",
+            "target": {"raw": "http://user:pass@example.com/?token=token_should_never_render", "normalized": None},
+            "authorization": {"confirmed": True, "statement": "Authorization: Bearer token_should_never_render"},
+            "policy": {"allowed": False, "policy_version": "active-network-v0-dry-run"},
+            "limits": {"max_requests": 0},
+            "planned_checks": [{"url": "http://user:pass@example.com/?password=super-secret-password"}],
+            "blocked_reasons": [{"code": "url_credentials_rejected", "message": "Authorization: Bearer token_should_never_render"}],
+            "audit_log": [{"details": {"secret": "super-secret-password"}}],
+            "errors": ["-----BEGIN PRIVATE KEY----- secret material -----END PRIVATE KEY-----"],
+            "summary": {"allowed": False, "planned_checks_count": 1, "blocked_reasons_count": 1, "network_requests_sent": 0},
+        },
+        error="PRIVATE KEY token_should_never_render",
+    )
+    app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
+        jobs_response = await client.get("/jobs")
+        exports = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    combined = json.dumps({"api": api_response.json(), "jobs": jobs_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in exports.items()
+    )
+    for secret in (
+        "http://user:pass@example.com",
+        "user:pass",
+        "token_should_never_render",
+        "Authorization: Bearer token_should_never_render",
+        "PRIVATE KEY",
+        "super-secret-password",
+    ):
+        assert secret not in combined
+    assert "[REDACTED]" in combined
+    summary = next(item for item in jobs_response.json() if item["id"] == job.id)["summary"]
+    assert summary["network_requests_sent"] == 0
+    assert summary["blocked_reason_codes"] == ["url_credentials_rejected"]
+
+
+@pytest.mark.anyio
+async def test_active_network_dry_run_sparse_jobs_export_without_breaking(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    jobs = [
+        JobRecord(id="b" * 31 + "1", audit_type="active_network_dry_run", status="queued", created_at=now, updated_at=now),
+        JobRecord(id="b" * 31 + "2", audit_type="active_network_dry_run", status="running", created_at=now, updated_at=now),
+        JobRecord(id="b" * 31 + "3", audit_type="active_network_dry_run", status="failed", created_at=now, updated_at=now, error="token_should_never_render"),
+        JobRecord(
+            id="b" * 31 + "4",
+            audit_type="active_network_dry_run",
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={"analyzer": "active_network_dry_run", "summary": None, "target": "malformed", "policy": None},
+        ),
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job in jobs:
+            job_response = await client.get(f"/jobs/{job.id}")
+            assert job_response.status_code == 200
+            for report_format in ("markdown", "html", "xml", "pdf"):
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+                assert response.status_code == 200
+                body = response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+                assert "token_should_never_render" not in body
 
 
 @pytest.mark.anyio

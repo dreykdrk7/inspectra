@@ -4,6 +4,8 @@ import httpx
 
 from app.config import Settings
 from app.reporting import (
+    redact_active_config_value,
+    redact_active_secret_text,
     redact_ci_cd_config_value,
     redact_ci_cd_secret_text,
     redact_compose_config_value,
@@ -17,6 +19,7 @@ from app.reporting import (
     redact_terraform_config_value,
 )
 from app.storage import FileStore, JobStore
+from active_runner import ActiveDryRunRequest, run_active_network_dry_run
 
 
 class PdfAuditService:
@@ -501,6 +504,23 @@ class RedisConfigAuditService:
 
         result = redact_redis_config_value(response.json())
         self.jobs.update(job_id, status="completed", result=result if isinstance(result, dict) else {"result": result})
+
+
+class ActiveNetworkDryRunService:
+    def __init__(self, settings: Settings, jobs: JobStore) -> None:
+        self.settings = settings
+        self.jobs = jobs
+
+    async def run_active_network_dry_run_analysis(self, job_id: str, active_request: ActiveDryRunRequest) -> None:
+        self.jobs.update(job_id, status="running")
+        try:
+            result = run_active_network_dry_run(active_request)
+        except Exception as exc:  # pragma: no cover - defensive controlled failure path.
+            self.jobs.update(job_id, status="failed", error=redact_active_secret_text(f"Active dry-run failed: {exc}"))
+            return
+
+        redacted_result = redact_active_config_value(result)
+        self.jobs.update(job_id, status="completed", result=redacted_result if isinstance(redacted_result, dict) else {"result": redacted_result})
 
 
 class WebAuditService:

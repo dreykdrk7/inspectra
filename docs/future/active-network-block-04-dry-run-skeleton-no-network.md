@@ -6,6 +6,8 @@ Base contract: `docs/future/active-network-block-03-dry-run-contracts-design.md`
 
 Commit scope: separated Active runner skeleton only.
 
+Implementation note: this separated skeleton was integrated into backend jobs later, still with no network behavior, in `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`.
+
 This document records the first Active/Network runtime skeleton. It does not integrate backend, create public endpoints, touch frontend, modify `tools/runner/main.py`, run network checks, resolve DNS, perform HTTP requests, run Nmap, create tags, create releases, or mutate the Passive Alpha.
 
 ## A. Implemented Files

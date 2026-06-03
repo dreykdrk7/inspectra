@@ -131,7 +131,7 @@ def render_xml_report(job: JobRecord) -> str:
     add_text(job_node, "auditType", job.audit_type)
     add_text(job_node, "status", job.status)
     add_text(job_node, "fileId", job.file_id or "")
-    add_text(job_node, "targetUrl", redact_url_query(job.target_url) if job.target_url else "")
+    add_text(job_node, "targetUrl", public_job_target_url(job) or "")
     add_text(job_node, "targetDomain", job.target_domain or "")
     add_text(job_node, "createdAt", job.created_at.isoformat())
     add_text(job_node, "updatedAt", job.updated_at.isoformat())
@@ -176,7 +176,7 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
                 ("Audit type", job.audit_type),
                 ("Status", job.status),
                 ("File ID", job.file_id or "N/A"),
-                ("Target URL", redact_url_query(job.target_url) if job.target_url else "N/A"),
+                ("Target URL", public_job_target_url(job) or "N/A"),
                 ("Target domain", job.target_domain or "N/A"),
                 ("Created at", job.created_at.isoformat()),
                 ("Updated at", job.updated_at.isoformat()),
@@ -228,6 +228,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_sql_database_config_sections(result))
     elif job.audit_type == "redis_config_basic":
         sections.extend(build_redis_config_sections(result))
+    elif job.audit_type == "active_network_dry_run":
+        sections.extend(build_active_network_dry_run_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -595,6 +597,30 @@ def build_redis_config_sections(result: dict[str, Any]) -> list[ReportSection]:
         ReportSection("Dumps / AOF / Backups Detected But Not Read", flatten_list(result.get("dump_or_aof_files"))),
         ReportSection("Findings", flatten_redis_findings(result.get("findings"))),
         ReportSection("Redaction Notes", flatten_list(result.get("redaction_notes"))),
+    ]
+
+
+def build_active_network_dry_run_sections(result: dict[str, Any]) -> list[ReportSection]:
+    public_result = as_dict(redact_active_config_value(result))
+    raw_json = json.dumps(public_result, indent=2, sort_keys=True)
+    return [
+        ReportSection(
+            "Active Scope Notice",
+            [
+                ("No network traffic was sent", "Yes"),
+                ("Dry-run purpose", "This dry run records planned checks after authorization and target validation."),
+                ("Authorization reminder", "Do not scan third-party systems without permission."),
+            ],
+        ),
+        ReportSection("Target Summary", flatten_mapping(as_dict(public_result.get("target")))),
+        ReportSection("Authorization Summary", flatten_mapping(as_dict(public_result.get("authorization")))),
+        ReportSection("Policy Decision", flatten_mapping(as_dict(public_result.get("policy")))),
+        ReportSection("Planned Checks", flatten_list(public_result.get("planned_checks"))),
+        ReportSection("Blocked Reasons", flatten_list(public_result.get("blocked_reasons"))),
+        ReportSection("Limits", flatten_mapping(as_dict(public_result.get("limits")))),
+        ReportSection("Audit Log", flatten_list(public_result.get("audit_log"))),
+        ReportSection("Errors", flatten_list(public_result.get("errors"))),
+        ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
     ]
 
 
@@ -1143,6 +1169,26 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["redacted_values_count"] = summary.get("redacted_values_count", "N/A")
         data["truncated"] = summary.get("truncated", "N/A")
         data["errors_count"] = len(result.get("errors") or [])
+    elif job.audit_type == "active_network_dry_run":
+        target = as_dict(result.get("target"))
+        policy = as_dict(result.get("policy"))
+        blocked_reasons = result.get("blocked_reasons")
+        if not isinstance(blocked_reasons, list):
+            blocked_reasons = []
+        target_display = target.get("normalized") or target.get("raw") or job.target_url or "N/A"
+        data["target_display"] = redact_active_secret_text(str(target_display))
+        data["mode"] = result.get("mode", "N/A")
+        data["profile"] = result.get("profile", "N/A")
+        data["allowed"] = policy.get("allowed", summary.get("allowed", "N/A"))
+        data["planned_checks_count"] = summary.get("planned_checks_count", "N/A")
+        data["blocked_reasons_count"] = summary.get("blocked_reasons_count", "N/A")
+        data["network_requests_sent"] = summary.get("network_requests_sent", "N/A")
+        data["blocked_reason_codes"] = [
+            reason.get("code")
+            for reason in blocked_reasons
+            if isinstance(reason, dict) and reason.get("code") is not None
+        ]
+        data["policy_version"] = policy.get("policy_version", "N/A")
     return data
 
 
@@ -1196,7 +1242,17 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_sql_database_config_value(result))
     if job.audit_type == "redis_config_basic":
         return as_dict(redact_redis_config_value(result))
+    if job.audit_type == "active_network_dry_run":
+        return as_dict(redact_active_config_value(result))
     return result
+
+
+def public_job_target_url(job: JobRecord) -> str:
+    if not job.target_url:
+        return ""
+    if job.audit_type == "active_network_dry_run":
+        return redact_active_secret_text(job.target_url)
+    return redact_url_query(job.target_url)
 
 
 def public_job_error(job: JobRecord) -> str:
@@ -1228,6 +1284,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_sql_database_secret_text(job.error)
     if job.audit_type == "redis_config_basic":
         return redact_redis_secret_text(job.error)
+    if job.audit_type == "active_network_dry_run":
+        return redact_active_secret_text(job.error)
     return job.error
 
 
@@ -1668,7 +1726,6 @@ def is_compose_secret_mapping_key(key: str) -> bool:
     return any(
         token in normalized
         for token in (
-            "authorization",
             "bearer",
             "cookie",
             "session",
@@ -1967,6 +2024,85 @@ def redact_redis_secret_text(value: str) -> str:
         redacted,
     )
     redacted = redacted.replace("PRIVATE_KEY_BLOCK_REDACTED", "[REDACTED]")
+    return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
+
+
+def redact_active_config_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_active_secret_text(value)
+    if isinstance(value, list):
+        return [redact_active_config_value(item) for item in value]
+    if isinstance(value, dict):
+        secret_named_value = active_record_has_secret_name(value)
+        return {
+            key: "[REDACTED]"
+            if is_active_secret_mapping_key(str(key))
+            or (secret_named_value and str(key).lower() in {"value", "raw_value", "default", "data", "content", "authorization"})
+            else redact_active_config_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def active_record_has_secret_name(record: dict[str, Any]) -> bool:
+    for marker in ("key", "name", "setting", "variable", "field_path", "header", "target", "raw"):
+        candidate = record.get(marker)
+        if candidate is not None and is_active_secret_mapping_key(str(candidate)):
+            return True
+    return False
+
+
+def is_active_secret_mapping_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if normalized == "authorization" or "redacted" in normalized or normalized.endswith("_count"):
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "authorization",
+            "bearer",
+            "cookie",
+            "session",
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "auth_token",
+            "client_secret",
+            "private_key",
+            "api_key",
+            "apikey",
+            "password",
+            "passwd",
+            "pwd",
+            "token",
+            "secret",
+            "credential",
+        )
+    )
+
+
+def redact_active_secret_text(value: str) -> str:
+    redacted = redact_redis_secret_text(value).replace("[REDACTED PRIVATE KEY]", "[REDACTED]")
+    redacted = re.sub(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "[REDACTED]",
+        redacted,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    redacted = re.sub(r"(?i)\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "Authorization: [REDACTED]", redacted)
+    redacted = re.sub(r"(?i)\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "[REDACTED]", redacted)
+    redacted = re.sub(
+        r"(?i)\b([a-z][a-z0-9+.-]*://)([^:\s/@;\"']+):([^@\s/;\"']+)@([^\s;\"']+)",
+        r"\1[REDACTED]@\4",
+        redacted,
+    )
+    redacted = SENSITIVE_QUERY_PARAM_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
+    redacted = re.sub(
+        r"(?i)\b([A-Z0-9_$_.-]*(?:authorization|cookie|session|client_secret|private_key|api_key|apikey|password|passwd|pwd|token|secret|credential)[A-Z0-9_$_.-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\";}\]]+",
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]",
+        redacted,
+    )
+    redacted = redacted.replace("PRIVATE KEY", "[REDACTED]")
     return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
 
 

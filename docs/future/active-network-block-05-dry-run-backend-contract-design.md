@@ -2,6 +2,8 @@
 
 Status: `ACTIVE_DRY_RUN_BACKEND_CONTRACT_DESIGNED_NO_RUNTIME_INTEGRATION`.
 
+Implementation note: the backend integration designed here was implemented later and recorded in `docs/future/active-network-block-06-dry-run-backend-integration-no-network.md`.
+
 Base skeleton: `docs/future/active-network-block-04-dry-run-skeleton-no-network.md`
 
 Base dry-run contract: `docs/future/active-network-block-03-dry-run-contracts-design.md`

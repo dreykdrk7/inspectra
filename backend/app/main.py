@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, Response, UploadFile, status
+from fastapi import BackgroundTasks, Body, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import load_settings
@@ -17,7 +18,9 @@ from app.models import (
 from app.reporting import (
     build_report_filename,
     public_job_error,
+    public_job_target_url,
     public_result_for_job,
+    redact_active_secret_text,
     render_html_report,
     render_markdown_report,
     render_pdf_report,
@@ -26,6 +29,7 @@ from app.reporting import (
 from app.sbom import build_sbom_filename, generate_cyclonedx_json, generate_spdx_json
 from app.services import (
     ArchiveAuditService,
+    ActiveNetworkDryRunService,
     CiCdConfigAuditService,
     ComposeConfigAuditService,
     DatabaseConfigAuditService,
@@ -48,6 +52,7 @@ from app.services import (
 )
 from app.storage import FileStore, JobStore
 from app.web_security import redact_url_query, validate_web_target_url
+from active_runner import ActiveDryRunRequest
 
 
 @asynccontextmanager
@@ -77,6 +82,7 @@ async def lifespan(app: FastAPI):
     app.state.database_config_audits = DatabaseConfigAuditService(settings, file_store, job_store)
     app.state.sql_database_config_audits = SqlDatabaseConfigAuditService(settings, file_store, job_store)
     app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
+    app.state.active_network_dry_runs = ActiveNetworkDryRunService(settings, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -311,6 +317,29 @@ async def launch_redis_config_audit(request: Request, file_id: str, background_t
     return job
 
 
+@app.post("/active/network/dry-run", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_active_network_dry_run(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    payload: Any = Body(...),
+) -> JobRecord:
+    if not request.app.state.settings.active_dry_run_enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active dry-run checks are disabled in this environment.")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Active dry-run request body must be a JSON object.")
+    if "target" not in payload or not str(payload.get("target", "")).strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Active dry-run target is required.")
+    try:
+        active_request = ActiveDryRunRequest.from_mapping(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid active dry-run request: {exc}") from exc
+
+    target_display = redact_active_secret_text(str(payload.get("target", ""))) if payload.get("target") is not None else ""
+    job = request.app.state.jobs.create_active_network_dry_run_job(target_display)
+    background_tasks.add_task(request.app.state.active_network_dry_runs.run_active_network_dry_run_analysis, job.id, active_request)
+    return job
+
+
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_web_basic_audit(request: Request, payload: WebAuditRequest, background_tasks: BackgroundTasks) -> JobRecord:
     if not payload.authorization_confirmed:
@@ -375,9 +404,11 @@ async def get_job(request: Request, job_id: str) -> JobRecord:
         "database_config_basic",
         "sql_database_config_basic",
         "redis_config_basic",
+        "active_network_dry_run",
     }:
         return job.model_copy(
             update={
+                "target_url": public_job_target_url(job) or None,
                 "result": public_result_for_job(job, job.result or {}),
                 "error": public_job_error(job) or None,
             }

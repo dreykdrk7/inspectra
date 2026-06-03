@@ -26,6 +26,7 @@ AuditType = Literal[
     "database_config_basic",
     "sql_database_config_basic",
     "redis_config_basic",
+    "active_network_dry_run",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 

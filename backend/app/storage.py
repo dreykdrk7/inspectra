@@ -334,6 +334,9 @@ class JobStore:
     def create_subdomain_inventory_job(self, target_domain: str) -> JobRecord:
         return self._create_job(None, "subdomain_inventory_basic", target_domain=target_domain)
 
+    def create_active_network_dry_run_job(self, target_display: str) -> JobRecord:
+        return self._create_job(None, "active_network_dry_run", target_url=target_display)
+
     def _create_job(
         self,
         file_id: str | None,
@@ -426,11 +429,14 @@ class JobStore:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Stored job metadata is invalid: {path.name}") from exc
 
     def _to_list_item(self, record: JobRecord) -> JobListItem:
+        target_url = record.target_url
+        if record.audit_type == "active_network_dry_run" and target_url:
+            target_url = _redact_active_summary_text(target_url)
         return JobListItem(
             id=record.id,
             audit_type=record.audit_type,
             file_id=record.file_id,
-            target_url=record.target_url,
+            target_url=target_url,
             target_domain=record.target_domain,
             status=record.status,
             created_at=record.created_at,
@@ -748,7 +754,53 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["redacted_values_count"] = manifest_summary.get("redacted_values_count")
             summary["truncated"] = manifest_summary.get("truncated")
             summary["errors_count"] = len(record.result.get("errors") or [])
+        if record.audit_type == "active_network_dry_run":
+            target = record.result.get("target")
+            policy = record.result.get("policy")
+            blocked_reasons = record.result.get("blocked_reasons")
+            if not isinstance(target, dict):
+                target = {}
+            if not isinstance(policy, dict):
+                policy = {}
+            if not isinstance(blocked_reasons, list):
+                blocked_reasons = []
+            target_display = target.get("normalized") or target.get("raw") or record.target_url
+            summary["target_display"] = _redact_active_summary_text(str(target_display)) if target_display else None
+            summary["mode"] = record.result.get("mode")
+            summary["profile"] = record.result.get("profile")
+            summary["allowed"] = policy.get("allowed", manifest_summary.get("allowed"))
+            summary["planned_checks_count"] = manifest_summary.get("planned_checks_count")
+            summary["blocked_reasons_count"] = manifest_summary.get("blocked_reasons_count")
+            summary["network_requests_sent"] = manifest_summary.get("network_requests_sent")
+            summary["blocked_reason_codes"] = [
+                str(reason.get("code"))
+                for reason in blocked_reasons
+                if isinstance(reason, dict) and reason.get("code") is not None
+            ]
+            summary["policy_version"] = policy.get("policy_version")
         return summary
     if record.error:
         return {"error": record.error}
     return None
+
+
+def _redact_active_summary_text(value: str) -> str:
+    redacted = re.sub(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "[REDACTED]",
+        value,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    redacted = re.sub(r"(?i)\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "Authorization: [REDACTED]", redacted)
+    redacted = re.sub(
+        r"(?i)([?&](?:access_token|refresh_token|id_token|api_key|apikey|key|token|secret|password|passwd|pwd|session|sid|auth|authorization|jwt|bearer|sig|signature|client_secret|code|state)=)[^&#\s]+",
+        lambda match: f"{match.group(1)}[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(r"(?i)\b([a-z][a-z0-9+.-]*://)([^:\s/@;\"']+):([^@\s/;\"']+)@([^\s;\"']+)", r"\1[REDACTED]@\4", redacted)
+    redacted = re.sub(
+        r"(?i)\b([a-z0-9_.-]*(?:token|password|secret|api_key|apikey|client_secret)[a-z0-9_.-]*)(\s*[:=]\s*)[^\s,;]+",
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]",
+        redacted,
+    )
+    return redacted.replace("PRIVATE KEY", "[REDACTED]")
