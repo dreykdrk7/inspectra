@@ -16,6 +16,8 @@ Base open-source/self-hosted framing: `docs/future/passive-alpha-p0-00-open-sour
 
 Base implementation readiness plan: `docs/future/passive-alpha-gap-fixes-08-implementation-readiness-plan.md`
 
+P0 runtime planning closeout: `docs/future/passive-alpha-p0-07-p0-runtime-planning-closeout.md`
+
 Commit scope: docs-only deployment hardening checklist for future Passive Alpha P0 work. This block defines deployment modes, controls, no-go conditions, and future tests/checks before exposing an Inspectra installation outside localhost/trusted local use. It does not change backend, frontend, runner, tests, fixtures, Compose configuration, schemas, storage, auth, CORS, CSRF, TLS, reverse proxy behavior, reports, exports, cleanup, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -499,19 +501,19 @@ This checklist depends on P0-01 through P0-05:
 - P0-05 defines retention/delete semantics and cleanup boundaries.
 - P0-06 defines deployment hardening gates before external exposure.
 
-The preferred next step is a closeout of the P0 planning line before runtime implementation:
+The P0 runtime planning closeout is now accepted:
 
 ```text
-PASSIVE-ALPHA-P0-07-P0-RUNTIME-PLANNING-CLOSEOUT
+PASSIVE_ALPHA_P0_RUNTIME_PLANNING_CLOSED
 ```
 
-If the product chooses to start implementation instead, the first runtime implementation planning candidate is:
+The preferred next step is the first small runtime slice:
 
 ```text
-PASSIVE-ALPHA-P0-07-AUTH-RUNTIME-FIRST-SLICE-PLAN
+PASSIVE-ALPHA-RUNTIME-01-AUTH-MODE-FLAG-AND-LOCAL-OPERATOR
 ```
 
-Preference: close P0 planning first, then begin runtime implementation in smaller slices.
+Preference: keep runtime implementation in small, testable slices and do not combine auth, ownership, retention/delete, UI, and deployment hardening in one large diff.
 
 ## Open Questions
 
@@ -617,10 +619,10 @@ Preference: close P0 planning first, then begin runtime implementation in smalle
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-07-P0-RUNTIME-PLANNING-CLOSEOUT
+PASSIVE-ALPHA-RUNTIME-01-AUTH-MODE-FLAG-AND-LOCAL-OPERATOR
 ```
 
-Close the P0 planning line before starting runtime implementation.
+Start runtime work by making the auth mode and default local/admin operator explicit before full login, owner metadata, API guards, owner checks, delete/cleanup, or deployment hardening implementation.
 
 ## Validation Commands
 

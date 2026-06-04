@@ -22,6 +22,8 @@ Retention/delete runtime plan: `docs/future/passive-alpha-p0-05-retention-delete
 
 Deployment hardening checklist: `docs/future/passive-alpha-p0-06-deployment-hardening-checklist.md`
 
+P0 runtime planning closeout: `docs/future/passive-alpha-p0-07-p0-runtime-planning-closeout.md`
+
 Commit scope: docs-only implementation readiness plan for future Passive Alpha P0/P1/P2 runtime work. This block orders future microphases, names dependencies, defines minimum test expectations, and keeps runtime work separate. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -105,6 +107,11 @@ Future runtime work should follow these principles:
    - Require review before any public/external runtime.
    - Accepted docs-first decision: `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_CHECKLIST_ACCEPTED`.
 
+7. `PASSIVE-ALPHA-P0-07-P0-RUNTIME-PLANNING-CLOSEOUT`
+   - Close P0 docs-first planning before runtime implementation.
+   - Consolidate accepted P0 decisions, blockers, risks, minimum tests, and first runtime slice.
+   - Accepted docs-first decision: `PASSIVE_ALPHA_P0_RUNTIME_PLANNING_CLOSED`.
+
 ### P1 Sequence
 
 1. `PASSIVE-ALPHA-P1-01-ONBOARDING-DISCLAIMER-UI`
@@ -145,15 +152,16 @@ Future runtime work should follow these principles:
 Recommended first future block:
 
 ```text
-PASSIVE-ALPHA-P0-01-AUTH-BOUNDARY-DESIGN-TO-RUNTIME-PLAN
+PASSIVE-ALPHA-RUNTIME-01-AUTH-MODE-FLAG-AND-LOCAL-OPERATOR
 ```
 
 Rationale:
 
-- The auth/session boundary must be decided before owner fields, owner-scoped API guards, or delete semantics can be implemented safely.
+- The auth/session boundary is now accepted at docs-first level.
+- Runtime mode must become explicit before full login, owner fields, owner-scoped API guards, or delete semantics are implemented.
 - Trusted local default operator behavior must be explicit before migrating existing local data.
 - Admin/operator boundaries affect cleanup, logs, exports, target histories, and Active internal controls.
-- Starting with storage ownership before auth would risk inventing fields without a clear principal model.
+- Starting with storage ownership before an explicit local/admin operator would risk inventing fields without a clear principal model.
 
 ## Dependencies
 
@@ -244,18 +252,10 @@ These remain deferred:
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-P0-07-P0-RUNTIME-PLANNING-CLOSEOUT
+PASSIVE-ALPHA-RUNTIME-01-AUTH-MODE-FLAG-AND-LOCAL-OPERATOR
 ```
 
-The auth-boundary runtime plan, owner model/storage migration plan, deny-anonymous API guards plan, owner-scoped resources plan, retention/delete runtime plan, and deployment hardening checklist are now accepted. Choose this next if the product wants to close the P0 planning line before starting runtime implementation slices.
-
-Implementation alternative:
-
-```text
-PASSIVE-ALPHA-P0-07-AUTH-RUNTIME-FIRST-SLICE-PLAN
-```
-
-Choose this only if the product wants to begin implementation planning immediately instead of doing the P0 closeout first.
+The auth-boundary runtime plan, owner model/storage migration plan, deny-anonymous API guards plan, owner-scoped resources plan, retention/delete runtime plan, deployment hardening checklist, and P0 runtime planning closeout are now accepted. Choose this next to begin runtime work with the smallest compatibility-preserving slice.
 
 Release-copy alternative:
 
