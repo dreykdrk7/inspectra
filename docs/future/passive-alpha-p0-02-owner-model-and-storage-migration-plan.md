@@ -2,7 +2,7 @@
 
 Status: `PASSIVE_ALPHA_OWNER_MODEL_STORAGE_MIGRATION_PLAN_ACCEPTED`.
 
-Runtime implementation record: the first owner write-path slice is now accepted as `PASSIVE_ALPHA_RUNTIME_OWNER_METADATA_WRITE_PATH_ACCEPTED` in `docs/future/passive-alpha-runtime-04-owner-metadata-write-path.md`.
+Runtime implementation record: the first owner write-path slice is now accepted as `PASSIVE_ALPHA_RUNTIME_OWNER_METADATA_WRITE_PATH_ACCEPTED` in `docs/future/passive-alpha-runtime-04-owner-metadata-write-path.md`. Trusted-local legacy ownerless data mapping is now accepted as `PASSIVE_ALPHA_RUNTIME_LEGACY_LOCAL_DATA_MAPPING_ACCEPTED` in `docs/future/passive-alpha-runtime-05-legacy-local-data-mapping.md`.
 
 Base auth-boundary runtime plan: `docs/future/passive-alpha-p0-01-auth-boundary-design-to-runtime-plan.md`
 

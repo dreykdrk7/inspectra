@@ -10,6 +10,8 @@ Base owner-scoped resources plan: `docs/future/passive-alpha-p0-04-owner-scoped-
 
 Base P0 runtime planning closeout: `docs/future/passive-alpha-p0-07-p0-runtime-planning-closeout.md`
 
+Successor runtime 05 legacy local data mapping: `docs/future/passive-alpha-runtime-05-legacy-local-data-mapping.md`
+
 Commit scope: minimal backend owner metadata write path for new files and jobs. This block does not implement login, password verification, sessions, cookies, frontend login UI, multi-user runtime, owner-scoped reads, owner-scoped exports, legacy migration, delete/retention runtime, billing, SaaS tenants, Nmap, new Active behavior, or new analyzers.
 
 ## Final Decision
@@ -102,7 +104,7 @@ Ownerless legacy records remain compatible in trusted local mode.
 - Legacy job metadata without `owner_id` still validates.
 - Reads/lists still return legacy records.
 - New jobs created from legacy ownerless source files in trusted local mode get `owner_id=local-admin`.
-- Formal mapping or migration of legacy ownerless data remains deferred to Runtime-05.
+- Runtime-05 now maps trusted-local legacy ownerless file/job records to `local-admin` on read and lazily persists the effective owner when a legacy job is updated.
 
 ## API Shape
 
@@ -147,7 +149,7 @@ Future UI or API polish may decide whether to hide owner metadata from some resp
 ## Residual Risks
 
 - New records have owner metadata, but owner-scoped reads are not enforced yet.
-- Legacy ownerless records remain unmigrated.
+- Legacy ownerless records are now mapped to the default local operator in trusted local mode, but not fully migrated across storage.
 - There is no user A/user B isolation yet.
 - Auth-required modes still have no login/session path, so protected workflows are blocked until later auth runtime.
 - `owner_id=local-admin` is a local compatibility marker, not a production multi-user identity model.
@@ -184,7 +186,7 @@ No `.env`, `.env.*`, or `.envrc` files are read by this work. No external networ
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-05-LEGACY-LOCAL-DATA-MAPPING
+PASSIVE-ALPHA-RUNTIME-06-OWNER-SCOPED-READS-AND-EXPORTS
 ```
 
-Next runtime work should define and implement the trusted local mapping behavior for existing ownerless records before enforcing owner-scoped reads. Keep owner-scoped reads, delete/retention runtime, deployment hardening, UI login/status work, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.
+Runtime-05 now defines and implements trusted local mapping behavior for existing ownerless records. Next runtime work should implement owner-scoped reads after anonymous access is denied. Keep delete/retention runtime, deployment hardening, UI login/status work, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.

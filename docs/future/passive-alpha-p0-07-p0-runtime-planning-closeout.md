@@ -26,6 +26,8 @@ Runtime 03 deny-anonymous sensitive routes: `docs/future/passive-alpha-runtime-0
 
 Runtime 04 owner metadata write path: `docs/future/passive-alpha-runtime-04-owner-metadata-write-path.md`
 
+Runtime 05 legacy local data mapping: `docs/future/passive-alpha-runtime-05-legacy-local-data-mapping.md`
+
 Commit scope: docs-only closeout for Passive Alpha P0 runtime planning. This block consolidates accepted docs-first decisions, runtime dependencies, the first implementation sequence, blockers, tests, and risk register. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, auth, sessions, cookies, migrations, API guards, owner checks, retention/delete behavior, cleanup, CORS, CSRF, TLS, reverse proxy behavior, reports, exports, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -301,13 +303,15 @@ The third runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_DENY_ANONYMOUS
 
 The fourth runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_OWNER_METADATA_WRITE_PATH_ACCEPTED`. It writes `owner_id` metadata for new uploads, file-based jobs, target-based jobs, and Active jobs while keeping trusted local compatibility and leaving owner-scoped reads, migration, login, and sessions for later slices.
 
+The fifth runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_LEGACY_LOCAL_DATA_MAPPING_ACCEPTED`. It maps trusted-local legacy ownerless files and jobs to `local-admin` on read/list/export/SBOM paths and lazily persists the effective owner when a legacy job is updated, without adding login, sessions, owner-scoped reads, cross-owner denial, or full migration.
+
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-05-LEGACY-LOCAL-DATA-MAPPING
+PASSIVE-ALPHA-RUNTIME-06-OWNER-SCOPED-READS-AND-EXPORTS
 ```
 
-Continue runtime work by mapping or defining trusted-local behavior for existing ownerless records. Keep owner-scoped reads, retention/delete runtime, cleanup, deployment hardening, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
+Continue runtime work by enforcing owner-scoped reads for files, jobs, reports, exports, SBOMs, Raw JSON, and target histories after anonymous access is denied. Keep retention/delete runtime, cleanup, deployment hardening, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
 
 ## Validation Commands
 

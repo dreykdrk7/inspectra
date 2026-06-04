@@ -479,6 +479,7 @@ async def test_trusted_local_legacy_ownerless_records_remain_compatible(monkeypa
     created_at = datetime.now(timezone.utc).isoformat()
     file_id = "1" * 32
     job_id = "2" * 32
+    target_job_id = "3" * 32
     (app.state.settings.upload_dir / f"{file_id}.json").write_text(
         json.dumps(
             {
@@ -507,20 +508,52 @@ async def test_trusted_local_legacy_ownerless_records_remain_compatible(monkeypa
         ),
         encoding="utf-8",
     )
+    (app.state.settings.jobs_dir / f"{target_job_id}.json").write_text(
+        json.dumps(
+            {
+                "id": target_job_id,
+                "audit_type": "web_basic",
+                "file_id": None,
+                "target_url": "https://example.com/status",
+                "status": "queued",
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_job = save_export_fixture_job()
+    updated = app.state.jobs.update(job_id, status="completed", result={"analyzer": "pdf_basic", "summary": {}})
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         file_response = await client.get(f"/files/{file_id}")
         files_response = await client.get("/files")
         job_response = await client.get(f"/jobs/{job_id}")
+        target_job_response = await client.get(f"/jobs/{target_job_id}")
+        manifest_job_response = await client.get(f"/jobs/{manifest_job.id}")
         jobs_response = await client.get("/jobs")
+        export_response = await client.get(f"/jobs/{job_id}/export/markdown")
+        sbom_response = await client.get(f"/jobs/{manifest_job.id}/sbom/cyclonedx-json")
 
     assert file_response.status_code == 200
-    assert file_response.json()["owner_id"] is None
-    assert files_response.json()[0]["owner_id"] is None
+    assert file_response.json()["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert files_response.json()[0]["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
     assert job_response.status_code == 200
-    assert job_response.json()["owner_id"] is None
-    assert jobs_response.json()[0]["owner_id"] is None
+    assert job_response.json()["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert target_job_response.status_code == 200
+    assert target_job_response.json()["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert manifest_job_response.status_code == 200
+    assert manifest_job_response.json()["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    listed_jobs = {item["id"]: item for item in jobs_response.json()}
+    assert listed_jobs[job_id]["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert listed_jobs[target_job_id]["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert listed_jobs[manifest_job.id]["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert updated.owner_id == DEFAULT_LOCAL_OPERATOR.id
+    saved_payload = json.loads((app.state.settings.jobs_dir / f"{job_id}.json").read_text(encoding="utf-8"))
+    assert saved_payload["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert export_response.status_code == 200
+    assert sbom_response.status_code == 200
 
 
 @pytest.mark.anyio

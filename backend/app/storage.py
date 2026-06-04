@@ -13,7 +13,7 @@ from uuid import uuid4
 from fastapi import HTTPException, UploadFile, status
 from pydantic import ValidationError
 
-from app.config import Settings
+from app.config import DEFAULT_LOCAL_OPERATOR, Settings
 from app.models import JobListItem, JobRecord, JobStatus, StoredFile
 
 try:
@@ -46,6 +46,28 @@ ARCHIVE_DEFINITIONS = (
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def resolve_record_owner_id(settings: Settings, owner_id: str | None) -> str | None:
+    if owner_id:
+        return owner_id
+    if settings.auth_mode == "trusted_local_no_auth":
+        return DEFAULT_LOCAL_OPERATOR.id
+    return None
+
+
+def _with_effective_file_owner(settings: Settings, record: StoredFile) -> StoredFile:
+    owner_id = resolve_record_owner_id(settings, record.owner_id)
+    if owner_id == record.owner_id:
+        return record
+    return record.model_copy(update={"owner_id": owner_id})
+
+
+def _with_effective_job_owner(settings: Settings, record: JobRecord) -> JobRecord:
+    owner_id = resolve_record_owner_id(settings, record.owner_id)
+    if owner_id == record.owner_id:
+        return record
+    return record.model_copy(update={"owner_id": owner_id})
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -256,7 +278,8 @@ class FileStore:
         if not path.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
         try:
-            return StoredFile.model_validate_json(path.read_text(encoding="utf-8"))
+            record = StoredFile.model_validate_json(path.read_text(encoding="utf-8"))
+            return _with_effective_file_owner(self.settings, record)
         except (ValidationError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored file metadata is invalid.") from exc
 
@@ -269,7 +292,8 @@ class FileStore:
 
     def _load_metadata_file(self, path: Path) -> StoredFile:
         try:
-            return StoredFile.model_validate_json(path.read_text(encoding="utf-8"))
+            record = StoredFile.model_validate_json(path.read_text(encoding="utf-8"))
+            return _with_effective_file_owner(self.settings, record)
         except (ValidationError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Stored file metadata is invalid: {path.name}") from exc
 
@@ -411,7 +435,8 @@ class JobStore:
         if not path.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
         try:
-            return JobRecord.model_validate_json(path.read_text(encoding="utf-8"))
+            record = JobRecord.model_validate_json(path.read_text(encoding="utf-8"))
+            return _with_effective_job_owner(self.settings, record)
         except (ValidationError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored job metadata is invalid.") from exc
 
@@ -435,7 +460,8 @@ class JobStore:
 
     def _load_job_file(self, path: Path) -> JobRecord:
         try:
-            return JobRecord.model_validate_json(path.read_text(encoding="utf-8"))
+            record = JobRecord.model_validate_json(path.read_text(encoding="utf-8"))
+            return _with_effective_job_owner(self.settings, record)
         except (ValidationError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Stored job metadata is invalid: {path.name}") from exc
 
