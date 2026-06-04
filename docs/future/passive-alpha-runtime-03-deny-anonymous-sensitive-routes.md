@@ -2,6 +2,8 @@
 
 Status: `PASSIVE_ALPHA_RUNTIME_DENY_ANONYMOUS_ROUTES_ACCEPTED`.
 
+Successor runtime 04 owner metadata write path: `docs/future/passive-alpha-runtime-04-owner-metadata-write-path.md`
+
 Base runtime 02 single-admin auth skeleton: `docs/future/passive-alpha-runtime-02-single-admin-auth-skeleton.md`
 
 Base deny-anonymous guard plan: `docs/future/passive-alpha-p0-03-deny-anonymous-reads-api-guards.md`
@@ -96,12 +98,12 @@ Auth-required modes now fail closed for anonymous sensitive routes. This is inte
 - Denials are intentionally generic and do not reveal whether a file, job, export, SBOM, or target exists.
 - The guard does not weaken Active target policy, feature flags, authorization payloads, double-confirmation requirements, or redaction.
 - Redaction remains required after future authentication succeeds.
-- Auth-required modes are still incomplete until login/session and owner metadata slices land.
+- Auth-required modes are still incomplete until login/session and owner-scoped enforcement slices land.
 
 ## Residual Risks
 
 - Auth-required modes now block anonymous sensitive access but do not yet provide an authenticated use path.
-- Owner metadata is not written yet.
+- Owner metadata was not written in this slice; Runtime-04 now writes owner metadata for new files and jobs.
 - Owner-scoped reads, reports, exports, SBOMs, Raw JSON, and target histories are not enforced yet.
 - `trusted_local_no_auth` remains appropriate only for localhost/dev/local trusted use.
 - Future route additions must either remain protected by default or document a narrow public-safe exception.
@@ -113,7 +115,7 @@ Auth-required modes now fail closed for anonymous sensitive routes. This is inte
 - Public-safe health and auth-status routes continue to work.
 - Sensitive route denial is generic and does not expose resource existence.
 - Upload, file, audit, target, Active, job, export, and SBOM route families are covered.
-- No login, sessions, cookies, owner metadata, migrations, frontend UI, runner changes, Active expansion, Nmap, or new capabilities are added.
+- Runtime-03 itself added no login, sessions, cookies, owner metadata, migrations, frontend UI, runner changes, Active expansion, Nmap, or new capabilities.
 
 ## Reference Validation Commands
 
@@ -135,7 +137,7 @@ No `.env`, `.env.*`, or `.envrc` files are read by this work. No external networ
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-04-OWNER-METADATA-WRITE-PATH
+PASSIVE-ALPHA-RUNTIME-05-LEGACY-LOCAL-DATA-MAPPING
 ```
 
-Next runtime work should write owner metadata on new uploads and target-based jobs, while preserving trusted-local compatibility and keeping owner-scoped reads, migrations, retention/delete runtime, deployment hardening, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.
+Next runtime work should define trusted-local handling for existing ownerless records before owner-scoped reads are enforced, while keeping owner-scoped reads, migrations beyond the accepted local mapping, retention/delete runtime, deployment hardening, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.

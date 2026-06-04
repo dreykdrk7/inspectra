@@ -84,7 +84,7 @@ class FileStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def save_pdf(self, upload: UploadFile) -> StoredFile:
+    async def save_pdf(self, upload: UploadFile, *, owner_id: str | None = None) -> StoredFile:
         first_chunk = await upload.read(UPLOAD_CHUNK_SIZE)
         if not first_chunk:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file.")
@@ -115,6 +115,7 @@ class FileStore:
 
         record = StoredFile(
             id=file_id,
+            owner_id=owner_id,
             kind="pdf",
             original_filename=original_filename,
             stored_filename=stored_filename,
@@ -126,7 +127,7 @@ class FileStore:
         self._save_record(record)
         return record
 
-    async def save_image(self, upload: UploadFile) -> StoredFile:
+    async def save_image(self, upload: UploadFile, *, owner_id: str | None = None) -> StoredFile:
         first_chunk = await upload.read(UPLOAD_CHUNK_SIZE)
         if not first_chunk:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file.")
@@ -159,6 +160,7 @@ class FileStore:
 
         record = StoredFile(
             id=file_id,
+            owner_id=owner_id,
             kind="image",
             original_filename=original_filename,
             stored_filename=stored_filename,
@@ -170,7 +172,7 @@ class FileStore:
         self._save_record(record)
         return record
 
-    async def save_manifest(self, upload: UploadFile) -> StoredFile:
+    async def save_manifest(self, upload: UploadFile, *, owner_id: str | None = None) -> StoredFile:
         original_filename = Path(upload.filename or "").name
         payload = await _read_limited_upload(upload, self.settings.max_upload_bytes)
         manifest_type, content_type = _validate_manifest_upload(original_filename, payload)
@@ -182,6 +184,7 @@ class FileStore:
 
         record = StoredFile(
             id=file_id,
+            owner_id=owner_id,
             kind="manifest",
             original_filename=original_filename,
             stored_filename=stored_filename,
@@ -193,7 +196,7 @@ class FileStore:
         self._save_record(record)
         return record
 
-    async def save_archive(self, upload: UploadFile) -> StoredFile:
+    async def save_archive(self, upload: UploadFile, *, owner_id: str | None = None) -> StoredFile:
         original_filename = Path(upload.filename or "").name
         payload = await _read_limited_upload(upload, self.settings.max_upload_bytes)
         _, extension, content_type = _validate_archive_upload(original_filename, payload)
@@ -205,6 +208,7 @@ class FileStore:
 
         record = StoredFile(
             id=file_id,
+            owner_id=owner_id,
             kind="archive",
             original_filename=original_filename,
             stored_filename=stored_filename,
@@ -274,71 +278,71 @@ class JobStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def create_pdf_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "pdf_basic")
+    def create_pdf_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "pdf_basic", owner_id=owner_id)
 
-    def create_image_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "image_basic")
+    def create_image_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "image_basic", owner_id=owner_id)
 
-    def create_manifest_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "manifest_basic")
+    def create_manifest_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "manifest_basic", owner_id=owner_id)
 
-    def create_archive_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "archive_basic")
+    def create_archive_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "archive_basic", owner_id=owner_id)
 
-    def create_project_archive_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "project_archive_basic")
+    def create_project_archive_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "project_archive_basic", owner_id=owner_id)
 
-    def create_django_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "django_config_basic")
+    def create_django_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "django_config_basic", owner_id=owner_id)
 
-    def create_docker_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "docker_config_basic")
+    def create_docker_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "docker_config_basic", owner_id=owner_id)
 
-    def create_secrets_review_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "secrets_review_basic")
+    def create_secrets_review_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "secrets_review_basic", owner_id=owner_id)
 
-    def create_node_package_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "node_package_config_basic")
+    def create_node_package_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "node_package_config_basic", owner_id=owner_id)
 
-    def create_ci_cd_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "ci_cd_config_basic")
+    def create_ci_cd_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "ci_cd_config_basic", owner_id=owner_id)
 
-    def create_k8s_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "k8s_config_basic")
+    def create_k8s_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "k8s_config_basic", owner_id=owner_id)
 
-    def create_terraform_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "terraform_config_basic")
+    def create_terraform_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "terraform_config_basic", owner_id=owner_id)
 
-    def create_nginx_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "nginx_config_basic")
+    def create_nginx_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "nginx_config_basic", owner_id=owner_id)
 
-    def create_compose_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "compose_config_basic")
+    def create_compose_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "compose_config_basic", owner_id=owner_id)
 
-    def create_database_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "database_config_basic")
+    def create_database_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "database_config_basic", owner_id=owner_id)
 
-    def create_sql_database_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "sql_database_config_basic")
+    def create_sql_database_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "sql_database_config_basic", owner_id=owner_id)
 
-    def create_redis_config_job(self, file_id: str) -> JobRecord:
-        return self._create_job(file_id, "redis_config_basic")
+    def create_redis_config_job(self, file_id: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(file_id, "redis_config_basic", owner_id=owner_id)
 
-    def create_web_job(self, target_url: str) -> JobRecord:
-        return self._create_job(None, "web_basic", target_url=target_url)
+    def create_web_job(self, target_url: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(None, "web_basic", target_url=target_url, owner_id=owner_id)
 
-    def create_domain_job(self, target_domain: str) -> JobRecord:
-        return self._create_job(None, "domain_basic", target_domain=target_domain)
+    def create_domain_job(self, target_domain: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(None, "domain_basic", target_domain=target_domain, owner_id=owner_id)
 
-    def create_subdomain_inventory_job(self, target_domain: str) -> JobRecord:
-        return self._create_job(None, "subdomain_inventory_basic", target_domain=target_domain)
+    def create_subdomain_inventory_job(self, target_domain: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(None, "subdomain_inventory_basic", target_domain=target_domain, owner_id=owner_id)
 
-    def create_active_network_dry_run_job(self, target_display: str) -> JobRecord:
-        return self._create_job(None, "active_network_dry_run", target_url=target_display)
+    def create_active_network_dry_run_job(self, target_display: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(None, "active_network_dry_run", target_url=target_display, owner_id=owner_id)
 
-    def create_active_http_header_probe_job(self, target_display: str) -> JobRecord:
-        return self._create_job(None, "active_http_header_probe", target_url=target_display)
+    def create_active_http_header_probe_job(self, target_display: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(None, "active_http_header_probe", target_url=target_display, owner_id=owner_id)
 
     def _create_job(
         self,
@@ -347,10 +351,12 @@ class JobStore:
         *,
         target_url: str | None = None,
         target_domain: str | None = None,
+        owner_id: str | None = None,
     ) -> JobRecord:
         now = utc_now()
         record = JobRecord(
             id=uuid4().hex,
+            owner_id=owner_id,
             audit_type=audit_type,
             file_id=file_id,
             target_url=target_url,
@@ -421,6 +427,8 @@ class JobStore:
         update: dict = {}
         if record.source_file_deleted_at is None and existing.source_file_deleted_at is not None:
             update["source_file_deleted_at"] = existing.source_file_deleted_at
+        if record.owner_id is None and existing.owner_id is not None:
+            update["owner_id"] = existing.owner_id
         if update:
             return record.model_copy(update=update)
         return record
@@ -437,6 +445,7 @@ class JobStore:
             target_url = _redact_active_summary_text(target_url)
         return JobListItem(
             id=record.id,
+            owner_id=record.owner_id,
             audit_type=record.audit_type,
             file_id=record.file_id,
             target_url=target_url,

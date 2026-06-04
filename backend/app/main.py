@@ -136,6 +136,14 @@ async def deny_anonymous_sensitive_routes(request: Request, call_next) -> Respon
     return await call_next(request)
 
 
+def current_owner_id_for_request(request: Request) -> str:
+    return request.app.state.default_local_operator.id
+
+
+def owner_id_for_file_job(request: Request, stored_file: StoredFile) -> str:
+    return stored_file.owner_id or current_owner_id_for_request(request)
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "inspectra-backend"}
@@ -158,22 +166,22 @@ async def auth_status(request: Request) -> AuthStatusResponse:
 
 @app.post("/files/pdf", response_model=StoredFile, status_code=status.HTTP_201_CREATED)
 async def upload_pdf(request: Request, file: UploadFile = File(...)) -> StoredFile:
-    return await request.app.state.files.save_pdf(file)
+    return await request.app.state.files.save_pdf(file, owner_id=current_owner_id_for_request(request))
 
 
 @app.post("/files/image", response_model=StoredFile, status_code=status.HTTP_201_CREATED)
 async def upload_image(request: Request, file: UploadFile = File(...)) -> StoredFile:
-    return await request.app.state.files.save_image(file)
+    return await request.app.state.files.save_image(file, owner_id=current_owner_id_for_request(request))
 
 
 @app.post("/files/manifest", response_model=StoredFile, status_code=status.HTTP_201_CREATED)
 async def upload_manifest(request: Request, file: UploadFile = File(...)) -> StoredFile:
-    return await request.app.state.files.save_manifest(file)
+    return await request.app.state.files.save_manifest(file, owner_id=current_owner_id_for_request(request))
 
 
 @app.post("/files/archive", response_model=StoredFile, status_code=status.HTTP_201_CREATED)
 async def upload_archive(request: Request, file: UploadFile = File(...)) -> StoredFile:
-    return await request.app.state.files.save_archive(file)
+    return await request.app.state.files.save_archive(file, owner_id=current_owner_id_for_request(request))
 
 
 @app.get("/files", response_model=list[StoredFile])
@@ -198,7 +206,7 @@ async def launch_pdf_audit(request: Request, file_id: str, background_tasks: Bac
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "pdf":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not a PDF.")
-    job = request.app.state.jobs.create_pdf_job(file_id)
+    job = request.app.state.jobs.create_pdf_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.pdf_audits.run_pdf_analysis, job.id)
     return job
 
@@ -208,7 +216,7 @@ async def launch_image_audit(request: Request, file_id: str, background_tasks: B
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "image":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an image.")
-    job = request.app.state.jobs.create_image_job(file_id)
+    job = request.app.state.jobs.create_image_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.image_audits.run_image_analysis, job.id)
     return job
 
@@ -218,7 +226,7 @@ async def launch_manifest_audit(request: Request, file_id: str, background_tasks
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "manifest":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not a manifest.")
-    job = request.app.state.jobs.create_manifest_job(file_id)
+    job = request.app.state.jobs.create_manifest_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.manifest_audits.run_manifest_analysis, job.id)
     return job
 
@@ -228,7 +236,7 @@ async def launch_archive_audit(request: Request, file_id: str, background_tasks:
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_archive_job(file_id)
+    job = request.app.state.jobs.create_archive_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.archive_audits.run_archive_analysis, job.id)
     return job
 
@@ -238,7 +246,7 @@ async def launch_project_archive_audit(request: Request, file_id: str, backgroun
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_project_archive_job(file_id)
+    job = request.app.state.jobs.create_project_archive_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.project_archive_audits.run_project_archive_analysis, job.id)
     return job
 
@@ -248,7 +256,7 @@ async def launch_django_config_audit(request: Request, file_id: str, background_
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_django_config_job(file_id)
+    job = request.app.state.jobs.create_django_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.django_config_audits.run_django_config_analysis, job.id)
     return job
 
@@ -258,7 +266,7 @@ async def launch_docker_config_audit(request: Request, file_id: str, background_
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_docker_config_job(file_id)
+    job = request.app.state.jobs.create_docker_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.docker_config_audits.run_docker_config_analysis, job.id)
     return job
 
@@ -268,7 +276,7 @@ async def launch_secrets_review_audit(request: Request, file_id: str, background
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_secrets_review_job(file_id)
+    job = request.app.state.jobs.create_secrets_review_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.secrets_review_audits.run_secrets_review_analysis, job.id)
     return job
 
@@ -278,7 +286,7 @@ async def launch_node_package_config_audit(request: Request, file_id: str, backg
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_node_package_config_job(file_id)
+    job = request.app.state.jobs.create_node_package_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.node_package_config_audits.run_node_package_config_analysis, job.id)
     return job
 
@@ -288,7 +296,7 @@ async def launch_ci_cd_config_audit(request: Request, file_id: str, background_t
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_ci_cd_config_job(file_id)
+    job = request.app.state.jobs.create_ci_cd_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.ci_cd_config_audits.run_ci_cd_config_analysis, job.id)
     return job
 
@@ -298,7 +306,7 @@ async def launch_k8s_config_audit(request: Request, file_id: str, background_tas
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_k8s_config_job(file_id)
+    job = request.app.state.jobs.create_k8s_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.k8s_config_audits.run_k8s_config_analysis, job.id)
     return job
 
@@ -308,7 +316,7 @@ async def launch_terraform_config_audit(request: Request, file_id: str, backgrou
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_terraform_config_job(file_id)
+    job = request.app.state.jobs.create_terraform_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.terraform_config_audits.run_terraform_config_analysis, job.id)
     return job
 
@@ -318,7 +326,7 @@ async def launch_nginx_config_audit(request: Request, file_id: str, background_t
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_nginx_config_job(file_id)
+    job = request.app.state.jobs.create_nginx_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.nginx_config_audits.run_nginx_config_analysis, job.id)
     return job
 
@@ -328,7 +336,7 @@ async def launch_compose_config_audit(request: Request, file_id: str, background
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_compose_config_job(file_id)
+    job = request.app.state.jobs.create_compose_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.compose_config_audits.run_compose_config_analysis, job.id)
     return job
 
@@ -338,7 +346,7 @@ async def launch_database_config_audit(request: Request, file_id: str, backgroun
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_database_config_job(file_id)
+    job = request.app.state.jobs.create_database_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.database_config_audits.run_database_config_analysis, job.id)
     return job
 
@@ -348,7 +356,7 @@ async def launch_sql_database_config_audit(request: Request, file_id: str, backg
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_sql_database_config_job(file_id)
+    job = request.app.state.jobs.create_sql_database_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.sql_database_config_audits.run_sql_database_config_analysis, job.id)
     return job
 
@@ -358,7 +366,7 @@ async def launch_redis_config_audit(request: Request, file_id: str, background_t
     stored_file = request.app.state.files.get(file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
-    job = request.app.state.jobs.create_redis_config_job(file_id)
+    job = request.app.state.jobs.create_redis_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
     background_tasks.add_task(request.app.state.redis_config_audits.run_redis_config_analysis, job.id)
     return job
 
@@ -381,7 +389,7 @@ async def launch_active_network_dry_run(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid active dry-run request: {exc}") from exc
 
     target_display = redact_active_secret_text(str(payload.get("target", ""))) if payload.get("target") is not None else ""
-    job = request.app.state.jobs.create_active_network_dry_run_job(target_display)
+    job = request.app.state.jobs.create_active_network_dry_run_job(target_display, owner_id=current_owner_id_for_request(request))
     background_tasks.add_task(request.app.state.active_network_dry_runs.run_active_network_dry_run_analysis, job.id, active_request)
     return job
 
@@ -404,7 +412,7 @@ async def launch_active_http_header_probe(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid active HTTP header probe request: {exc}") from exc
 
     target_display = redact_active_secret_text(str(payload.get("target", ""))) if payload.get("target") is not None else ""
-    job = request.app.state.jobs.create_active_http_header_probe_job(target_display)
+    job = request.app.state.jobs.create_active_http_header_probe_job(target_display, owner_id=current_owner_id_for_request(request))
     background_tasks.add_task(request.app.state.active_http_header_probes.run_active_http_header_probe_analysis, job.id, active_request)
     return job
 
@@ -418,7 +426,7 @@ async def launch_web_basic_audit(request: Request, payload: WebAuditRequest, bac
         allow_private_targets=request.app.state.settings.web_allow_private_targets,
         allowed_ports=request.app.state.settings.web_allowed_ports,
     )
-    job = request.app.state.jobs.create_web_job(redact_url_query(normalized_url))
+    job = request.app.state.jobs.create_web_job(redact_url_query(normalized_url), owner_id=current_owner_id_for_request(request))
     background_tasks.add_task(request.app.state.web_audits.run_web_analysis, job.id, normalized_url)
     return job
 
@@ -428,7 +436,7 @@ async def launch_domain_basic_audit(request: Request, payload: DomainAuditReques
     if not payload.authorization_confirmed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Authorization confirmation is required.")
     normalized_domain = normalize_domain(payload.domain)
-    job = request.app.state.jobs.create_domain_job(normalized_domain)
+    job = request.app.state.jobs.create_domain_job(normalized_domain, owner_id=current_owner_id_for_request(request))
     background_tasks.add_task(request.app.state.domain_audits.run_domain_analysis, job.id)
     return job
 
@@ -447,7 +455,7 @@ async def launch_subdomain_inventory_basic_audit(
         payload.subdomains,
         request.app.state.settings.subdomain_max_candidates,
     )
-    job = request.app.state.jobs.create_subdomain_inventory_job(normalized_root)
+    job = request.app.state.jobs.create_subdomain_inventory_job(normalized_root, owner_id=current_owner_id_for_request(request))
     background_tasks.add_task(
         request.app.state.subdomain_inventory_audits.run_subdomain_inventory_analysis,
         job.id,

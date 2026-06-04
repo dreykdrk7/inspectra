@@ -40,6 +40,7 @@ AuthMode = Literal[
 
 class StoredFile(BaseModel):
     id: str
+    owner_id: str | None = None
     kind: FileKind = "pdf"
     original_filename: str
     stored_filename: str
@@ -51,6 +52,7 @@ class StoredFile(BaseModel):
 
 class JobRecord(BaseModel):
     id: str
+    owner_id: str | None = None
     audit_type: AuditType
     file_id: str | None = None
     target_url: str | None = None
@@ -69,6 +71,7 @@ class JobCreated(BaseModel):
 
 class JobListItem(BaseModel):
     id: str
+    owner_id: str | None = None
     audit_type: AuditType
     file_id: str | None = None
     target_url: str | None = None

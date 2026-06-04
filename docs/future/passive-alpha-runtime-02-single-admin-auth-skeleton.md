@@ -4,6 +4,8 @@ Status: `PASSIVE_ALPHA_RUNTIME_SINGLE_ADMIN_AUTH_SKELETON_ACCEPTED`.
 
 Successor runtime 03 deny-anonymous guard: `docs/future/passive-alpha-runtime-03-deny-anonymous-sensitive-routes.md`
 
+Successor runtime 04 owner metadata write path: `docs/future/passive-alpha-runtime-04-owner-metadata-write-path.md`
+
 Base runtime 01 auth-mode/local-operator slice: `docs/future/passive-alpha-runtime-01-auth-mode-flag-and-local-operator.md`
 
 Base P0 runtime planning closeout: `docs/future/passive-alpha-p0-07-p0-runtime-planning-closeout.md`
@@ -167,7 +169,7 @@ No npm suite is required because this slice does not touch frontend code.
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-04-OWNER-METADATA-WRITE-PATH
+PASSIVE-ALPHA-RUNTIME-05-LEGACY-LOCAL-DATA-MAPPING
 ```
 
-Next runtime work should begin writing owner metadata on new uploads and target-based jobs, while preserving `trusted_local_no_auth` behavior and keeping owner-scoped reads, migrations, delete/retention runtime, deployment hardening, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.
+Next runtime work should define trusted-local handling for existing ownerless records, while preserving `trusted_local_no_auth` behavior and keeping owner-scoped reads, broader migrations, delete/retention runtime, deployment hardening, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.

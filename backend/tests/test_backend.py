@@ -362,6 +362,193 @@ async def test_self_hosted_single_admin_denies_anonymous_target_and_active_route
 
 
 @pytest.mark.anyio
+async def test_trusted_local_uploads_write_owner_metadata(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post(
+            "/files/pdf",
+            files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+        )
+        manifest_response = await client.post(
+            "/files/manifest",
+            files={"file": ("package.json", SAMPLE_PACKAGE_JSON, "application/json")},
+        )
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("sample.zip", make_zip_bytes({"README.md": b"hello"}), "application/zip")},
+        )
+        list_response = await client.get("/files")
+
+    for response in (pdf_response, manifest_response, archive_response):
+        assert response.status_code in {201, 202}
+        payload = response.json()
+        assert payload["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+        stored = app.state.files.get(payload["id"])
+        assert stored.owner_id == DEFAULT_LOCAL_OPERATOR.id
+    assert {item["owner_id"] for item in list_response.json()} == {DEFAULT_LOCAL_OPERATOR.id}
+
+
+@pytest.mark.anyio
+async def test_trusted_local_file_based_jobs_write_and_preserve_owner_metadata(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.pdf_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        file_response = await client.post(
+            "/files/pdf",
+            files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+        )
+        job_response = await client.post(f"/audits/pdf/{file_response.json()['id']}")
+        jobs_response = await client.get("/jobs")
+
+    job_id = job_response.json()["id"]
+    assert job_response.status_code == 202
+    assert job_response.json()["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert app.state.jobs.get(job_id).owner_id == DEFAULT_LOCAL_OPERATOR.id
+    assert next(item for item in jobs_response.json() if item["id"] == job_id)["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+
+    updated = app.state.jobs.update(job_id, status="completed", result={"analyzer": "pdf_basic", "summary": {}})
+    assert updated.owner_id == DEFAULT_LOCAL_OPERATOR.id
+    assert app.state.jobs.get(job_id).owner_id == DEFAULT_LOCAL_OPERATOR.id
+
+
+@pytest.mark.anyio
+async def test_trusted_local_target_based_jobs_write_owner_metadata(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.web_audits = NoopAuditService()
+    app.state.domain_audits = NoopAuditService()
+    app.state.subdomain_inventory_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        web_response = await client.post(
+            "/audits/web/basic",
+            json={"url": "https://example.com/status", "authorization_confirmed": True},
+        )
+        domain_response = await client.post(
+            "/audits/domain/basic",
+            json={"domain": "example.com", "authorization_confirmed": True},
+        )
+        subdomain_response = await client.post(
+            "/audits/subdomains/basic",
+            json={"root_domain": "example.com", "subdomains": ["www"], "authorization_confirmed": True},
+        )
+        jobs_response = await client.get("/jobs")
+
+    for response in (web_response, domain_response, subdomain_response):
+        assert response.status_code == 202
+        payload = response.json()
+        assert payload["file_id"] is None
+        assert payload["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+        assert app.state.jobs.get(payload["id"]).owner_id == DEFAULT_LOCAL_OPERATOR.id
+    assert {item["owner_id"] for item in jobs_response.json()} == {DEFAULT_LOCAL_OPERATOR.id}
+
+
+@pytest.mark.anyio
+async def test_trusted_local_active_jobs_write_owner_metadata_without_live_probe(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.active_network_dry_runs = NoopAuditService()
+    app.state.active_http_header_probes = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        dry_run_response = await client.post("/active/network/dry-run", json=make_active_dry_run_payload())
+        header_response = await client.post(
+            "/active/network/http-header-probe",
+            json=make_active_http_header_probe_payload("http://10.0.0.1/"),
+        )
+        jobs_response = await client.get("/jobs")
+
+    for response in (dry_run_response, header_response):
+        assert response.status_code == 202
+        payload = response.json()
+        assert payload["file_id"] is None
+        assert payload["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+        assert app.state.jobs.get(payload["id"]).owner_id == DEFAULT_LOCAL_OPERATOR.id
+    assert {item["owner_id"] for item in jobs_response.json()} == {DEFAULT_LOCAL_OPERATOR.id}
+
+
+@pytest.mark.anyio
+async def test_trusted_local_legacy_ownerless_records_remain_compatible(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    created_at = datetime.now(timezone.utc).isoformat()
+    file_id = "1" * 32
+    job_id = "2" * 32
+    (app.state.settings.upload_dir / f"{file_id}.json").write_text(
+        json.dumps(
+            {
+                "id": file_id,
+                "kind": "pdf",
+                "original_filename": "legacy.pdf",
+                "stored_filename": f"{file_id}.pdf",
+                "content_type": "application/pdf",
+                "size_bytes": 11,
+                "sha256": "0" * 64,
+                "created_at": created_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (app.state.settings.jobs_dir / f"{job_id}.json").write_text(
+        json.dumps(
+            {
+                "id": job_id,
+                "audit_type": "pdf_basic",
+                "file_id": file_id,
+                "status": "queued",
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        file_response = await client.get(f"/files/{file_id}")
+        files_response = await client.get("/files")
+        job_response = await client.get(f"/jobs/{job_id}")
+        jobs_response = await client.get("/jobs")
+
+    assert file_response.status_code == 200
+    assert file_response.json()["owner_id"] is None
+    assert files_response.json()[0]["owner_id"] is None
+    assert job_response.status_code == 200
+    assert job_response.json()["owner_id"] is None
+    assert jobs_response.json()[0]["owner_id"] is None
+
+
+@pytest.mark.anyio
+async def test_self_hosted_single_admin_denies_anonymous_writes_before_owner_metadata(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        upload_response = await client.post(
+            "/files/pdf",
+            files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+        )
+        target_response = await client.post(
+            "/audits/web/basic",
+            json={"url": "https://example.com/status", "authorization_confirmed": True},
+        )
+        active_response = await client.post("/active/network/dry-run", json=make_active_dry_run_payload())
+
+    assert upload_response.status_code == 401
+    assert target_response.status_code == 401
+    assert active_response.status_code == 401
+    assert app.state.files.list() == []
+    assert app.state.jobs.list() == []
+
+
+@pytest.mark.anyio
 async def test_pdf_upload_creates_record(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     sample_pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"

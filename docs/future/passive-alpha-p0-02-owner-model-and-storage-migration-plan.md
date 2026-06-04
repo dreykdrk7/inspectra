@@ -2,6 +2,8 @@
 
 Status: `PASSIVE_ALPHA_OWNER_MODEL_STORAGE_MIGRATION_PLAN_ACCEPTED`.
 
+Runtime implementation record: the first owner write-path slice is now accepted as `PASSIVE_ALPHA_RUNTIME_OWNER_METADATA_WRITE_PATH_ACCEPTED` in `docs/future/passive-alpha-runtime-04-owner-metadata-write-path.md`.
+
 Base auth-boundary runtime plan: `docs/future/passive-alpha-p0-01-auth-boundary-design-to-runtime-plan.md`
 
 Base open-source/self-hosted framing: `docs/future/passive-alpha-p0-00-open-source-self-hosted-product-framing.md`

@@ -2,6 +2,8 @@
 
 Status: `PASSIVE_ALPHA_OWNER_SCOPED_RESOURCES_PLAN_ACCEPTED`.
 
+Runtime implementation record: new uploads and jobs now receive owner metadata through `PASSIVE_ALPHA_RUNTIME_OWNER_METADATA_WRITE_PATH_ACCEPTED` in `docs/future/passive-alpha-runtime-04-owner-metadata-write-path.md`. Owner-scoped reads and cross-owner denial remain future runtime work.
+
 Base deny-anonymous API guards plan: `docs/future/passive-alpha-p0-03-deny-anonymous-reads-api-guards.md`
 
 Base owner model and storage migration plan: `docs/future/passive-alpha-p0-02-owner-model-and-storage-migration-plan.md`
