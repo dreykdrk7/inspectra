@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import math
 import re
 import secrets
 
@@ -26,6 +27,15 @@ class AdminSession:
     created_at: datetime
     expires_at: datetime
     auth_mode: str = "self_hosted_single_admin"
+
+
+@dataclass(frozen=True)
+class LoginAttemptRecord:
+    client_key: str
+    failure_count: int
+    first_failed_at: datetime
+    last_failed_at: datetime
+    locked_until: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +119,140 @@ class AdminSessionStore:
 
     def _new_session_csrf_token(self) -> str:
         return self._csrf_token_factory()
+
+
+class LoginAttemptStore:
+    def __init__(
+        self,
+        window_seconds: int,
+        max_failures: int,
+        lockout_seconds: int,
+        max_keys: int,
+        now_func=None,
+    ) -> None:
+        self.window_seconds = max(1, int(window_seconds))
+        self.max_failures = max(1, int(max_failures))
+        self.lockout_seconds = max(1, int(lockout_seconds))
+        self.max_keys = max(1, int(max_keys))
+        self._now_func = now_func or _utc_now
+        self._records: dict[str, LoginAttemptRecord] = {}
+
+    def record_failure(self, client_key: str) -> LoginAttemptRecord:
+        key = self._client_key(client_key)
+        now = self._now()
+        existing = self._records.get(key)
+
+        if existing is None or self._is_expired(existing, now):
+            locked_until = None
+            if self.max_failures <= 1:
+                locked_until = now + timedelta(seconds=self.lockout_seconds)
+            record = LoginAttemptRecord(
+                client_key=key,
+                failure_count=1,
+                first_failed_at=now,
+                last_failed_at=now,
+                locked_until=locked_until,
+            )
+        elif existing.locked_until is not None and existing.locked_until > now:
+            record = existing
+        else:
+            failure_count = existing.failure_count + 1
+            locked_until = None
+            if failure_count >= self.max_failures:
+                locked_until = now + timedelta(seconds=self.lockout_seconds)
+            record = LoginAttemptRecord(
+                client_key=key,
+                failure_count=failure_count,
+                first_failed_at=existing.first_failed_at,
+                last_failed_at=now,
+                locked_until=locked_until,
+            )
+
+        self._records[key] = record
+        self._evict_oldest_keys()
+        return record
+
+    def is_locked(self, client_key: str) -> bool:
+        key = self._client_key(client_key)
+        record = self._records.get(key)
+        if record is None:
+            return False
+
+        now = self._now()
+        if record.locked_until is None:
+            if self._is_expired(record, now):
+                self._records.pop(key, None)
+            return False
+
+        if record.locked_until <= now:
+            self._records.pop(key, None)
+            return False
+
+        return True
+
+    def seconds_until_unlock(self, client_key: str) -> int:
+        key = self._client_key(client_key)
+        record = self._records.get(key)
+        if record is None or record.locked_until is None:
+            return 0
+
+        now = self._now()
+        if record.locked_until <= now:
+            self._records.pop(key, None)
+            return 0
+
+        return max(0, math.ceil((record.locked_until - now).total_seconds()))
+
+    def reset_success(self, client_key: str) -> bool:
+        key = self._client_key(client_key)
+        return self._records.pop(key, None) is not None
+
+    def purge_expired(self) -> int:
+        now = self._now()
+        expired_keys = [
+            key
+            for key, record in self._records.items()
+            if self._is_expired(record, now)
+        ]
+        for key in expired_keys:
+            self._records.pop(key, None)
+        return len(expired_keys)
+
+    def failure_count(self, client_key: str) -> int:
+        key = self._client_key(client_key)
+        record = self._records.get(key)
+        if record is None:
+            return 0
+        if self._is_expired(record, self._now()):
+            self._records.pop(key, None)
+            return 0
+        return record.failure_count
+
+    def record_count(self) -> int:
+        return len(self._records)
+
+    def _is_expired(self, record: LoginAttemptRecord, now: datetime) -> bool:
+        if record.locked_until is not None:
+            return record.locked_until <= now
+        return record.last_failed_at + timedelta(seconds=self.window_seconds) <= now
+
+    def _evict_oldest_keys(self) -> None:
+        while len(self._records) > self.max_keys:
+            oldest_key = min(self._records, key=lambda key: self._records[key].last_failed_at)
+            self._records.pop(oldest_key, None)
+
+    def _now(self) -> datetime:
+        current = self._now_func()
+        if current.tzinfo is None:
+            return current.replace(tzinfo=timezone.utc)
+        return current.astimezone(timezone.utc)
+
+    @staticmethod
+    def _client_key(client_key: str) -> str:
+        if not isinstance(client_key, str):
+            return "unknown"
+        normalized = client_key.strip()
+        return normalized or "unknown"
 
 
 def build_session_cookie_settings(ttl_seconds: int, secure: bool = False) -> SessionCookieSettings:

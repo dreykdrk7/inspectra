@@ -55,6 +55,10 @@ DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_ACTIVE_DRY_RUN_ENABLED = False
 DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED = False
 DEFAULT_SESSION_TTL_SECONDS = 3600
+DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS = 600
+DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES = 5
+DEFAULT_LOGIN_LOCKOUT_SECONDS = 900
+DEFAULT_LOGIN_ATTEMPT_MAX_KEYS = 1024
 SUPPORTED_AUTH_MODES = (
     "trusted_local_no_auth",
     "self_hosted_single_admin",
@@ -140,6 +144,10 @@ class Settings:
     active_dry_run_enabled: bool = DEFAULT_ACTIVE_DRY_RUN_ENABLED
     active_http_header_probe_enabled: bool = DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
+    login_attempt_window_seconds: int = DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS
+    login_attempt_max_failures: int = DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES
+    login_lockout_seconds: int = DEFAULT_LOGIN_LOCKOUT_SECONDS
+    login_attempt_max_keys: int = DEFAULT_LOGIN_ATTEMPT_MAX_KEYS
 
     @property
     def upload_dir(self) -> Path:
@@ -336,6 +344,22 @@ def load_settings() -> Settings:
         DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED,
     )
     session_ttl_seconds = _positive_int_from_env("INSPECTRA_SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS)
+    login_attempt_window_seconds = _positive_int_from_env(
+        "INSPECTRA_LOGIN_ATTEMPT_WINDOW_SECONDS",
+        DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS,
+    )
+    login_attempt_max_failures = _positive_int_from_env(
+        "INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES",
+        DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES,
+    )
+    login_lockout_seconds = _positive_int_from_env(
+        "INSPECTRA_LOGIN_LOCKOUT_SECONDS",
+        DEFAULT_LOGIN_LOCKOUT_SECONDS,
+    )
+    login_attempt_max_keys = _positive_int_from_env(
+        "INSPECTRA_LOGIN_ATTEMPT_MAX_KEYS",
+        DEFAULT_LOGIN_ATTEMPT_MAX_KEYS,
+    )
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
@@ -391,6 +415,10 @@ def load_settings() -> Settings:
         active_dry_run_enabled=active_dry_run_enabled,
         active_http_header_probe_enabled=active_http_header_probe_enabled,
         session_ttl_seconds=session_ttl_seconds,
+        login_attempt_window_seconds=login_attempt_window_seconds,
+        login_attempt_max_failures=login_attempt_max_failures,
+        login_lockout_seconds=login_lockout_seconds,
+        login_attempt_max_keys=login_attempt_max_keys,
     )
 
 

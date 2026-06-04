@@ -144,6 +144,8 @@ Passive Alpha self-hosted auth closeout decision: `PASSIVE_ALPHA_SELF_HOSTED_AUT
 
 Passive Alpha rate-limit/lockout plan decision: `PASSIVE_ALPHA_RATE_LIMIT_LOCKOUT_PLAN_ACCEPTED`. Future `self_hosted_single_admin` login hardening should use generic failures, bounded attempt tracking, soft temporary lockout, and self-hosted recovery caveats to reduce brute-force risk without creating irreversible operator lockout. The plan is docs-only and does not implement rate limiting, backoff, lockout, persistent storage, multi-user auth, public/community runtime, billing/SaaS/quota behavior, Nmap, new Active behavior, or new capabilities.
 
+Passive Alpha login-attempt store runtime decision: `PASSIVE_ALPHA_RUNTIME_LOGIN_ATTEMPT_STORE_ACCEPTED`. The backend now has an isolated in-memory store for failed login-attempt metadata with bounded key retention and soft-lockout calculations for future `self_hosted_single_admin` enforcement. The store is not connected to `POST /auth/login` yet, does not change public responses, and does not store passwords, password hashes, sessions, cookies, or CSRF tokens. Effective rate limiting/backoff, persistent storage, recovery, multi-user auth, public/community runtime, billing/SaaS/quota behavior, Nmap, new Active behavior, and new capabilities remain out of scope.
+
 Tools used in this phase:
 
 - `pdfinfo`

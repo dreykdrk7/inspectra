@@ -10,6 +10,7 @@ from app.auth import (
     ADMIN_SESSION_COOKIE_NAME,
     AdminSession,
     AdminSessionStore,
+    LoginAttemptStore,
     build_session_cookie_settings,
     is_supported_admin_password_hash,
     verify_admin_csrf_token,
@@ -89,6 +90,12 @@ async def lifespan(app: FastAPI):
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
     app.state.admin_sessions = AdminSessionStore(settings.session_ttl_seconds)
+    app.state.login_attempts = LoginAttemptStore(
+        window_seconds=settings.login_attempt_window_seconds,
+        max_failures=settings.login_attempt_max_failures,
+        lockout_seconds=settings.login_lockout_seconds,
+        max_keys=settings.login_attempt_max_keys,
+    )
     app.state.session_cookie_settings = build_session_cookie_settings(settings.session_ttl_seconds)
     app.state.files = file_store
     app.state.jobs = job_store

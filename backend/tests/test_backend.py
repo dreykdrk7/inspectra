@@ -16,6 +16,7 @@ from app.auth import (
     ADMIN_SESSION_COOKIE_NAME,
     ADMIN_SESSION_COOKIE_SAMESITE,
     AdminSessionStore,
+    LoginAttemptStore,
     MIN_ADMIN_PASSWORD_HASH_ITERATIONS,
     build_session_cookie_settings,
     is_supported_admin_password_hash,
@@ -23,6 +24,10 @@ from app.auth import (
 )
 from app.config import (
     DEFAULT_AUTH_MODE,
+    DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES,
+    DEFAULT_LOGIN_ATTEMPT_MAX_KEYS,
+    DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS,
+    DEFAULT_LOGIN_LOCKOUT_SECONDS,
     DEFAULT_LOCAL_OPERATOR,
     DEFAULT_SESSION_TTL_SECONDS,
     get_auth_mode,
@@ -207,6 +212,12 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
     app.state.admin_sessions = AdminSessionStore(settings.session_ttl_seconds)
+    app.state.login_attempts = LoginAttemptStore(
+        window_seconds=settings.login_attempt_window_seconds,
+        max_failures=settings.login_attempt_max_failures,
+        lockout_seconds=settings.login_lockout_seconds,
+        max_keys=settings.login_attempt_max_keys,
+    )
     app.state.session_cookie_settings = build_session_cookie_settings(settings.session_ttl_seconds)
     app.state.files = file_store
     app.state.jobs = job_store
@@ -372,6 +383,159 @@ def test_admin_session_does_not_store_password_or_hash_material():
     assert "hash" not in serialized_session.lower()
 
 
+def test_login_attempt_store_starts_unlocked_and_records_failures():
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = LoginAttemptStore(
+        window_seconds=600,
+        max_failures=3,
+        lockout_seconds=900,
+        max_keys=10,
+        now_func=lambda: current_time,
+    )
+
+    assert store.is_locked("203.0.113.10") is False
+    assert store.seconds_until_unlock("203.0.113.10") == 0
+    assert store.failure_count("203.0.113.10") == 0
+
+    first_record = store.record_failure("203.0.113.10")
+    second_record = store.record_failure("203.0.113.10")
+
+    assert first_record.failure_count == 1
+    assert second_record.failure_count == 2
+    assert store.failure_count("203.0.113.10") == 2
+    assert store.is_locked("203.0.113.10") is False
+
+
+def test_login_attempt_store_threshold_soft_locks_and_expires():
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = LoginAttemptStore(
+        window_seconds=600,
+        max_failures=3,
+        lockout_seconds=900,
+        max_keys=10,
+        now_func=lambda: current_time,
+    )
+
+    store.record_failure("203.0.113.20")
+    store.record_failure("203.0.113.20")
+    locked_record = store.record_failure("203.0.113.20")
+
+    assert locked_record.failure_count == 3
+    assert locked_record.locked_until == current_time + timedelta(seconds=900)
+    assert store.is_locked("203.0.113.20") is True
+    assert store.seconds_until_unlock("203.0.113.20") == 900
+
+    current_time = current_time + timedelta(seconds=901)
+
+    assert store.is_locked("203.0.113.20") is False
+    assert store.seconds_until_unlock("203.0.113.20") == 0
+    assert store.failure_count("203.0.113.20") == 0
+
+
+def test_login_attempt_store_single_failure_threshold_locks_immediately():
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = LoginAttemptStore(
+        window_seconds=600,
+        max_failures=1,
+        lockout_seconds=900,
+        max_keys=10,
+        now_func=lambda: current_time,
+    )
+
+    record = store.record_failure("203.0.113.21")
+
+    assert record.failure_count == 1
+    assert record.locked_until == current_time + timedelta(seconds=900)
+    assert store.is_locked("203.0.113.21") is True
+
+
+def test_login_attempt_store_reset_success_clears_counter_and_lockout():
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = LoginAttemptStore(
+        window_seconds=600,
+        max_failures=2,
+        lockout_seconds=900,
+        max_keys=10,
+        now_func=lambda: current_time,
+    )
+
+    store.record_failure("203.0.113.30")
+    store.record_failure("203.0.113.30")
+
+    assert store.is_locked("203.0.113.30") is True
+    assert store.reset_success("203.0.113.30") is True
+    assert store.is_locked("203.0.113.30") is False
+    assert store.failure_count("203.0.113.30") == 0
+    assert store.reset_success("203.0.113.30") is False
+
+
+def test_login_attempt_store_purges_expired_records():
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = LoginAttemptStore(
+        window_seconds=60,
+        max_failures=3,
+        lockout_seconds=900,
+        max_keys=10,
+        now_func=lambda: current_time,
+    )
+
+    store.record_failure("203.0.113.40")
+    current_time = current_time + timedelta(seconds=61)
+    store.record_failure("203.0.113.41")
+
+    assert store.record_count() == 2
+    assert store.purge_expired() == 1
+    assert store.failure_count("203.0.113.40") == 0
+    assert store.failure_count("203.0.113.41") == 1
+
+
+def test_login_attempt_store_max_keys_evicts_oldest_records():
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = LoginAttemptStore(
+        window_seconds=600,
+        max_failures=3,
+        lockout_seconds=900,
+        max_keys=2,
+        now_func=lambda: current_time,
+    )
+
+    store.record_failure("203.0.113.50")
+    current_time = current_time + timedelta(seconds=1)
+    store.record_failure("203.0.113.51")
+    current_time = current_time + timedelta(seconds=1)
+    store.record_failure("203.0.113.52")
+
+    assert store.record_count() == 2
+    assert store.failure_count("203.0.113.50") == 0
+    assert store.failure_count("203.0.113.51") == 1
+    assert store.failure_count("203.0.113.52") == 1
+
+
+def test_login_attempt_store_does_not_store_secret_material():
+    password_hash = make_admin_password_hash()
+    store = LoginAttemptStore(
+        window_seconds=600,
+        max_failures=3,
+        lockout_seconds=900,
+        max_keys=10,
+    )
+
+    store.record_failure("203.0.113.60")
+    serialized_records = json.dumps(
+        [record.__dict__ for record in store._records.values()],
+        default=str,
+        sort_keys=True,
+    )
+
+    assert ADMIN_PASSWORD_FIXTURE not in serialized_records
+    assert password_hash not in serialized_records
+    assert "csrf" not in serialized_records.lower()
+    assert "cookie" not in serialized_records.lower()
+    assert "session" not in serialized_records.lower()
+    assert "hash" not in serialized_records.lower()
+    assert "password" not in serialized_records.lower()
+
+
 def test_session_cookie_settings_are_safe_by_default():
     cookie_settings = build_session_cookie_settings(ttl_seconds=DEFAULT_SESSION_TTL_SECONDS)
 
@@ -404,12 +568,57 @@ def test_session_ttl_config_defaults_and_env_override(monkeypatch, tmp_path):
     assert app.state.session_cookie_settings.max_age_seconds == 120
 
 
+def test_login_attempt_config_defaults_and_env_override(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+
+    assert app.state.settings.login_attempt_window_seconds == DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS
+    assert app.state.settings.login_attempt_max_failures == DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES
+    assert app.state.settings.login_lockout_seconds == DEFAULT_LOGIN_LOCKOUT_SECONDS
+    assert app.state.settings.login_attempt_max_keys == DEFAULT_LOGIN_ATTEMPT_MAX_KEYS
+    assert app.state.login_attempts.window_seconds == DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS
+    assert app.state.login_attempts.max_failures == DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES
+    assert app.state.login_attempts.lockout_seconds == DEFAULT_LOGIN_LOCKOUT_SECONDS
+    assert app.state.login_attempts.max_keys == DEFAULT_LOGIN_ATTEMPT_MAX_KEYS
+
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_WINDOW_SECONDS", "120")
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "2")
+    monkeypatch.setenv("INSPECTRA_LOGIN_LOCKOUT_SECONDS", "300")
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_KEYS", "8")
+    configure_test_state(monkeypatch, tmp_path)
+
+    assert app.state.settings.login_attempt_window_seconds == 120
+    assert app.state.settings.login_attempt_max_failures == 2
+    assert app.state.settings.login_lockout_seconds == 300
+    assert app.state.settings.login_attempt_max_keys == 8
+    assert app.state.login_attempts.window_seconds == 120
+    assert app.state.login_attempts.max_failures == 2
+    assert app.state.login_attempts.lockout_seconds == 300
+    assert app.state.login_attempts.max_keys == 8
+
+
 @pytest.mark.parametrize("raw_value", ["0", "-1", "not-a-number"])
 def test_session_ttl_config_rejects_invalid_values(monkeypatch, tmp_path, raw_value):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("INSPECTRA_SESSION_TTL_SECONDS", raw_value)
 
     with pytest.raises(ValueError, match="INSPECTRA_SESSION_TTL_SECONDS"):
+        load_settings()
+
+
+@pytest.mark.parametrize(
+    ("env_name", "raw_value"),
+    [
+        ("INSPECTRA_LOGIN_ATTEMPT_WINDOW_SECONDS", "0"),
+        ("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "-1"),
+        ("INSPECTRA_LOGIN_LOCKOUT_SECONDS", "not-a-number"),
+        ("INSPECTRA_LOGIN_ATTEMPT_MAX_KEYS", "0"),
+    ],
+)
+def test_login_attempt_config_rejects_invalid_values(monkeypatch, tmp_path, env_name, raw_value):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(env_name, raw_value)
+
+    with pytest.raises(ValueError, match=env_name):
         load_settings()
 
 
@@ -577,6 +786,29 @@ async def test_self_hosted_login_wrong_password_fails_generic(monkeypatch, tmp_p
     assert "wrong-admin-password" not in serialized
     assert admin_hash not in serialized
     assert "set-cookie" not in login_response.headers
+
+
+@pytest.mark.anyio
+async def test_login_attempt_store_is_not_integrated_with_login_yet(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "1")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        second_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        success_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+
+    assert first_failure.status_code == 401
+    assert first_failure.json() == {"detail": "Invalid credentials."}
+    assert second_failure.status_code == 401
+    assert second_failure.json() == {"detail": "Invalid credentials."}
+    assert success_response.status_code == 200
+    assert success_response.json()["authenticated"] is True
+    assert app.state.login_attempts.record_count() == 0
 
 
 @pytest.mark.anyio

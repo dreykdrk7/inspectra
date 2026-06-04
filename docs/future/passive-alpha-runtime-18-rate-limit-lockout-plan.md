@@ -266,6 +266,14 @@ Recommended next slice:
 PASSIVE-ALPHA-RUNTIME-19-LOGIN-ATTEMPT-STORE
 ```
 
+## Successor Status
+
+```text
+PASSIVE_ALPHA_RUNTIME_LOGIN_ATTEMPT_STORE_ACCEPTED
+```
+
+Runtime-19 now implements the isolated in-memory login-attempt store, config, and tests recommended by this plan. Enforcement in `POST /auth/login`, generic `429`/cooldown behavior, frontend copy, and auth-hardening smoke remain future slices.
+
 ## No-Scope Preserved
 
 - No code changes.
