@@ -154,6 +154,8 @@ Passive Alpha auth hardening smoke runtime decision: `PASSIVE_ALPHA_RUNTIME_AUTH
 
 Passive Alpha self-hosted auth hardening closeout decision: `PASSIVE_ALPHA_SELF_HOSTED_AUTH_HARDENING_CLOSED`. Runtime-17 through Runtime-22 are closed as the current private/self-hosted single-admin alpha hardening line: usable auth flow, backend login `429`, frontend controlled `429` copy, owner-scoped sensitive routes, CSRF, and smoke evidence. `trusted_local_no_auth` remains the default local/dev/trusted mode and `self_hosted_single_admin` remains private/self-hosted. Public/community runtime, persistent sessions, persistent rate-limit storage, admin recovery, OAuth/OIDC, multi-user auth, billing/SaaS/quota behavior, Nmap, broader Active behavior, release/tag state, and production readiness remain out of scope.
 
+Passive Alpha self-hosted release-notes decision: `PASSIVE_ALPHA_SELF_HOSTED_RELEASE_NOTES_READY`. The current private/self-hosted alpha release notes summarize supported auth state, validation evidence, no-scope, and exposed-use gaps without approving public/community runtime, production readiness, SaaS/billing/quota behavior, Nmap, broader Active behavior, release/tag/push state, or runtime expansion.
+
 Tools used in this phase:
 
 - `pdfinfo`
