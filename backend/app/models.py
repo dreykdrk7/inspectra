@@ -30,6 +30,12 @@ AuditType = Literal[
     "active_http_header_probe",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
+AuthMode = Literal[
+    "trusted_local_no_auth",
+    "self_hosted_single_admin",
+    "private_team_lightweight_users",
+    "public_community_limited_instance",
+]
 
 
 class StoredFile(BaseModel):
@@ -77,6 +83,15 @@ class JobListItem(BaseModel):
 class DeletedFileResponse(BaseModel):
     deleted_file: StoredFile
     associated_jobs_marked: int
+
+
+class AuthStatusResponse(BaseModel):
+    auth_mode: AuthMode
+    auth_required: bool
+    configured: bool
+    trusted_local: bool
+    default_operator_id: str
+    login_available: bool = False
 
 
 class WebAuditRequest(BaseModel):

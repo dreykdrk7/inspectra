@@ -88,6 +88,7 @@ class Settings:
     data_dir: Path
     tool_runner_url: str
     auth_mode: AuthMode = DEFAULT_AUTH_MODE
+    admin_password_hash: str | None = None
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
     web_allow_private_targets: bool = DEFAULT_WEB_ALLOW_PRIVATE_TARGETS
@@ -159,6 +160,7 @@ def load_settings() -> Settings:
     data_dir = Path(os.getenv("INSPECTRA_DATA_DIR", "data")).resolve()
     tool_runner_url = os.getenv("INSPECTRA_TOOL_RUNNER_URL", "http://audit-tools:8081").rstrip("/")
     auth_mode = _auth_mode_from_env("INSPECTRA_AUTH_MODE", DEFAULT_AUTH_MODE)
+    admin_password_hash = _optional_secret_from_env("INSPECTRA_ADMIN_PASSWORD_HASH")
     max_upload_bytes = _positive_int_from_env("INSPECTRA_MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)
     cors_origins = _csv_from_env("INSPECTRA_CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
     web_allow_private_targets = _bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", DEFAULT_WEB_ALLOW_PRIVATE_TARGETS)
@@ -335,6 +337,7 @@ def load_settings() -> Settings:
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
         auth_mode=auth_mode,
+        admin_password_hash=admin_password_hash,
         max_upload_bytes=max_upload_bytes,
         cors_origins=cors_origins,
         web_allow_private_targets=web_allow_private_targets,
@@ -396,6 +399,15 @@ def get_current_operator_for_trusted_local(settings: Settings | None = None) -> 
     return DEFAULT_LOCAL_OPERATOR
 
 
+def is_auth_required(settings: Settings | None = None) -> bool:
+    return get_auth_mode(settings) != "trusted_local_no_auth"
+
+
+def is_single_admin_auth_configured(settings: Settings | None = None) -> bool:
+    resolved_settings = settings or load_settings()
+    return resolved_settings.auth_mode == "self_hosted_single_admin" and bool(resolved_settings.admin_password_hash)
+
+
 def _auth_mode_from_env(name: str, default: AuthMode) -> AuthMode:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -405,6 +417,16 @@ def _auth_mode_from_env(name: str, default: AuthMode) -> AuthMode:
         return cast(AuthMode, normalized)
     allowed = ", ".join(SUPPORTED_AUTH_MODES)
     raise ValueError(f"{name} must be one of: {allowed}.")
+
+
+def _optional_secret_from_env(name: str) -> str | None:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return None
+    value = raw_value.strip()
+    if not value:
+        return None
+    return value
 
 
 def _positive_int_from_env(name: str, default: int) -> int:

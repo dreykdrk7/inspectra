@@ -4,11 +4,18 @@ from typing import Any
 from fastapi import BackgroundTasks, Body, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import get_auth_mode, get_current_operator_for_trusted_local, load_settings
+from app.config import (
+    get_auth_mode,
+    get_current_operator_for_trusted_local,
+    is_auth_required,
+    is_single_admin_auth_configured,
+    load_settings,
+)
 from app.domain_security import normalize_domain, normalize_subdomain_candidates
 from app.models import (
     DeletedFileResponse,
     DomainAuditRequest,
+    AuthStatusResponse,
     JobListItem,
     JobRecord,
     StoredFile,
@@ -66,6 +73,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.auth_mode = get_auth_mode(settings)
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
+    app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
     app.state.files = file_store
     app.state.jobs = job_store
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)
@@ -112,6 +120,21 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "inspectra-backend"}
+
+
+@app.get("/auth/status", response_model=AuthStatusResponse)
+async def auth_status(request: Request) -> AuthStatusResponse:
+    settings = request.app.state.settings
+    operator = request.app.state.default_local_operator
+    auth_mode = get_auth_mode(settings)
+    return AuthStatusResponse(
+        auth_mode=auth_mode,
+        auth_required=is_auth_required(settings),
+        configured=is_single_admin_auth_configured(settings),
+        trusted_local=auth_mode == "trusted_local_no_auth",
+        default_operator_id=operator.id,
+        login_available=False,
+    )
 
 
 @app.post("/files/pdf", response_model=StoredFile, status_code=status.HTTP_201_CREATED)

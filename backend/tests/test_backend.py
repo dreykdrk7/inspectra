@@ -15,6 +15,7 @@ from app.config import (
     DEFAULT_LOCAL_OPERATOR,
     get_auth_mode,
     get_current_operator_for_trusted_local,
+    is_single_admin_auth_configured,
     load_settings,
 )
 from app.domain_security import normalize_domain, normalize_subdomain_candidate
@@ -179,6 +180,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.settings = settings
     app.state.auth_mode = get_auth_mode(settings)
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
+    app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
     app.state.files = file_store
     app.state.jobs = job_store
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)
@@ -215,6 +217,68 @@ async def test_health(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "inspectra-backend"}
+
+
+@pytest.mark.anyio
+async def test_auth_status_defaults_to_trusted_local_no_auth(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/auth/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "auth_mode": "trusted_local_no_auth",
+        "auth_required": False,
+        "configured": False,
+        "trusted_local": True,
+        "default_operator_id": "local-admin",
+        "login_available": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_auth_status_self_hosted_single_admin_missing_credential(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/auth/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["auth_mode"] == "self_hosted_single_admin"
+    assert payload["auth_required"] is True
+    assert payload["configured"] is False
+    assert payload["trusted_local"] is False
+    assert payload["default_operator_id"] == "local-admin"
+    assert payload["login_available"] is False
+
+
+@pytest.mark.anyio
+async def test_auth_status_self_hosted_configured_does_not_leak_hash(monkeypatch, tmp_path):
+    admin_hash = "argon2id$admin-hash-should-not-render"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/auth/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    serialized = json.dumps(payload, sort_keys=True)
+    assert payload["auth_mode"] == "self_hosted_single_admin"
+    assert payload["auth_required"] is True
+    assert payload["configured"] is True
+    assert payload["trusted_local"] is False
+    assert "INSPECTRA_ADMIN_PASSWORD_HASH" not in serialized
+    assert "admin-hash-should-not-render" not in serialized
+    assert admin_hash not in serialized
 
 
 @pytest.mark.anyio

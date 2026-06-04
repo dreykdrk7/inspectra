@@ -110,6 +110,8 @@ Passive Alpha P0 runtime planning closeout decision: `PASSIVE_ALPHA_P0_RUNTIME_P
 
 Passive Alpha auth-mode/local-operator runtime decision: `PASSIVE_ALPHA_RUNTIME_AUTH_MODE_LOCAL_OPERATOR_ACCEPTED`. The backend has an explicit `INSPECTRA_AUTH_MODE` flag and stable default local/admin operator id `local-admin`. The default `trusted_local_no_auth` keeps current local behavior and is only for localhost/dev/local trusted use. The accepted future mode values do not protect exposed deployments yet; login, sessions, cookies, owner metadata, anonymous-route guards, owner checks, retention/delete runtime, deployment hardening, billing, SaaS tenants, Nmap, and new capabilities remain out of scope.
 
+Passive Alpha single-admin auth skeleton decision: `PASSIVE_ALPHA_RUNTIME_SINGLE_ADMIN_AUTH_SKELETON_ACCEPTED`. The backend exposes `GET /auth/status` and uses `INSPECTRA_ADMIN_PASSWORD_HASH` only to report whether future single-admin auth is configured when `INSPECTRA_AUTH_MODE=self_hosted_single_admin`. The endpoint does not return hashes, passwords, tokens, sessions, cookies, file/job data, targets, storage paths, or other sensitive runtime state. Existing sensitive routes remain unguarded until a later deny-anonymous slice, and `trusted_local_no_auth` remains the default local mode.
+
 Tools used in this phase:
 
 - `pdfinfo`

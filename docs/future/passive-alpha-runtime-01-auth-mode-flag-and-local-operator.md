@@ -10,6 +10,8 @@ Base owner model and storage migration plan: `docs/future/passive-alpha-p0-02-ow
 
 Base deny-anonymous API guards plan: `docs/future/passive-alpha-p0-03-deny-anonymous-reads-api-guards.md`
 
+Runtime 02 single-admin auth skeleton: `docs/future/passive-alpha-runtime-02-single-admin-auth-skeleton.md`
+
 Commit scope: minimal backend runtime slice for explicit auth mode naming and the default local/admin operator concept. This block does not change endpoint access, job creation, reports, exports, Raw JSON, Active behavior, target policy, storage schema, migrations, frontend UI, runner behavior, login, sessions, cookies, passwords, owner checks, API guards, delete/retention runtime, cleanup, or deployment hardening.
 
 ## Final Decision
@@ -115,10 +117,14 @@ git status --short
 
 No npm suite is required because this slice does not touch frontend code.
 
+## Runtime 02 Implementation Note
+
+The next slice is now accepted as `PASSIVE_ALPHA_RUNTIME_SINGLE_ADMIN_AUTH_SKELETON_ACCEPTED`. It adds `GET /auth/status` and safe configured/unconfigured status for future single-admin auth without changing existing endpoint permissions.
+
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-02-SINGLE-ADMIN-AUTH-SKELETON
+PASSIVE-ALPHA-RUNTIME-03-DENY-ANONYMOUS-SENSITIVE-ROUTES
 ```
 
-Next runtime work should add a minimal single-admin auth skeleton without jumping ahead to owner fields, migrations, deny-anonymous guards, retention/delete runtime, deployment hardening, billing/SaaS concepts, Nmap, new Active behavior, or new analyzers.
+Next runtime work should start denying anonymous access to sensitive routes when auth mode requires it, while preserving `trusted_local_no_auth` behavior and keeping owner metadata, migrations, retention/delete runtime, deployment hardening, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.
