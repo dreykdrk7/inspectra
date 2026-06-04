@@ -156,6 +156,8 @@ Passive Alpha self-hosted auth hardening closeout decision: `PASSIVE_ALPHA_SELF_
 
 Passive Alpha self-hosted release-notes decision: `PASSIVE_ALPHA_SELF_HOSTED_RELEASE_NOTES_READY`. The current private/self-hosted alpha release notes summarize supported auth state, validation evidence, no-scope, and exposed-use gaps without approving public/community runtime, production readiness, SaaS/billing/quota behavior, Nmap, broader Active behavior, release/tag/push state, or runtime expansion.
 
+Passive Alpha deployment hardening design decision: `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_DESIGN_ACCEPTED`. Private self-hosted exposure should be planned around HTTPS, a reverse proxy, explicit origins, conservative secure-cookie behavior, and deny-by-default trusted proxy header handling. This is docs-only and does not approve public/community runtime, production readiness, proxy/TLS runtime enforcement, Docker execution, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

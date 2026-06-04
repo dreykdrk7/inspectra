@@ -96,6 +96,8 @@ The self-hosted auth hardening closeout is documented in `docs/future/passive-al
 
 Private self-hosted alpha release notes are available at `docs/future/passive-alpha-self-hosted-release-notes.md`; they summarize supported auth state, Runtime-22 validation evidence, explicit no-scope, and remaining exposed-use gaps without creating a tag, release, public launch, or runtime expansion.
 
+The private self-hosted deployment hardening design is documented in `docs/future/passive-alpha-deployment-hardening-design.md`; it covers TLS, reverse proxy expectations, secure-cookie direction, and trusted proxy header policy without implementing runtime changes or approving public/community or production-ready deployment.
+
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 
 Release notes for the local passive alpha tag `v0.1.0-passive-alpha` are available at `docs/releases/v0.1.0-passive-alpha.md`.
