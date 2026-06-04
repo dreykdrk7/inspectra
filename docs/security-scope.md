@@ -160,6 +160,8 @@ Passive Alpha deployment hardening design decision: `PASSIVE_ALPHA_DEPLOYMENT_HA
 
 Passive Alpha deployment hardening runbook decision: `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_RUNBOOK_READY`. The private self-hosted runbook documents operator checklists for mode selection, pre-exposure review, reverse proxy posture, cookies/sessions, login rate-limit caveats, CORS, logging, manual smoke checks, and red flags. It is docs-only and does not approve production readiness, public/community runtime, Docker execution, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
 
+Passive Alpha README launch-copy polish decision: `PASSIVE_ALPHA_README_LAUNCH_COPY_POLISH_ACCEPTED`. README positioning now summarizes Passive Alpha as local-first, self-hosted-first, passive analysis with private single-admin alpha boundaries, deployment-hardening references, explicit non-production/no-public/no-SaaS/no-Nmap scope, and an immediate roadmap. This is docs-only and does not add runtime behavior, production readiness, public/community runtime, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

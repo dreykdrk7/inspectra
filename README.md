@@ -4,6 +4,60 @@ Inspectra is a lightweight, open source MVP for defensive and educational securi
 
 This project is intentionally small: a FastAPI backend, a containerized tool runner, local job/result storage, and clear boundaries for authorized use.
 
+## Passive Alpha At A Glance
+
+Inspectra Passive Alpha is an open-source, altruistic, local-first, and self-hosted-first security audit workbench for defensive review of projects and artifacts you own or are explicitly authorized to assess. It focuses on passive local analysis: uploaded files and archives, configuration review, dependency and package metadata, local reports, SBOM exports, Raw JSON, and redacted evidence.
+
+It is not a commercial SaaS, billing platform, tenant system, quota product, paid-plan product, production-ready service, public/community hosting package, or general active scanner.
+
+### Current Use Modes
+
+`trusted_local_no_auth` is the default localhost/dev/local trusted mode. Use it only on a trusted local workstation with no network exposure, no public reverse proxy, and no third-party access.
+
+`self_hosted_single_admin` is the private self-hosted alpha mode. It requires a supported admin password hash and provides login/logout, an `HttpOnly` session cookie, CSRF checks on mutating cookie-auth routes, owner-scoped sensitive routes, generic `401` responses, controlled login `429` handling, and no frontend `localStorage` or `sessionStorage` auth state. It remains private alpha behavior, not production, public/community, or multi-user readiness.
+
+### Deployment Hardening
+
+For any use outside localhost, the current guidance expects HTTPS/TLS, a reverse proxy in front of the app, no direct backend exposure to the internet, explicit allowed origins, no wildcard CORS with credentials, and logs that avoid secrets, cookies, tokens, request bodies, Raw JSON, report contents, and SBOM contents. Secure-cookie runtime enforcement, trusted-proxy runtime enforcement, persistent sessions, and persistent login-attempt storage remain known gaps until separately designed and implemented.
+
+Reference docs:
+
+- self-hosted alpha release notes: `docs/future/passive-alpha-self-hosted-release-notes.md`
+- deployment hardening design: `docs/future/passive-alpha-deployment-hardening-design.md`
+- deployment hardening runbook: `docs/future/passive-alpha-deployment-hardening-runbook.md`
+
+### What Passive Alpha Does Not Promise
+
+- No exposed production deployment approval.
+- No public/community readiness.
+- No SaaS.
+- No billing.
+- No tenant billing.
+- No subscriptions.
+- No quotas.
+- No paid plans.
+- No enterprise tenancy.
+- No OAuth/OIDC.
+- No multi-user runtime.
+- No persistent sessions yet.
+- No persistent rate-limit store yet.
+- No admin recovery yet.
+- No Docker execution as a deployment guarantee.
+- No Nmap.
+- No port scanning.
+- No crawling.
+- No probes.
+- No DNS expansion.
+- No external HTTP or live target expansion beyond separately documented authorized target flows.
+
+### Immediate Roadmap
+
+1. Deployment hardening closeout.
+2. Persistent auth state design and implementation planning.
+3. Release candidate checklist.
+4. Tag, release, and push decision.
+5. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
+
 ## What This MVP Does
 
 - Uploads local PDF files through a REST API.
