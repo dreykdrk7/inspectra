@@ -126,6 +126,8 @@ Passive Alpha deployment hardening smoke decision: `PASSIVE_ALPHA_RUNTIME_DEPLOY
 
 Passive Alpha Runtime P0 closeout decision: `PASSIVE_ALPHA_RUNTIME_P0_CLOSED_TRUSTED_LOCAL_HARDENED`. Runtime-01 through Runtime-08 are closed as the current trusted-local hardened backend line. `trusted_local_no_auth` remains the default and local/dev only; auth-required modes fail closed for anonymous sensitive routes but remain unusable for authenticated workflows until login/session work exists. The closeout preserves the open-source, local-first, self-hosted-first, non-SaaS posture and keeps public/community readiness, billing/tenant models, Nmap, new Active capability, and broader runtime work out of scope.
 
+Passive Alpha single-admin login/session plan decision: `PASSIVE_ALPHA_SINGLE_ADMIN_LOGIN_SESSION_PLAN_ACCEPTED`. Future work should make `self_hosted_single_admin` usable through a minimal local password plus session-cookie model: safe admin-hash verification, `POST /auth/login`, server-side session state, `HttpOnly` cookie, logout, CSRF protection for mutating browser requests, safe `/auth/status` evolution, and frontend auth-state handling. This decision is docs-only and does not implement login, password verification, sessions, cookies, CSRF, frontend login, rate limiting, OAuth/OIDC, multi-user auth, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

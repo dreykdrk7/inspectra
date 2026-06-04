@@ -6,6 +6,8 @@ Successor runtime 03 deny-anonymous guard: `docs/future/passive-alpha-runtime-03
 
 Successor runtime 04 owner metadata write path: `docs/future/passive-alpha-runtime-04-owner-metadata-write-path.md`
 
+Successor Runtime-10 login/session plan: `docs/future/passive-alpha-runtime-10-single-admin-login-session-plan.md`
+
 Base runtime 01 auth-mode/local-operator slice: `docs/future/passive-alpha-runtime-01-auth-mode-flag-and-local-operator.md`
 
 Base P0 runtime planning closeout: `docs/future/passive-alpha-p0-07-p0-runtime-planning-closeout.md`
@@ -173,3 +175,5 @@ PASSIVE-ALPHA-RUNTIME-05-LEGACY-LOCAL-DATA-MAPPING
 ```
 
 Next runtime work should define trusted-local handling for existing ownerless records, while preserving `trusted_local_no_auth` behavior and keeping owner-scoped reads, broader migrations, delete/retention runtime, deployment hardening, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.
+
+Historical note: Runtime-05 through Runtime-09 have since closed the trusted-local hardened P0 line. Runtime-10 now defines the docs-first plan for future single-admin login/session behavior and recommends `PASSIVE-ALPHA-RUNTIME-11-PASSWORD-VERIFY-HELPER` as the next implementation slice.

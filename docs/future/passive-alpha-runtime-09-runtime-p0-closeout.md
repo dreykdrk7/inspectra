@@ -20,6 +20,8 @@ Base Runtime-01 auth mode/local operator: `docs/future/passive-alpha-runtime-01-
 
 P0 runtime planning closeout: `docs/future/passive-alpha-p0-07-p0-runtime-planning-closeout.md`
 
+Successor Runtime-10 single-admin login/session plan: `docs/future/passive-alpha-runtime-10-single-admin-login-session-plan.md`
+
 Commit scope: docs-only Runtime P0 closeout. This block summarizes accepted runtime decisions, current backend posture, Runtime-08 test evidence, preserved no-scope boundaries, residual gaps, and recommended next lines. It does not change backend, frontend, runner, tests, fixtures, storage, auth logic, sessions, cookies, target policy, Active behavior, reports, exports, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -260,3 +262,5 @@ Recommended order:
 2. `PASSIVE-ALPHA-TRUSTED-LOCAL-RELEASE-NOTES`
 
 Keep runtime implementation separate from release notes unless explicitly scoped.
+
+Runtime-10 now accepts the single-admin login/session plan at docs-first level and recommends `PASSIVE-ALPHA-RUNTIME-11-PASSWORD-VERIFY-HELPER` as the next runtime slice. Runtime-09 remains the historical closeout for the trusted-local hardened P0 line.
