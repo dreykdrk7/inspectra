@@ -257,7 +257,7 @@ Checklist:
 - Avoid wildcard CORS for credentialed browser requests.
 - Configure allowed origins explicitly for self-hosted custom domains.
 - Treat CORS as browser boundary only, not backend auth.
-- Add CSRF protection for mutating requests if browser session cookies are used.
+- Keep CSRF protection enabled for mutating requests when browser session cookies are used.
 - Review API usage guidance for token or non-cookie auth if introduced later.
 - Document proxy/custom-domain origin changes for self-hosted operators.
 - Do not expose admin or sensitive APIs through broad cross-origin allowances.
@@ -265,6 +265,7 @@ Checklist:
 Current implementation note:
 
 - The current default CORS origin is local development (`http://localhost:5173`). Future deployed origins must be explicit.
+- Runtime-14 adds backend CSRF protection for `self_hosted_single_admin` mutating routes through the session-bound `X-CSRF-Token`; frontend wiring remains a separate follow-up.
 
 Future checks:
 
@@ -448,7 +449,7 @@ Public/external deployment is no-go if any of these are true:
 - TLS is absent outside localhost;
 - reverse-proxy auth can be skipped by direct backend access;
 - wildcard CORS is used with credentials;
-- no CSRF protection exists for cookie-auth mutating routes;
+- no CSRF protection is enforced for cookie-auth mutating routes;
 - no retention/delete policy exists;
 - logs capture secrets, Raw JSON, source contents, or target secrets;
 - backups are public or undocumented;

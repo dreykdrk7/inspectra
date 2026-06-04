@@ -102,6 +102,8 @@ class AuthStatusResponse(BaseModel):
     login_available: bool = False
     authenticated: bool = False
     operator_id: str | None = None
+    csrf_required: bool = False
+    csrf_token: str | None = None
 
 
 class AuthLoginRequest(BaseModel):

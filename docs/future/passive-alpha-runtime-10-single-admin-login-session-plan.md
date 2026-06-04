@@ -437,6 +437,8 @@ Runtime-12 now accepts the internal session/cookie skeleton and recommends `PASS
 
 Runtime-13 now accepts minimal backend login/logout endpoints, session cookie issuance/clearing, and valid-session guard integration for `self_hosted_single_admin`; it recommends `PASSIVE-ALPHA-RUNTIME-14-CSRF-MUTATING-ROUTES` next.
 
+Runtime-14 now accepts backend CSRF protection for cookie-auth mutating routes in `self_hosted_single_admin`; it recommends `PASSIVE-ALPHA-RUNTIME-15-FRONTEND-AUTH-STATUS-LOGIN-UX` next.
+
 ## No-Scope
 
 - No code changes.

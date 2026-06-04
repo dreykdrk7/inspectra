@@ -10,6 +10,8 @@ Base Runtime-10 login/session plan: `docs/future/passive-alpha-runtime-10-single
 
 Base Runtime-09 closeout: `docs/future/passive-alpha-runtime-09-runtime-p0-closeout.md`
 
+Successor Runtime-14 CSRF mutating-route guard: `docs/future/passive-alpha-runtime-14-csrf-mutating-routes.md`
+
 Commit scope: minimal backend login/logout endpoints, session-cookie issuance/clearing, session principal integration with the existing auth-required guard, focused tests, and documentation alignment. This block does not add frontend login, CSRF, rate limiting, lockout, multi-user auth, OAuth/OIDC, public/community readiness, target policy changes, Active changes, Nmap, tags, releases, or deployment behavior.
 
 ## Final Decision
@@ -121,7 +123,7 @@ Success response:
 }
 ```
 
-Logout is a mutating route. Runtime-14 must add CSRF protection before cookie-auth browser use is considered complete.
+Logout is a mutating route. Runtime-14 adds CSRF protection before cookie-auth browser use is considered ready for frontend wiring.
 
 ## Session Guard Integration
 
@@ -179,7 +181,7 @@ With a valid session, it reports:
 }
 ```
 
-The response does not include password hashes, passwords, session ids, cookie values, CSRF tokens, file ids, job ids, target history, storage paths, or bypass guidance.
+The response does not include password hashes, passwords, session ids, cookie values, file ids, job ids, target history, storage paths, or bypass guidance. Runtime-14 later adds a session-bound CSRF token to authenticated status responses for mutating-route protection.
 
 If a hash is absent or unsupported, `login_available=false` and login fails generically.
 
@@ -201,7 +203,7 @@ Secure cookies for non-local deployments remain future deployment hardening work
 
 - No frontend login UI.
 - No frontend auth-state handling.
-- No CSRF protection.
+- No CSRF protection in this slice; Runtime-14 adds backend CSRF for cookie-auth mutating routes.
 - No rate limiting, backoff, or lockout.
 - No password setup CLI.
 - No persistent session DB.
@@ -251,7 +253,7 @@ No npm suite is required because this slice does not touch frontend code.
 
 ## Residual Risks
 
-- CSRF protection is not implemented yet.
+- CSRF protection was not implemented in this slice; Runtime-14 adds backend CSRF for cookie-auth mutating routes.
 - Frontend login/status/logout UX is not implemented yet.
 - Rate limiting, backoff, and lockout are not implemented yet.
 - In-memory sessions do not survive backend restart.
@@ -263,7 +265,7 @@ No npm suite is required because this slice does not touch frontend code.
 
 - No `.env`, `.env.*`, or `.envrc` reads.
 - No frontend changes.
-- No CSRF implementation.
+- No CSRF implementation in this slice.
 - No rate limiting or lockout.
 - No multi-user runtime.
 - No OAuth/OIDC.
@@ -280,3 +282,5 @@ PASSIVE-ALPHA-RUNTIME-14-CSRF-MUTATING-ROUTES
 ```
 
 Next runtime work should add CSRF protection for cookie-auth mutating routes before frontend login UX or broader browser-auth use is considered complete.
+
+Runtime-14 now accepts backend CSRF protection for cookie-auth mutating routes and recommends `PASSIVE-ALPHA-RUNTIME-15-FRONTEND-AUTH-STATUS-LOGIN-UX` next. Runtime-13 remains the historical login/logout endpoint slice.

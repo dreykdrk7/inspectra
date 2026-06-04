@@ -31,7 +31,7 @@ from app.config import (
     load_settings,
 )
 from app.domain_security import normalize_domain, normalize_subdomain_candidate
-from app.main import AUTH_REQUIRED_DETAIL, app
+from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, app
 from app.models import JobRecord
 from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
@@ -299,8 +299,11 @@ def test_admin_session_store_creates_opaque_local_admin_session():
     assert session.operator_id == "local-admin"
     assert session.auth_mode == "self_hosted_single_admin"
     assert isinstance(session.session_id, str)
+    assert isinstance(session.csrf_token, str)
     assert len(session.session_id) >= 32
+    assert len(session.csrf_token) >= 32
     assert session.session_id != second_session.session_id
+    assert session.csrf_token != second_session.csrf_token
     assert session.expires_at > session.created_at
     assert store.get_session(session.session_id) == session
     assert store.is_session_valid(session) is True
@@ -410,6 +413,8 @@ async def test_auth_status_defaults_to_trusted_local_no_auth(monkeypatch, tmp_pa
         "login_available": False,
         "authenticated": False,
         "operator_id": None,
+        "csrf_required": False,
+        "csrf_token": None,
     }
 
 
@@ -432,6 +437,8 @@ async def test_auth_status_self_hosted_single_admin_missing_credential(monkeypat
     assert payload["login_available"] is False
     assert payload["authenticated"] is False
     assert payload["operator_id"] is None
+    assert payload["csrf_required"] is True
+    assert payload["csrf_token"] is None
 
 
 @pytest.mark.anyio
@@ -455,6 +462,8 @@ async def test_auth_status_self_hosted_configured_does_not_leak_hash(monkeypatch
     assert payload["login_available"] is False
     assert payload["authenticated"] is False
     assert payload["operator_id"] is None
+    assert payload["csrf_required"] is True
+    assert payload["csrf_token"] is None
     assert "INSPECTRA_ADMIN_PASSWORD_HASH" not in serialized
     assert "admin-hash-should-not-render" not in serialized
     assert admin_hash not in serialized
@@ -481,6 +490,8 @@ async def test_auth_status_supported_hash_reports_login_available_and_redacted(m
     assert payload["login_available"] is True
     assert payload["authenticated"] is False
     assert payload["operator_id"] is None
+    assert payload["csrf_required"] is True
+    assert payload["csrf_token"] is None
     assert ADMIN_PASSWORD_FIXTURE not in serialized
     assert admin_hash not in serialized
 
@@ -498,6 +509,8 @@ async def test_self_hosted_login_unavailable_without_hash_fails_generic(monkeypa
     status_payload = status_response.json()
     assert status_payload["configured"] is False
     assert status_payload["login_available"] is False
+    assert status_payload["csrf_required"] is True
+    assert status_payload["csrf_token"] is None
     assert login_response.status_code == 401
     assert login_response.json() == {"detail": "Invalid credentials."}
     assert "set-cookie" not in login_response.headers
@@ -519,6 +532,8 @@ async def test_self_hosted_login_unsupported_hash_fails_generic(monkeypatch, tmp
     login_serialized = json.dumps(login_response.json(), sort_keys=True)
     assert status_payload["configured"] is True
     assert status_payload["login_available"] is False
+    assert status_payload["csrf_required"] is True
+    assert status_payload["csrf_token"] is None
     assert login_response.status_code == 401
     assert login_response.json() == {"detail": "Invalid credentials."}
     assert "admin-hash-should-not-render" not in login_serialized
@@ -617,13 +632,16 @@ async def test_self_hosted_session_cookie_allows_protected_route_and_auth_status
     assert status_payload["login_available"] is True
     assert status_payload["authenticated"] is True
     assert status_payload["operator_id"] == "local-admin"
+    assert status_payload["csrf_required"] is True
+    assert isinstance(status_payload["csrf_token"], str)
+    assert len(status_payload["csrf_token"]) >= 32
     assert ADMIN_PASSWORD_FIXTURE not in status_serialized
     assert admin_hash not in status_serialized
     assert ADMIN_SESSION_COOKIE_NAME not in status_serialized
 
 
 @pytest.mark.anyio
-async def test_self_hosted_logout_clears_cookie_and_denies_protected_route(monkeypatch, tmp_path):
+async def test_self_hosted_csrf_required_for_authenticated_mutating_routes(monkeypatch, tmp_path):
     admin_hash = make_admin_password_hash()
     monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
     monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
@@ -632,12 +650,69 @@ async def test_self_hosted_logout_clears_cookie_and_denies_protected_route(monke
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
-        allowed_response = await client.get("/files")
-        logout_response = await client.post("/auth/logout")
-        denied_response = await client.get("/files")
-        second_logout_response = await client.post("/auth/logout")
+        status_response = await client.get("/auth/status")
+        csrf_token = status_response.json()["csrf_token"]
+        get_files_response = await client.get("/files")
+        missing_token_response = await client.post(
+            "/files/pdf",
+            files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+        )
+        wrong_token_response = await client.post(
+            "/files/pdf",
+            headers={"X-CSRF-Token": "wrong-csrf-token"},
+            files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+        )
+        correct_token_response = await client.post(
+            "/files/pdf",
+            headers={"X-CSRF-Token": csrf_token},
+            files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+        )
+        files_after_response = await client.get("/files")
 
     assert login_response.status_code == 200
+    assert status_response.status_code == 200
+    assert isinstance(status_response.json()["csrf_token"], str)
+    assert get_files_response.status_code == 200
+    assert missing_token_response.status_code == 403
+    assert missing_token_response.json() == {"detail": CSRF_REQUIRED_DETAIL}
+    assert wrong_token_response.status_code == 403
+    assert wrong_token_response.json() == {"detail": CSRF_REQUIRED_DETAIL}
+    assert correct_token_response.status_code == 201
+    assert correct_token_response.json()["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert csrf_token not in json.dumps(correct_token_response.json(), sort_keys=True)
+    assert csrf_token not in json.dumps(files_after_response.json(), sort_keys=True)
+
+
+@pytest.mark.anyio
+async def test_self_hosted_logout_requires_csrf_and_clears_session(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        status_response = await client.get("/auth/status")
+        missing_token_logout_response = await client.post("/auth/logout")
+        wrong_token_logout_response = await client.post("/auth/logout", headers={"X-CSRF-Token": "wrong-csrf-token"})
+        allowed_response = await client.get("/files")
+        logout_response = await client.post(
+            "/auth/logout",
+            headers={"X-CSRF-Token": status_response.json()["csrf_token"]},
+        )
+        denied_response = await client.get("/files")
+        second_logout_response = await client.post(
+            "/auth/logout",
+            headers={"X-CSRF-Token": status_response.json()["csrf_token"]},
+        )
+
+    assert login_response.status_code == 200
+    assert status_response.status_code == 200
+    assert missing_token_logout_response.status_code == 403
+    assert missing_token_logout_response.json() == {"detail": CSRF_REQUIRED_DETAIL}
+    assert wrong_token_logout_response.status_code == 403
+    assert wrong_token_logout_response.json() == {"detail": CSRF_REQUIRED_DETAIL}
     assert allowed_response.status_code == 200
     assert logout_response.status_code == 200
     assert logout_response.json() == {
@@ -648,7 +723,7 @@ async def test_self_hosted_logout_clears_cookie_and_denies_protected_route(monke
     assert "Max-Age=0" in logout_response.headers.get("set-cookie", "")
     assert denied_response.status_code == 401
     assert denied_response.json() == {"detail": AUTH_REQUIRED_DETAIL}
-    assert second_logout_response.status_code == 200
+    assert second_logout_response.status_code == 401
 
 
 @pytest.mark.anyio
@@ -665,6 +740,19 @@ async def test_self_hosted_single_admin_allows_anonymous_public_safe_routes(monk
     assert health_response.json() == {"status": "ok", "service": "inspectra-backend"}
     assert auth_response.status_code == 200
     assert auth_response.json()["auth_required"] is True
+
+
+@pytest.mark.anyio
+async def test_self_hosted_single_admin_denies_anonymous_logout_before_csrf(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/auth/logout")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": AUTH_REQUIRED_DETAIL}
 
 
 @pytest.mark.anyio

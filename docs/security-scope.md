@@ -134,6 +134,8 @@ Passive Alpha session/cookie skeleton runtime decision: `PASSIVE_ALPHA_RUNTIME_S
 
 Passive Alpha login/logout endpoint runtime decision: `PASSIVE_ALPHA_RUNTIME_LOGIN_LOGOUT_ENDPOINTS_ACCEPTED`. The backend now supports `POST /auth/login` and `POST /auth/logout` for `self_hosted_single_admin`, sets and clears an `HttpOnly` `inspectra_session` cookie, reports safe authenticated state without leaking password/hash/session material, and allows valid sessions to provide the `local-admin` principal for existing owner-scoped backend routes. CSRF, frontend login UX, rate limiting, multi-user auth, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, and new capabilities remain out of scope.
 
+Passive Alpha CSRF mutating-route runtime decision: `PASSIVE_ALPHA_RUNTIME_CSRF_MUTATING_ROUTES_ACCEPTED`. The backend now binds an opaque CSRF token to each single-admin session, exposes it only through authenticated `/auth/status`, and requires `X-CSRF-Token` for cookie-auth mutating routes in `self_hosted_single_admin`. Anonymous sensitive requests still fail with generic `401` before CSRF detail, CSRF failures use generic `403`, and `trusted_local_no_auth` remains compatible without CSRF. Frontend login/CSRF wiring, rate limiting, multi-user auth, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, and new capabilities remain out of scope.
+
 Tools used in this phase:
 
 - `pdfinfo`

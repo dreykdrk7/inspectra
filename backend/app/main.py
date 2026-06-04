@@ -6,11 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.auth import (
+    ADMIN_CSRF_HEADER_NAME,
     ADMIN_SESSION_COOKIE_NAME,
     AdminSession,
     AdminSessionStore,
     build_session_cookie_settings,
     is_supported_admin_password_hash,
+    verify_admin_csrf_token,
     verify_admin_password,
 )
 from app.config import (
@@ -122,8 +124,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-PUBLIC_ANONYMOUS_PATHS = {"/health", "/auth/status", "/auth/login", "/auth/logout"}
+PUBLIC_ANONYMOUS_PATHS = {"/health", "/auth/status", "/auth/login"}
+CSRF_REQUIRED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 AUTH_REQUIRED_DETAIL = "Authentication required."
+CSRF_REQUIRED_DETAIL = "CSRF validation failed."
 INVALID_CREDENTIALS_DETAIL = "Invalid credentials."
 
 app.add_middleware(
@@ -141,10 +145,23 @@ async def deny_anonymous_sensitive_routes(request: Request, call_next) -> Respon
         return await call_next(request)
 
     settings = getattr(request.app.state, "settings", None) or load_settings()
-    if is_auth_required(settings) and current_session_for_request(request) is None:
+    if not is_auth_required(settings):
+        return await call_next(request)
+
+    session = current_session_for_request(request)
+    if session is None:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": AUTH_REQUIRED_DETAIL},
+        )
+
+    if is_csrf_required_for_request(request) and not verify_admin_csrf_token(
+        request.headers.get(ADMIN_CSRF_HEADER_NAME),
+        session,
+    ):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": CSRF_REQUIRED_DETAIL},
         )
 
     return await call_next(request)
@@ -182,6 +199,10 @@ def is_login_available_for_settings(settings) -> bool:
     return get_auth_mode(settings) == "self_hosted_single_admin" and is_supported_admin_password_hash(
         settings.admin_password_hash
     )
+
+
+def is_csrf_required_for_request(request: Request) -> bool:
+    return request.method.upper() in CSRF_REQUIRED_METHODS
 
 
 def owned_by_current_request(request: Request, owner_id: str | None) -> bool:
@@ -222,16 +243,19 @@ async def auth_status(request: Request) -> AuthStatusResponse:
     settings = request.app.state.settings
     operator = request.app.state.default_local_operator
     auth_mode = get_auth_mode(settings)
-    session = current_session_for_request(request) if is_auth_required(settings) else None
+    auth_required = is_auth_required(settings)
+    session = current_session_for_request(request) if auth_required else None
     return AuthStatusResponse(
         auth_mode=auth_mode,
-        auth_required=is_auth_required(settings),
+        auth_required=auth_required,
         configured=is_single_admin_auth_configured(settings),
         trusted_local=auth_mode == "trusted_local_no_auth",
         default_operator_id=operator.id,
         login_available=is_login_available_for_settings(settings),
         authenticated=session is not None,
         operator_id=session.operator_id if session is not None else None,
+        csrf_required=auth_required,
+        csrf_token=session.csrf_token if session is not None else None,
     )
 
 

@@ -11,6 +11,8 @@ MIN_ADMIN_PASSWORD_HASH_ITERATIONS = 600_000
 ADMIN_SESSION_COOKIE_NAME = "inspectra_session"
 ADMIN_SESSION_COOKIE_SAMESITE = "lax"
 ADMIN_SESSION_ID_BYTES = 32
+ADMIN_CSRF_HEADER_NAME = "X-CSRF-Token"
+ADMIN_CSRF_TOKEN_BYTES = 32
 _ADMIN_PASSWORD_HASH_PATTERN = re.compile(
     r"^pbkdf2_sha256\$(?P<iterations>[1-9][0-9]*)\$(?P<salt>[A-Za-z0-9_.-]{16,128})\$(?P<digest>[A-Fa-f0-9]{64})$"
 )
@@ -19,6 +21,7 @@ _ADMIN_PASSWORD_HASH_PATTERN = re.compile(
 @dataclass(frozen=True)
 class AdminSession:
     session_id: str
+    csrf_token: str
     operator_id: str
     created_at: datetime
     expires_at: datetime
@@ -36,16 +39,18 @@ class SessionCookieSettings:
 
 
 class AdminSessionStore:
-    def __init__(self, ttl_seconds: int, now_func=None, token_factory=None) -> None:
+    def __init__(self, ttl_seconds: int, now_func=None, token_factory=None, csrf_token_factory=None) -> None:
         self.ttl_seconds = max(1, int(ttl_seconds))
         self._now_func = now_func or _utc_now
         self._token_factory = token_factory or _new_session_id
+        self._csrf_token_factory = csrf_token_factory or _new_csrf_token
         self._sessions: dict[str, AdminSession] = {}
 
     def create_admin_session(self, operator_id: str, auth_mode: str = "self_hosted_single_admin") -> AdminSession:
         now = self._now()
         session = AdminSession(
             session_id=self._unique_session_id(),
+            csrf_token=self._new_session_csrf_token(),
             operator_id=operator_id,
             created_at=now,
             expires_at=now + timedelta(seconds=self.ttl_seconds),
@@ -102,6 +107,9 @@ class AdminSessionStore:
                 return session_id
         return _new_session_id()
 
+    def _new_session_csrf_token(self) -> str:
+        return self._csrf_token_factory()
+
 
 def build_session_cookie_settings(ttl_seconds: int, secure: bool = False) -> SessionCookieSettings:
     return SessionCookieSettings(
@@ -140,6 +148,12 @@ def verify_admin_password(password: str | None, password_hash: str | None) -> bo
     return hmac.compare_digest(actual_digest, expected_digest)
 
 
+def verify_admin_csrf_token(token: str | None, session: AdminSession | None) -> bool:
+    if session is None or not isinstance(token, str) or not token:
+        return False
+    return hmac.compare_digest(token, session.csrf_token)
+
+
 def _parse_admin_password_hash(password_hash: str | None) -> tuple[int, str, str] | None:
     if not isinstance(password_hash, str):
         return None
@@ -169,3 +183,7 @@ def _utc_now() -> datetime:
 
 def _new_session_id() -> str:
     return secrets.token_urlsafe(ADMIN_SESSION_ID_BYTES)
+
+
+def _new_csrf_token() -> str:
+    return secrets.token_urlsafe(ADMIN_CSRF_TOKEN_BYTES)
