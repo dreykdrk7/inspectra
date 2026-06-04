@@ -132,10 +132,10 @@ No source usage of `localStorage` or `sessionStorage` was found in `frontend/src
 - Public/community readiness remains blocked.
 - Optional release notes can summarize the trusted-local plus self-hosted auth line when product timing is right.
 
-## Next Recommendation
+## Successor Status
 
 ```text
-PASSIVE-ALPHA-RUNTIME-17-SELF-HOSTED-AUTH-CLOSEOUT
+PASSIVE_ALPHA_SELF_HOSTED_AUTH_CLOSED
 ```
 
-The auth flow smoke passed cleanly, so the next step should close the current self-hosted single-admin auth line before opening rate limiting or lockout as a separate hardening slice.
+Runtime-17 now closes the current self-hosted single-admin auth line and recommends `PASSIVE-ALPHA-RUNTIME-18-RATE-LIMIT-LOCKOUT-PLAN` as the next hardening slice before self-hosted release notes.

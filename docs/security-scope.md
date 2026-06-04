@@ -140,6 +140,8 @@ Passive Alpha frontend auth status/login/logout UX runtime decision: `PASSIVE_AL
 
 Passive Alpha auth flow smoke runtime decision: `PASSIVE_ALPHA_RUNTIME_AUTH_FLOW_SMOKE_PASSED`. Backend and frontend smoke validation passed for the current trusted-local and self-hosted single-admin auth flow, including login/logout, authenticated auth status, CSRF behavior, generic 401/403 handling, and CORS credential support for configured origins. No auth data is stored in frontend `localStorage` or `sessionStorage`. Rate limiting, lockout, multi-user auth, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, and new capabilities remain out of scope.
 
+Passive Alpha self-hosted auth closeout decision: `PASSIVE_ALPHA_SELF_HOSTED_AUTH_CLOSED`. The current `self_hosted_single_admin` line is closed for Passive Alpha as a usable single-admin flow when a supported password hash is configured, while `trusted_local_no_auth` remains the default local/dev/trusted mode. Exposed self-hosted use still needs TLS/reverse-proxy and secure-cookie hardening, and rate limiting/lockout remains future work. Multi-user auth, OAuth/OIDC, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, and new capabilities remain out of scope.
+
 Tools used in this phase:
 
 - `pdfinfo`
