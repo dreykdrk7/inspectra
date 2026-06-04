@@ -124,6 +124,8 @@ Passive Alpha delete source/job-results runtime decision: `PASSIVE_ALPHA_RUNTIME
 
 Passive Alpha deployment hardening smoke decision: `PASSIVE_ALPHA_RUNTIME_DEPLOYMENT_HARDENING_SMOKE_PASSED`. Backend smoke validation confirms `trusted_local_no_auth` compatibility, public `GET /health`, public `GET /auth/status`, public preflight behavior, auth-required anonymous denial for sensitive routes, owner metadata writes, legacy local mapping, owner-scoped reads/exports/SBOMs, owner-scoped source and job/result deletion, queued/running delete conflict behavior, and Active route gating. It does not approve production/public/community readiness and does not implement login, sessions, frontend login, delete-all-owned-data, scheduler cleanup, TLS/reverse-proxy runtime, Docker execution, external probes, Nmap, billing/SaaS concepts, new Active behavior, or new capabilities.
 
+Passive Alpha Runtime P0 closeout decision: `PASSIVE_ALPHA_RUNTIME_P0_CLOSED_TRUSTED_LOCAL_HARDENED`. Runtime-01 through Runtime-08 are closed as the current trusted-local hardened backend line. `trusted_local_no_auth` remains the default and local/dev only; auth-required modes fail closed for anonymous sensitive routes but remain unusable for authenticated workflows until login/session work exists. The closeout preserves the open-source, local-first, self-hosted-first, non-SaaS posture and keeps public/community readiness, billing/tenant models, Nmap, new Active capability, and broader runtime work out of scope.
+
 Tools used in this phase:
 
 - `pdfinfo`

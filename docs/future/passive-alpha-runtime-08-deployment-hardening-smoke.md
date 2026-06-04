@@ -182,7 +182,7 @@ No positive promise was found that would make Inspectra production-ready, SaaS/c
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-09-RUNTIME-P0-CLOSEOUT
+PASSIVE-ALPHA-RUNTIME-10-SINGLE-ADMIN-LOGIN-SESSION-PLAN
 ```
 
-Next work should close the Runtime-01 through Runtime-08 P0 line and summarize the accepted backend hardening state. Keep single-admin login/session planning separate unless the product explicitly chooses to start that new line.
+Runtime-09 has closed the Runtime-01 through Runtime-08 P0 line. Next technical work should be a docs-first single-admin login/session plan if Inspectra should become usable in `self_hosted_single_admin` mode. Product publication work may instead proceed with trusted-local release notes. Keep runtime implementation separate unless explicitly scoped.

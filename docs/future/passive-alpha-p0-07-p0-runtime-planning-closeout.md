@@ -34,6 +34,8 @@ Runtime 07 delete source and job/results: `docs/future/passive-alpha-runtime-07-
 
 Runtime 08 deployment hardening smoke: `docs/future/passive-alpha-runtime-08-deployment-hardening-smoke.md`
 
+Runtime 09 runtime P0 closeout: `docs/future/passive-alpha-runtime-09-runtime-p0-closeout.md`
+
 Commit scope: docs-only closeout for Passive Alpha P0 runtime planning. This block consolidates accepted docs-first decisions, runtime dependencies, the first implementation sequence, blockers, tests, and risk register. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, auth, sessions, cookies, migrations, API guards, owner checks, retention/delete behavior, cleanup, CORS, CSRF, TLS, reverse proxy behavior, reports, exports, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -127,6 +129,8 @@ No runtime behavior is implemented by this closeout. The next work should be sma
 - No-go checklist before exposing an instance beyond trusted local use.
 
 ## What Is Not Implemented
+
+Historical note: this section describes the original docs-only P0-07 planning closeout scope. Later Runtime-01 through Runtime-09 implementation notes below record the backend slices that have since been accepted.
 
 - Auth runtime.
 - Session or cookie runtime.
@@ -317,13 +321,15 @@ The seventh runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_DELETE_SOURC
 
 The eighth runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_DEPLOYMENT_HARDENING_SMOKE_PASSED`. It smoke-tests trusted-local compatibility, auth-required anonymous denial, public route narrowness, owner metadata, legacy mapping, owner-scoped reads/exports/SBOMs, owner-scoped delete behavior, and Active gating without adding new runtime capabilities.
 
+The ninth runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_P0_CLOSED_TRUSTED_LOCAL_HARDENED`. It closes the current Runtime-01 through Runtime-08 line as trusted-local hardened, with self-hosted single-admin login/session still reserved for a separate future line.
+
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-09-RUNTIME-P0-CLOSEOUT
+PASSIVE-ALPHA-RUNTIME-10-SINGLE-ADMIN-LOGIN-SESSION-PLAN
 ```
 
-Close the Runtime-01 through Runtime-08 P0 line and summarize the accepted backend hardening state. Keep broader retention runtime, cleanup, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
+Plan single-admin login/session behavior if Inspectra should become usable in `self_hosted_single_admin` mode. Keep broader retention runtime, cleanup, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
 
 ## Validation Commands
 
