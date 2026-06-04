@@ -36,7 +36,7 @@ from app.config import (
     load_settings,
 )
 from app.domain_security import normalize_domain, normalize_subdomain_candidate
-from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, app
+from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
 from app.models import JobRecord
 from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
@@ -622,6 +622,18 @@ def test_login_attempt_config_rejects_invalid_values(monkeypatch, tmp_path, env_
         load_settings()
 
 
+def test_login_client_key_falls_back_to_unknown_without_request_client():
+    request_without_client = type("RequestWithoutClient", (), {"client": None})()
+    request_with_blank_client = type(
+        "RequestWithBlankClient",
+        (),
+        {"client": type("Client", (), {"host": " "})()},
+    )()
+
+    assert login_client_key_for_request(request_without_client) == "unknown"
+    assert login_client_key_for_request(request_with_blank_client) == "unknown"
+
+
 @pytest.mark.anyio
 async def test_auth_status_defaults_to_trusted_local_no_auth(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
@@ -742,6 +754,7 @@ async def test_self_hosted_login_unavailable_without_hash_fails_generic(monkeypa
     assert login_response.status_code == 401
     assert login_response.json() == {"detail": "Invalid credentials."}
     assert "set-cookie" not in login_response.headers
+    assert app.state.login_attempts.record_count() == 1
 
 
 @pytest.mark.anyio
@@ -767,6 +780,7 @@ async def test_self_hosted_login_unsupported_hash_fails_generic(monkeypatch, tmp
     assert "admin-hash-should-not-render" not in login_serialized
     assert admin_hash not in login_serialized
     assert "set-cookie" not in login_response.headers
+    assert app.state.login_attempts.record_count() == 1
 
 
 @pytest.mark.anyio
@@ -786,10 +800,104 @@ async def test_self_hosted_login_wrong_password_fails_generic(monkeypatch, tmp_p
     assert "wrong-admin-password" not in serialized
     assert admin_hash not in serialized
     assert "set-cookie" not in login_response.headers
+    assert app.state.login_attempts.record_count() == 1
 
 
 @pytest.mark.anyio
-async def test_login_attempt_store_is_not_integrated_with_login_yet(monkeypatch, tmp_path):
+async def test_self_hosted_login_failures_trigger_rate_limit_and_retry_after(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "2")
+    monkeypatch.setenv("INSPECTRA_LOGIN_LOCKOUT_SECONDS", "120")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        second_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        locked_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        status_response = await client.get("/auth/status")
+
+    assert first_failure.status_code == 401
+    assert first_failure.json() == {"detail": "Invalid credentials."}
+    assert second_failure.status_code == 401
+    assert second_failure.json() == {"detail": "Invalid credentials."}
+    assert locked_response.status_code == 429
+    assert locked_response.json() == {"detail": RATE_LIMITED_DETAIL}
+    assert locked_response.headers["retry-after"] == "120"
+    assert "set-cookie" not in locked_response.headers
+    serialized = json.dumps(locked_response.json(), sort_keys=True)
+    assert "wrong-admin-password" not in serialized
+    assert ADMIN_PASSWORD_FIXTURE not in serialized
+    assert admin_hash not in serialized
+    assert "127.0.0.1" not in serialized
+    assert "threshold" not in serialized.lower()
+    assert status_response.status_code == 200
+    assert RATE_LIMITED_DETAIL not in json.dumps(status_response.json(), sort_keys=True)
+
+
+@pytest.mark.anyio
+async def test_self_hosted_login_lockout_expires_and_success_resets(monkeypatch, tmp_path):
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "1")
+    monkeypatch.setenv("INSPECTRA_LOGIN_LOCKOUT_SECONDS", "10")
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.login_attempts = LoginAttemptStore(
+        window_seconds=app.state.settings.login_attempt_window_seconds,
+        max_failures=app.state.settings.login_attempt_max_failures,
+        lockout_seconds=app.state.settings.login_lockout_seconds,
+        max_keys=app.state.settings.login_attempt_max_keys,
+        now_func=lambda: current_time,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        locked_success_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        current_time = current_time + timedelta(seconds=11)
+        unlocked_success_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+
+    assert first_failure.status_code == 401
+    assert first_failure.json() == {"detail": "Invalid credentials."}
+    assert locked_success_response.status_code == 429
+    assert locked_success_response.json() == {"detail": RATE_LIMITED_DETAIL}
+    assert locked_success_response.headers["retry-after"] == "10"
+    assert unlocked_success_response.status_code == 200
+    assert unlocked_success_response.json()["authenticated"] is True
+    assert app.state.login_attempts.record_count() == 0
+
+
+@pytest.mark.anyio
+async def test_self_hosted_login_success_resets_failure_counter(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "3")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        assert first_failure.status_code == 401
+        assert app.state.login_attempts.record_count() == 1
+
+        success_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        assert success_response.status_code == 200
+        assert success_response.json()["authenticated"] is True
+        assert app.state.login_attempts.record_count() == 0
+
+        second_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+
+    assert second_failure.status_code == 401
+    assert app.state.login_attempts.record_count() == 1
+
+
+@pytest.mark.anyio
+async def test_self_hosted_login_rate_limit_ignores_x_forwarded_for(monkeypatch, tmp_path):
     admin_hash = make_admin_password_hash()
     monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
     monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
@@ -798,17 +906,22 @@ async def test_login_attempt_store_is_not_integrated_with_login_yet(monkeypatch,
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        first_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
-        second_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
-        success_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        first_failure = await client.post(
+            "/auth/login",
+            json={"password": "wrong-admin-password"},
+            headers={"X-Forwarded-For": "198.51.100.10"},
+        )
+        locked_response = await client.post(
+            "/auth/login",
+            json={"password": ADMIN_PASSWORD_FIXTURE},
+            headers={"X-Forwarded-For": "203.0.113.10"},
+        )
 
     assert first_failure.status_code == 401
-    assert first_failure.json() == {"detail": "Invalid credentials."}
-    assert second_failure.status_code == 401
-    assert second_failure.json() == {"detail": "Invalid credentials."}
-    assert success_response.status_code == 200
-    assert success_response.json()["authenticated"] is True
-    assert app.state.login_attempts.record_count() == 0
+    assert locked_response.status_code == 429
+    assert locked_response.json() == {"detail": RATE_LIMITED_DETAIL}
+    assert "198.51.100.10" not in json.dumps(locked_response.json(), sort_keys=True)
+    assert "203.0.113.10" not in json.dumps(locked_response.json(), sort_keys=True)
 
 
 @pytest.mark.anyio
@@ -857,6 +970,27 @@ async def test_self_hosted_login_rejects_non_admin_username(monkeypatch, tmp_pat
 
     assert login_response.status_code == 401
     assert login_response.json() == {"detail": "Invalid credentials."}
+    assert app.state.login_attempts.record_count() == 1
+
+
+@pytest.mark.anyio
+async def test_trusted_local_no_auth_login_is_not_rate_limited(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "1")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_response = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        second_response = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        status_response = await client.get("/auth/status")
+
+    assert first_response.status_code == 401
+    assert first_response.json() == {"detail": "Invalid credentials."}
+    assert second_response.status_code == 401
+    assert second_response.json() == {"detail": "Invalid credentials."}
+    assert status_response.status_code == 200
+    assert status_response.json()["trusted_local"] is True
+    assert app.state.login_attempts.record_count() == 0
 
 
 @pytest.mark.anyio

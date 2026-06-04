@@ -136,6 +136,7 @@ CSRF_REQUIRED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 AUTH_REQUIRED_DETAIL = "Authentication required."
 CSRF_REQUIRED_DETAIL = "CSRF validation failed."
 INVALID_CREDENTIALS_DETAIL = "Invalid credentials."
+RATE_LIMITED_DETAIL = "Too many attempts. Try again later."
 
 app.add_middleware(
     CORSMiddleware,
@@ -208,6 +209,13 @@ def is_login_available_for_settings(settings) -> bool:
     )
 
 
+def login_client_key_for_request(request: Request) -> str:
+    client = request.client
+    if client is None or not isinstance(client.host, str) or not client.host.strip():
+        return "unknown"
+    return client.host.strip()
+
+
 def is_csrf_required_for_request(request: Request) -> bool:
     return request.method.upper() in CSRF_REQUIRED_METHODS
 
@@ -273,14 +281,30 @@ async def auth_login(request: Request, response: Response, login_request: AuthLo
     username = (login_request.username or "").strip()
     username_allowed = not username or username == "admin"
     password = login_request.password or ""
+    login_attempts = request.app.state.login_attempts
+    client_key = login_client_key_for_request(request)
+
+    if auth_mode == "self_hosted_single_admin":
+        login_attempts.purge_expired()
+        if login_attempts.is_locked(client_key):
+            retry_after = login_attempts.seconds_until_unlock(client_key)
+            headers = {"Retry-After": str(retry_after)} if retry_after > 0 else None
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=RATE_LIMITED_DETAIL,
+                headers=headers,
+            )
 
     if (
         auth_mode != "self_hosted_single_admin"
         or not username_allowed
         or not verify_admin_password(password, settings.admin_password_hash)
     ):
+        if auth_mode == "self_hosted_single_admin":
+            login_attempts.record_failure(client_key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS_DETAIL)
 
+    login_attempts.reset_success(client_key)
     session = request.app.state.admin_sessions.create_admin_session(
         request.app.state.default_local_operator.id,
         auth_mode=auth_mode,

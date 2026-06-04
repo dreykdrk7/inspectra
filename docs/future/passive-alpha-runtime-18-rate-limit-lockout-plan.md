@@ -274,6 +274,12 @@ PASSIVE_ALPHA_RUNTIME_LOGIN_ATTEMPT_STORE_ACCEPTED
 
 Runtime-19 now implements the isolated in-memory login-attempt store, config, and tests recommended by this plan. Enforcement in `POST /auth/login`, generic `429`/cooldown behavior, frontend copy, and auth-hardening smoke remain future slices.
 
+```text
+PASSIVE_ALPHA_RUNTIME_LOGIN_RATE_LIMIT_BACKOFF_ACCEPTED
+```
+
+Runtime-20 now wires the attempt store into `POST /auth/login` for `self_hosted_single_admin`, adds generic temporary `429` lockout behavior with safe `Retry-After`, and keeps `trusted_local_no_auth` unaffected. Frontend rate-limit copy and auth-hardening smoke remain future slices.
+
 ## No-Scope Preserved
 
 - No code changes.

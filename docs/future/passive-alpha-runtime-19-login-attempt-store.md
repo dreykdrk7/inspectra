@@ -138,3 +138,11 @@ PASSIVE-ALPHA-RUNTIME-20-LOGIN-RATE-LIMIT-BACKOFF
 ```
 
 Runtime-20 should wire the attempt store into `POST /auth/login`, preserve generic failures, add temporary `429`/cooldown behavior, avoid detailed public counters or bypass guidance, and keep `trusted_local_no_auth` unaffected.
+
+## Successor Status
+
+```text
+PASSIVE_ALPHA_RUNTIME_LOGIN_RATE_LIMIT_BACKOFF_ACCEPTED
+```
+
+Runtime-20 now wires the attempt store into `POST /auth/login` for `self_hosted_single_admin`, preserves generic invalid-credential failures, adds temporary generic `429` lockout behavior with safe `Retry-After`, and keeps `trusted_local_no_auth` unaffected. Runtime-19 remains the historical isolated store slice.
