@@ -100,6 +100,19 @@ class AuthStatusResponse(BaseModel):
     trusted_local: bool
     default_operator_id: str
     login_available: bool = False
+    authenticated: bool = False
+    operator_id: str | None = None
+
+
+class AuthLoginRequest(BaseModel):
+    password: str | None = None
+    username: str | None = None
+
+
+class AuthSessionResponse(BaseModel):
+    authenticated: bool
+    operator_id: str | None = None
+    auth_mode: AuthMode
 
 
 class WebAuditRequest(BaseModel):

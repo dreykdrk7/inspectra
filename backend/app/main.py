@@ -5,7 +5,14 @@ from fastapi import BackgroundTasks, Body, FastAPI, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.auth import AdminSessionStore, build_session_cookie_settings
+from app.auth import (
+    ADMIN_SESSION_COOKIE_NAME,
+    AdminSession,
+    AdminSessionStore,
+    build_session_cookie_settings,
+    is_supported_admin_password_hash,
+    verify_admin_password,
+)
 from app.config import (
     get_auth_mode,
     get_current_operator_for_trusted_local,
@@ -18,6 +25,8 @@ from app.models import (
     DeletedFileResponse,
     DeletedJobResponse,
     DomainAuditRequest,
+    AuthLoginRequest,
+    AuthSessionResponse,
     AuthStatusResponse,
     JobListItem,
     JobRecord,
@@ -113,8 +122,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-PUBLIC_ANONYMOUS_PATHS = {"/health", "/auth/status"}
+PUBLIC_ANONYMOUS_PATHS = {"/health", "/auth/status", "/auth/login", "/auth/logout"}
 AUTH_REQUIRED_DETAIL = "Authentication required."
+INVALID_CREDENTIALS_DETAIL = "Invalid credentials."
 
 app.add_middleware(
     CORSMiddleware,
@@ -131,7 +141,7 @@ async def deny_anonymous_sensitive_routes(request: Request, call_next) -> Respon
         return await call_next(request)
 
     settings = getattr(request.app.state, "settings", None) or load_settings()
-    if is_auth_required(settings):
+    if is_auth_required(settings) and current_session_for_request(request) is None:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": AUTH_REQUIRED_DETAIL},
@@ -141,7 +151,37 @@ async def deny_anonymous_sensitive_routes(request: Request, call_next) -> Respon
 
 
 def current_owner_id_for_request(request: Request) -> str:
+    session_operator_id = getattr(request.state, "current_operator_id", None)
+    if isinstance(session_operator_id, str) and session_operator_id:
+        return session_operator_id
+
+    settings = getattr(request.app.state, "settings", None) or load_settings()
+    if is_auth_required(settings):
+        session = current_session_for_request(request)
+        if session is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=AUTH_REQUIRED_DETAIL)
+        return session.operator_id
+
     return request.app.state.default_local_operator.id
+
+
+def current_session_for_request(request: Request) -> AdminSession | None:
+    existing_session = getattr(request.state, "current_session", None)
+    if isinstance(existing_session, AdminSession):
+        return existing_session
+
+    session_id = request.cookies.get(ADMIN_SESSION_COOKIE_NAME)
+    session = request.app.state.admin_sessions.get_session(session_id)
+    if session is not None:
+        request.state.current_session = session
+        request.state.current_operator_id = session.operator_id
+    return session
+
+
+def is_login_available_for_settings(settings) -> bool:
+    return get_auth_mode(settings) == "self_hosted_single_admin" and is_supported_admin_password_hash(
+        settings.admin_password_hash
+    )
 
 
 def owned_by_current_request(request: Request, owner_id: str | None) -> bool:
@@ -182,13 +222,73 @@ async def auth_status(request: Request) -> AuthStatusResponse:
     settings = request.app.state.settings
     operator = request.app.state.default_local_operator
     auth_mode = get_auth_mode(settings)
+    session = current_session_for_request(request) if is_auth_required(settings) else None
     return AuthStatusResponse(
         auth_mode=auth_mode,
         auth_required=is_auth_required(settings),
         configured=is_single_admin_auth_configured(settings),
         trusted_local=auth_mode == "trusted_local_no_auth",
         default_operator_id=operator.id,
-        login_available=False,
+        login_available=is_login_available_for_settings(settings),
+        authenticated=session is not None,
+        operator_id=session.operator_id if session is not None else None,
+    )
+
+
+@app.post("/auth/login", response_model=AuthSessionResponse)
+async def auth_login(request: Request, response: Response, login_request: AuthLoginRequest = Body(...)) -> AuthSessionResponse:
+    settings = request.app.state.settings
+    auth_mode = get_auth_mode(settings)
+    username = (login_request.username or "").strip()
+    username_allowed = not username or username == "admin"
+    password = login_request.password or ""
+
+    if (
+        auth_mode != "self_hosted_single_admin"
+        or not username_allowed
+        or not verify_admin_password(password, settings.admin_password_hash)
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS_DETAIL)
+
+    session = request.app.state.admin_sessions.create_admin_session(
+        request.app.state.default_local_operator.id,
+        auth_mode=auth_mode,
+    )
+    cookie_settings = request.app.state.session_cookie_settings
+    response.set_cookie(
+        key=cookie_settings.name,
+        value=session.session_id,
+        max_age=cookie_settings.max_age_seconds,
+        httponly=cookie_settings.httponly,
+        secure=cookie_settings.secure,
+        samesite=cookie_settings.samesite,
+        path=cookie_settings.path,
+    )
+    return AuthSessionResponse(
+        authenticated=True,
+        operator_id=session.operator_id,
+        auth_mode=auth_mode,
+    )
+
+
+@app.post("/auth/logout", response_model=AuthSessionResponse)
+async def auth_logout(request: Request, response: Response) -> AuthSessionResponse:
+    settings = request.app.state.settings
+    auth_mode = get_auth_mode(settings)
+    session_id = request.cookies.get(ADMIN_SESSION_COOKIE_NAME)
+    request.app.state.admin_sessions.invalidate_session(session_id)
+    cookie_settings = request.app.state.session_cookie_settings
+    response.delete_cookie(
+        key=cookie_settings.name,
+        path=cookie_settings.path,
+        secure=cookie_settings.secure,
+        httponly=cookie_settings.httponly,
+        samesite=cookie_settings.samesite,
+    )
+    return AuthSessionResponse(
+        authenticated=False,
+        operator_id=None,
+        auth_mode=auth_mode,
     )
 
 

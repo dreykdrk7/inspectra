@@ -182,3 +182,5 @@ PASSIVE-ALPHA-RUNTIME-12-SESSION-COOKIE-SKELETON
 Next runtime work should design and implement the minimal session/cookie skeleton separately from login endpoint behavior, preserving fail-closed auth-required routes until a valid session principal is explicitly integrated.
 
 Runtime-12 now accepts the internal session/cookie skeleton and recommends `PASSIVE-ALPHA-RUNTIME-13-LOGIN-LOGOUT-ENDPOINTS` next. Runtime-11 remains the historical password-verifier slice.
+
+Runtime-13 now wires the password verifier and session/cookie skeleton into minimal backend login/logout endpoints and recommends `PASSIVE-ALPHA-RUNTIME-14-CSRF-MUTATING-ROUTES` next.

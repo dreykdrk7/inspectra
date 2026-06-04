@@ -8,6 +8,8 @@ Base Runtime-10 login/session plan: `docs/future/passive-alpha-runtime-10-single
 
 Base Runtime-09 closeout: `docs/future/passive-alpha-runtime-09-runtime-p0-closeout.md`
 
+Successor Runtime-13 login/logout endpoints: `docs/future/passive-alpha-runtime-13-login-logout-endpoints.md`
+
 Commit scope: backend session/cookie skeleton, focused tests, and minimal documentation alignment. This block does not add login, logout, session principal integration, frontend login, CSRF, rate limiting, endpoint permission changes, guard changes, target policy changes, Active changes, Nmap, tags, releases, or deployment behavior.
 
 ## Final Decision
@@ -200,3 +202,5 @@ PASSIVE-ALPHA-RUNTIME-13-LOGIN-LOGOUT-ENDPOINTS
 ```
 
 Next runtime work should wire the existing password verifier and session/cookie skeleton into explicit login/logout endpoints, while preserving generic failures, keeping `/auth/status` safe, and not broadening the guard beyond valid session principal resolution.
+
+Runtime-13 now accepts minimal backend login/logout endpoints and recommends `PASSIVE-ALPHA-RUNTIME-14-CSRF-MUTATING-ROUTES` next. Runtime-12 remains the historical session/cookie skeleton slice.

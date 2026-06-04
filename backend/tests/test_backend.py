@@ -408,6 +408,8 @@ async def test_auth_status_defaults_to_trusted_local_no_auth(monkeypatch, tmp_pa
         "trusted_local": True,
         "default_operator_id": "local-admin",
         "login_available": False,
+        "authenticated": False,
+        "operator_id": None,
     }
 
 
@@ -428,6 +430,8 @@ async def test_auth_status_self_hosted_single_admin_missing_credential(monkeypat
     assert payload["trusted_local"] is False
     assert payload["default_operator_id"] == "local-admin"
     assert payload["login_available"] is False
+    assert payload["authenticated"] is False
+    assert payload["operator_id"] is None
 
 
 @pytest.mark.anyio
@@ -448,13 +452,16 @@ async def test_auth_status_self_hosted_configured_does_not_leak_hash(monkeypatch
     assert payload["auth_required"] is True
     assert payload["configured"] is True
     assert payload["trusted_local"] is False
+    assert payload["login_available"] is False
+    assert payload["authenticated"] is False
+    assert payload["operator_id"] is None
     assert "INSPECTRA_ADMIN_PASSWORD_HASH" not in serialized
     assert "admin-hash-should-not-render" not in serialized
     assert admin_hash not in serialized
 
 
 @pytest.mark.anyio
-async def test_auth_status_supported_hash_remains_login_unavailable_and_redacted(monkeypatch, tmp_path):
+async def test_auth_status_supported_hash_reports_login_available_and_redacted(monkeypatch, tmp_path):
     admin_hash = make_admin_password_hash()
     monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
     monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
@@ -470,9 +477,178 @@ async def test_auth_status_supported_hash_remains_login_unavailable_and_redacted
     assert payload["auth_mode"] == "self_hosted_single_admin"
     assert payload["auth_required"] is True
     assert payload["configured"] is True
-    assert payload["login_available"] is False
+    assert payload["trusted_local"] is False
+    assert payload["login_available"] is True
+    assert payload["authenticated"] is False
+    assert payload["operator_id"] is None
     assert ADMIN_PASSWORD_FIXTURE not in serialized
     assert admin_hash not in serialized
+
+
+@pytest.mark.anyio
+async def test_self_hosted_login_unavailable_without_hash_fails_generic(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        status_response = await client.get("/auth/status")
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+
+    status_payload = status_response.json()
+    assert status_payload["configured"] is False
+    assert status_payload["login_available"] is False
+    assert login_response.status_code == 401
+    assert login_response.json() == {"detail": "Invalid credentials."}
+    assert "set-cookie" not in login_response.headers
+
+
+@pytest.mark.anyio
+async def test_self_hosted_login_unsupported_hash_fails_generic(monkeypatch, tmp_path):
+    admin_hash = "argon2id$admin-hash-should-not-render"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        status_response = await client.get("/auth/status")
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+
+    status_payload = status_response.json()
+    login_serialized = json.dumps(login_response.json(), sort_keys=True)
+    assert status_payload["configured"] is True
+    assert status_payload["login_available"] is False
+    assert login_response.status_code == 401
+    assert login_response.json() == {"detail": "Invalid credentials."}
+    assert "admin-hash-should-not-render" not in login_serialized
+    assert admin_hash not in login_serialized
+    assert "set-cookie" not in login_response.headers
+
+
+@pytest.mark.anyio
+async def test_self_hosted_login_wrong_password_fails_generic(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+
+    serialized = json.dumps(login_response.json(), sort_keys=True)
+    assert login_response.status_code == 401
+    assert login_response.json() == {"detail": "Invalid credentials."}
+    assert "wrong-admin-password" not in serialized
+    assert admin_hash not in serialized
+    assert "set-cookie" not in login_response.headers
+
+
+@pytest.mark.anyio
+async def test_self_hosted_login_success_sets_http_only_session_cookie(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+
+    payload = login_response.json()
+    serialized = json.dumps(payload, sort_keys=True)
+    set_cookie = login_response.headers.get("set-cookie", "")
+    assert login_response.status_code == 200
+    assert payload == {
+        "authenticated": True,
+        "operator_id": "local-admin",
+        "auth_mode": "self_hosted_single_admin",
+    }
+    assert ADMIN_PASSWORD_FIXTURE not in serialized
+    assert admin_hash not in serialized
+    assert ADMIN_SESSION_COOKIE_NAME not in serialized
+    assert ADMIN_SESSION_COOKIE_NAME in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie
+    assert "Max-Age=3600" in set_cookie
+    assert "Path=/" in set_cookie
+
+
+@pytest.mark.anyio
+async def test_self_hosted_login_rejects_non_admin_username(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post(
+            "/auth/login",
+            json={"username": "another-user", "password": ADMIN_PASSWORD_FIXTURE},
+        )
+
+    assert login_response.status_code == 401
+    assert login_response.json() == {"detail": "Invalid credentials."}
+
+
+@pytest.mark.anyio
+async def test_self_hosted_session_cookie_allows_protected_route_and_auth_status(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        denied_response = await client.get("/files")
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        files_response = await client.get("/files")
+        status_response = await client.get("/auth/status")
+
+    assert denied_response.status_code == 401
+    assert denied_response.json() == {"detail": AUTH_REQUIRED_DETAIL}
+    assert login_response.status_code == 200
+    assert files_response.status_code == 200
+    assert files_response.json() == []
+    status_payload = status_response.json()
+    status_serialized = json.dumps(status_payload, sort_keys=True)
+    assert status_payload["login_available"] is True
+    assert status_payload["authenticated"] is True
+    assert status_payload["operator_id"] == "local-admin"
+    assert ADMIN_PASSWORD_FIXTURE not in status_serialized
+    assert admin_hash not in status_serialized
+    assert ADMIN_SESSION_COOKIE_NAME not in status_serialized
+
+
+@pytest.mark.anyio
+async def test_self_hosted_logout_clears_cookie_and_denies_protected_route(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        allowed_response = await client.get("/files")
+        logout_response = await client.post("/auth/logout")
+        denied_response = await client.get("/files")
+        second_logout_response = await client.post("/auth/logout")
+
+    assert login_response.status_code == 200
+    assert allowed_response.status_code == 200
+    assert logout_response.status_code == 200
+    assert logout_response.json() == {
+        "authenticated": False,
+        "operator_id": None,
+        "auth_mode": "self_hosted_single_admin",
+    }
+    assert "Max-Age=0" in logout_response.headers.get("set-cookie", "")
+    assert denied_response.status_code == 401
+    assert denied_response.json() == {"detail": AUTH_REQUIRED_DETAIL}
+    assert second_logout_response.status_code == 200
 
 
 @pytest.mark.anyio

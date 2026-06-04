@@ -435,6 +435,8 @@ Runtime-11 now accepts the isolated password verifier helper with explicit `pbkd
 
 Runtime-12 now accepts the internal session/cookie skeleton and recommends `PASSIVE-ALPHA-RUNTIME-13-LOGIN-LOGOUT-ENDPOINTS` next.
 
+Runtime-13 now accepts minimal backend login/logout endpoints, session cookie issuance/clearing, and valid-session guard integration for `self_hosted_single_admin`; it recommends `PASSIVE-ALPHA-RUNTIME-14-CSRF-MUTATING-ROUTES` next.
+
 ## No-Scope
 
 - No code changes.

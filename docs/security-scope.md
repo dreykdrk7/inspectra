@@ -132,6 +132,8 @@ Passive Alpha password verifier runtime decision: `PASSIVE_ALPHA_RUNTIME_PASSWOR
 
 Passive Alpha session/cookie skeleton runtime decision: `PASSIVE_ALPHA_RUNTIME_SESSION_COOKIE_SKELETON_ACCEPTED`. The backend now has internal in-memory session helpers, opaque random session ids, `local-admin` session metadata, `INSPECTRA_SESSION_TTL_SECONDS`, and cookie metadata for future `self_hosted_single_admin` login work. This does not add login/logout endpoints, does not set cookies on responses, does not integrate sessions with sensitive-route guards, and does not implement CSRF, frontend login, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, or new capabilities.
 
+Passive Alpha login/logout endpoint runtime decision: `PASSIVE_ALPHA_RUNTIME_LOGIN_LOGOUT_ENDPOINTS_ACCEPTED`. The backend now supports `POST /auth/login` and `POST /auth/logout` for `self_hosted_single_admin`, sets and clears an `HttpOnly` `inspectra_session` cookie, reports safe authenticated state without leaking password/hash/session material, and allows valid sessions to provide the `local-admin` principal for existing owner-scoped backend routes. CSRF, frontend login UX, rate limiting, multi-user auth, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, and new capabilities remain out of scope.
+
 Tools used in this phase:
 
 - `pdfinfo`
