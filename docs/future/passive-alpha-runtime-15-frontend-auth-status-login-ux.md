@@ -72,6 +72,7 @@ When auth is required, login is available, and the user is unauthenticated:
 - copy says: `Authentication required for this self-hosted instance.`;
 - only a password field is shown;
 - login failure shows a generic credential error;
+- Runtime-21 adds controlled frontend copy for login `429` rate-limit responses while keeping normal credential failures generic;
 - the password is cleared after submit;
 - no hash, session id, cookie value, CSRF token, config secret, `.env` guidance, or bypass guidance is rendered.
 
@@ -174,7 +175,7 @@ No Docker, external probes, DNS, external HTTP, Nmap, or live target traffic are
 ## No-Scope Preserved
 
 - No `.env`, `.env.*`, or `.envrc` reads.
-- No rate limiting or lockout.
+- Runtime-15 itself did not implement rate limiting or lockout; Runtime-21 later added controlled frontend copy for backend login `429` responses.
 - No multi-user runtime.
 - No OAuth/OIDC.
 - No public/community runtime.

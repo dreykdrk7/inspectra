@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 
-function jsonResponse(payload: unknown, status = 200): Response {
+function jsonResponse(payload: unknown, status = 200, headers: HeadersInit = {}): Response {
+  const responseHeaders = new Headers(headers);
+  responseHeaders.set("content-type", "application/json");
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { "content-type": "application/json" }
+    headers: responseHeaders
   });
 }
 
@@ -687,6 +689,45 @@ describe("App", () => {
     expect(await screen.findByText("Invalid credentials.")).toBeInTheDocument();
     expect((screen.getByLabelText("Password") as HTMLInputElement).value).toBe("");
     expect(document.body.textContent ?? "").not.toContain("wrong-admin-password");
+  });
+
+  it("shows controlled login rate-limit copy and clears the password", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(selfHostedLoginStatus));
+        }
+        if (url.endsWith("/auth/login")) {
+          return Promise.resolve(
+            jsonResponse({ detail: "Too many attempts. Try again later." }, 429, { "Retry-After": "60" })
+          );
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    render(<App />);
+
+    const passwordInput = await screen.findByLabelText("Password");
+    fireEvent.change(passwordInput, { target: { value: "super-secret-password" } });
+    fireEvent.click(screen.getByRole("button", { name: /Sign in/i }));
+
+    expect(await screen.findByText("Too many attempts. Try again later.")).toBeInTheDocument();
+    expect((screen.getByLabelText("Password") as HTMLInputElement).value).toBe("");
+    const rendered = document.body.textContent ?? "";
+    expect(rendered).not.toContain("super-secret-password");
+    expect(rendered).not.toContain("Retry-After");
+    expect(rendered).not.toContain("60");
+    expect(rendered).not.toContain("client key");
+    expect(rendered).not.toContain("threshold");
+    expect(rendered).not.toContain("recovery");
+    expect(rendered).not.toContain("bypass");
+    expect(rendered).not.toContain(".env");
   });
 
   it("sends CSRF only on mutating requests and keeps it out of the DOM", async () => {

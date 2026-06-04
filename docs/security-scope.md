@@ -148,6 +148,8 @@ Passive Alpha login-attempt store runtime decision: `PASSIVE_ALPHA_RUNTIME_LOGIN
 
 Passive Alpha login rate-limit/backoff runtime decision: `PASSIVE_ALPHA_RUNTIME_LOGIN_RATE_LIMIT_BACKOFF_ACCEPTED`. `POST /auth/login` now enforces the in-memory soft-lockout policy for `self_hosted_single_admin` with generic credential failures, generic `429` lockout responses, safe `Retry-After`, no public counters, and no client key/hash/config disclosure. The client key is the backend-observed request client host; `X-Forwarded-For` is not trusted by default. `trusted_local_no_auth` remains unaffected. Frontend copy, persistent storage, recovery, multi-user auth, public/community runtime, billing/SaaS/quota behavior, Nmap, new Active behavior, and new capabilities remain out of scope.
 
+Passive Alpha frontend rate-limit copy runtime decision: `PASSIVE_ALPHA_RUNTIME_FRONTEND_RATE_LIMIT_COPY_ACCEPTED`. The frontend now renders controlled login cooldown copy for `429` responses from `POST /auth/login` while keeping normal login failures generic. It clears submitted passwords and does not expose `Retry-After` seconds, counters, thresholds, client keys, lockout internals, password/hash/config state, recovery instructions, bypass guidance, `.env` guidance, cookies, or CSRF tokens. This does not change backend rate-limit policy, persistent storage, admin recovery, multi-user auth, public/community runtime, billing/SaaS/quota behavior, Nmap, new Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

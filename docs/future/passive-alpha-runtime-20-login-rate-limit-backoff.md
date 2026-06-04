@@ -151,3 +151,5 @@ PASSIVE-ALPHA-RUNTIME-21-FRONTEND-RATE-LIMIT-COPY
 ```
 
 Runtime-21 should add controlled frontend copy for `429` login responses without exposing counters, lockout internals, client keys, config values, recovery instructions, or bypass guidance.
+
+Runtime-21 is now accepted in `docs/future/passive-alpha-runtime-21-frontend-rate-limit-copy.md` with final decision `PASSIVE_ALPHA_RUNTIME_FRONTEND_RATE_LIMIT_COPY_ACCEPTED`.

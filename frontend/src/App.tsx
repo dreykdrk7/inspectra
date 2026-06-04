@@ -14,7 +14,7 @@ import {
   UploadCloud
 } from "lucide-react";
 
-import { api } from "./api";
+import { ApiError, api } from "./api";
 import { ActiveDryRunJobReport } from "./ActiveDryRunJobReport";
 import { redactActiveDryRunText } from "./activeDryRunReport";
 import { ActiveHttpHeaderProbeJobReport } from "./ActiveHttpHeaderProbeJobReport";
@@ -81,6 +81,7 @@ const ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT = "I confirm I own or am authorized
 const ACTIVE_HTTP_HEADER_PROBE_LIVE_TRAFFIC_STATEMENT = "I understand this will send one HTTP HEAD request to the target.";
 const AUTH_SESSION_EXPIRED_MESSAGE = "Session expired. Sign in again.";
 const AUTH_CSRF_FAILED_MESSAGE = "Session verification failed. Sign in again.";
+const AUTH_RATE_LIMIT_MESSAGE = "Too many attempts. Try again later.";
 
 const initialAuthStatus: AuthStatusResponse = {
   auth_mode: "trusted_local_no_auth",
@@ -286,8 +287,11 @@ export function App() {
         await Promise.all([refreshFiles(), refreshJobs()]);
       }
       setLoginState({ loading: false, error: null });
-    } catch {
-      setLoginState({ loading: false, error: "Invalid credentials." });
+    } catch (error) {
+      setLoginState({
+        loading: false,
+        error: error instanceof ApiError && error.status === 429 ? AUTH_RATE_LIMIT_MESSAGE : "Invalid credentials."
+      });
     }
   }
 
