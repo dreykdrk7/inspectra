@@ -30,6 +30,10 @@ Runtime 05 legacy local data mapping: `docs/future/passive-alpha-runtime-05-lega
 
 Runtime 06 owner-scoped reads and exports: `docs/future/passive-alpha-runtime-06-owner-scoped-reads-and-exports.md`
 
+Runtime 07 delete source and job/results: `docs/future/passive-alpha-runtime-07-delete-source-and-job-results.md`
+
+Runtime 08 deployment hardening smoke: `docs/future/passive-alpha-runtime-08-deployment-hardening-smoke.md`
+
 Commit scope: docs-only closeout for Passive Alpha P0 runtime planning. This block consolidates accepted docs-first decisions, runtime dependencies, the first implementation sequence, blockers, tests, and risk register. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, auth, sessions, cookies, migrations, API guards, owner checks, retention/delete behavior, cleanup, CORS, CSRF, TLS, reverse proxy behavior, reports, exports, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -309,13 +313,17 @@ The fifth runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_LEGACY_LOCAL_D
 
 The sixth runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_OWNER_SCOPED_READS_EXPORTS_ACCEPTED`. It filters file/job lists by current owner, checks direct file/job reads, gates file-based job creation by source-file owner, and authorizes report/SBOM exports before rendering or generation.
 
+The seventh runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_DELETE_SOURCE_JOB_RESULTS_ACCEPTED`. It makes source upload deletion owner-scoped, preserves historical job results with `source_file_deleted_at`, and makes completed/failed job/result deletion remove job detail, Raw JSON, report exports, and SBOM export availability.
+
+The eighth runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_DEPLOYMENT_HARDENING_SMOKE_PASSED`. It smoke-tests trusted-local compatibility, auth-required anonymous denial, public route narrowness, owner metadata, legacy mapping, owner-scoped reads/exports/SBOMs, owner-scoped delete behavior, and Active gating without adding new runtime capabilities.
+
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-07-DELETE-SOURCE-AND-JOB-RESULTS
+PASSIVE-ALPHA-RUNTIME-09-RUNTIME-P0-CLOSEOUT
 ```
 
-Continue runtime work by defining owner-scoped source delete and job/result delete behavior. Keep broader retention runtime, cleanup, deployment hardening, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
+Close the Runtime-01 through Runtime-08 P0 line and summarize the accepted backend hardening state. Keep broader retention runtime, cleanup, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
 
 ## Validation Commands
 

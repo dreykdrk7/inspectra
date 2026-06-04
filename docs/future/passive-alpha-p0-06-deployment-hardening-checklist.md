@@ -20,6 +20,8 @@ P0 runtime planning closeout: `docs/future/passive-alpha-p0-07-p0-runtime-planni
 
 Commit scope: docs-only deployment hardening checklist for future Passive Alpha P0 work. This block defines deployment modes, controls, no-go conditions, and future tests/checks before exposing an Inspectra installation outside localhost/trusted local use. It does not change backend, frontend, runner, tests, fixtures, Compose configuration, schemas, storage, auth, CORS, CSRF, TLS, reverse proxy behavior, reports, exports, cleanup, feature flags, target policy, tags, releases, or runtime behavior.
 
+Runtime smoke record: `docs/future/passive-alpha-runtime-08-deployment-hardening-smoke.md` validates the current Runtime-01 through Runtime-07 backend guardrails against this checklist. It confirms trusted-local compatibility and auth-required fail-closed behavior, but it does not approve production/public/community readiness or implement login, sessions, TLS/reverse-proxy runtime, scheduler cleanup, Docker execution, external probes, Nmap, or new capabilities.
+
 ## Final Decision
 
 ```text

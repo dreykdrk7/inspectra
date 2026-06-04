@@ -155,7 +155,7 @@ No `.env`, `.env.*`, or `.envrc` files are read by this work. No Docker, runner,
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-08-DEPLOYMENT-HARDENING-SMOKE
+PASSIVE-ALPHA-RUNTIME-09-RUNTIME-P0-CLOSEOUT
 ```
 
-Next runtime work should smoke the current trusted-local and auth-required behavior from a deployment-hardening angle, without adding login/session runtime, frontend controls, public/community support, billing/SaaS concepts, Nmap, new Active behavior, or new analyzers.
+Runtime-08 has smoke-tested the current trusted-local and auth-required behavior from a deployment-hardening angle. Next runtime work should close the P0 runtime line, without adding login/session runtime, frontend controls, public/community support, billing/SaaS concepts, Nmap, new Active behavior, or new analyzers.
