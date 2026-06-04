@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 import io
 import json
 import tarfile
@@ -10,6 +11,12 @@ import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
+from app.auth import (
+    ADMIN_PASSWORD_HASH_SCHEME,
+    MIN_ADMIN_PASSWORD_HASH_ITERATIONS,
+    is_supported_admin_password_hash,
+    verify_admin_password,
+)
 from app.config import (
     DEFAULT_AUTH_MODE,
     DEFAULT_LOCAL_OPERATOR,
@@ -73,6 +80,18 @@ SQL_DATABASE_SECRET_FIXTURES = (
     "pgpass_secret_should_not_render",
     "mycnf_secret_should_not_render",
 )
+ADMIN_PASSWORD_FIXTURE = "correct-admin-password"
+ADMIN_PASSWORD_FIXTURE_SALT = "localAdminSaltForTests"
+
+
+def make_admin_password_hash(password: str = ADMIN_PASSWORD_FIXTURE, salt: str = ADMIN_PASSWORD_FIXTURE_SALT) -> str:
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        MIN_ADMIN_PASSWORD_HASH_ITERATIONS,
+    ).hex()
+    return f"{ADMIN_PASSWORD_HASH_SCHEME}${MIN_ADMIN_PASSWORD_HASH_ITERATIONS}${salt}${digest}"
 
 
 class NoopAuditService:
@@ -220,6 +239,50 @@ async def test_health(monkeypatch, tmp_path):
     assert response.json() == {"status": "ok", "service": "inspectra-backend"}
 
 
+def test_verify_admin_password_accepts_supported_pbkdf2_hash():
+    password_hash = make_admin_password_hash()
+
+    assert is_supported_admin_password_hash(password_hash) is True
+    assert verify_admin_password(ADMIN_PASSWORD_FIXTURE, password_hash) is True
+
+
+@pytest.mark.parametrize(
+    ("password", "password_hash"),
+    [
+        ("wrong-admin-password", make_admin_password_hash()),
+        ("", make_admin_password_hash()),
+        (None, make_admin_password_hash()),
+        (ADMIN_PASSWORD_FIXTURE, ""),
+        (ADMIN_PASSWORD_FIXTURE, None),
+        (ADMIN_PASSWORD_FIXTURE, "argon2id$unsupported-format"),
+        (ADMIN_PASSWORD_FIXTURE, "pbkdf2_sha256$1000$localAdminSaltForTests$00"),
+        (ADMIN_PASSWORD_FIXTURE, "pbkdf2_sha256$600000$short$00"),
+        (ADMIN_PASSWORD_FIXTURE, "pbkdf2_sha256$600000$localAdminSaltForTests$not-hex"),
+    ],
+)
+def test_verify_admin_password_fails_closed_for_invalid_inputs(password, password_hash):
+    assert verify_admin_password(password, password_hash) is False
+
+
+def test_verify_admin_password_does_not_log_password_or_hash(caplog):
+    password_hash = make_admin_password_hash()
+
+    assert verify_admin_password("wrong-admin-password", password_hash) is False
+
+    serialized_logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert ADMIN_PASSWORD_FIXTURE not in serialized_logs
+    assert "wrong-admin-password" not in serialized_logs
+    assert password_hash not in serialized_logs
+
+
+def test_supported_admin_password_hash_rejects_missing_or_unsupported_formats():
+    assert is_supported_admin_password_hash(make_admin_password_hash()) is True
+    assert is_supported_admin_password_hash("") is False
+    assert is_supported_admin_password_hash(None) is False
+    assert is_supported_admin_password_hash("argon2id$unsupported-format") is False
+    assert is_supported_admin_password_hash("pbkdf2_sha256$1000$localAdminSaltForTests$00") is False
+
+
 @pytest.mark.anyio
 async def test_auth_status_defaults_to_trusted_local_no_auth(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
@@ -279,6 +342,28 @@ async def test_auth_status_self_hosted_configured_does_not_leak_hash(monkeypatch
     assert payload["trusted_local"] is False
     assert "INSPECTRA_ADMIN_PASSWORD_HASH" not in serialized
     assert "admin-hash-should-not-render" not in serialized
+    assert admin_hash not in serialized
+
+
+@pytest.mark.anyio
+async def test_auth_status_supported_hash_remains_login_unavailable_and_redacted(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/auth/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    serialized = json.dumps(payload, sort_keys=True)
+    assert payload["auth_mode"] == "self_hosted_single_admin"
+    assert payload["auth_required"] is True
+    assert payload["configured"] is True
+    assert payload["login_available"] is False
+    assert ADMIN_PASSWORD_FIXTURE not in serialized
     assert admin_hash not in serialized
 
 

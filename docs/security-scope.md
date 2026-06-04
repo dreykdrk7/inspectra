@@ -128,6 +128,8 @@ Passive Alpha Runtime P0 closeout decision: `PASSIVE_ALPHA_RUNTIME_P0_CLOSED_TRU
 
 Passive Alpha single-admin login/session plan decision: `PASSIVE_ALPHA_SINGLE_ADMIN_LOGIN_SESSION_PLAN_ACCEPTED`. Future work should make `self_hosted_single_admin` usable through a minimal local password plus session-cookie model: safe admin-hash verification, `POST /auth/login`, server-side session state, `HttpOnly` cookie, logout, CSRF protection for mutating browser requests, safe `/auth/status` evolution, and frontend auth-state handling. This decision is docs-only and does not implement login, password verification, sessions, cookies, CSRF, frontend login, rate limiting, OAuth/OIDC, multi-user auth, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, or new capabilities.
 
+Passive Alpha password verifier runtime decision: `PASSIVE_ALPHA_RUNTIME_PASSWORD_VERIFY_HELPER_ACCEPTED`. The backend now has an isolated helper that verifies supported `pbkdf2_sha256$iterations$salt$digest` admin password hashes with fail-closed behavior for missing, blank, unsupported, malformed, or exception-raising inputs. It does not expose password hashes through `/auth/status`, does not make login available, and does not implement sessions, cookies, CSRF, frontend login, rate limiting, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

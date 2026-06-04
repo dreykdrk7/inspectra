@@ -12,6 +12,8 @@ Base auth-boundary runtime plan: `docs/future/passive-alpha-p0-01-auth-boundary-
 
 Base deployment hardening checklist: `docs/future/passive-alpha-p0-06-deployment-hardening-checklist.md`
 
+Successor Runtime-11 password verifier: `docs/future/passive-alpha-runtime-11-password-verify-helper.md`
+
 Commit scope: docs-only login/session plan for future `self_hosted_single_admin` runtime. This block defines password verification, session/cookie behavior, logout, CSRF implications, frontend auth-state handling, future tests, and implementation slices. It does not change backend, frontend, runner, tests, fixtures, guards, sessions, cookies, target policy, Active behavior, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -428,6 +430,8 @@ Recommended next microphase:
 ```text
 PASSIVE-ALPHA-RUNTIME-11-PASSWORD-VERIFY-HELPER
 ```
+
+Runtime-11 now accepts the isolated password verifier helper with explicit `pbkdf2_sha256$iterations$salt$digest` support and recommends `PASSIVE-ALPHA-RUNTIME-12-SESSION-COOKIE-SKELETON` next. Runtime-10 remains the historical login/session plan and does not itself implement runtime behavior.
 
 ## No-Scope
 
