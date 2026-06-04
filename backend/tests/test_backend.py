@@ -13,13 +13,18 @@ from httpx import ASGITransport, AsyncClient
 
 from app.auth import (
     ADMIN_PASSWORD_HASH_SCHEME,
+    ADMIN_SESSION_COOKIE_NAME,
+    ADMIN_SESSION_COOKIE_SAMESITE,
+    AdminSessionStore,
     MIN_ADMIN_PASSWORD_HASH_ITERATIONS,
+    build_session_cookie_settings,
     is_supported_admin_password_hash,
     verify_admin_password,
 )
 from app.config import (
     DEFAULT_AUTH_MODE,
     DEFAULT_LOCAL_OPERATOR,
+    DEFAULT_SESSION_TTL_SECONDS,
     get_auth_mode,
     get_current_operator_for_trusted_local,
     is_single_admin_auth_configured,
@@ -201,6 +206,8 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.auth_mode = get_auth_mode(settings)
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
+    app.state.admin_sessions = AdminSessionStore(settings.session_ttl_seconds)
+    app.state.session_cookie_settings = build_session_cookie_settings(settings.session_ttl_seconds)
     app.state.files = file_store
     app.state.jobs = job_store
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)
@@ -281,6 +288,107 @@ def test_supported_admin_password_hash_rejects_missing_or_unsupported_formats():
     assert is_supported_admin_password_hash(None) is False
     assert is_supported_admin_password_hash("argon2id$unsupported-format") is False
     assert is_supported_admin_password_hash("pbkdf2_sha256$1000$localAdminSaltForTests$00") is False
+
+
+def test_admin_session_store_creates_opaque_local_admin_session():
+    store = AdminSessionStore(ttl_seconds=60)
+
+    session = store.create_admin_session(DEFAULT_LOCAL_OPERATOR.id)
+    second_session = store.create_admin_session(DEFAULT_LOCAL_OPERATOR.id)
+
+    assert session.operator_id == "local-admin"
+    assert session.auth_mode == "self_hosted_single_admin"
+    assert isinstance(session.session_id, str)
+    assert len(session.session_id) >= 32
+    assert session.session_id != second_session.session_id
+    assert session.expires_at > session.created_at
+    assert store.get_session(session.session_id) == session
+    assert store.is_session_valid(session) is True
+
+
+def test_admin_session_store_expires_and_invalidates_sessions():
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = AdminSessionStore(ttl_seconds=30, now_func=lambda: current_time)
+    session = store.create_admin_session(DEFAULT_LOCAL_OPERATOR.id)
+
+    assert store.get_session(session.session_id) == session
+
+    current_time = current_time + timedelta(seconds=31)
+
+    assert store.get_session(session.session_id) is None
+    assert store.is_session_valid(session) is False
+
+    active_session = store.create_admin_session(DEFAULT_LOCAL_OPERATOR.id)
+    assert store.invalidate_session(active_session.session_id) is True
+    assert store.get_session(active_session.session_id) is None
+    assert store.invalidate_session(active_session.session_id) is False
+
+
+def test_admin_session_store_purges_expired_sessions():
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = AdminSessionStore(ttl_seconds=10, now_func=lambda: current_time)
+    expired_session = store.create_admin_session(DEFAULT_LOCAL_OPERATOR.id)
+
+    current_time = current_time + timedelta(seconds=11)
+    active_session = store.create_admin_session(DEFAULT_LOCAL_OPERATOR.id)
+
+    assert store.purge_expired_sessions() == 1
+    assert store.get_session(expired_session.session_id) is None
+    assert store.get_session(active_session.session_id) == active_session
+
+
+def test_admin_session_does_not_store_password_or_hash_material():
+    password_hash = make_admin_password_hash()
+    store = AdminSessionStore(ttl_seconds=60)
+
+    session = store.create_admin_session(DEFAULT_LOCAL_OPERATOR.id)
+    serialized_session = json.dumps(session.__dict__, default=str, sort_keys=True)
+
+    assert ADMIN_PASSWORD_FIXTURE not in serialized_session
+    assert password_hash not in serialized_session
+    assert "password" not in serialized_session.lower()
+    assert "hash" not in serialized_session.lower()
+
+
+def test_session_cookie_settings_are_safe_by_default():
+    cookie_settings = build_session_cookie_settings(ttl_seconds=DEFAULT_SESSION_TTL_SECONDS)
+
+    assert cookie_settings.name == ADMIN_SESSION_COOKIE_NAME
+    assert cookie_settings.httponly is True
+    assert cookie_settings.samesite == ADMIN_SESSION_COOKIE_SAMESITE
+    assert cookie_settings.secure is False
+    assert cookie_settings.max_age_seconds == DEFAULT_SESSION_TTL_SECONDS
+    assert cookie_settings.path == "/"
+
+
+def test_session_cookie_settings_can_require_secure_cookie():
+    cookie_settings = build_session_cookie_settings(ttl_seconds=120, secure=True)
+
+    assert cookie_settings.secure is True
+    assert cookie_settings.max_age_seconds == 120
+
+
+def test_session_ttl_config_defaults_and_env_override(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+
+    assert app.state.settings.session_ttl_seconds == DEFAULT_SESSION_TTL_SECONDS
+    assert app.state.session_cookie_settings.max_age_seconds == DEFAULT_SESSION_TTL_SECONDS
+
+    monkeypatch.setenv("INSPECTRA_SESSION_TTL_SECONDS", "120")
+    configure_test_state(monkeypatch, tmp_path)
+
+    assert app.state.settings.session_ttl_seconds == 120
+    assert app.state.admin_sessions.ttl_seconds == 120
+    assert app.state.session_cookie_settings.max_age_seconds == 120
+
+
+@pytest.mark.parametrize("raw_value", ["0", "-1", "not-a-number"])
+def test_session_ttl_config_rejects_invalid_values(monkeypatch, tmp_path, raw_value):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_SESSION_TTL_SECONDS", raw_value)
+
+    with pytest.raises(ValueError, match="INSPECTRA_SESSION_TTL_SECONDS"):
+        load_settings()
 
 
 @pytest.mark.anyio

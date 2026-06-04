@@ -136,6 +136,7 @@ The application defaults are intentionally conservative. Docker Compose sets man
 | --- | --- | --- | --- |
 | `INSPECTRA_AUTH_MODE` | backend | `trusted_local_no_auth` | Explicit auth/deployment mode flag. Current default preserves trusted local behavior; accepted values also include `self_hosted_single_admin`, `private_team_lightweight_users`, and `public_community_limited_instance` for future gated runtime work. |
 | `INSPECTRA_ADMIN_PASSWORD_HASH` | backend | unset | Future single-admin credential hash. The backend has a fail-closed helper for explicit `pbkdf2_sha256$iterations$salt$digest` values, and `GET /auth/status` reports only whether a hash is configured; login/session runtime is still not implemented and the hash is never returned. |
+| `INSPECTRA_SESSION_TTL_SECONDS` | backend | `3600` | Future single-admin session TTL. The backend has an internal in-memory session/cookie skeleton for future login work, but no login/logout endpoint or cookie-setting response exists yet. |
 | `INSPECTRA_CORS_ORIGINS` | backend | `http://localhost:5173` | Comma-separated browser origins allowed in development. |
 | `INSPECTRA_DATA_DIR` | backend, audit-tools | `/app/data` | Local data mount used for uploads and results. |
 | `INSPECTRA_MAX_UPLOAD_BYTES` | backend | `20971520` | Maximum accepted upload size. Default is 20 MB. |

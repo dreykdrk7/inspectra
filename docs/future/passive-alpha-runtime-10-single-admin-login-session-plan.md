@@ -433,6 +433,8 @@ PASSIVE-ALPHA-RUNTIME-11-PASSWORD-VERIFY-HELPER
 
 Runtime-11 now accepts the isolated password verifier helper with explicit `pbkdf2_sha256$iterations$salt$digest` support and recommends `PASSIVE-ALPHA-RUNTIME-12-SESSION-COOKIE-SKELETON` next. Runtime-10 remains the historical login/session plan and does not itself implement runtime behavior.
 
+Runtime-12 now accepts the internal session/cookie skeleton and recommends `PASSIVE-ALPHA-RUNTIME-13-LOGIN-LOGOUT-ENDPOINTS` next.
+
 ## No-Scope
 
 - No code changes.

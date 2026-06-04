@@ -5,6 +5,7 @@ from fastapi import BackgroundTasks, Body, FastAPI, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.auth import AdminSessionStore, build_session_cookie_settings
 from app.config import (
     get_auth_mode,
     get_current_operator_for_trusted_local,
@@ -76,6 +77,8 @@ async def lifespan(app: FastAPI):
     app.state.auth_mode = get_auth_mode(settings)
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
+    app.state.admin_sessions = AdminSessionStore(settings.session_ttl_seconds)
+    app.state.session_cookie_settings = build_session_cookie_settings(settings.session_ttl_seconds)
     app.state.files = file_store
     app.state.jobs = job_store
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)

@@ -8,6 +8,8 @@ Base Runtime-09 closeout: `docs/future/passive-alpha-runtime-09-runtime-p0-close
 
 Base Runtime-02 auth-status skeleton: `docs/future/passive-alpha-runtime-02-single-admin-auth-skeleton.md`
 
+Successor Runtime-12 session/cookie skeleton: `docs/future/passive-alpha-runtime-12-session-cookie-skeleton.md`
+
 Commit scope: backend password-verification helper, focused tests, and minimal documentation alignment. This block does not add login, logout, sessions, cookies, CSRF, frontend login, rate limiting, endpoint behavior changes, guard changes, target policy changes, Active changes, Nmap, tags, releases, or deployment behavior.
 
 ## Final Decision
@@ -178,3 +180,5 @@ PASSIVE-ALPHA-RUNTIME-12-SESSION-COOKIE-SKELETON
 ```
 
 Next runtime work should design and implement the minimal session/cookie skeleton separately from login endpoint behavior, preserving fail-closed auth-required routes until a valid session principal is explicitly integrated.
+
+Runtime-12 now accepts the internal session/cookie skeleton and recommends `PASSIVE-ALPHA-RUNTIME-13-LOGIN-LOGOUT-ENDPOINTS` next. Runtime-11 remains the historical password-verifier slice.

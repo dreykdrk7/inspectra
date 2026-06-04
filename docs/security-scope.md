@@ -130,6 +130,8 @@ Passive Alpha single-admin login/session plan decision: `PASSIVE_ALPHA_SINGLE_AD
 
 Passive Alpha password verifier runtime decision: `PASSIVE_ALPHA_RUNTIME_PASSWORD_VERIFY_HELPER_ACCEPTED`. The backend now has an isolated helper that verifies supported `pbkdf2_sha256$iterations$salt$digest` admin password hashes with fail-closed behavior for missing, blank, unsupported, malformed, or exception-raising inputs. It does not expose password hashes through `/auth/status`, does not make login available, and does not implement sessions, cookies, CSRF, frontend login, rate limiting, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, or new capabilities.
 
+Passive Alpha session/cookie skeleton runtime decision: `PASSIVE_ALPHA_RUNTIME_SESSION_COOKIE_SKELETON_ACCEPTED`. The backend now has internal in-memory session helpers, opaque random session ids, `local-admin` session metadata, `INSPECTRA_SESSION_TTL_SECONDS`, and cookie metadata for future `self_hosted_single_admin` login work. This does not add login/logout endpoints, does not set cookies on responses, does not integrate sessions with sensitive-route guards, and does not implement CSRF, frontend login, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`
