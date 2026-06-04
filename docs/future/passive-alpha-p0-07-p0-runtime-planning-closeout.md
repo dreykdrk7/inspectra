@@ -22,6 +22,8 @@ Runtime 01 auth-mode/local-operator slice: `docs/future/passive-alpha-runtime-01
 
 Runtime 02 single-admin auth skeleton: `docs/future/passive-alpha-runtime-02-single-admin-auth-skeleton.md`
 
+Runtime 03 deny-anonymous sensitive routes: `docs/future/passive-alpha-runtime-03-deny-anonymous-sensitive-routes.md`
+
 Commit scope: docs-only closeout for Passive Alpha P0 runtime planning. This block consolidates accepted docs-first decisions, runtime dependencies, the first implementation sequence, blockers, tests, and risk register. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, auth, sessions, cookies, migrations, API guards, owner checks, retention/delete behavior, cleanup, CORS, CSRF, TLS, reverse proxy behavior, reports, exports, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -293,13 +295,15 @@ The first runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_AUTH_MODE_LOCA
 
 The second runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_SINGLE_ADMIN_AUTH_SKELETON_ACCEPTED`. It adds `GET /auth/status` and configured/unconfigured status for future single-admin auth without adding login, sessions, cookies, owner metadata, global guards, or permission changes.
 
+The third runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_DENY_ANONYMOUS_ROUTES_ACCEPTED`. It denies anonymous sensitive backend routes in auth-required modes with a generic `401` while preserving `trusted_local_no_auth`, public health/auth-status, and the existing no-login/no-session boundary.
+
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-03-DENY-ANONYMOUS-SENSITIVE-ROUTES
+PASSIVE-ALPHA-RUNTIME-04-OWNER-METADATA-WRITE-PATH
 ```
 
-Continue runtime work by applying deny-anonymous behavior to sensitive routes when auth mode requires it. Keep owner metadata, owner checks, migrations, retention/delete runtime, cleanup, deployment hardening, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
+Continue runtime work by writing owner metadata on new uploads and target-based jobs. Keep owner-scoped reads, migrations, retention/delete runtime, cleanup, deployment hardening, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
 
 ## Validation Commands
 

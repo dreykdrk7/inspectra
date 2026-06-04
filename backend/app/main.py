@@ -3,6 +3,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks, Body, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import (
     get_auth_mode,
@@ -108,6 +109,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+PUBLIC_ANONYMOUS_PATHS = {"/health", "/auth/status"}
+AUTH_REQUIRED_DETAIL = "Authentication required."
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(load_settings().cors_origins),
@@ -115,6 +119,21 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def deny_anonymous_sensitive_routes(request: Request, call_next) -> Response:
+    if request.method == "OPTIONS" or request.url.path in PUBLIC_ANONYMOUS_PATHS:
+        return await call_next(request)
+
+    settings = getattr(request.app.state, "settings", None) or load_settings()
+    if is_auth_required(settings):
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": AUTH_REQUIRED_DETAIL},
+        )
+
+    return await call_next(request)
 
 
 @app.get("/health")

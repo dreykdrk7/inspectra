@@ -2,6 +2,8 @@
 
 Status: `PASSIVE_ALPHA_DENY_ANONYMOUS_API_GUARDS_PLAN_ACCEPTED`.
 
+Runtime implementation record: the first backend guard slice is now accepted as `PASSIVE_ALPHA_RUNTIME_DENY_ANONYMOUS_ROUTES_ACCEPTED` in `docs/future/passive-alpha-runtime-03-deny-anonymous-sensitive-routes.md`.
+
 Base owner model and storage migration plan: `docs/future/passive-alpha-p0-02-owner-model-and-storage-migration-plan.md`
 
 Base auth-boundary runtime plan: `docs/future/passive-alpha-p0-01-auth-boundary-design-to-runtime-plan.md`

@@ -2,6 +2,8 @@
 
 Status: `PASSIVE_ALPHA_RUNTIME_SINGLE_ADMIN_AUTH_SKELETON_ACCEPTED`.
 
+Successor runtime 03 deny-anonymous guard: `docs/future/passive-alpha-runtime-03-deny-anonymous-sensitive-routes.md`
+
 Base runtime 01 auth-mode/local-operator slice: `docs/future/passive-alpha-runtime-01-auth-mode-flag-and-local-operator.md`
 
 Base P0 runtime planning closeout: `docs/future/passive-alpha-p0-07-p0-runtime-planning-closeout.md`
@@ -118,7 +120,7 @@ No `.env`, `.env.*`, or `.envrc` files are read by this work. Operators may prov
 
 `trusted_local_no_auth` remains the default. Existing file uploads, jobs, reports, exports, Raw JSON, target flows, and Active feature flags keep their current behavior.
 
-This skeleton does not apply guards to existing endpoints. Deny-anonymous behavior is intentionally reserved for `PASSIVE-ALPHA-RUNTIME-03-DENY-ANONYMOUS-SENSITIVE-ROUTES`.
+This skeleton itself did not apply guards to existing endpoints. Deny-anonymous behavior is now handled by `PASSIVE-ALPHA-RUNTIME-03-DENY-ANONYMOUS-SENSITIVE-ROUTES`.
 
 ## Security Notes
 
@@ -131,7 +133,7 @@ This skeleton does not apply guards to existing endpoints. Deny-anonymous behavi
 ## Residual Risks
 
 - Exposed deployments are still not protected by auth.
-- Sensitive routes remain unguarded until Runtime-03.
+- Sensitive routes were unguarded in this slice; Runtime-03 now denies anonymous sensitive routes when auth mode requires it.
 - No session/cookie security exists yet.
 - The configured hash is not used for verification yet.
 - Future slices must avoid treating `configured=true` as proof of a complete secure deployment.
@@ -165,7 +167,7 @@ No npm suite is required because this slice does not touch frontend code.
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-03-DENY-ANONYMOUS-SENSITIVE-ROUTES
+PASSIVE-ALPHA-RUNTIME-04-OWNER-METADATA-WRITE-PATH
 ```
 
-Next runtime work should begin denying anonymous access to sensitive routes when auth mode requires it, while preserving `trusted_local_no_auth` behavior and keeping owner metadata, migrations, delete/retention runtime, deployment hardening, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.
+Next runtime work should begin writing owner metadata on new uploads and target-based jobs, while preserving `trusted_local_no_auth` behavior and keeping owner-scoped reads, migrations, delete/retention runtime, deployment hardening, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.

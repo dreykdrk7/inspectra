@@ -19,7 +19,7 @@ from app.config import (
     load_settings,
 )
 from app.domain_security import normalize_domain, normalize_subdomain_candidate
-from app.main import app
+from app.main import AUTH_REQUIRED_DETAIL, app
 from app.models import JobRecord
 from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
@@ -279,6 +279,86 @@ async def test_auth_status_self_hosted_configured_does_not_leak_hash(monkeypatch
     assert "INSPECTRA_ADMIN_PASSWORD_HASH" not in serialized
     assert "admin-hash-should-not-render" not in serialized
     assert admin_hash not in serialized
+
+
+@pytest.mark.anyio
+async def test_self_hosted_single_admin_allows_anonymous_public_safe_routes(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        health_response = await client.get("/health")
+        auth_response = await client.get("/auth/status")
+
+    assert health_response.status_code == 200
+    assert health_response.json() == {"status": "ok", "service": "inspectra-backend"}
+    assert auth_response.status_code == 200
+    assert auth_response.json()["auth_required"] is True
+
+
+@pytest.mark.anyio
+async def test_self_hosted_single_admin_denies_anonymous_file_routes(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [
+            await client.get("/files"),
+            await client.get("/files/not-a-file-id"),
+            await client.post(
+                "/files/pdf",
+                files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+            ),
+            await client.delete("/files/not-a-file-id"),
+        ]
+
+    for response in responses:
+        assert response.status_code == 401
+        assert response.json() == {"detail": AUTH_REQUIRED_DETAIL}
+
+
+@pytest.mark.anyio
+async def test_self_hosted_single_admin_denies_anonymous_audit_job_and_export_routes(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [
+            await client.post("/audits/pdf/not-a-file-id"),
+            await client.get("/jobs"),
+            await client.get("/jobs/not-a-job-id"),
+            await client.get("/jobs/not-a-job-id/export/markdown"),
+            await client.get("/jobs/not-a-job-id/sbom/cyclonedx-json"),
+        ]
+
+    for response in responses:
+        assert response.status_code == 401
+        assert response.json() == {"detail": AUTH_REQUIRED_DETAIL}
+
+
+@pytest.mark.anyio
+async def test_self_hosted_single_admin_denies_anonymous_target_and_active_routes(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [
+            await client.post("/audits/web/basic", json={}),
+            await client.post("/audits/domain/basic", json={}),
+            await client.post("/audits/subdomains/basic", json={}),
+            await client.post("/active/network/dry-run", json={}),
+            await client.post("/active/network/http-header-probe", json={}),
+        ]
+
+    for response in responses:
+        assert response.status_code == 401
+        assert response.json() == {"detail": AUTH_REQUIRED_DETAIL}
 
 
 @pytest.mark.anyio
