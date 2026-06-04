@@ -142,6 +142,8 @@ Passive Alpha auth flow smoke runtime decision: `PASSIVE_ALPHA_RUNTIME_AUTH_FLOW
 
 Passive Alpha self-hosted auth closeout decision: `PASSIVE_ALPHA_SELF_HOSTED_AUTH_CLOSED`. The current `self_hosted_single_admin` line is closed for Passive Alpha as a usable single-admin flow when a supported password hash is configured, while `trusted_local_no_auth` remains the default local/dev/trusted mode. Exposed self-hosted use still needs TLS/reverse-proxy and secure-cookie hardening, and rate limiting/lockout remains future work. Multi-user auth, OAuth/OIDC, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, and new capabilities remain out of scope.
 
+Passive Alpha rate-limit/lockout plan decision: `PASSIVE_ALPHA_RATE_LIMIT_LOCKOUT_PLAN_ACCEPTED`. Future `self_hosted_single_admin` login hardening should use generic failures, bounded attempt tracking, soft temporary lockout, and self-hosted recovery caveats to reduce brute-force risk without creating irreversible operator lockout. The plan is docs-only and does not implement rate limiting, backoff, lockout, persistent storage, multi-user auth, public/community runtime, billing/SaaS/quota behavior, Nmap, new Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

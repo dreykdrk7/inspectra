@@ -123,15 +123,23 @@ Runtime-16 recorded the auth flow smoke evidence:
 - Future mutating routes must keep the same auth and CSRF guard expectations.
 - Future public/community use remains blocked until separate anti-abuse, isolation, retention, logging, and deployment controls exist.
 
-## Recommended Next Paths
-
-Primary recommendation:
+## Successor Status
 
 ```text
-PASSIVE-ALPHA-RUNTIME-18-RATE-LIMIT-LOCKOUT-PLAN
+PASSIVE_ALPHA_RATE_LIMIT_LOCKOUT_PLAN_ACCEPTED
 ```
 
-If the product goal is security before broader publication, the next docs-first block should plan rate limiting, backoff, lockout, and safe failure semantics for `self_hosted_single_admin`.
+Runtime-18 now accepts a docs-first rate limit, backoff, and lockout policy for `self_hosted_single_admin`. It recommends `PASSIVE-ALPHA-RUNTIME-19-LOGIN-ATTEMPT-STORE` as the next runtime slice and keeps Runtime-17 as the historical closeout for the current self-hosted auth flow.
+
+## Recommended Future Paths
+
+Primary follow-up recommendation:
+
+```text
+PASSIVE-ALPHA-RUNTIME-19-LOGIN-ATTEMPT-STORE
+```
+
+Runtime-18 accepts the docs-first policy; the next runtime slice should add the isolated in-memory login-attempt store before wiring enforcement.
 
 Follow-up recommendation:
 
@@ -143,7 +151,7 @@ After the rate-limit/lockout plan, or if the immediate goal is explaining curren
 
 Recommended order:
 
-1. `PASSIVE-ALPHA-RUNTIME-18-RATE-LIMIT-LOCKOUT-PLAN`
+1. `PASSIVE-ALPHA-RUNTIME-19-LOGIN-ATTEMPT-STORE`
 2. `PASSIVE-ALPHA-SELF-HOSTED-RELEASE-NOTES`
 
 ## No-Scope Preserved
