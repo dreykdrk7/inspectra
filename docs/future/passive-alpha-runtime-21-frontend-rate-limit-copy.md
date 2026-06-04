@@ -134,3 +134,5 @@ PASSIVE-ALPHA-RUNTIME-22-AUTH-HARDENING-SMOKE
 ```
 
 Runtime-22 should smoke the self-hosted auth hardening line end to end: login/logout/session/CSRF, owner-scoped sensitive routes, backend rate-limit `429`, frontend controlled rate-limit copy, no browser storage for auth state, and no public/community or Active expansion.
+
+Runtime-22 is now accepted in `docs/future/passive-alpha-runtime-22-auth-hardening-smoke.md` with final decision `PASSIVE_ALPHA_RUNTIME_AUTH_HARDENING_SMOKE_PASSED`.

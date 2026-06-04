@@ -131,6 +131,8 @@ PASSIVE_ALPHA_RATE_LIMIT_LOCKOUT_PLAN_ACCEPTED
 
 Runtime-18 now accepts a docs-first rate limit, backoff, and lockout policy for `self_hosted_single_admin`. It recommends `PASSIVE-ALPHA-RUNTIME-19-LOGIN-ATTEMPT-STORE` as the next runtime slice and keeps Runtime-17 as the historical closeout for the current self-hosted auth flow.
 
+Post-closeout note: Runtime-18 through Runtime-22 later completed and smoke-validated the first self-hosted login hardening line: docs-first lockout policy, isolated login-attempt store, backend login `429`, frontend controlled `429` copy, and auth hardening smoke. Runtime-17 remains the historical closeout for the pre-rate-limit auth flow.
+
 ## Recommended Future Paths
 
 Primary follow-up recommendation:

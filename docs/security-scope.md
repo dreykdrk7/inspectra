@@ -150,6 +150,8 @@ Passive Alpha login rate-limit/backoff runtime decision: `PASSIVE_ALPHA_RUNTIME_
 
 Passive Alpha frontend rate-limit copy runtime decision: `PASSIVE_ALPHA_RUNTIME_FRONTEND_RATE_LIMIT_COPY_ACCEPTED`. The frontend now renders controlled login cooldown copy for `429` responses from `POST /auth/login` while keeping normal login failures generic. It clears submitted passwords and does not expose `Retry-After` seconds, counters, thresholds, client keys, lockout internals, password/hash/config state, recovery instructions, bypass guidance, `.env` guidance, cookies, or CSRF tokens. This does not change backend rate-limit policy, persistent storage, admin recovery, multi-user auth, public/community runtime, billing/SaaS/quota behavior, Nmap, new Active behavior, or new capabilities.
 
+Passive Alpha auth hardening smoke runtime decision: `PASSIVE_ALPHA_RUNTIME_AUTH_HARDENING_SMOKE_PASSED`. Backend and frontend smoke validation passed for the current auth hardening line: trusted-local default, self-hosted login gate, password verifier, session cookie, CSRF, owner-scoped sensitive routes, backend login `429`, frontend controlled `429` copy, logout, global `401`/`403`, CORS credentials, no browser auth-state storage, and full backend/frontend/build regressions. The smoke does not approve public/community readiness and does not add runtime behavior, persistent storage, admin recovery, multi-user auth, billing/SaaS/quota behavior, Nmap, new Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`
