@@ -152,6 +152,8 @@ Passive Alpha frontend rate-limit copy runtime decision: `PASSIVE_ALPHA_RUNTIME_
 
 Passive Alpha auth hardening smoke runtime decision: `PASSIVE_ALPHA_RUNTIME_AUTH_HARDENING_SMOKE_PASSED`. Backend and frontend smoke validation passed for the current auth hardening line: trusted-local default, self-hosted login gate, password verifier, session cookie, CSRF, owner-scoped sensitive routes, backend login `429`, frontend controlled `429` copy, logout, global `401`/`403`, CORS credentials, no browser auth-state storage, and full backend/frontend/build regressions. The smoke does not approve public/community readiness and does not add runtime behavior, persistent storage, admin recovery, multi-user auth, billing/SaaS/quota behavior, Nmap, new Active behavior, or new capabilities.
 
+Passive Alpha self-hosted auth hardening closeout decision: `PASSIVE_ALPHA_SELF_HOSTED_AUTH_HARDENING_CLOSED`. Runtime-17 through Runtime-22 are closed as the current private/self-hosted single-admin alpha hardening line: usable auth flow, backend login `429`, frontend controlled `429` copy, owner-scoped sensitive routes, CSRF, and smoke evidence. `trusted_local_no_auth` remains the default local/dev/trusted mode and `self_hosted_single_admin` remains private/self-hosted. Public/community runtime, persistent sessions, persistent rate-limit storage, admin recovery, OAuth/OIDC, multi-user auth, billing/SaaS/quota behavior, Nmap, broader Active behavior, release/tag state, and production readiness remain out of scope.
+
 Tools used in this phase:
 
 - `pdfinfo`

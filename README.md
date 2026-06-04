@@ -92,6 +92,8 @@ For trusted local alpha demos, use only the synthetic fixture pack under `tests/
 
 The self-hosted auth hardening smoke is documented in `docs/future/passive-alpha-runtime-22-auth-hardening-smoke.md`.
 
+The self-hosted auth hardening closeout is documented in `docs/future/passive-alpha-runtime-23-self-hosted-auth-hardening-closeout.md`; it closes the current private/self-hosted alpha line without adding public/community readiness, runtime expansion, SaaS/billing behavior, Nmap, or release/tag state.
+
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 
 Release notes for the local passive alpha tag `v0.1.0-passive-alpha` are available at `docs/releases/v0.1.0-passive-alpha.md`.
