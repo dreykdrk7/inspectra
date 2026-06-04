@@ -108,6 +108,8 @@ Passive Alpha deployment hardening checklist decision: `PASSIVE_ALPHA_DEPLOYMENT
 
 Passive Alpha P0 runtime planning closeout decision: `PASSIVE_ALPHA_P0_RUNTIME_PLANNING_CLOSED`. Future runtime work should start with `PASSIVE-ALPHA-RUNTIME-01-AUTH-MODE-FLAG-AND-LOCAL-OPERATOR` so trusted local mode remains explicit and a default local/admin operator exists before full login, owner metadata, API guards, owner checks, delete/cleanup, or deployment hardening implementation. Trusted local remains accepted; self-hosted exposed, private/internal, and optional public/community modes remain pending runtime controls. This decision is docs-only and does not implement auth, sessions, cookies, owner fields, migrations, guards, cleanup, billing, SaaS tenants, Nmap, new Active behavior, or new capabilities.
 
+Passive Alpha auth-mode/local-operator runtime decision: `PASSIVE_ALPHA_RUNTIME_AUTH_MODE_LOCAL_OPERATOR_ACCEPTED`. The backend has an explicit `INSPECTRA_AUTH_MODE` flag and stable default local/admin operator id `local-admin`. The default `trusted_local_no_auth` keeps current local behavior and is only for localhost/dev/local trusted use. The accepted future mode values do not protect exposed deployments yet; login, sessions, cookies, owner metadata, anonymous-route guards, owner checks, retention/delete runtime, deployment hardening, billing, SaaS tenants, Nmap, and new capabilities remain out of scope.
+
 Tools used in this phase:
 
 - `pdfinfo`

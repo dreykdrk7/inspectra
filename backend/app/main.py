@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import BackgroundTasks, Body, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import load_settings
+from app.config import get_auth_mode, get_current_operator_for_trusted_local, load_settings
 from app.domain_security import normalize_domain, normalize_subdomain_candidates
 from app.models import (
     DeletedFileResponse,
@@ -64,6 +64,8 @@ async def lifespan(app: FastAPI):
     job_store = JobStore(settings)
 
     app.state.settings = settings
+    app.state.auth_mode = get_auth_mode(settings)
+    app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.files = file_store
     app.state.jobs = job_store
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)

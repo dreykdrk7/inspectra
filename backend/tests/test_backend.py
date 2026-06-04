@@ -10,7 +10,13 @@ import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from app.config import load_settings
+from app.config import (
+    DEFAULT_AUTH_MODE,
+    DEFAULT_LOCAL_OPERATOR,
+    get_auth_mode,
+    get_current_operator_for_trusted_local,
+    load_settings,
+)
 from app.domain_security import normalize_domain, normalize_subdomain_candidate
 from app.main import app
 from app.models import JobRecord
@@ -171,6 +177,8 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     file_store = FileStore(settings)
     job_store = JobStore(settings)
     app.state.settings = settings
+    app.state.auth_mode = get_auth_mode(settings)
+    app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.files = file_store
     app.state.jobs = job_store
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)
@@ -3255,6 +3263,50 @@ def test_subdomain_inventory_global_deadline_config(monkeypatch, tmp_path):
     settings = load_settings()
 
     assert settings.subdomain_global_deadline_seconds == 12.5
+
+
+def test_default_auth_mode_is_trusted_local(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+
+    settings = load_settings()
+
+    assert settings.auth_mode == DEFAULT_AUTH_MODE
+    assert get_auth_mode(settings) == "trusted_local_no_auth"
+
+
+def test_default_local_operator_has_stable_id(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+
+    operator = get_current_operator_for_trusted_local(load_settings())
+
+    assert operator == DEFAULT_LOCAL_OPERATOR
+    assert operator.id == "local-admin"
+    assert operator.kind == "local_admin"
+
+
+def test_backend_state_exposes_auth_mode_and_local_operator(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+
+    assert app.state.auth_mode == "trusted_local_no_auth"
+    assert app.state.default_local_operator.id == "local-admin"
+
+
+def test_self_hosted_single_admin_auth_mode_can_be_configured(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+
+    settings = load_settings()
+
+    assert settings.auth_mode == "self_hosted_single_admin"
+    assert get_auth_mode(settings) == "self_hosted_single_admin"
+
+
+def test_unknown_auth_mode_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "public-root-admin")
+
+    with pytest.raises(ValueError, match="INSPECTRA_AUTH_MODE must be one of"):
+        load_settings()
 
 
 def test_django_config_limits_config(monkeypatch, tmp_path):

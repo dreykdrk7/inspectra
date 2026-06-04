@@ -1,9 +1,11 @@
 from dataclasses import dataclass
 import os
 from pathlib import Path
+from typing import Literal, cast
 
 
 DEFAULT_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+DEFAULT_AUTH_MODE = "trusted_local_no_auth"
 DEFAULT_CORS_ORIGINS = ("http://localhost:5173",)
 DEFAULT_WEB_ALLOW_PRIVATE_TARGETS = False
 DEFAULT_WEB_TIMEOUT_SECONDS = 10.0
@@ -52,12 +54,40 @@ DEFAULT_REDIS_CONFIG_MAX_FILE_BYTES = 524_288
 DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_ACTIVE_DRY_RUN_ENABLED = False
 DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED = False
+SUPPORTED_AUTH_MODES = (
+    "trusted_local_no_auth",
+    "self_hosted_single_admin",
+    "private_team_lightweight_users",
+    "public_community_limited_instance",
+)
+
+AuthMode = Literal[
+    "trusted_local_no_auth",
+    "self_hosted_single_admin",
+    "private_team_lightweight_users",
+    "public_community_limited_instance",
+]
+
+
+@dataclass(frozen=True)
+class LocalOperator:
+    id: str
+    label: str
+    kind: str
+
+
+DEFAULT_LOCAL_OPERATOR = LocalOperator(
+    id="local-admin",
+    label="Default local/admin operator",
+    kind="local_admin",
+)
 
 
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
     tool_runner_url: str
+    auth_mode: AuthMode = DEFAULT_AUTH_MODE
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
     web_allow_private_targets: bool = DEFAULT_WEB_ALLOW_PRIVATE_TARGETS
@@ -128,6 +158,7 @@ class Settings:
 def load_settings() -> Settings:
     data_dir = Path(os.getenv("INSPECTRA_DATA_DIR", "data")).resolve()
     tool_runner_url = os.getenv("INSPECTRA_TOOL_RUNNER_URL", "http://audit-tools:8081").rstrip("/")
+    auth_mode = _auth_mode_from_env("INSPECTRA_AUTH_MODE", DEFAULT_AUTH_MODE)
     max_upload_bytes = _positive_int_from_env("INSPECTRA_MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)
     cors_origins = _csv_from_env("INSPECTRA_CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
     web_allow_private_targets = _bool_from_env("INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS", DEFAULT_WEB_ALLOW_PRIVATE_TARGETS)
@@ -303,6 +334,7 @@ def load_settings() -> Settings:
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
+        auth_mode=auth_mode,
         max_upload_bytes=max_upload_bytes,
         cors_origins=cors_origins,
         web_allow_private_targets=web_allow_private_targets,
@@ -353,6 +385,26 @@ def load_settings() -> Settings:
         active_dry_run_enabled=active_dry_run_enabled,
         active_http_header_probe_enabled=active_http_header_probe_enabled,
     )
+
+
+def get_auth_mode(settings: Settings | None = None) -> AuthMode:
+    return (settings or load_settings()).auth_mode
+
+
+def get_current_operator_for_trusted_local(settings: Settings | None = None) -> LocalOperator:
+    get_auth_mode(settings)
+    return DEFAULT_LOCAL_OPERATOR
+
+
+def _auth_mode_from_env(name: str, default: AuthMode) -> AuthMode:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower().replace("-", "_")
+    if normalized in SUPPORTED_AUTH_MODES:
+        return cast(AuthMode, normalized)
+    allowed = ", ".join(SUPPORTED_AUTH_MODES)
+    raise ValueError(f"{name} must be one of: {allowed}.")
 
 
 def _positive_int_from_env(name: str, default: int) -> int:

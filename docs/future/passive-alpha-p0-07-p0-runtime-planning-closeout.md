@@ -18,6 +18,8 @@ Base open-source/self-hosted framing: `docs/future/passive-alpha-p0-00-open-sour
 
 Base implementation readiness plan: `docs/future/passive-alpha-gap-fixes-08-implementation-readiness-plan.md`
 
+Runtime 01 auth-mode/local-operator slice: `docs/future/passive-alpha-runtime-01-auth-mode-flag-and-local-operator.md`
+
 Commit scope: docs-only closeout for Passive Alpha P0 runtime planning. This block consolidates accepted docs-first decisions, runtime dependencies, the first implementation sequence, blockers, tests, and risk register. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, auth, sessions, cookies, migrations, API guards, owner checks, retention/delete behavior, cleanup, CORS, CSRF, TLS, reverse proxy behavior, reports, exports, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -283,13 +285,17 @@ Future runtime implementation should include tests for:
 - No-go conditions are clear.
 - No runtime or capability changes are made.
 
+## Runtime 01 Implementation Note
+
+The first runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_AUTH_MODE_LOCAL_OPERATOR_ACCEPTED`. It adds explicit backend auth mode parsing and the default local/admin operator concept while preserving current trusted local endpoint behavior.
+
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-01-AUTH-MODE-FLAG-AND-LOCAL-OPERATOR
+PASSIVE-ALPHA-RUNTIME-02-SINGLE-ADMIN-AUTH-SKELETON
 ```
 
-Start runtime work with the smallest compatibility-preserving slice: mode naming/config and the default local/admin operator concept. Keep full login, owner metadata, API guards, owner checks, retention/delete runtime, cleanup, deployment hardening, UI polish, and public/community support for later separately scoped microphases.
+Continue runtime work with a minimal single-admin auth skeleton. Keep owner metadata, API guards, owner checks, retention/delete runtime, cleanup, deployment hardening, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
 
 ## Validation Commands
 
