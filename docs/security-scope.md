@@ -138,6 +138,8 @@ Passive Alpha CSRF mutating-route runtime decision: `PASSIVE_ALPHA_RUNTIME_CSRF_
 
 Passive Alpha frontend auth status/login/logout UX runtime decision: `PASSIVE_ALPHA_RUNTIME_FRONTEND_AUTH_LOGIN_UX_ACCEPTED`. The frontend now uses `GET /auth/status` to decide between the trusted-local dashboard and a password-only `self_hosted_single_admin` login gate, calls `POST /auth/login` and `POST /auth/logout`, keeps CSRF state in memory only, sends `X-CSRF-Token` on mutating cookie-auth requests when required, and refreshes auth status after global `401`/`403` auth failures. It does not expose password hashes, session ids, cookie values, CSRF tokens, config secrets, `.env` guidance, or bypass guidance in the UI. Rate limiting, lockout, multi-user auth, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, and new capabilities remain out of scope.
 
+Passive Alpha auth flow smoke runtime decision: `PASSIVE_ALPHA_RUNTIME_AUTH_FLOW_SMOKE_PASSED`. Backend and frontend smoke validation passed for the current trusted-local and self-hosted single-admin auth flow, including login/logout, authenticated auth status, CSRF behavior, generic 401/403 handling, and CORS credential support for configured origins. No auth data is stored in frontend `localStorage` or `sessionStorage`. Rate limiting, lockout, multi-user auth, public/community runtime, billing/SaaS behavior, Nmap, new Active behavior, and new capabilities remain out of scope.
+
 Tools used in this phase:
 
 - `pdfinfo`

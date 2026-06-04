@@ -183,10 +183,10 @@ No Docker, external probes, DNS, external HTTP, Nmap, or live target traffic are
 - No Active expansion.
 - No billing, SaaS, tenant billing, subscription, quota, paid-plan, or enterprise tenancy model.
 
-## Next Recommendation
+## Successor Status
 
 ```text
-PASSIVE-ALPHA-RUNTIME-16-AUTH-FLOW-SMOKE
+PASSIVE_ALPHA_RUNTIME_AUTH_FLOW_SMOKE_PASSED
 ```
 
-Next work should smoke the full auth flow across backend and frontend with controlled mocks/local test harnesses before opening rate limiting/lockout planning.
+Runtime-16 now accepts the backend plus frontend auth flow smoke and recommends `PASSIVE-ALPHA-RUNTIME-17-SELF-HOSTED-AUTH-CLOSEOUT` before opening rate limiting/lockout as a separate hardening slice. Runtime-15 remains the historical frontend auth status/login/logout UX slice.
