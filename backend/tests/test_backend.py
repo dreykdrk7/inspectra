@@ -246,6 +246,25 @@ async def test_health(monkeypatch, tmp_path):
     assert response.json() == {"status": "ok", "service": "inspectra-backend"}
 
 
+@pytest.mark.anyio
+async def test_cors_preflight_allows_credentials_for_configured_origin(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.options(
+            "/files",
+            headers={
+                "origin": "http://localhost:5173",
+                "access-control-request-method": "GET",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
 def test_verify_admin_password_accepts_supported_pbkdf2_hash():
     password_hash = make_admin_password_hash()
 

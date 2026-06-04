@@ -1,5 +1,18 @@
-import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, Download, Eye, FilePlus2, Globe2, Network, Play, RefreshCw, Trash2, UploadCloud } from "lucide-react";
+import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  Download,
+  Eye,
+  FilePlus2,
+  Globe2,
+  LogOut,
+  Network,
+  Play,
+  RefreshCw,
+  ShieldCheck,
+  Trash2,
+  UploadCloud
+} from "lucide-react";
 
 import { api } from "./api";
 import { ActiveDryRunJobReport } from "./ActiveDryRunJobReport";
@@ -42,6 +55,7 @@ import { WebJobReport } from "./WebJobReport";
 import type {
   ActiveDryRunRequest,
   ActiveHttpHeaderProbeRequest,
+  AuthStatusResponse,
   FileRecord,
   HealthResponse,
   JobListItem,
@@ -65,6 +79,21 @@ const LOCAL_ALPHA_DEMO_REDACTION_COPY =
   "Results, exports, and Raw JSON are redacted with [REDACTED]; this does not sanitize the original uploaded file.";
 const ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT = "I confirm I own or am authorized to test this target.";
 const ACTIVE_HTTP_HEADER_PROBE_LIVE_TRAFFIC_STATEMENT = "I understand this will send one HTTP HEAD request to the target.";
+const AUTH_SESSION_EXPIRED_MESSAGE = "Session expired. Sign in again.";
+const AUTH_CSRF_FAILED_MESSAGE = "Session verification failed. Sign in again.";
+
+const initialAuthStatus: AuthStatusResponse = {
+  auth_mode: "trusted_local_no_auth",
+  auth_required: false,
+  configured: false,
+  trusted_local: true,
+  default_operator_id: "local-admin",
+  login_available: false,
+  authenticated: false,
+  operator_id: null,
+  csrf_required: false,
+  csrf_token: null
+};
 
 type ArchiveAction = {
   label: string;
@@ -77,16 +106,22 @@ type ArchiveActionGroup = {
 };
 
 export function App() {
+  const authFailureHandlerRef = useRef<(status: number) => void>(() => undefined);
+  const [authStatus, setAuthStatus] = useState<AuthStatusResponse>(initialAuthStatus);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [selectedJob, setSelectedJob] = useState<JobRecord | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [authState, setAuthState] = useState<LoadState>(initialLoadState);
   const [uploadKind, setUploadKind] = useState<FileRecord["kind"]>("pdf");
   const [healthState, setHealthState] = useState<LoadState>(initialLoadState);
   const [filesState, setFilesState] = useState<LoadState>(initialLoadState);
   const [jobsState, setJobsState] = useState<LoadState>(initialLoadState);
   const [uploadState, setUploadState] = useState<LoadState>(initialLoadState);
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginState, setLoginState] = useState<LoadState>(initialLoadState);
+  const [logoutState, setLogoutState] = useState<LoadState>(initialLoadState);
   const [actionError, setActionError] = useState<string | null>(null);
   const [fileKindFilter, setFileKindFilter] = useState<FileKindFilter>("all");
   const [fileSearch, setFileSearch] = useState("");
@@ -110,6 +145,53 @@ export function App() {
   const [activeHttpHeaderProbeAuthorizationConfirmed, setActiveHttpHeaderProbeAuthorizationConfirmed] = useState(false);
   const [activeHttpHeaderProbeLiveTrafficConfirmed, setActiveHttpHeaderProbeLiveTrafficConfirmed] = useState(false);
   const [activeHttpHeaderProbeState, setActiveHttpHeaderProbeState] = useState<LoadState>(initialLoadState);
+
+  const clearPrivateUiState = useCallback(() => {
+    setFiles([]);
+    setJobs([]);
+    setSelectedJob(null);
+  }, []);
+
+  const applyAuthStatus = useCallback((status: AuthStatusResponse) => {
+    setAuthStatus(status);
+    api.configureAuthContext({
+      csrfRequired: status.csrf_required,
+      csrfToken: status.csrf_token,
+      onAuthFailure: (failureStatus) => {
+        authFailureHandlerRef.current(failureStatus);
+      }
+    });
+    if (status.auth_required && !status.authenticated) {
+      clearPrivateUiState();
+    }
+    return status;
+  }, [clearPrivateUiState]);
+
+  const refreshAuthStatus = useCallback(async () => {
+    setAuthState({ loading: true, error: null });
+    try {
+      const status = applyAuthStatus(await api.getAuthStatus());
+      setAuthState({ loading: false, error: null });
+      return status;
+    } catch (error) {
+      setAuthState({ loading: false, error: toErrorMessage(error) });
+      return null;
+    }
+  }, [applyAuthStatus]);
+
+  const handleAuthFailure = useCallback(async (status: number) => {
+    const refreshed = await refreshAuthStatus();
+    if (!refreshed || (refreshed.auth_required && !refreshed.authenticated)) {
+      clearPrivateUiState();
+      setActionError(status === 403 ? AUTH_CSRF_FAILED_MESSAGE : AUTH_SESSION_EXPIRED_MESSAGE);
+    }
+  }, [clearPrivateUiState, refreshAuthStatus]);
+
+  useEffect(() => {
+    authFailureHandlerRef.current = (status: number) => {
+      void handleAuthFailure(status);
+    };
+  }, [handleAuthFailure]);
 
   const refreshHealth = useCallback(async () => {
     setHealthState({ loading: true, error: null });
@@ -146,15 +228,21 @@ export function App() {
 
   const refreshAll = useCallback(async () => {
     setActionError(null);
+    const status = await refreshAuthStatus();
+    if (!status || (status.auth_required && !status.authenticated)) {
+      clearPrivateUiState();
+      await refreshHealth();
+      return;
+    }
     await Promise.all([refreshHealth(), refreshFiles(), refreshJobs()]);
-  }, [refreshFiles, refreshHealth, refreshJobs]);
+  }, [clearPrivateUiState, refreshAuthStatus, refreshFiles, refreshHealth, refreshJobs]);
 
   useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
 
   const hasActiveJobs = useMemo(() => jobs.some((job) => job.status === "queued" || job.status === "running"), [jobs]);
-  const isRefreshing = healthState.loading || filesState.loading || jobsState.loading;
+  const isRefreshing = authState.loading || healthState.loading || filesState.loading || jobsState.loading;
   const metrics = useMemo(() => buildDashboardMetrics(files, jobs), [files, jobs]);
   const filteredFiles = useMemo(
     () => filterFiles(files, fileKindFilter, fileSearch),
@@ -173,6 +261,7 @@ export function App() {
   const activeDryRunHasUserinfo = useMemo(() => targetHasUserinfo(activeDryRunTarget), [activeDryRunTarget]);
   const activeHttpHeaderProbeQueryInspection = useMemo(() => inspectWebUrlQuery(activeHttpHeaderProbeTarget), [activeHttpHeaderProbeTarget]);
   const activeHttpHeaderProbeHasUserinfo = useMemo(() => targetHasUserinfo(activeHttpHeaderProbeTarget), [activeHttpHeaderProbeTarget]);
+  const authBlocksDashboard = authStatus.auth_required && !authStatus.authenticated;
 
   useEffect(() => {
     if (!hasActiveJobs) {
@@ -183,6 +272,47 @@ export function App() {
     }, 3000);
     return () => window.clearInterval(interval);
   }, [hasActiveJobs, refreshJobs]);
+
+  async function handleLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const password = loginPassword;
+    setLoginPassword("");
+    setLoginState({ loading: true, error: null });
+    setActionError(null);
+    try {
+      await api.login(password);
+      const status = await refreshAuthStatus();
+      if (status && (!status.auth_required || status.authenticated)) {
+        await Promise.all([refreshFiles(), refreshJobs()]);
+      }
+      setLoginState({ loading: false, error: null });
+    } catch {
+      setLoginState({ loading: false, error: "Invalid credentials." });
+    }
+  }
+
+  async function handleLogout() {
+    setLogoutState({ loading: true, error: null });
+    setActionError(null);
+    try {
+      await api.logout();
+      api.configureAuthContext({ csrfRequired: false, csrfToken: null });
+      setAuthStatus((current) => ({
+        ...current,
+        authenticated: false,
+        operator_id: null,
+        csrf_token: null
+      }));
+      clearPrivateUiState();
+      await refreshAuthStatus();
+      setLogoutState({ loading: false, error: null });
+    } catch {
+      api.configureAuthContext({ csrfRequired: false, csrfToken: null });
+      clearPrivateUiState();
+      await refreshAuthStatus();
+      setLogoutState({ loading: false, error: AUTH_SESSION_EXPIRED_MESSAGE });
+    }
+  }
 
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -586,13 +716,61 @@ export function App() {
           <p className="eyebrow">Defensive audits</p>
           <h1>Inspectra</h1>
         </div>
-        <button className="secondary-button" onClick={() => void refreshAll()} disabled={isRefreshing}>
-          <RefreshCw size={16} aria-hidden="true" />
-          {isRefreshing ? "Refreshing" : "Refresh data"}
-        </button>
+        <div className="header-actions">
+          {authStatus.auth_required && authStatus.authenticated ? (
+            <>
+              <span className="status-pill ok">Signed in as {authStatus.operator_id ?? "local-admin"}</span>
+              <button className="secondary-button" onClick={() => void handleLogout()} disabled={logoutState.loading}>
+                <LogOut size={16} aria-hidden="true" />
+                {logoutState.loading ? "Signing out" : "Sign out"}
+              </button>
+            </>
+          ) : null}
+          <button className="secondary-button" onClick={() => void refreshAll()} disabled={isRefreshing}>
+            <RefreshCw size={16} aria-hidden="true" />
+            {isRefreshing ? "Refreshing" : "Refresh data"}
+          </button>
+        </div>
       </header>
 
       {actionError ? <div className="alert">{actionError}</div> : null}
+      {logoutState.error ? <div className="alert">{logoutState.error}</div> : null}
+
+      {authBlocksDashboard ? (
+        <section className="auth-gate" aria-label="Authentication">
+          <Panel title="Authentication required" icon={<ShieldCheck size={18} aria-hidden="true" />}>
+            <p className="muted">Authentication required for this self-hosted instance.</p>
+            {authState.error ? <p className="error-text">{authState.error}</p> : null}
+            {!authStatus.login_available ? (
+              <div className="query-warning" role="status">
+                Authentication is not available for this deployment.
+              </div>
+            ) : (
+              <form className="auth-form" onSubmit={(event) => void handleLogin(event)}>
+                <label className="auth-field">
+                  <span>Password</span>
+                  <input
+                    type="password"
+                    value={loginPassword}
+                    onChange={(event) => {
+                      setLoginPassword(event.target.value);
+                      setLoginState(initialLoadState);
+                    }}
+                    autoComplete="current-password"
+                    required
+                  />
+                </label>
+                <button type="submit" disabled={loginState.loading || !loginPassword}>
+                  <ShieldCheck size={16} aria-hidden="true" />
+                  {loginState.loading ? "Signing in" : "Sign in"}
+                </button>
+                {loginState.error ? <p className="error-text">{loginState.error}</p> : null}
+              </form>
+            )}
+          </Panel>
+        </section>
+      ) : (
+        <>
 
       <section className="metrics-grid" aria-label="Dashboard summary">
         <MetricCard label="Total files" value={metrics.totalFiles} />
@@ -1106,6 +1284,8 @@ export function App() {
           <EmptyState text="Select a job to view its result." />
         )}
       </Panel>
+        </>
+      )}
     </main>
   );
 }

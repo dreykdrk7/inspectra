@@ -133,7 +133,7 @@ INVALID_CREDENTIALS_DETAIL = "Invalid credentials."
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(load_settings().cors_origins),
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )

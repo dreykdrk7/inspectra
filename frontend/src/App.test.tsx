@@ -10,12 +10,52 @@ function jsonResponse(payload: unknown, status = 200): Response {
   });
 }
 
+const trustedLocalAuthStatus = {
+  auth_mode: "trusted_local_no_auth",
+  auth_required: false,
+  configured: false,
+  trusted_local: true,
+  default_operator_id: "local-admin",
+  login_available: false,
+  authenticated: false,
+  operator_id: null,
+  csrf_required: false,
+  csrf_token: null
+};
+
+const selfHostedLoginStatus = {
+  auth_mode: "self_hosted_single_admin",
+  auth_required: true,
+  configured: true,
+  trusted_local: false,
+  default_operator_id: "local-admin",
+  login_available: true,
+  authenticated: false,
+  operator_id: null,
+  csrf_required: true,
+  csrf_token: null
+};
+
+const selfHostedAuthenticatedStatus = {
+  ...selfHostedLoginStatus,
+  authenticated: true,
+  operator_id: "local-admin",
+  csrf_token: "csrf-token-123"
+};
+
+function headerValue(init: RequestInit | undefined, name: string): string | null {
+  return new Headers(init?.headers).get(name);
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
         if (url.endsWith("/health")) {
           return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
         }
@@ -525,8 +565,246 @@ describe("App", () => {
     expect(screen.getAllByText("File basics").length).toBeGreaterThan(0);
 
     await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(4);
     });
+  });
+
+  it("shows the self-hosted login gate when auth is required and unauthenticated", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(selfHostedLoginStatus));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+
+    expect(await screen.findByText("Authentication required for this self-hosted instance.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Upload File" })).not.toBeInTheDocument();
+    const rendered = view.container.textContent ?? "";
+    expect(rendered).not.toContain(".env");
+    expect(rendered).not.toContain("bypass");
+    expect(rendered).not.toContain("csrf-token-123");
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input).endsWith("/files"))).toBe(false);
+  });
+
+  it("shows controlled unavailable auth state without configuration guidance", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse({ ...selfHostedLoginStatus, configured: false, login_available: false }));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+
+    expect(await screen.findByText("Authentication is not available for this deployment.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    const rendered = view.container.textContent ?? "";
+    expect(rendered).not.toContain(".env");
+    expect(rendered).not.toContain("INSPECTRA_ADMIN_PASSWORD_HASH");
+    expect(rendered).not.toContain("bypass");
+  });
+
+  it("logs in, refreshes auth status, clears the password, and hides the login gate", async () => {
+    let authStatusCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          authStatusCalls += 1;
+          return Promise.resolve(jsonResponse(authStatusCalls === 1 ? selfHostedLoginStatus : selfHostedAuthenticatedStatus));
+        }
+        if (url.endsWith("/auth/login")) {
+          expect(JSON.parse(String(init?.body))).toEqual({ password: "correct-admin-password" });
+          return Promise.resolve(jsonResponse({ authenticated: true, operator_id: "local-admin", auth_mode: "self_hosted_single_admin" }));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files") || url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+
+    const passwordInput = await screen.findByLabelText("Password");
+    fireEvent.change(passwordInput, { target: { value: "correct-admin-password" } });
+    fireEvent.click(screen.getByRole("button", { name: /Sign in/i }));
+
+    expect(await screen.findByText("Signed in as local-admin")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Upload File" })).toBeInTheDocument();
+    const rendered = view.container.textContent ?? "";
+    expect(rendered).not.toContain("correct-admin-password");
+    expect(rendered).not.toContain("csrf-token-123");
+    expect(rendered).not.toContain("inspectra_session");
+  });
+
+  it("shows generic login failure and clears the password", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(selfHostedLoginStatus));
+        }
+        if (url.endsWith("/auth/login")) {
+          return Promise.resolve(jsonResponse({ detail: "Invalid credentials." }, 401));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    render(<App />);
+
+    const passwordInput = await screen.findByLabelText("Password");
+    fireEvent.change(passwordInput, { target: { value: "wrong-admin-password" } });
+    fireEvent.click(screen.getByRole("button", { name: /Sign in/i }));
+
+    expect(await screen.findByText("Invalid credentials.")).toBeInTheDocument();
+    expect((screen.getByLabelText("Password") as HTMLInputElement).value).toBe("");
+    expect(document.body.textContent ?? "").not.toContain("wrong-admin-password");
+  });
+
+  it("sends CSRF only on mutating requests and keeps it out of the DOM", async () => {
+    const manifestRecord = {
+      id: "file-manifest-uploaded",
+      kind: "manifest",
+      original_filename: "package.json",
+      stored_filename: "file-manifest-uploaded-package.json",
+      content_type: "application/json",
+      size_bytes: 48,
+      sha256: "1234567890abcdef1234567890abcdef",
+      created_at: "2026-05-26T10:20:00Z"
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(selfHostedAuthenticatedStatus));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files/manifest")) {
+          return Promise.resolve(jsonResponse(manifestRecord, 201));
+        }
+        if (url.endsWith("/files") || url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+
+    expect(await screen.findByText("Signed in as local-admin")).toBeInTheDocument();
+    await waitFor(() => {
+      const filesGetCall = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input).endsWith("/files"));
+      expect(headerValue(filesGetCall?.[1] as RequestInit | undefined, "X-CSRF-Token")).toBeNull();
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Manifest" })[0]);
+    const input = view.container.querySelector('input[type="file"]');
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [new File(['{"name":"demo","version":"1.0.0"}'], "package.json", { type: "application/json" })]
+      }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Upload/i }));
+
+    await waitFor(() => {
+      const uploadCall = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input).endsWith("/files/manifest"));
+      expect(headerValue(uploadCall?.[1] as RequestInit | undefined, "X-CSRF-Token")).toBe("csrf-token-123");
+    });
+    expect(view.container.textContent ?? "").not.toContain("csrf-token-123");
+  });
+
+  it("logs out with the CSRF header and returns to login state", async () => {
+    let authStatusCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          authStatusCalls += 1;
+          return Promise.resolve(jsonResponse(authStatusCalls === 1 ? selfHostedAuthenticatedStatus : selfHostedLoginStatus));
+        }
+        if (url.endsWith("/auth/logout")) {
+          return Promise.resolve(jsonResponse({ authenticated: false, operator_id: null, auth_mode: "self_hosted_single_admin" }));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files") || url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Signed in as local-admin")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Sign out/i }));
+
+    await waitFor(() => {
+      const logoutCall = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input).endsWith("/auth/logout"));
+      expect(headerValue(logoutCall?.[1] as RequestInit | undefined, "X-CSRF-Token")).toBe("csrf-token-123");
+    });
+    expect(await screen.findByLabelText("Password")).toBeInTheDocument();
+  });
+
+  it("refreshes auth and returns to login state after a global 401", async () => {
+    let authStatusCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          authStatusCalls += 1;
+          return Promise.resolve(jsonResponse(authStatusCalls === 1 ? selfHostedAuthenticatedStatus : selfHostedLoginStatus));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files")) {
+          return Promise.resolve(jsonResponse({ detail: "Authentication required." }, 401));
+        }
+        if (url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Session expired. Sign in again.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
   });
 
   it("renders clear empty dashboard states for files and jobs", async () => {
@@ -534,6 +812,9 @@ describe("App", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
         if (url.endsWith("/health")) {
           return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
         }
@@ -569,6 +850,9 @@ describe("App", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
         if (url.endsWith("/health")) {
           return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
         }
@@ -826,6 +1110,9 @@ describe("App", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
         if (url.endsWith("/health")) {
           return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
         }
@@ -945,6 +1232,9 @@ describe("App", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
         if (url.endsWith("/health")) {
           return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
         }
@@ -1011,6 +1301,9 @@ describe("App", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
         if (url.endsWith("/health")) {
           return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
         }
@@ -1123,6 +1416,9 @@ describe("App", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
         if (url.endsWith("/health")) {
           return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
         }

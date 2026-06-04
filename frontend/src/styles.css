@@ -101,6 +101,14 @@ pre {
   margin-bottom: 1rem;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
 .app-header h1 {
   margin: 0;
   font-size: 2rem;
@@ -207,6 +215,35 @@ pre {
 .web-audit-form {
   align-items: flex-start;
   flex-direction: column;
+}
+
+.auth-gate {
+  max-width: 34rem;
+}
+
+.auth-form,
+.auth-field {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.auth-form {
+  align-items: start;
+}
+
+.auth-field {
+  width: min(24rem, 100%);
+  color: #425267;
+  font-size: 0.9rem;
+}
+
+.auth-field input {
+  min-height: 2.25rem;
+  max-width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0.45rem 0.65rem;
+  background: #fff;
 }
 
 .checkbox-row {

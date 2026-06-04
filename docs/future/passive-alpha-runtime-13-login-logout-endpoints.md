@@ -254,7 +254,7 @@ No npm suite is required because this slice does not touch frontend code.
 ## Residual Risks
 
 - CSRF protection was not implemented in this slice; Runtime-14 adds backend CSRF for cookie-auth mutating routes.
-- Frontend login/status/logout UX is not implemented yet.
+- At Runtime-13 closeout, frontend login/status/logout UX was not implemented yet; Runtime-15 later accepts that frontend wiring.
 - Rate limiting, backoff, and lockout are not implemented yet.
 - In-memory sessions do not survive backend restart.
 - Secure cookie behavior for non-local deployments still needs TLS/reverse-proxy hardening.
@@ -284,3 +284,5 @@ PASSIVE-ALPHA-RUNTIME-14-CSRF-MUTATING-ROUTES
 Next runtime work should add CSRF protection for cookie-auth mutating routes before frontend login UX or broader browser-auth use is considered complete.
 
 Runtime-14 now accepts backend CSRF protection for cookie-auth mutating routes and recommends `PASSIVE-ALPHA-RUNTIME-15-FRONTEND-AUTH-STATUS-LOGIN-UX` next. Runtime-13 remains the historical login/logout endpoint slice.
+
+Runtime-15 now accepts frontend auth status, login, logout, in-memory CSRF handling, and global `401`/`403` auth-state handling. Runtime-13 remains the historical backend login/logout endpoint slice.

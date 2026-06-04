@@ -200,8 +200,7 @@ No npm suite is required because this slice does not touch frontend code.
 
 ## Residual Risks
 
-- Frontend login/status/logout UX is not implemented yet.
-- Frontend does not yet send `X-CSRF-Token`.
+- At Runtime-14 closeout, frontend login/status/logout UX and CSRF header wiring were not implemented yet; Runtime-15 later accepts that frontend wiring.
 - Rate limiting, backoff, and lockout are not implemented yet.
 - In-memory sessions and CSRF tokens do not survive backend restart.
 - Secure cookie behavior for non-local deployments still needs TLS/reverse-proxy hardening.
@@ -221,10 +220,10 @@ No npm suite is required because this slice does not touch frontend code.
 - No Active expansion.
 - No billing, SaaS, tenant billing, subscription, quota, paid-plan, or enterprise tenancy model.
 
-## Next Recommendation
+## Successor Status
 
 ```text
-PASSIVE-ALPHA-RUNTIME-15-FRONTEND-AUTH-STATUS-LOGIN-UX
+PASSIVE_ALPHA_RUNTIME_FRONTEND_AUTH_LOGIN_UX_ACCEPTED
 ```
 
-Next runtime work should wire frontend auth status, login, logout, and `X-CSRF-Token` header handling without adding rate limiting, multi-user auth, OAuth/OIDC, Active expansion, Nmap, or SaaS/billing behavior.
+Runtime-15 now accepts frontend auth status, login, logout, in-memory CSRF handling, and global `401`/`403` auth-state handling without adding rate limiting, multi-user auth, OAuth/OIDC, Active expansion, Nmap, or SaaS/billing behavior. Runtime-14 remains the historical backend CSRF mutating-route guard slice.

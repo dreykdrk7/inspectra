@@ -439,6 +439,8 @@ Runtime-13 now accepts minimal backend login/logout endpoints, session cookie is
 
 Runtime-14 now accepts backend CSRF protection for cookie-auth mutating routes in `self_hosted_single_admin`; it recommends `PASSIVE-ALPHA-RUNTIME-15-FRONTEND-AUTH-STATUS-LOGIN-UX` next.
 
+Runtime-15 now accepts frontend auth status, login, logout, in-memory CSRF handling, and global `401`/`403` auth-state handling for `self_hosted_single_admin`; it recommends `PASSIVE-ALPHA-RUNTIME-16-AUTH-FLOW-SMOKE` next.
+
 ## No-Scope
 
 - No code changes.

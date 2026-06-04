@@ -3,6 +3,31 @@ export type HealthResponse = {
   service: string;
 };
 
+export type AuthMode =
+  | 'trusted_local_no_auth'
+  | 'self_hosted_single_admin'
+  | 'private_team_lightweight_users'
+  | 'public_community_limited_instance';
+
+export type AuthStatusResponse = {
+  auth_mode: AuthMode;
+  auth_required: boolean;
+  configured: boolean;
+  trusted_local: boolean;
+  default_operator_id: string;
+  login_available: boolean;
+  authenticated: boolean;
+  operator_id: string | null;
+  csrf_required: boolean;
+  csrf_token: string | null;
+};
+
+export type AuthSessionResponse = {
+  authenticated: boolean;
+  operator_id: string | null;
+  auth_mode: AuthMode;
+};
+
 export type FileRecord = {
   id: string;
   kind: 'pdf' | 'image' | 'manifest' | 'archive';
