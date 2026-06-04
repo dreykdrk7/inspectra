@@ -16,6 +16,8 @@ Deployment hardening checklist: `docs/future/passive-alpha-p0-06-deployment-hard
 
 Commit scope: docs-only retention and delete runtime plan for future Passive Alpha P0 work. This block defines future semantics and sequencing for owner-scoped delete and retention behavior. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, reports, exports, feature flags, target policy, tags, releases, or runtime behavior.
 
+Runtime implementation record: `docs/future/passive-alpha-runtime-07-delete-source-and-job-results.md` accepts and implements the minimal P0 slice for owner-scoped source upload deletion plus completed/failed job/result deletion. Broader delete-all-owned-data, scheduler cleanup, admin cleanup, demo reset, stored artifact cleanup, and queued/running cancellation remain future work.
+
 ## Final Decision
 
 ```text

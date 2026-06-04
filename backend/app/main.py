@@ -15,6 +15,7 @@ from app.config import (
 from app.domain_security import normalize_domain, normalize_subdomain_candidates
 from app.models import (
     DeletedFileResponse,
+    DeletedJobResponse,
     DomainAuditRequest,
     AuthStatusResponse,
     JobListItem,
@@ -220,8 +221,9 @@ async def get_file(request: Request, file_id: str) -> StoredFile:
 
 @app.delete("/files/{file_id}", response_model=DeletedFileResponse)
 async def delete_file(request: Request, file_id: str) -> DeletedFileResponse:
-    deleted_file = request.app.state.files.delete(file_id)
-    associated_jobs_marked = request.app.state.jobs.mark_file_deleted(file_id)
+    owner_id = current_owner_id_for_request(request)
+    deleted_file = request.app.state.files.delete(file_id, owner_id=owner_id)
+    associated_jobs_marked = request.app.state.jobs.mark_file_deleted(file_id, owner_id=owner_id)
     return DeletedFileResponse(deleted_file=deleted_file, associated_jobs_marked=associated_jobs_marked)
 
 
@@ -516,6 +518,12 @@ async def get_job(request: Request, job_id: str) -> JobRecord:
             }
         )
     return job
+
+
+@app.delete("/jobs/{job_id}", response_model=DeletedJobResponse)
+async def delete_job(request: Request, job_id: str) -> DeletedJobResponse:
+    deleted_job = request.app.state.jobs.delete(job_id, owner_id=current_owner_id_for_request(request))
+    return DeletedJobResponse(job_id=deleted_job.id, deleted=True)
 
 
 @app.get("/jobs/{job_id}/export/markdown")

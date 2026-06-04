@@ -255,9 +255,11 @@ class FileStore:
     def get(self, file_id: str) -> StoredFile:
         return self._get_unlocked(file_id)
 
-    def delete(self, file_id: str) -> StoredFile:
+    def delete(self, file_id: str, *, owner_id: str | None = None) -> StoredFile:
         with storage_lock(self.settings):
             record = self._get_unlocked(file_id)
+            if owner_id is not None and record.owner_id != owner_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
             upload_path = self._safe_upload_path(record.stored_filename)
             metadata_path = self._metadata_path(file_id)
             upload_path.unlink(missing_ok=True)
@@ -412,7 +414,7 @@ class JobStore:
         records.sort(key=lambda item: item.created_at, reverse=True)
         return [self._to_list_item(record) for record in records]
 
-    def mark_file_deleted(self, file_id: str) -> int:
+    def mark_file_deleted(self, file_id: str, *, owner_id: str | None = None) -> int:
         _validate_identifier(file_id, "file_id")
         deleted_at = utc_now()
         marked = 0
@@ -421,10 +423,25 @@ class JobStore:
                 record = self._load_job_file(path)
                 if record.file_id != file_id or record.source_file_deleted_at is not None:
                     continue
+                if owner_id is not None and record.owner_id != owner_id:
+                    continue
                 updated = record.model_copy(update={"source_file_deleted_at": deleted_at, "updated_at": deleted_at})
                 self._save_unlocked(updated)
                 marked += 1
         return marked
+
+    def delete(self, job_id: str, *, owner_id: str | None = None) -> JobRecord:
+        with storage_lock(self.settings):
+            record = self._get_unlocked(job_id)
+            if owner_id is not None and record.owner_id != owner_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+            if record.status not in {"completed", "failed"}:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Job deletion is only available for completed or failed jobs.",
+                )
+            self._job_path(job_id).unlink(missing_ok=True)
+            return record
 
     def save(self, record: JobRecord) -> None:
         with storage_lock(self.settings):

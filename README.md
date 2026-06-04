@@ -588,7 +588,15 @@ Jobs are returned with the most recently created first. Completed jobs include a
 curl -sS -X DELETE http://localhost:8000/files/<file_id>
 ```
 
-This deletes the uploaded file and its metadata. Existing job results are kept. Associated jobs are marked with `source_file_deleted_at` so historical results remain readable while making it clear that the original source file is no longer available.
+This deletes the uploaded source file and its metadata for the current/effective owner. Existing job results are kept. Associated owned jobs are marked with `source_file_deleted_at` so historical results remain readable while making it clear that the original source file is no longer available.
+
+## Delete a Job Result
+
+```bash
+curl -sS -X DELETE http://localhost:8000/jobs/<job_id>
+```
+
+This deletes a completed or failed job/result record for the current/effective owner. After deletion, job detail, Raw JSON, Markdown/HTML/XML/PDF exports, and SBOM exports derived from that job are unavailable. Queued or running jobs are not deleted in this slice.
 
 ## Development
 

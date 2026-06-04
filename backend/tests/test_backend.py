@@ -4457,6 +4457,214 @@ async def test_delete_file_removes_source_and_marks_jobs(monkeypatch, tmp_path):
     assert job_response.json()["result"]["hashes"]["sha256"] == file_payload["sha256"]
 
 
+@pytest.mark.anyio
+async def test_delete_file_is_owner_scoped_and_preserves_wrong_owner_data(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    created_at = datetime.now(timezone.utc).isoformat()
+    file_id = "1" * 31 + "0"
+    job_id = "1" * 31 + "1"
+    stored_filename = f"{file_id}.pdf"
+    upload_path = app.state.settings.upload_dir / stored_filename
+    metadata_path = app.state.settings.upload_dir / f"{file_id}.json"
+    job_path = app.state.settings.jobs_dir / f"{job_id}.json"
+    upload_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "id": file_id,
+                "owner_id": "other-owner",
+                "kind": "pdf",
+                "original_filename": "other.pdf",
+                "stored_filename": stored_filename,
+                "content_type": "application/pdf",
+                "size_bytes": upload_path.stat().st_size,
+                "sha256": "0" * 64,
+                "created_at": created_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+    job_path.write_text(
+        json.dumps(
+            {
+                "id": job_id,
+                "owner_id": "other-owner",
+                "audit_type": "pdf_basic",
+                "file_id": file_id,
+                "status": "completed",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "result": {"analyzer": "pdf_basic", "summary": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        delete_response = await client.delete(f"/files/{file_id}")
+
+    assert delete_response.status_code == 404
+    assert delete_response.json()["detail"] == "File not found."
+    assert upload_path.exists()
+    assert metadata_path.exists()
+    assert job_path.exists()
+    assert app.state.jobs.get(job_id).source_file_deleted_at is None
+
+
+@pytest.mark.anyio
+async def test_self_hosted_single_admin_denies_anonymous_deletes(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    file_id = "1" * 31 + "2"
+    job_id = "1" * 31 + "3"
+    stored_filename = f"{file_id}.pdf"
+    upload_path = app.state.settings.upload_dir / stored_filename
+    metadata_path = app.state.settings.upload_dir / f"{file_id}.json"
+    upload_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "id": file_id,
+                "owner_id": DEFAULT_LOCAL_OPERATOR.id,
+                "kind": "pdf",
+                "original_filename": "sample.pdf",
+                "stored_filename": stored_filename,
+                "content_type": "application/pdf",
+                "size_bytes": upload_path.stat().st_size,
+                "sha256": "0" * 64,
+                "created_at": now.isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    job = JobRecord(
+        id=job_id,
+        owner_id=DEFAULT_LOCAL_OPERATOR.id,
+        audit_type="pdf_basic",
+        file_id=file_id,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={"analyzer": "pdf_basic", "summary": {}},
+    )
+    app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        file_delete_response = await client.delete(f"/files/{file_id}")
+        job_delete_response = await client.delete(f"/jobs/{job_id}")
+
+    assert file_delete_response.status_code == 401
+    assert job_delete_response.status_code == 401
+    assert file_delete_response.json()["detail"] == AUTH_REQUIRED_DETAIL
+    assert job_delete_response.json()["detail"] == AUTH_REQUIRED_DETAIL
+    assert upload_path.exists()
+    assert metadata_path.exists()
+    assert (app.state.settings.jobs_dir / f"{job_id}.json").exists()
+
+
+@pytest.mark.anyio
+async def test_delete_job_removes_result_and_report_surfaces(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_export_fixture_job()
+    job_path = app.state.settings.jobs_dir / f"{job.id}.json"
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        before_job_response = await client.get(f"/jobs/{job.id}")
+        before_export_response = await client.get(f"/jobs/{job.id}/export/markdown")
+        before_sbom_response = await client.get(f"/jobs/{job.id}/sbom/cyclonedx-json")
+        delete_response = await client.delete(f"/jobs/{job.id}")
+        after_job_response = await client.get(f"/jobs/{job.id}")
+        after_export_response = await client.get(f"/jobs/{job.id}/export/markdown")
+        after_sbom_response = await client.get(f"/jobs/{job.id}/sbom/cyclonedx-json")
+
+    assert before_job_response.status_code == 200
+    assert before_export_response.status_code == 200
+    assert before_sbom_response.status_code == 200
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"job_id": job.id, "deleted": True}
+    assert not job_path.exists()
+    for response in (after_job_response, after_export_response, after_sbom_response):
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found."
+
+
+@pytest.mark.anyio
+async def test_delete_job_is_owner_scoped_and_rejects_nonterminal_jobs(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    wrong_owner_job = JobRecord(
+        id="1" * 31 + "4",
+        owner_id="other-owner",
+        audit_type="pdf_basic",
+        file_id="1" * 31 + "5",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={"analyzer": "pdf_basic", "summary": {}},
+    )
+    queued_job = app.state.jobs.create_pdf_job("1" * 31 + "6", owner_id=DEFAULT_LOCAL_OPERATOR.id)
+    running_job = JobRecord(
+        id="1" * 31 + "7",
+        owner_id=DEFAULT_LOCAL_OPERATOR.id,
+        audit_type="pdf_basic",
+        file_id="1" * 31 + "8",
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
+    app.state.jobs.save(wrong_owner_job)
+    app.state.jobs.save(running_job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        wrong_owner_response = await client.delete(f"/jobs/{wrong_owner_job.id}")
+        queued_response = await client.delete(f"/jobs/{queued_job.id}")
+        running_response = await client.delete(f"/jobs/{running_job.id}")
+
+    assert wrong_owner_response.status_code == 404
+    assert wrong_owner_response.json()["detail"] == "Job not found."
+    for response in (queued_response, running_response):
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Job deletion is only available for completed or failed jobs."
+    for job_id in (wrong_owner_job.id, queued_job.id, running_job.id):
+        assert (app.state.settings.jobs_dir / f"{job_id}.json").exists()
+
+
+@pytest.mark.anyio
+async def test_delete_failed_target_job_removes_app_side_history(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    job = JobRecord(
+        id="1" * 31 + "9",
+        owner_id=DEFAULT_LOCAL_OPERATOR.id,
+        audit_type="web_basic",
+        file_id=None,
+        target_url="https://example.com/status",
+        status="failed",
+        created_at=now,
+        updated_at=now,
+        error="controlled failure",
+    )
+    app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        before_response = await client.get(f"/jobs/{job.id}")
+        delete_response = await client.delete(f"/jobs/{job.id}")
+        after_response = await client.get(f"/jobs/{job.id}")
+        export_response = await client.get(f"/jobs/{job.id}/export/markdown")
+
+    assert before_response.status_code == 200
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"job_id": job.id, "deleted": True}
+    assert after_response.status_code == 404
+    assert export_response.status_code == 404
+
+
 def test_storage_lockfile_is_created_inside_data(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
 

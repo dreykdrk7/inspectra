@@ -67,6 +67,8 @@ The Passive Alpha legacy local data mapping runtime decision is `PASSIVE_ALPHA_R
 
 The Passive Alpha owner-scoped reads/exports runtime decision is `PASSIVE_ALPHA_RUNTIME_OWNER_SCOPED_READS_EXPORTS_ACCEPTED`. Backend routes now filter file/job lists by current owner, check file and job detail ownership before returning metadata or Raw JSON payloads, require source-file ownership before file-based job creation, and authorize Markdown/HTML/XML/PDF and SBOM exports before rendering or generation. Wrong-owner reads use generic not-found responses to avoid resource-existence disclosure. This slice does not implement login, sessions, multi-user runtime, DB users, delete/retention runtime, frontend UI, billing, SaaS tenants, Nmap, new Active behavior, or new analyzers.
 
+The Passive Alpha delete source/job-results runtime decision is `PASSIVE_ALPHA_RUNTIME_DELETE_SOURCE_JOB_RESULTS_ACCEPTED`. Backend delete routes now require the current/effective owner: source upload deletion removes source bytes and file metadata while marking related owned jobs with `source_file_deleted_at`, and completed/failed job deletion removes the stored job JSON so job detail, Raw JSON, Markdown/HTML/XML/PDF exports, and SBOM exports are unavailable. Queued/running job deletion returns a controlled conflict until cancellation is separately designed. This slice does not implement login, sessions, frontend delete controls, delete-all-owned-data, scheduler cleanup, admin cleanup, demo reset, billing, SaaS tenants, Nmap, new Active behavior, or new analyzers.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
@@ -142,9 +144,9 @@ The Passive Alpha readiness recheck decision after Active closeout is `PASSIVE_A
   - PDF, image, dependency manifest, and archive upload endpoints.
   - Authorized single-URL web audit endpoint.
   - Authorized domain and explicit subdomain-inventory audit endpoints.
-  - File listing and deletion endpoints.
+  - File listing and owner-scoped deletion endpoints.
   - Basic file metadata registry.
-  - Job creation, listing, and status management.
+  - Job creation, listing, status management, and terminal job/result deletion.
   - Job report export in Markdown, HTML, XML, and PDF.
   - Offline SBOM export in CycloneDX JSON and SPDX JSON for completed manifest jobs.
   - Calling the internal tool runner.
@@ -281,7 +283,7 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `POST /files/archive`: upload and register a ZIP, TAR, TAR.GZ, or TGZ archive.
 - `GET /files`: list registered files.
 - `GET /files/{file_id}`: read one file record.
-- `DELETE /files/{file_id}`: delete an uploaded source file and its metadata.
+- `DELETE /files/{file_id}`: delete an owned uploaded source file and its metadata.
 - `POST /audits/pdf/{file_id}`: start a basic passive PDF audit.
 - `POST /audits/image/{file_id}`: start a basic passive image audit.
 - `POST /audits/manifest/{file_id}`: start a basic passive dependency manifest audit.
@@ -304,6 +306,7 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `POST /audits/subdomains/basic`: start a controlled passive inventory for explicit authorized subdomain candidates.
 - `GET /jobs`: list jobs, newest first, with summaries when available.
 - `GET /jobs/{job_id}`: read one full job record.
+- `DELETE /jobs/{job_id}`: delete an owned completed or failed job/result record.
 - `GET /jobs/{job_id}/export/markdown`: export a Markdown report.
 - `GET /jobs/{job_id}/export/html`: export a static HTML report.
 - `GET /jobs/{job_id}/export/xml`: export an Inspectra XML report.
@@ -311,7 +314,9 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `GET /jobs/{job_id}/sbom/cyclonedx-json`: export a CycloneDX JSON SBOM for a completed manifest dependency job.
 - `GET /jobs/{job_id}/sbom/spdx-json`: export an SPDX JSON SBOM for a completed manifest dependency job.
 
-Deleting a file does not remove historical job results. Associated jobs are marked with `source_file_deleted_at`.
+Deleting a file does not remove historical job results. Associated owned jobs are marked with `source_file_deleted_at`.
+
+Deleting a completed or failed job removes the stored job JSON, which also removes availability for job detail, Raw JSON, Markdown/HTML/XML/PDF exports, and SBOM exports. Inspectra does not make a secure deletion guarantee; manual downloads, browser caches, external copies, backups, snapshots, and target-side logs remain outside app-side deletion control.
 
 The browser UI consumes these same endpoints. The backend enables CORS only for configured origins through `INSPECTRA_CORS_ORIGINS`, defaulting to the local Vite origin.
 

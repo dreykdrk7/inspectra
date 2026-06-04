@@ -14,6 +14,8 @@ Base owner model and storage migration plan: `docs/future/passive-alpha-p0-02-ow
 
 Commit scope: minimal backend owner-scoped read/export enforcement using the existing current/effective owner. This block does not implement login, password verification, sessions, cookies, frontend login UI, multi-user runtime, DB users, delete/retention runtime, broad storage migration, billing, SaaS tenants, Nmap, new Active behavior, or new analyzers.
 
+Follow-up runtime delete implementation: `docs/future/passive-alpha-runtime-07-delete-source-and-job-results.md`
+
 ## Final Decision
 
 ```text
@@ -111,8 +113,8 @@ In auth-required modes, anonymous requests still receive the Runtime-03 generic 
 - DB users.
 - User A/user B authenticated runtime.
 - Admin read-all policy.
-- Delete or retention runtime.
-- Job/result deletion.
+- Runtime-07 separately implements minimal owner-scoped source delete and terminal job/result delete.
+- Delete-all-owned-data runtime.
 - Full storage migration.
 - Public/community runtime.
 - Billing, SaaS, tenant billing, paid plans, quotas, or enterprise multi-tenant behavior.
@@ -133,7 +135,7 @@ In auth-required modes, anonymous requests still receive the Runtime-03 generic 
 - No authenticated login/session path exists yet.
 - `self_hosted_single_admin` still cannot run protected workflows through an authenticated session.
 - There is no real user A/user B runtime yet, only owner checks using the current/effective owner.
-- Delete/retention runtime remains future work.
+- Broader delete/retention runtime remains future work beyond Runtime-07.
 - Frontend does not yet surface a dedicated owner/permission state.
 - Full migration and missing-owner claiming remain future work.
 
@@ -172,7 +174,7 @@ No `.env`, `.env.*`, or `.envrc` files are read by this work. No external networ
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-07-DELETE-SOURCE-AND-JOB-RESULTS
+PASSIVE-ALPHA-RUNTIME-08-DEPLOYMENT-HARDENING-SMOKE
 ```
 
-Next runtime work should define and implement owner-scoped source delete and job/result delete behavior. Keep login/session runtime, UI login/status work, broader migration, deployment hardening, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.
+Runtime-07 has implemented owner-scoped source delete and terminal job/result delete behavior. Next runtime work should smoke deployment-hardening behavior while keeping login/session runtime, UI login/status work, broader migration, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.

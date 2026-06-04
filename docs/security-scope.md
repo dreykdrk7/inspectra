@@ -120,6 +120,8 @@ Passive Alpha legacy local data mapping runtime decision: `PASSIVE_ALPHA_RUNTIME
 
 Passive Alpha owner-scoped reads/exports runtime decision: `PASSIVE_ALPHA_RUNTIME_OWNER_SCOPED_READS_EXPORTS_ACCEPTED`. File/job lists are filtered by current owner; file detail, job detail, Raw JSON/job payloads, file-based job creation, Markdown/HTML/XML/PDF exports, SBOM exports, and target histories through job surfaces now require the current/effective owner before data is returned or rendered. Wrong-owner and unresolved-owner reads receive generic not-found responses, while auth-required anonymous requests still receive the Runtime-03 generic `401` before lookup. This does not implement login, sessions, multi-user runtime, DB users, delete/retention runtime, frontend UI, billing, SaaS tenants, Nmap, new Active behavior, or new capabilities.
 
+Passive Alpha delete source/job-results runtime decision: `PASSIVE_ALPHA_RUNTIME_DELETE_SOURCE_JOB_RESULTS_ACCEPTED`. Source upload deletion is now owner-scoped: it removes stored source bytes and file metadata, then marks related owned jobs with `source_file_deleted_at` while preserving historical derived results by default. Completed and failed job/result deletion is owner-scoped and removes the stored job JSON, making job detail, Raw JSON, Markdown/HTML/XML/PDF exports, and SBOM exports unavailable; queued/running deletion returns a controlled conflict until cancellation is separately designed. Anonymous auth-required requests are still denied before lookup, and wrong-owner deletes receive generic not-found responses. This does not implement login, sessions, frontend delete controls, delete-all-owned-data, scheduler cleanup, admin cleanup, demo reset, billing, SaaS tenants, Nmap, new Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`
@@ -303,7 +305,9 @@ Audit results may include document metadata such as author names, producer strin
 
 JSON metadata writes use atomic replacement and a local file lock to reduce concurrent update races. This improves consistency for local MVP workflows, but it does not add authentication, authorization, encryption, or database-grade multi-user transaction semantics.
 
-Deleting a file through `DELETE /files/{file_id}` removes the uploaded source file and its metadata. It does not delete historical job results; associated jobs are marked so it is clear that the source file is no longer present.
+Deleting a file through `DELETE /files/{file_id}` removes the uploaded source file and its metadata for the current/effective owner. It does not delete historical job results; associated owned jobs are marked so it is clear that the source file is no longer present.
+
+Deleting a completed or failed job through `DELETE /jobs/{job_id}` removes the stored job JSON for the current/effective owner. Job detail, Raw JSON, report exports, and SBOM exports are unavailable after that deletion. Queued and running jobs are not deleted in this slice. Inspectra does not make a secure deletion guarantee; manual downloads, browser caches, external copies, backups, snapshots, and target-side logs remain outside app-side deletion control.
 
 The backend limits uploads with `INSPECTRA_MAX_UPLOAD_BYTES`, defaulting to 20 MB. This is a usability and resource guardrail, not content sanitization.
 

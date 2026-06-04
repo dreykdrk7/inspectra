@@ -88,6 +88,11 @@ class DeletedFileResponse(BaseModel):
     associated_jobs_marked: int
 
 
+class DeletedJobResponse(BaseModel):
+    job_id: str
+    deleted: bool
+
+
 class AuthStatusResponse(BaseModel):
     auth_mode: AuthMode
     auth_required: bool
