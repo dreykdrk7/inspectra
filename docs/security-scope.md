@@ -118,6 +118,8 @@ Passive Alpha owner metadata write-path runtime decision: `PASSIVE_ALPHA_RUNTIME
 
 Passive Alpha legacy local data mapping runtime decision: `PASSIVE_ALPHA_RUNTIME_LEGACY_LOCAL_DATA_MAPPING_ACCEPTED`. In `trusted_local_no_auth`, ownerless legacy file and job records now resolve to `local-admin` on backend list/detail/export/SBOM paths, and job updates lazily persist the effective owner for the touched job. In auth-required modes, missing owner metadata remains unresolved while anonymous sensitive routes are denied before resource lookup. This does not implement login, sessions, multi-user runtime, owner-scoped reads, cross-owner denial, full migration, delete/retention runtime, frontend UI, billing, SaaS tenants, Nmap, new Active behavior, or new capabilities.
 
+Passive Alpha owner-scoped reads/exports runtime decision: `PASSIVE_ALPHA_RUNTIME_OWNER_SCOPED_READS_EXPORTS_ACCEPTED`. File/job lists are filtered by current owner; file detail, job detail, Raw JSON/job payloads, file-based job creation, Markdown/HTML/XML/PDF exports, SBOM exports, and target histories through job surfaces now require the current/effective owner before data is returned or rendered. Wrong-owner and unresolved-owner reads receive generic not-found responses, while auth-required anonymous requests still receive the Runtime-03 generic `401` before lookup. This does not implement login, sessions, multi-user runtime, DB users, delete/retention runtime, frontend UI, billing, SaaS tenants, Nmap, new Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

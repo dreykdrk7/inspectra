@@ -140,6 +140,30 @@ def current_owner_id_for_request(request: Request) -> str:
     return request.app.state.default_local_operator.id
 
 
+def owned_by_current_request(request: Request, owner_id: str | None) -> bool:
+    return owner_id == current_owner_id_for_request(request)
+
+
+def require_file_owner(request: Request, stored_file: StoredFile) -> StoredFile:
+    if not owned_by_current_request(request, stored_file.owner_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
+    return stored_file
+
+
+def require_job_owner(request: Request, job: JobRecord) -> JobRecord:
+    if not owned_by_current_request(request, job.owner_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+    return job
+
+
+def get_file_for_current_owner(request: Request, file_id: str) -> StoredFile:
+    return require_file_owner(request, request.app.state.files.get(file_id))
+
+
+def get_job_for_current_owner(request: Request, job_id: str) -> JobRecord:
+    return require_job_owner(request, request.app.state.jobs.get(job_id))
+
+
 def owner_id_for_file_job(request: Request, stored_file: StoredFile) -> str:
     return stored_file.owner_id or current_owner_id_for_request(request)
 
@@ -186,12 +210,12 @@ async def upload_archive(request: Request, file: UploadFile = File(...)) -> Stor
 
 @app.get("/files", response_model=list[StoredFile])
 async def list_files(request: Request) -> list[StoredFile]:
-    return request.app.state.files.list()
+    return request.app.state.files.list(owner_id=current_owner_id_for_request(request))
 
 
 @app.get("/files/{file_id}", response_model=StoredFile)
 async def get_file(request: Request, file_id: str) -> StoredFile:
-    return request.app.state.files.get(file_id)
+    return get_file_for_current_owner(request, file_id)
 
 
 @app.delete("/files/{file_id}", response_model=DeletedFileResponse)
@@ -203,7 +227,7 @@ async def delete_file(request: Request, file_id: str) -> DeletedFileResponse:
 
 @app.post("/audits/pdf/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_pdf_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "pdf":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not a PDF.")
     job = request.app.state.jobs.create_pdf_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -213,7 +237,7 @@ async def launch_pdf_audit(request: Request, file_id: str, background_tasks: Bac
 
 @app.post("/audits/image/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_image_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "image":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an image.")
     job = request.app.state.jobs.create_image_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -223,7 +247,7 @@ async def launch_image_audit(request: Request, file_id: str, background_tasks: B
 
 @app.post("/audits/manifest/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_manifest_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "manifest":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not a manifest.")
     job = request.app.state.jobs.create_manifest_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -233,7 +257,7 @@ async def launch_manifest_audit(request: Request, file_id: str, background_tasks
 
 @app.post("/audits/archive/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_archive_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_archive_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -243,7 +267,7 @@ async def launch_archive_audit(request: Request, file_id: str, background_tasks:
 
 @app.post("/audits/project-archive/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_project_archive_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_project_archive_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -253,7 +277,7 @@ async def launch_project_archive_audit(request: Request, file_id: str, backgroun
 
 @app.post("/audits/django-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_django_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_django_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -263,7 +287,7 @@ async def launch_django_config_audit(request: Request, file_id: str, background_
 
 @app.post("/audits/docker-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_docker_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_docker_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -273,7 +297,7 @@ async def launch_docker_config_audit(request: Request, file_id: str, background_
 
 @app.post("/audits/secrets-review/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_secrets_review_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_secrets_review_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -283,7 +307,7 @@ async def launch_secrets_review_audit(request: Request, file_id: str, background
 
 @app.post("/audits/node-package-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_node_package_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_node_package_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -293,7 +317,7 @@ async def launch_node_package_config_audit(request: Request, file_id: str, backg
 
 @app.post("/audits/ci-cd-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_ci_cd_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_ci_cd_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -303,7 +327,7 @@ async def launch_ci_cd_config_audit(request: Request, file_id: str, background_t
 
 @app.post("/audits/k8s-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_k8s_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_k8s_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -313,7 +337,7 @@ async def launch_k8s_config_audit(request: Request, file_id: str, background_tas
 
 @app.post("/audits/terraform-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_terraform_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_terraform_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -323,7 +347,7 @@ async def launch_terraform_config_audit(request: Request, file_id: str, backgrou
 
 @app.post("/audits/nginx-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_nginx_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_nginx_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -333,7 +357,7 @@ async def launch_nginx_config_audit(request: Request, file_id: str, background_t
 
 @app.post("/audits/compose-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_compose_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_compose_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -343,7 +367,7 @@ async def launch_compose_config_audit(request: Request, file_id: str, background
 
 @app.post("/audits/database-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_database_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_database_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -353,7 +377,7 @@ async def launch_database_config_audit(request: Request, file_id: str, backgroun
 
 @app.post("/audits/sql-database-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_sql_database_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_sql_database_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -363,7 +387,7 @@ async def launch_sql_database_config_audit(request: Request, file_id: str, backg
 
 @app.post("/audits/redis-config/{file_id}", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_redis_config_audit(request: Request, file_id: str, background_tasks: BackgroundTasks) -> JobRecord:
-    stored_file = request.app.state.files.get(file_id)
+    stored_file = get_file_for_current_owner(request, file_id)
     if stored_file.kind != "archive":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is not an archive.")
     job = request.app.state.jobs.create_redis_config_job(file_id, owner_id=owner_id_for_file_job(request, stored_file))
@@ -466,12 +490,12 @@ async def launch_subdomain_inventory_basic_audit(
 
 @app.get("/jobs", response_model=list[JobListItem])
 async def list_jobs(request: Request) -> list[JobListItem]:
-    return request.app.state.jobs.list()
+    return request.app.state.jobs.list(owner_id=current_owner_id_for_request(request))
 
 
 @app.get("/jobs/{job_id}", response_model=JobRecord)
 async def get_job(request: Request, job_id: str) -> JobRecord:
-    job = request.app.state.jobs.get(job_id)
+    job = get_job_for_current_owner(request, job_id)
     if job.audit_type in {
         "ci_cd_config_basic",
         "k8s_config_basic",
@@ -496,31 +520,31 @@ async def get_job(request: Request, job_id: str) -> JobRecord:
 
 @app.get("/jobs/{job_id}/export/markdown")
 async def export_job_markdown(request: Request, job_id: str) -> Response:
-    job = request.app.state.jobs.get(job_id)
+    job = get_job_for_current_owner(request, job_id)
     return export_response(render_markdown_report(job), "text/markdown; charset=utf-8", build_report_filename(job, "md"))
 
 
 @app.get("/jobs/{job_id}/export/html")
 async def export_job_html(request: Request, job_id: str) -> Response:
-    job = request.app.state.jobs.get(job_id)
+    job = get_job_for_current_owner(request, job_id)
     return export_response(render_html_report(job), "text/html; charset=utf-8", build_report_filename(job, "html"))
 
 
 @app.get("/jobs/{job_id}/export/xml")
 async def export_job_xml(request: Request, job_id: str) -> Response:
-    job = request.app.state.jobs.get(job_id)
+    job = get_job_for_current_owner(request, job_id)
     return export_response(render_xml_report(job), "application/xml; charset=utf-8", build_report_filename(job, "xml"))
 
 
 @app.get("/jobs/{job_id}/export/pdf")
 async def export_job_pdf(request: Request, job_id: str) -> Response:
-    job = request.app.state.jobs.get(job_id)
+    job = get_job_for_current_owner(request, job_id)
     return export_response(render_pdf_report(job), "application/pdf", build_report_filename(job, "pdf"))
 
 
 @app.get("/jobs/{job_id}/sbom/cyclonedx-json")
 async def export_job_cyclonedx_sbom(request: Request, job_id: str) -> Response:
-    job = request.app.state.jobs.get(job_id)
+    job = get_job_for_current_owner(request, job_id)
     return export_response(
         generate_cyclonedx_json(job),
         "application/vnd.cyclonedx+json; charset=utf-8",
@@ -530,7 +554,7 @@ async def export_job_cyclonedx_sbom(request: Request, job_id: str) -> Response:
 
 @app.get("/jobs/{job_id}/sbom/spdx-json")
 async def export_job_spdx_sbom(request: Request, job_id: str) -> Response:
-    job = request.app.state.jobs.get(job_id)
+    job = get_job_for_current_owner(request, job_id)
     return export_response(
         generate_spdx_json(job),
         "application/spdx+json; charset=utf-8",

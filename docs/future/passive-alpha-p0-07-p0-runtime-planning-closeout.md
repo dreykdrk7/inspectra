@@ -28,6 +28,8 @@ Runtime 04 owner metadata write path: `docs/future/passive-alpha-runtime-04-owne
 
 Runtime 05 legacy local data mapping: `docs/future/passive-alpha-runtime-05-legacy-local-data-mapping.md`
 
+Runtime 06 owner-scoped reads and exports: `docs/future/passive-alpha-runtime-06-owner-scoped-reads-and-exports.md`
+
 Commit scope: docs-only closeout for Passive Alpha P0 runtime planning. This block consolidates accepted docs-first decisions, runtime dependencies, the first implementation sequence, blockers, tests, and risk register. It does not change backend, frontend, runner, tests, fixtures, schemas, storage, auth, sessions, cookies, migrations, API guards, owner checks, retention/delete behavior, cleanup, CORS, CSRF, TLS, reverse proxy behavior, reports, exports, target policy, tags, releases, or runtime behavior.
 
 ## Final Decision
@@ -305,13 +307,15 @@ The fourth runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_OWNER_METADAT
 
 The fifth runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_LEGACY_LOCAL_DATA_MAPPING_ACCEPTED`. It maps trusted-local legacy ownerless files and jobs to `local-admin` on read/list/export/SBOM paths and lazily persists the effective owner when a legacy job is updated, without adding login, sessions, owner-scoped reads, cross-owner denial, or full migration.
 
+The sixth runtime slice is now accepted as `PASSIVE_ALPHA_RUNTIME_OWNER_SCOPED_READS_EXPORTS_ACCEPTED`. It filters file/job lists by current owner, checks direct file/job reads, gates file-based job creation by source-file owner, and authorizes report/SBOM exports before rendering or generation.
+
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-06-OWNER-SCOPED-READS-AND-EXPORTS
+PASSIVE-ALPHA-RUNTIME-07-DELETE-SOURCE-AND-JOB-RESULTS
 ```
 
-Continue runtime work by enforcing owner-scoped reads for files, jobs, reports, exports, SBOMs, Raw JSON, and target histories after anonymous access is denied. Keep retention/delete runtime, cleanup, deployment hardening, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
+Continue runtime work by defining owner-scoped source delete and job/result delete behavior. Keep broader retention runtime, cleanup, deployment hardening, UI polish, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers for later separately scoped microphases.
 
 ## Validation Commands
 

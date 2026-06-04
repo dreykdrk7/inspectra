@@ -242,12 +242,14 @@ class FileStore:
         self._save_record(record)
         return record
 
-    def list(self) -> list[StoredFile]:
+    def list(self, *, owner_id: str | None = None) -> list[StoredFile]:
         records = [
             self._load_metadata_file(path)
             for path in self.settings.upload_dir.glob("*.json")
             if IDENTIFIER_PATTERN.fullmatch(path.stem)
         ]
+        if owner_id is not None:
+            records = [record for record in records if record.owner_id == owner_id]
         return sorted(records, key=lambda item: item.created_at, reverse=True)
 
     def get(self, file_id: str) -> StoredFile:
@@ -403,8 +405,10 @@ class JobStore:
             self._save_unlocked(updated)
             return updated
 
-    def list(self) -> list[JobListItem]:
+    def list(self, *, owner_id: str | None = None) -> list[JobListItem]:
         records = [self._load_job_file(path) for path in self.settings.jobs_dir.glob("*.json")]
+        if owner_id is not None:
+            records = [record for record in records if record.owner_id == owner_id]
         records.sort(key=lambda item: item.created_at, reverse=True)
         return [self._to_list_item(record) for record in records]
 

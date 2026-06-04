@@ -98,13 +98,13 @@ Auth-required modes now fail closed for anonymous sensitive routes. This is inte
 - Denials are intentionally generic and do not reveal whether a file, job, export, SBOM, or target exists.
 - The guard does not weaken Active target policy, feature flags, authorization payloads, double-confirmation requirements, or redaction.
 - Redaction remains required after future authentication succeeds.
-- Auth-required modes are still incomplete until login/session and owner-scoped enforcement slices land.
+- Auth-required modes are still incomplete until login/session runtime lands; Runtime-06 now applies owner-scoped read/export checks on the implemented backend surfaces.
 
 ## Residual Risks
 
 - Auth-required modes now block anonymous sensitive access but do not yet provide an authenticated use path.
 - Owner metadata was not written in this slice; Runtime-04 now writes owner metadata for new files and jobs.
-- Owner-scoped reads, reports, exports, SBOMs, Raw JSON, and target histories are not enforced yet.
+- Runtime-06 now enforces owner-scoped reads, reports, exports, SBOMs, Raw JSON/job detail payloads, and target histories through job surfaces for the implemented backend routes.
 - `trusted_local_no_auth` remains appropriate only for localhost/dev/local trusted use.
 - Future route additions must either remain protected by default or document a narrow public-safe exception.
 

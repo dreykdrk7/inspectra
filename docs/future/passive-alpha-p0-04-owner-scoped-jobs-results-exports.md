@@ -2,7 +2,7 @@
 
 Status: `PASSIVE_ALPHA_OWNER_SCOPED_RESOURCES_PLAN_ACCEPTED`.
 
-Runtime implementation record: new uploads and jobs now receive owner metadata through `PASSIVE_ALPHA_RUNTIME_OWNER_METADATA_WRITE_PATH_ACCEPTED` in `docs/future/passive-alpha-runtime-04-owner-metadata-write-path.md`. Trusted-local legacy ownerless files and jobs now map to `local-admin` through `PASSIVE_ALPHA_RUNTIME_LEGACY_LOCAL_DATA_MAPPING_ACCEPTED` in `docs/future/passive-alpha-runtime-05-legacy-local-data-mapping.md`. Owner-scoped reads and cross-owner denial remain future runtime work.
+Runtime implementation record: new uploads and jobs now receive owner metadata through `PASSIVE_ALPHA_RUNTIME_OWNER_METADATA_WRITE_PATH_ACCEPTED` in `docs/future/passive-alpha-runtime-04-owner-metadata-write-path.md`. Trusted-local legacy ownerless files and jobs now map to `local-admin` through `PASSIVE_ALPHA_RUNTIME_LEGACY_LOCAL_DATA_MAPPING_ACCEPTED` in `docs/future/passive-alpha-runtime-05-legacy-local-data-mapping.md`. Owner-scoped read/export checks are now accepted as `PASSIVE_ALPHA_RUNTIME_OWNER_SCOPED_READS_EXPORTS_ACCEPTED` in `docs/future/passive-alpha-runtime-06-owner-scoped-reads-and-exports.md`. Delete/retention runtime remains future work.
 
 Base deny-anonymous API guards plan: `docs/future/passive-alpha-p0-03-deny-anonymous-reads-api-guards.md`
 

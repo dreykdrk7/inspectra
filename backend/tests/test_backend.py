@@ -50,6 +50,7 @@ from app.services import (
     calculate_subdomain_inventory_runner_timeout_seconds,
 )
 from app.storage import FileStore, JobStore
+from app import main as backend_main
 from app import services as audit_services
 from app import web_security
 
@@ -554,6 +555,169 @@ async def test_trusted_local_legacy_ownerless_records_remain_compatible(monkeypa
     assert saved_payload["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
     assert export_response.status_code == 200
     assert sbom_response.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_owner_scoped_reads_filter_and_deny_wrong_owner_resources(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    created_at = datetime.now(timezone.utc).isoformat()
+    local_file_id = "4" * 32
+    legacy_file_id = "5" * 32
+    other_file_id = "6" * 32
+    local_job_id = "7" * 32
+    legacy_job_id = "8" * 32
+    other_job_id = "9" * 32
+    other_target_job_id = "a" * 32
+    other_failed_job_id = "b" * 32
+
+    def write_file(file_id: str, *, owner_id: str | None = DEFAULT_LOCAL_OPERATOR.id) -> None:
+        payload = {
+            "id": file_id,
+            "kind": "pdf",
+            "original_filename": f"{file_id}.pdf",
+            "stored_filename": f"{file_id}.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 11,
+            "sha256": "0" * 64,
+            "created_at": created_at,
+        }
+        if owner_id is not None:
+            payload["owner_id"] = owner_id
+        (app.state.settings.upload_dir / f"{file_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def write_job(
+        job_id: str,
+        *,
+        owner_id: str | None = DEFAULT_LOCAL_OPERATOR.id,
+        audit_type: str = "pdf_basic",
+        file_id: str | None = local_file_id,
+        status: str = "queued",
+        target_url: str | None = None,
+        result: dict | None = None,
+        error: str | None = None,
+    ) -> None:
+        payload = {
+            "id": job_id,
+            "audit_type": audit_type,
+            "file_id": file_id,
+            "target_url": target_url,
+            "status": status,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "result": result,
+            "error": error,
+        }
+        if owner_id is not None:
+            payload["owner_id"] = owner_id
+        (app.state.settings.jobs_dir / f"{job_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    write_file(local_file_id)
+    write_file(legacy_file_id, owner_id=None)
+    write_file(other_file_id, owner_id="other-owner")
+    write_job(local_job_id, result={"analyzer": "pdf_basic", "summary": {}})
+    write_job(legacy_job_id, owner_id=None, file_id=legacy_file_id)
+    write_job(other_job_id, owner_id="other-owner", file_id=other_file_id)
+    write_job(
+        other_target_job_id,
+        owner_id="other-owner",
+        audit_type="web_basic",
+        file_id=None,
+        target_url="https://other.example/status",
+    )
+    write_job(
+        other_failed_job_id,
+        owner_id="other-owner",
+        audit_type="pdf_basic",
+        file_id=other_file_id,
+        status="failed",
+        error="controlled wrong-owner failure",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        files_response = await client.get("/files")
+        jobs_response = await client.get("/jobs")
+        local_file_response = await client.get(f"/files/{local_file_id}")
+        legacy_file_response = await client.get(f"/files/{legacy_file_id}")
+        other_file_response = await client.get(f"/files/{other_file_id}")
+        local_job_response = await client.get(f"/jobs/{local_job_id}")
+        legacy_job_response = await client.get(f"/jobs/{legacy_job_id}")
+        other_job_response = await client.get(f"/jobs/{other_job_id}")
+        other_target_job_response = await client.get(f"/jobs/{other_target_job_id}")
+        other_failed_job_response = await client.get(f"/jobs/{other_failed_job_id}")
+        other_file_audit_response = await client.post(f"/audits/pdf/{other_file_id}")
+
+    visible_file_ids = {item["id"] for item in files_response.json()}
+    visible_job_ids = {item["id"] for item in jobs_response.json()}
+    assert visible_file_ids == {local_file_id, legacy_file_id}
+    assert visible_job_ids == {local_job_id, legacy_job_id}
+    assert local_file_response.status_code == 200
+    assert legacy_file_response.status_code == 200
+    assert local_file_response.json()["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert legacy_file_response.json()["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert other_file_response.status_code == 404
+    assert other_file_response.json()["detail"] == "File not found."
+    assert local_job_response.status_code == 200
+    assert legacy_job_response.status_code == 200
+    assert local_job_response.json()["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert legacy_job_response.json()["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    for response in (other_job_response, other_target_job_response, other_failed_job_response):
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found."
+    assert other_file_audit_response.status_code == 404
+    assert other_file_audit_response.json()["detail"] == "File not found."
+
+
+@pytest.mark.anyio
+async def test_owner_scoped_exports_and_sbom_deny_wrong_owner_before_render(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    wrong_job = JobRecord(
+        id="c" * 32,
+        owner_id="other-owner",
+        audit_type="manifest_basic",
+        file_id="d" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "manifest_basic",
+            "manifest_type": "package_json",
+            "parsed": {
+                "project": {"name": "wrong-owner"},
+                "dependencies": {"dependencies": [{"name": "fastapi", "specifier": "0.115.0"}]},
+            },
+        },
+    )
+    app.state.jobs.save(wrong_job)
+
+    def fail_render(*args, **kwargs):
+        raise AssertionError("wrong-owner export rendered before owner check")
+
+    def fail_sbom(*args, **kwargs):
+        raise AssertionError("wrong-owner SBOM generated before owner check")
+
+    monkeypatch.setattr(backend_main, "render_markdown_report", fail_render)
+    monkeypatch.setattr(backend_main, "render_html_report", fail_render)
+    monkeypatch.setattr(backend_main, "render_xml_report", fail_render)
+    monkeypatch.setattr(backend_main, "render_pdf_report", fail_render)
+    monkeypatch.setattr(backend_main, "generate_cyclonedx_json", fail_sbom)
+    monkeypatch.setattr(backend_main, "generate_spdx_json", fail_sbom)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        export_responses = [
+            await client.get(f"/jobs/{wrong_job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        ]
+        sbom_responses = [
+            await client.get(f"/jobs/{wrong_job.id}/sbom/cyclonedx-json"),
+            await client.get(f"/jobs/{wrong_job.id}/sbom/spdx-json"),
+        ]
+
+    for response in export_responses + sbom_responses:
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found."
 
 
 @pytest.mark.anyio

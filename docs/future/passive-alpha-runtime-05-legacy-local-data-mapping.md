@@ -10,6 +10,8 @@ Base owner-scoped resources plan: `docs/future/passive-alpha-p0-04-owner-scoped-
 
 Base P0 runtime planning closeout: `docs/future/passive-alpha-p0-07-p0-runtime-planning-closeout.md`
 
+Successor runtime 06 owner-scoped reads and exports: `docs/future/passive-alpha-runtime-06-owner-scoped-reads-and-exports.md`
+
 Commit scope: minimal backend storage mapping for trusted-local legacy ownerless data. This block does not implement login, password verification, sessions, cookies, frontend login UI, multi-user runtime, owner-scoped reads, cross-owner denial, broad storage migration, delete/retention runtime, billing, SaaS tenants, Nmap, new Active behavior, or new analyzers.
 
 ## Final Decision
@@ -56,9 +58,9 @@ In `trusted_local_no_auth`:
 
 In auth-required modes, missing owner metadata remains unresolved.
 
-Runtime-03 still denies anonymous sensitive routes before upload, file, job, export, SBOM, target, or Active handlers can reveal resource existence. Because login, sessions, authenticated principals, and owner-scoped reads do not exist yet, Runtime-05 does not map ownerless data for auth-required modes.
+Runtime-03 still denies anonymous sensitive routes before upload, file, job, export, SBOM, target, or Active handlers can reveal resource existence. Because login, sessions, and authenticated principals do not exist yet, Runtime-05 does not map ownerless data for auth-required modes.
 
-Future Runtime-06 must handle missing-owner records with fail-closed owner checks or an explicitly accepted migration/claiming flow.
+Runtime-06 now applies generic not-found denials for wrong-owner or unresolved-owner reads/exports while keeping auth-required anonymous routes blocked before lookup.
 
 ## API Shape
 
@@ -117,7 +119,7 @@ This is an effective owner mapping. It does not mean the original legacy file ne
 
 ## Residual Risks
 
-- Owner-scoped reads are still not enforced.
+- Owner-scoped reads and exports are now enforced by Runtime-06 for the implemented read/export surfaces.
 - There is still no user A/user B isolation.
 - Trusted-local mapping assumes legacy local data belongs to the local operator.
 - Legacy files are not mass-rewritten, so on-disk metadata may still omit `owner_id` until touched by a later operation.
@@ -155,7 +157,7 @@ No `.env`, `.env.*`, or `.envrc` files are read by this work. No external networ
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-06-OWNER-SCOPED-READS-AND-EXPORTS
+PASSIVE-ALPHA-RUNTIME-07-DELETE-SOURCE-AND-JOB-RESULTS
 ```
 
-Next runtime work should implement owner-scoped reads for files, jobs, reports, exports, SBOMs, Raw JSON, and target histories after anonymous access is denied. Keep delete/retention runtime, cleanup, deployment hardening, UI login/status work, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.
+Runtime-06 now implements owner-scoped reads and exports for files, jobs, reports, SBOMs, Raw JSON/job detail, and target histories through job surfaces. Next runtime work should define owner-scoped source delete and job/result delete behavior. Keep broader retention runtime, cleanup, deployment hardening, UI login/status work, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.

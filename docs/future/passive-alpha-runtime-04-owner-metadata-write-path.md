@@ -12,6 +12,8 @@ Base P0 runtime planning closeout: `docs/future/passive-alpha-p0-07-p0-runtime-p
 
 Successor runtime 05 legacy local data mapping: `docs/future/passive-alpha-runtime-05-legacy-local-data-mapping.md`
 
+Successor runtime 06 owner-scoped reads and exports: `docs/future/passive-alpha-runtime-06-owner-scoped-reads-and-exports.md`
+
 Commit scope: minimal backend owner metadata write path for new files and jobs. This block does not implement login, password verification, sessions, cookies, frontend login UI, multi-user runtime, owner-scoped reads, owner-scoped exports, legacy migration, delete/retention runtime, billing, SaaS tenants, Nmap, new Active behavior, or new analyzers.
 
 ## Final Decision
@@ -143,12 +145,12 @@ Future UI or API polish may decide whether to hide owner metadata from some resp
 - This is a foundation for later checks, not an access-control completion.
 - Anonymous sensitive writes remain blocked in auth-required modes.
 - `trusted_local_no_auth` remains localhost/dev/local trusted only.
-- Redaction remains required after future owner checks succeed.
-- Reports, exports, SBOMs, and Raw JSON still require owner-scoped authorization in a later runtime slice.
+- Redaction remains required after owner checks succeed.
+- Runtime-06 now adds owner-scoped authorization for reports, exports, SBOMs, Raw JSON/job detail payloads, and target histories through job surfaces.
 
 ## Residual Risks
 
-- New records have owner metadata, but owner-scoped reads are not enforced yet.
+- New records have owner metadata, and Runtime-06 now enforces owner-scoped reads/exports on the implemented backend surfaces.
 - Legacy ownerless records are now mapped to the default local operator in trusted local mode, but not fully migrated across storage.
 - There is no user A/user B isolation yet.
 - Auth-required modes still have no login/session path, so protected workflows are blocked until later auth runtime.
@@ -186,7 +188,7 @@ No `.env`, `.env.*`, or `.envrc` files are read by this work. No external networ
 ## Next Recommendation
 
 ```text
-PASSIVE-ALPHA-RUNTIME-06-OWNER-SCOPED-READS-AND-EXPORTS
+PASSIVE-ALPHA-RUNTIME-07-DELETE-SOURCE-AND-JOB-RESULTS
 ```
 
-Runtime-05 now defines and implements trusted local mapping behavior for existing ownerless records. Next runtime work should implement owner-scoped reads after anonymous access is denied. Keep delete/retention runtime, deployment hardening, UI login/status work, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.
+Runtime-05 defines trusted local mapping behavior for existing ownerless records, and Runtime-06 enforces owner-scoped reads/exports for the implemented read/export surfaces. Next runtime work should define owner-scoped source delete and job/result delete behavior. Keep broader retention runtime, deployment hardening, UI login/status work, public/community support, billing/SaaS concepts, Nmap, new Active behavior, and new analyzers separately scoped.
