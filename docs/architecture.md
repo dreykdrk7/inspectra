@@ -105,6 +105,8 @@ The Passive Alpha self-hosted release-notes decision is `PASSIVE_ALPHA_SELF_HOST
 
 The Passive Alpha deployment hardening design decision is `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_DESIGN_ACCEPTED`. It defines docs-only expectations for private self-hosted TLS/HTTPS, reverse proxy placement, secure-cookie direction, trusted proxy headers, CORS origins, and admin setup boundaries before exposed use. It does not implement runtime behavior, configure Docker or proxies, approve public/community or production-ready deployment, add SaaS/billing behavior, add Nmap, or add new Active behavior.
 
+The Passive Alpha deployment hardening runbook decision is `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_RUNBOOK_READY`. It converts the accepted design into an operator checklist for private self-hosted mode selection, pre-exposure review, proxy posture, cookies/sessions, rate limits, CORS/origin, logging, smoke checks, and red flags. It is docs-only and does not implement runtime behavior, execute deployment steps, approve production/public/community readiness, add SaaS/billing behavior, add Nmap, or add new Active behavior.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.

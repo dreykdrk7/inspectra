@@ -158,6 +158,8 @@ Passive Alpha self-hosted release-notes decision: `PASSIVE_ALPHA_SELF_HOSTED_REL
 
 Passive Alpha deployment hardening design decision: `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_DESIGN_ACCEPTED`. Private self-hosted exposure should be planned around HTTPS, a reverse proxy, explicit origins, conservative secure-cookie behavior, and deny-by-default trusted proxy header handling. This is docs-only and does not approve public/community runtime, production readiness, proxy/TLS runtime enforcement, Docker execution, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
 
+Passive Alpha deployment hardening runbook decision: `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_RUNBOOK_READY`. The private self-hosted runbook documents operator checklists for mode selection, pre-exposure review, reverse proxy posture, cookies/sessions, login rate-limit caveats, CORS, logging, manual smoke checks, and red flags. It is docs-only and does not approve production readiness, public/community runtime, Docker execution, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`
