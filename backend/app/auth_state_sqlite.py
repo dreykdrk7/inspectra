@@ -2,12 +2,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import math
 from pathlib import Path
 import secrets
 import sqlite3
 from typing import Any
 
-from app.auth import ADMIN_CSRF_TOKEN_BYTES, ADMIN_SESSION_ID_BYTES, AdminSession
+from app.auth import ADMIN_CSRF_TOKEN_BYTES, ADMIN_SESSION_ID_BYTES, AdminSession, LoginAttemptRecord
 
 
 AUTH_STATE_SCHEMA_VERSION = 1
@@ -279,6 +280,12 @@ class SQLiteAuthStateStore:
         )
         return cursor.rowcount > 0
 
+    def count_login_attempts(self) -> int:
+        row = self._fetchone("SELECT COUNT(*) AS row_count FROM auth_login_attempts")
+        if row is None:
+            return 0
+        return max(0, int(row["row_count"]))
+
     def cleanup_login_attempts(
         self,
         *,
@@ -296,6 +303,48 @@ class SQLiteAuthStateStore:
             (now_ts, window, now_ts),
         )
         return max(0, cursor.rowcount)
+
+    def prune_login_attempts(
+        self,
+        *,
+        max_rows: int,
+        now: datetime | float | int | None = None,
+    ) -> int:
+        limit = max(1, int(max_rows))
+        total = self.count_login_attempts()
+        if total <= limit:
+            return 0
+
+        excess = total - limit
+        now_ts = _timestamp(now)
+        try:
+            connection = self._connect()
+            try:
+                rows = connection.execute(
+                    """
+                    SELECT client_key_hash
+                    FROM auth_login_attempts
+                    WHERE locked_until IS NULL OR locked_until <= ?
+                    ORDER BY updated_at ASC
+                    LIMIT ?
+                    """,
+                    (now_ts, excess),
+                ).fetchall()
+                if not rows:
+                    return 0
+                deleted = 0
+                for row in rows:
+                    cursor = connection.execute(
+                        "DELETE FROM auth_login_attempts WHERE client_key_hash = ?",
+                        (row["client_key_hash"],),
+                    )
+                    deleted += max(0, cursor.rowcount)
+                connection.commit()
+                return deleted
+            finally:
+                connection.close()
+        except sqlite3.Error as exc:
+            raise SQLiteAuthStateError("SQLite auth state operation failed.") from exc
 
     def get_schema_version(self) -> int | None:
         row = self._fetchone("SELECT value FROM auth_state_metadata WHERE key = 'schema_version'")
@@ -506,6 +555,100 @@ class SQLiteAdminSessionStore:
         return current.astimezone(timezone.utc)
 
 
+class SQLiteLoginAttemptStore:
+    def __init__(
+        self,
+        db_path: str | Path,
+        window_seconds: int,
+        max_failures: int,
+        lockout_seconds: int,
+        max_keys: int,
+        now_func=None,
+    ) -> None:
+        self.window_seconds = max(1, int(window_seconds))
+        self.max_failures = max(1, int(max_failures))
+        self.lockout_seconds = max(1, int(lockout_seconds))
+        self.max_keys = max(1, int(max_keys))
+        self._now_func = now_func or _utc_now
+        self._auth_state = SQLiteAuthStateStore(db_path)
+
+    def record_failure(self, client_key: str) -> LoginAttemptRecord:
+        key = self._client_key(client_key)
+        now = self._now()
+        record = self._auth_state.record_login_failure(
+            key,
+            now=now,
+            window_seconds=self.window_seconds,
+            max_failures=self.max_failures,
+            lockout_seconds=self.lockout_seconds,
+        )
+        self._auth_state.prune_login_attempts(max_rows=self.max_keys, now=now)
+        return _login_attempt_record_from_sqlite(key, record)
+
+    def is_locked(self, client_key: str) -> bool:
+        key = self._client_key(client_key)
+        record = self._auth_state.get_login_attempt(key)
+        if record is None:
+            return False
+
+        now = self._now()
+        if self._is_expired(record, now):
+            self.purge_expired()
+            return False
+
+        return record.locked_until is not None and record.locked_until > now
+
+    def seconds_until_unlock(self, client_key: str) -> int:
+        key = self._client_key(client_key)
+        record = self._auth_state.get_login_attempt(key)
+        if record is None or record.locked_until is None:
+            return 0
+
+        now = self._now()
+        if record.locked_until <= now:
+            self.purge_expired()
+            return 0
+
+        return max(0, math.ceil((record.locked_until - now).total_seconds()))
+
+    def reset_success(self, client_key: str) -> bool:
+        return self._auth_state.reset_login_attempt(self._client_key(client_key))
+
+    def purge_expired(self) -> int:
+        return self._auth_state.cleanup_login_attempts(now=self._now(), window_seconds=self.window_seconds)
+
+    def failure_count(self, client_key: str) -> int:
+        key = self._client_key(client_key)
+        record = self._auth_state.get_login_attempt(key)
+        if record is None:
+            return 0
+        if self._is_expired(record, self._now()):
+            self.purge_expired()
+            return 0
+        return record.failure_count
+
+    def record_count(self) -> int:
+        return self._auth_state.count_login_attempts()
+
+    def _is_expired(self, record: SQLiteLoginAttempt, now: datetime) -> bool:
+        if record.locked_until is not None:
+            return record.locked_until <= now
+        return record.last_failed_at + timedelta(seconds=self.window_seconds) <= now
+
+    def _now(self) -> datetime:
+        current = self._now_func()
+        if current.tzinfo is None:
+            return current.replace(tzinfo=timezone.utc)
+        return current.astimezone(timezone.utc)
+
+    @staticmethod
+    def _client_key(client_key: str) -> str:
+        if not isinstance(client_key, str):
+            return "unknown"
+        normalized = client_key.strip()
+        return normalized or "unknown"
+
+
 def hash_session_id(session_id: str) -> str:
     return _hash_value("session", session_id)
 
@@ -563,6 +706,16 @@ def _login_attempt_from_row(row: sqlite3.Row) -> SQLiteLoginAttempt:
         last_failed_at=_datetime_from_timestamp(row["last_failed_at"]),
         locked_until=_datetime_from_timestamp(row["locked_until"]) if row["locked_until"] is not None else None,
         updated_at=_datetime_from_timestamp(row["updated_at"]),
+    )
+
+
+def _login_attempt_record_from_sqlite(client_key: str, record: SQLiteLoginAttempt) -> LoginAttemptRecord:
+    return LoginAttemptRecord(
+        client_key=client_key,
+        failure_count=record.failure_count,
+        first_failed_at=record.first_failed_at,
+        last_failed_at=record.last_failed_at,
+        locked_until=record.locked_until,
     )
 
 

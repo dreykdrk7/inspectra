@@ -14,11 +14,11 @@ It is not a commercial SaaS, billing platform, tenant system, quota product, pai
 
 `trusted_local_no_auth` is the default localhost/dev/local trusted mode. Use it only on a trusted local workstation with no network exposure, no public reverse proxy, and no third-party access.
 
-`self_hosted_single_admin` is the private self-hosted alpha mode. It requires a supported admin password hash and provides login/logout, an `HttpOnly` session cookie, CSRF checks on mutating cookie-auth routes, owner-scoped sensitive routes, generic `401` responses, controlled login `429` handling, optional SQLite-backed persistent sessions, and no frontend `localStorage` or `sessionStorage` auth state. It remains private alpha behavior, not production, public/community, or multi-user readiness.
+`self_hosted_single_admin` is the private self-hosted alpha mode. It requires a supported admin password hash and provides login/logout, an `HttpOnly` session cookie, CSRF checks on mutating cookie-auth routes, owner-scoped sensitive routes, generic `401` responses, controlled login `429` handling, optional SQLite-backed persistent sessions and login-attempt lockout state, and no frontend `localStorage` or `sessionStorage` auth state. It remains private alpha behavior, not production, public/community, or multi-user readiness.
 
 ### Deployment Hardening
 
-For any use outside localhost, the current guidance expects HTTPS/TLS, a reverse proxy in front of the app, no direct backend exposure to the internet, explicit allowed origins, no wildcard CORS with credentials, and logs that avoid secrets, cookies, tokens, request bodies, Raw JSON, report contents, and SBOM contents. SQLite-backed persistent sessions are available only when explicitly enabled for `self_hosted_single_admin`; secure-cookie runtime enforcement, trusted-proxy runtime enforcement, and persistent login-attempt storage remain known gaps until separately designed and implemented.
+For any use outside localhost, the current guidance expects HTTPS/TLS, a reverse proxy in front of the app, no direct backend exposure to the internet, explicit allowed origins, no wildcard CORS with credentials, and logs that avoid secrets, cookies, tokens, request bodies, Raw JSON, report contents, and SBOM contents. SQLite-backed persistent sessions and login-attempt lockout state are available only when explicitly enabled for `self_hosted_single_admin`; secure-cookie runtime enforcement, trusted-proxy runtime enforcement, and admin recovery/setup guidance remain known gaps until separately designed and implemented.
 
 Reference docs:
 
@@ -30,6 +30,7 @@ Reference docs:
 - SQLite auth store scaffold: `docs/future/passive-alpha-sqlite-auth-store-scaffold.md`
 - persistent session store integration: `docs/future/passive-alpha-persistent-session-store-integration.md`
 - persistent login-attempt store design: `docs/future/passive-alpha-persistent-login-attempt-store-design.md`
+- persistent login-attempt store integration: `docs/future/passive-alpha-persistent-login-attempt-store-integration.md`
 
 ### What Passive Alpha Does Not Promise
 
@@ -44,8 +45,7 @@ Reference docs:
 - No enterprise tenancy.
 - No OAuth/OIDC.
 - No multi-user runtime.
-- No persistent sessions by default; SQLite-backed sessions are opt-in for private `self_hosted_single_admin`.
-- No persistent rate-limit store yet.
+- No persistent sessions or login-attempt store by default; SQLite-backed auth state is opt-in for private `self_hosted_single_admin`.
 - No admin recovery yet.
 - No Docker execution as a deployment guarantee.
 - No Nmap.
@@ -57,7 +57,7 @@ Reference docs:
 
 ### Immediate Roadmap
 
-1. Persistent login-attempt store integration, kept separate from session persistence.
+1. Auth-state cleanup and rotation design.
 2. Release candidate checklist.
 3. Tag, release, and push decision.
 4. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
@@ -162,9 +162,11 @@ The persistent auth state design is documented in `docs/future/passive-alpha-per
 
 The SQLite auth store scaffold is documented in `docs/future/passive-alpha-sqlite-auth-store-scaffold.md`; it adds an isolated backend store and tests for hashed session, CSRF, and login-attempt state.
 
-Persistent session-store integration is documented in `docs/future/passive-alpha-persistent-session-store-integration.md`; it wires SQLite-backed sessions into `self_hosted_single_admin` when `INSPECTRA_AUTH_STATE_STORE=sqlite`, while keeping default trusted-local behavior and login attempts in memory.
+Persistent session-store integration is documented in `docs/future/passive-alpha-persistent-session-store-integration.md`; it wires SQLite-backed sessions into `self_hosted_single_admin` when `INSPECTRA_AUTH_STATE_STORE=sqlite`, while keeping default trusted-local behavior memory-backed.
 
-Persistent login-attempt store design is documented in `docs/future/passive-alpha-persistent-login-attempt-store-design.md`; it accepts SQLite-backed login-attempt persistence as the next runtime direction for `self_hosted_single_admin` when `INSPECTRA_AUTH_STATE_STORE=sqlite`, but it does not integrate that runtime behavior yet.
+Persistent login-attempt store design is documented in `docs/future/passive-alpha-persistent-login-attempt-store-design.md`; it accepted SQLite-backed login-attempt persistence as the runtime direction for `self_hosted_single_admin` when `INSPECTRA_AUTH_STATE_STORE=sqlite`.
+
+Persistent login-attempt store integration is documented in `docs/future/passive-alpha-persistent-login-attempt-store-integration.md`; it wires SQLite-backed login-attempt/rate-limit state into `self_hosted_single_admin` when `INSPECTRA_AUTH_STATE_STORE=sqlite`, while preserving memory defaults, generic `429`, safe `Retry-After`, and current backend-observed client-key semantics.
 
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 
@@ -213,8 +215,8 @@ The application defaults are intentionally conservative. Docker Compose sets man
 | `INSPECTRA_AUTH_MODE` | backend | `trusted_local_no_auth` | Explicit auth/deployment mode flag. Current default preserves trusted local behavior; accepted values also include `self_hosted_single_admin`, `private_team_lightweight_users`, and `public_community_limited_instance` for future gated runtime work. |
 | `INSPECTRA_ADMIN_PASSWORD_HASH` | backend | unset | Single-admin credential hash for `self_hosted_single_admin`. Supported format is `pbkdf2_sha256$iterations$salt$digest`; the hash is used only by backend login verification and is never returned by `/auth/status` or login responses. |
 | `INSPECTRA_SESSION_TTL_SECONDS` | backend | `3600` | Single-admin session TTL and session-cookie max age. Login/logout endpoints use it for the `inspectra_session` cookie, mutating cookie-auth routes require the session-bound `X-CSRF-Token`, and the frontend fetches auth status, performs login/logout, keeps CSRF in memory only, sends `X-CSRF-Token` on mutating requests, and shows controlled copy for login `429` rate-limit responses. |
-| `INSPECTRA_AUTH_STATE_STORE` | backend | `memory` | Auth-state backend for `self_hosted_single_admin` sessions. Accepted values are `memory` and `sqlite`; `sqlite` is opt-in and does not persist login-attempt rate-limit state yet. |
-| `INSPECTRA_AUTH_STATE_DB_PATH` | backend | `data/runtime/auth_state.sqlite3` under `INSPECTRA_DATA_DIR` when SQLite is enabled | Optional SQLite auth-state DB path for persistent self-hosted sessions. The DB stores hashed session and CSRF material, not raw session ids or CSRF tokens. |
+| `INSPECTRA_AUTH_STATE_STORE` | backend | `memory` | Auth-state backend for `self_hosted_single_admin` sessions and login-attempt lockout state. Accepted values are `memory` and `sqlite`; `sqlite` is opt-in and keeps `trusted_local_no_auth` memory-backed. |
+| `INSPECTRA_AUTH_STATE_DB_PATH` | backend | `data/runtime/auth_state.sqlite3` under `INSPECTRA_DATA_DIR` when SQLite is enabled | Optional SQLite auth-state DB path for persistent self-hosted sessions and login attempts. The DB stores hashed session, CSRF, and login client-key material, not raw session ids, CSRF tokens, passwords, admin password hashes, request bodies, or raw client keys. |
 | `INSPECTRA_CORS_ORIGINS` | backend | `http://localhost:5173` | Comma-separated browser origins allowed in development. |
 | `INSPECTRA_DATA_DIR` | backend, audit-tools | `/app/data` | Local data mount used for uploads and results. |
 | `INSPECTRA_MAX_UPLOAD_BYTES` | backend | `20971520` | Maximum accepted upload size. Default is 20 MB. |

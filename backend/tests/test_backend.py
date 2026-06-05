@@ -24,7 +24,12 @@ from app.auth import (
     is_supported_admin_password_hash,
     verify_admin_password,
 )
-from app.auth_state_sqlite import SQLiteAdminSessionStore, SQLiteAuthStateError, SQLiteAuthStateStore
+from app.auth_state_sqlite import (
+    SQLiteAdminSessionStore,
+    SQLiteAuthStateError,
+    SQLiteAuthStateStore,
+    SQLiteLoginAttemptStore,
+)
 from app.config import (
     DEFAULT_AUTH_STATE_STORE,
     DEFAULT_AUTH_MODE,
@@ -222,12 +227,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
     app.state.admin_sessions = backend_main.create_admin_session_store(settings)
-    app.state.login_attempts = LoginAttemptStore(
-        window_seconds=settings.login_attempt_window_seconds,
-        max_failures=settings.login_attempt_max_failures,
-        lockout_seconds=settings.login_lockout_seconds,
-        max_keys=settings.login_attempt_max_keys,
-    )
+    app.state.login_attempts = backend_main.create_login_attempt_store(settings)
     app.state.session_cookie_settings = build_session_cookie_settings(settings.session_ttl_seconds)
     app.state.files = file_store
     app.state.jobs = job_store
@@ -813,6 +813,90 @@ def test_sqlite_auth_state_cleanup_login_attempts(tmp_path):
     assert store.get_login_attempt("203.0.113.111") is None
 
 
+def test_sqlite_login_attempt_store_matches_window_lockout_and_reset_semantics(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = SQLiteLoginAttemptStore(
+        db_path,
+        window_seconds=60,
+        max_failures=2,
+        lockout_seconds=120,
+        max_keys=10,
+        now_func=lambda: current_time,
+    )
+
+    first = store.record_failure(" 203.0.113.120 ")
+    second = store.record_failure("203.0.113.120")
+
+    assert first.failure_count == 1
+    assert first.client_key == "203.0.113.120"
+    assert second.failure_count == 2
+    assert store.is_locked("203.0.113.120") is True
+    assert store.seconds_until_unlock("203.0.113.120") == 120
+
+    restarted_store = SQLiteLoginAttemptStore(
+        db_path,
+        window_seconds=60,
+        max_failures=2,
+        lockout_seconds=120,
+        max_keys=10,
+        now_func=lambda: current_time,
+    )
+
+    assert restarted_store.is_locked("203.0.113.120") is True
+    assert restarted_store.reset_success("203.0.113.120") is True
+    assert store.failure_count("203.0.113.120") == 0
+
+    current_time = current_time + timedelta(seconds=61)
+    reset_window = store.record_failure("203.0.113.121")
+    current_time = current_time + timedelta(seconds=61)
+    outside_window = store.record_failure("203.0.113.121")
+
+    assert reset_window.failure_count == 1
+    assert outside_window.failure_count == 1
+
+
+def test_sqlite_login_attempt_store_cleanup_and_pruning_are_bounded(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = SQLiteLoginAttemptStore(
+        db_path,
+        window_seconds=60,
+        max_failures=5,
+        lockout_seconds=120,
+        max_keys=2,
+        now_func=lambda: current_time,
+    )
+
+    store.record_failure("203.0.113.130")
+    current_time = current_time + timedelta(seconds=1)
+    store.record_failure("203.0.113.131")
+    current_time = current_time + timedelta(seconds=1)
+    store.record_failure("203.0.113.132")
+
+    assert store.record_count() == 2
+    assert store.failure_count("203.0.113.130") == 0
+    assert store.failure_count("203.0.113.131") == 1
+    assert store.failure_count("203.0.113.132") == 1
+
+    lockout_store = SQLiteLoginAttemptStore(
+        db_path,
+        window_seconds=60,
+        max_failures=1,
+        lockout_seconds=30,
+        max_keys=10,
+        now_func=lambda: current_time,
+    )
+    lockout_store.record_failure("203.0.113.133")
+    assert lockout_store.is_locked("203.0.113.133") is True
+
+    current_time = current_time + timedelta(seconds=31)
+
+    assert lockout_store.purge_expired() >= 1
+    assert lockout_store.is_locked("203.0.113.133") is False
+    assert b"203.0.113.133" not in db_path.read_bytes()
+
+
 def test_session_cookie_settings_are_safe_by_default():
     cookie_settings = build_session_cookie_settings(ttl_seconds=DEFAULT_SESSION_TTL_SECONDS)
 
@@ -890,7 +974,7 @@ def test_auth_state_store_config_defaults_and_sqlite_override(monkeypatch, tmp_p
     assert app.state.settings.auth_state_store == "sqlite"
     assert app.state.settings.resolved_auth_state_db_path == db_path
     assert isinstance(app.state.admin_sessions, SQLiteAdminSessionStore)
-    assert isinstance(app.state.login_attempts, LoginAttemptStore)
+    assert isinstance(app.state.login_attempts, SQLiteLoginAttemptStore)
     assert db_path.exists()
 
 
@@ -903,6 +987,8 @@ def test_auth_state_store_sqlite_is_ignored_for_trusted_local(monkeypatch, tmp_p
     assert app.state.settings.auth_state_store == "sqlite"
     assert isinstance(app.state.admin_sessions, AdminSessionStore)
     assert not isinstance(app.state.admin_sessions, SQLiteAdminSessionStore)
+    assert isinstance(app.state.login_attempts, LoginAttemptStore)
+    assert not isinstance(app.state.login_attempts, SQLiteLoginAttemptStore)
     assert db_path.exists() is False
 
 
@@ -1581,24 +1667,172 @@ async def test_self_hosted_sqlite_expired_session_is_rejected(monkeypatch, tmp_p
 
 
 @pytest.mark.anyio
-async def test_self_hosted_sqlite_keeps_login_attempt_rate_limit_in_memory(monkeypatch, tmp_path):
+async def test_self_hosted_sqlite_login_attempts_record_failures_in_db_and_redact(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
     monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
-    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
     monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
-    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(tmp_path / "runtime" / "auth_state.sqlite3"))
-    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "1")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "3")
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         first_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
-        locked_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        second_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
 
     assert isinstance(app.state.admin_sessions, SQLiteAdminSessionStore)
-    assert isinstance(app.state.login_attempts, LoginAttemptStore)
+    assert isinstance(app.state.login_attempts, SQLiteLoginAttemptStore)
+    assert first_failure.status_code == 401
+    assert second_failure.status_code == 401
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT client_key_hash, failure_count, locked_until FROM auth_login_attempts"
+        ).fetchone()
+    assert row is not None
+    assert len(row[0]) == 64
+    assert row[1] == 2
+    assert row[2] is None
+    db_bytes = db_path.read_bytes()
+    assert b"127.0.0.1" not in db_bytes
+    assert b"wrong-admin-password" not in db_bytes
+    assert ADMIN_PASSWORD_FIXTURE.encode("utf-8") not in db_bytes
+    assert admin_hash.encode("utf-8") not in db_bytes
+
+
+@pytest.mark.anyio
+async def test_self_hosted_sqlite_login_lockout_persists_after_store_recreate(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "1")
+    monkeypatch.setenv("INSPECTRA_LOGIN_LOCKOUT_SECONDS", "120")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        app.state.login_attempts = backend_main.create_login_attempt_store(app.state.settings)
+        locked_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+
     assert first_failure.status_code == 401
     assert locked_response.status_code == 429
     assert locked_response.json() == {"detail": RATE_LIMITED_DETAIL}
+    assert int(locked_response.headers["retry-after"]) > 0
+    assert "set-cookie" not in locked_response.headers
+
+
+@pytest.mark.anyio
+async def test_self_hosted_sqlite_successful_login_resets_persistent_attempt(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "3")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        with sqlite3.connect(db_path) as connection:
+            before_success = connection.execute("SELECT COUNT(*) FROM auth_login_attempts").fetchone()[0]
+        success_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        with sqlite3.connect(db_path) as connection:
+            after_success = connection.execute("SELECT COUNT(*) FROM auth_login_attempts").fetchone()[0]
+
+    assert first_failure.status_code == 401
+    assert before_success == 1
+    assert success_response.status_code == 200
+    assert success_response.json()["authenticated"] is True
+    assert after_success == 0
+
+
+def test_self_hosted_sqlite_login_attempt_stores_share_lockout(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "1")
+    configure_test_state(monkeypatch, tmp_path)
+
+    first_store = backend_main.create_login_attempt_store(app.state.settings)
+    second_store = backend_main.create_login_attempt_store(app.state.settings)
+
+    assert isinstance(first_store, SQLiteLoginAttemptStore)
+    assert isinstance(second_store, SQLiteLoginAttemptStore)
+    first_store.record_failure("203.0.113.140")
+    assert second_store.is_locked("203.0.113.140") is True
+    assert second_store.seconds_until_unlock("203.0.113.140") > 0
+
+
+@pytest.mark.anyio
+async def test_self_hosted_sqlite_login_rate_limit_ignores_forwarded_headers(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "1")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_failure = await client.post(
+            "/auth/login",
+            json={"password": "wrong-admin-password"},
+            headers={
+                "X-Forwarded-For": "198.51.100.10",
+                "X-Forwarded-Proto": "https",
+                "Forwarded": "for=198.51.100.10;proto=https",
+            },
+        )
+        locked_response = await client.post(
+            "/auth/login",
+            json={"password": ADMIN_PASSWORD_FIXTURE},
+            headers={
+                "X-Forwarded-For": "203.0.113.10",
+                "X-Forwarded-Proto": "https",
+                "Forwarded": "for=203.0.113.10;proto=https",
+            },
+        )
+
+    assert first_failure.status_code == 401
+    assert locked_response.status_code == 429
+    db_bytes = db_path.read_bytes()
+    assert b"198.51.100.10" not in db_bytes
+    assert b"203.0.113.10" not in db_bytes
+
+
+@pytest.mark.anyio
+async def test_self_hosted_sqlite_sessions_still_work_with_persistent_attempts(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        app.state.admin_sessions = backend_main.create_admin_session_store(app.state.settings)
+        app.state.login_attempts = backend_main.create_login_attempt_store(app.state.settings)
+        status_response = await client.get("/auth/status")
+        upload_response = await client.post(
+            "/files/pdf",
+            headers={"X-CSRF-Token": status_response.json()["csrf_token"]},
+            files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+        )
+
+    assert login_response.status_code == 200
+    assert status_response.status_code == 200
+    assert status_response.json()["authenticated"] is True
+    assert upload_response.status_code == 201
 
 
 @pytest.mark.anyio

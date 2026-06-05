@@ -16,7 +16,7 @@ from app.auth import (
     verify_admin_csrf_token,
     verify_admin_password,
 )
-from app.auth_state_sqlite import SQLiteAdminSessionStore
+from app.auth_state_sqlite import SQLiteAdminSessionStore, SQLiteLoginAttemptStore
 from app.config import (
     get_auth_mode,
     get_current_operator_for_trusted_local,
@@ -91,12 +91,7 @@ async def lifespan(app: FastAPI):
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
     app.state.admin_sessions = create_admin_session_store(settings)
-    app.state.login_attempts = LoginAttemptStore(
-        window_seconds=settings.login_attempt_window_seconds,
-        max_failures=settings.login_attempt_max_failures,
-        lockout_seconds=settings.login_lockout_seconds,
-        max_keys=settings.login_attempt_max_keys,
-    )
+    app.state.login_attempts = create_login_attempt_store(settings)
     app.state.session_cookie_settings = build_session_cookie_settings(settings.session_ttl_seconds)
     app.state.files = file_store
     app.state.jobs = job_store
@@ -205,6 +200,23 @@ def create_admin_session_store(settings) -> AdminSessionStore | SQLiteAdminSessi
     if get_auth_mode(settings) == "self_hosted_single_admin" and settings.auth_state_store == "sqlite":
         return SQLiteAdminSessionStore(settings.resolved_auth_state_db_path, settings.session_ttl_seconds)
     return AdminSessionStore(settings.session_ttl_seconds)
+
+
+def create_login_attempt_store(settings) -> LoginAttemptStore | SQLiteLoginAttemptStore:
+    if get_auth_mode(settings) == "self_hosted_single_admin" and settings.auth_state_store == "sqlite":
+        return SQLiteLoginAttemptStore(
+            settings.resolved_auth_state_db_path,
+            window_seconds=settings.login_attempt_window_seconds,
+            max_failures=settings.login_attempt_max_failures,
+            lockout_seconds=settings.login_lockout_seconds,
+            max_keys=settings.login_attempt_max_keys,
+        )
+    return LoginAttemptStore(
+        window_seconds=settings.login_attempt_window_seconds,
+        max_failures=settings.login_attempt_max_failures,
+        lockout_seconds=settings.login_lockout_seconds,
+        max_keys=settings.login_attempt_max_keys,
+    )
 
 
 def is_login_available_for_settings(settings) -> bool:

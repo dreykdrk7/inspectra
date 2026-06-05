@@ -172,6 +172,8 @@ Passive Alpha persistent session store integration decision: `PASSIVE_ALPHA_PERS
 
 Passive Alpha persistent login-attempt store design decision: `PASSIVE_ALPHA_PERSISTENT_LOGIN_ATTEMPT_STORE_DESIGN_ACCEPTED`. Future private `self_hosted_single_admin` auth hardening should persist login-attempt/rate-limit state in the existing SQLite auth-state DB when `INSPECTRA_AUTH_STATE_STORE=sqlite`, using hashed client keys and current backend-observed client-key semantics. The design keeps memory as the default, keeps `trusted_local_no_auth` unaffected, preserves generic `429` and safe `Retry-After`, and does not implement runtime wiring, frontend changes, trusted proxy handling, recovery endpoints, public/community anti-abuse, production readiness, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
 
+Passive Alpha persistent login-attempt store integration decision: `PASSIVE_ALPHA_PERSISTENT_LOGIN_ATTEMPT_STORE_INTEGRATED`. `self_hosted_single_admin` can now use SQLite-backed persistent login-attempt/rate-limit state when `INSPECTRA_AUTH_STATE_STORE=sqlite` is explicitly configured. The default remains memory-backed, `trusted_local_no_auth` does not require persistent auth state, and stored attempt rows use hashed client-key material rather than raw client keys. Generic `429`, safe `Retry-After`, current backend-observed client-key semantics, and ignored forwarded headers are preserved. This does not add frontend behavior, admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, public/community anti-abuse, production readiness, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

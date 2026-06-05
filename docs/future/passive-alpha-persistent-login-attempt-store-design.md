@@ -2,6 +2,8 @@
 
 Status: `PASSIVE_ALPHA_PERSISTENT_LOGIN_ATTEMPT_STORE_DESIGN_ACCEPTED`
 
+Historical note: this docs-first design was implemented by `docs/future/passive-alpha-persistent-login-attempt-store-integration.md`. It remains the design reference for scope and acceptance criteria.
+
 Base auth-state design: `docs/future/passive-alpha-persistent-auth-state-design.md`
 
 SQLite scaffold: `docs/future/passive-alpha-sqlite-auth-store-scaffold.md`
