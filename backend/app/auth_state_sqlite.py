@@ -1,10 +1,13 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 from pathlib import Path
+import secrets
 import sqlite3
 from typing import Any
+
+from app.auth import ADMIN_CSRF_TOKEN_BYTES, ADMIN_SESSION_ID_BYTES, AdminSession
 
 
 AUTH_STATE_SCHEMA_VERSION = 1
@@ -115,6 +118,50 @@ class SQLiteAuthStateStore:
             return None
 
         return _session_from_row(row)
+
+    def verify_session_csrf_token(
+        self,
+        session_id: str | None,
+        csrf_token: str | None,
+        *,
+        now: datetime | float | int | None = None,
+    ) -> bool:
+        if not isinstance(session_id, str) or not session_id or not isinstance(csrf_token, str) or not csrf_token:
+            return False
+
+        session_hash = hash_session_id(session_id)
+        row = self._fetchone(
+            "SELECT session_id_hash, csrf_token_hash, expires_at, revoked_at FROM auth_sessions WHERE session_id_hash = ?",
+            (session_hash,),
+        )
+        if row is None or not hmac.compare_digest(str(row["session_id_hash"]), session_hash):
+            return False
+        if row["revoked_at"] is not None or float(row["expires_at"]) <= _timestamp(now):
+            return False
+        return hmac.compare_digest(str(row["csrf_token_hash"]), hash_csrf_token(csrf_token))
+
+    def update_session_csrf_token(
+        self,
+        session_id: str | None,
+        csrf_token: str,
+        *,
+        now: datetime | float | int | None = None,
+    ) -> bool:
+        if not isinstance(session_id, str) or not session_id:
+            return False
+        self._require_non_blank("csrf_token", csrf_token)
+        now_ts = _timestamp(now)
+        cursor = self._execute(
+            """
+            UPDATE auth_sessions
+            SET csrf_token_hash = ?, last_seen_at = ?
+            WHERE session_id_hash = ?
+              AND revoked_at IS NULL
+              AND expires_at > ?
+            """,
+            (hash_csrf_token(csrf_token), now_ts, hash_session_id(session_id), now_ts),
+        )
+        return cursor.rowcount > 0
 
     def revoke_session(
         self,
@@ -355,6 +402,110 @@ class SQLiteAuthStateStore:
             raise ValueError(f"{field_name} is required")
 
 
+class SQLiteAdminSessionStore:
+    def __init__(self, db_path: str | Path, ttl_seconds: int, now_func=None, token_factory=None, csrf_token_factory=None) -> None:
+        self.ttl_seconds = max(1, int(ttl_seconds))
+        self._now_func = now_func or _utc_now
+        self._token_factory = token_factory or _new_session_id
+        self._csrf_token_factory = csrf_token_factory or _new_csrf_token
+        self._auth_state = SQLiteAuthStateStore(db_path)
+        self._csrf_token_cache: dict[str, str] = {}
+
+    def create_admin_session(self, operator_id: str, auth_mode: str = "self_hosted_single_admin") -> AdminSession:
+        now = self._now()
+        session_id = self._unique_session_id()
+        csrf_token = self._csrf_token_factory()
+        persisted = self._auth_state.create_session(
+            session_id,
+            csrf_token,
+            operator_id,
+            auth_mode=auth_mode,
+            expires_at=now + timedelta(seconds=self.ttl_seconds),
+            now=now,
+        )
+        self._csrf_token_cache[session_id] = csrf_token
+        return AdminSession(
+            session_id=session_id,
+            csrf_token=csrf_token,
+            operator_id=persisted.operator_id,
+            created_at=persisted.created_at,
+            expires_at=persisted.expires_at,
+            auth_mode=persisted.auth_mode,
+        )
+
+    def get_session(self, session_id: str | None) -> AdminSession | None:
+        if not isinstance(session_id, str) or not session_id:
+            return None
+        persisted = self._auth_state.get_session(session_id, now=self._now())
+        if persisted is None:
+            self._csrf_token_cache.pop(session_id, None)
+            return None
+        return AdminSession(
+            session_id=session_id,
+            csrf_token=self._csrf_token_cache.get(session_id, ""),
+            operator_id=persisted.operator_id,
+            created_at=persisted.created_at,
+            expires_at=persisted.expires_at,
+            auth_mode=persisted.auth_mode,
+        )
+
+    def is_session_valid(self, session: AdminSession | None) -> bool:
+        if session is None:
+            return False
+        persisted = self._auth_state.get_session(session.session_id, now=self._now())
+        return (
+            persisted is not None
+            and persisted.operator_id == session.operator_id
+            and persisted.auth_mode == session.auth_mode
+            and persisted.expires_at == session.expires_at
+        )
+
+    def invalidate_session(self, session_id: str | None) -> bool:
+        if not isinstance(session_id, str) or not session_id:
+            return False
+        self._csrf_token_cache.pop(session_id, None)
+        return self._auth_state.revoke_session(session_id, "logout", now=self._now())
+
+    def purge_expired_sessions(self) -> int:
+        return self._auth_state.cleanup_sessions(now=self._now())
+
+    def csrf_token_for_session(self, session: AdminSession | None) -> str | None:
+        if session is None:
+            return None
+        cached_token = self._csrf_token_cache.get(session.session_id)
+        if cached_token:
+            return cached_token
+        csrf_token = self._csrf_token_factory()
+        if not self._auth_state.update_session_csrf_token(session.session_id, csrf_token, now=self._now()):
+            return None
+        self._csrf_token_cache[session.session_id] = csrf_token
+        return csrf_token
+
+    def verify_csrf_token(self, session_id: str | None, csrf_token: str | None) -> bool:
+        if not isinstance(session_id, str) or not session_id or not isinstance(csrf_token, str) or not csrf_token:
+            return False
+        cached_token = self._csrf_token_cache.get(session_id)
+        if cached_token and hmac.compare_digest(cached_token, csrf_token):
+            return True
+        if not self._auth_state.verify_session_csrf_token(session_id, csrf_token, now=self._now()):
+            return False
+        self._csrf_token_cache[session_id] = csrf_token
+        return True
+
+    def _unique_session_id(self) -> str:
+        for _ in range(5):
+            session_id = self._token_factory()
+            if self._auth_state.get_session(session_id, now=self._now()) is None:
+                return session_id
+        return _new_session_id()
+
+    def _now(self) -> datetime:
+        current = self._now_func()
+        if current.tzinfo is None:
+            return current.replace(tzinfo=timezone.utc)
+        return current.astimezone(timezone.utc)
+
+
 def hash_session_id(session_id: str) -> str:
     return _hash_value("session", session_id)
 
@@ -429,3 +580,15 @@ def _safe_reason(reason: str | None) -> str | None:
     if not normalized:
         return None
     return normalized[:120]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _new_session_id() -> str:
+    return secrets.token_urlsafe(ADMIN_SESSION_ID_BYTES)
+
+
+def _new_csrf_token() -> str:
+    return secrets.token_urlsafe(ADMIN_CSRF_TOKEN_BYTES)

@@ -16,6 +16,7 @@ from app.auth import (
     verify_admin_csrf_token,
     verify_admin_password,
 )
+from app.auth_state_sqlite import SQLiteAdminSessionStore
 from app.config import (
     get_auth_mode,
     get_current_operator_for_trusted_local,
@@ -89,7 +90,7 @@ async def lifespan(app: FastAPI):
     app.state.auth_mode = get_auth_mode(settings)
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
-    app.state.admin_sessions = AdminSessionStore(settings.session_ttl_seconds)
+    app.state.admin_sessions = create_admin_session_store(settings)
     app.state.login_attempts = LoginAttemptStore(
         window_seconds=settings.login_attempt_window_seconds,
         max_failures=settings.login_attempt_max_failures,
@@ -163,10 +164,7 @@ async def deny_anonymous_sensitive_routes(request: Request, call_next) -> Respon
             content={"detail": AUTH_REQUIRED_DETAIL},
         )
 
-    if is_csrf_required_for_request(request) and not verify_admin_csrf_token(
-        request.headers.get(ADMIN_CSRF_HEADER_NAME),
-        session,
-    ):
+    if is_csrf_required_for_request(request) and not verify_csrf_token_for_request(request, session):
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
             content={"detail": CSRF_REQUIRED_DETAIL},
@@ -203,6 +201,12 @@ def current_session_for_request(request: Request) -> AdminSession | None:
     return session
 
 
+def create_admin_session_store(settings) -> AdminSessionStore | SQLiteAdminSessionStore:
+    if get_auth_mode(settings) == "self_hosted_single_admin" and settings.auth_state_store == "sqlite":
+        return SQLiteAdminSessionStore(settings.resolved_auth_state_db_path, settings.session_ttl_seconds)
+    return AdminSessionStore(settings.session_ttl_seconds)
+
+
 def is_login_available_for_settings(settings) -> bool:
     return get_auth_mode(settings) == "self_hosted_single_admin" and is_supported_admin_password_hash(
         settings.admin_password_hash
@@ -218,6 +222,23 @@ def login_client_key_for_request(request: Request) -> str:
 
 def is_csrf_required_for_request(request: Request) -> bool:
     return request.method.upper() in CSRF_REQUIRED_METHODS
+
+
+def csrf_token_for_session(request: Request, session: AdminSession | None) -> str | None:
+    if session is None:
+        return None
+    token_provider = getattr(request.app.state.admin_sessions, "csrf_token_for_session", None)
+    if callable(token_provider):
+        return token_provider(session)
+    return session.csrf_token
+
+
+def verify_csrf_token_for_request(request: Request, session: AdminSession) -> bool:
+    csrf_token = request.headers.get(ADMIN_CSRF_HEADER_NAME)
+    verifier = getattr(request.app.state.admin_sessions, "verify_csrf_token", None)
+    if callable(verifier):
+        return verifier(session.session_id, csrf_token)
+    return verify_admin_csrf_token(csrf_token, session)
 
 
 def owned_by_current_request(request: Request, owner_id: str | None) -> bool:
@@ -270,7 +291,7 @@ async def auth_status(request: Request) -> AuthStatusResponse:
         authenticated=session is not None,
         operator_id=session.operator_id if session is not None else None,
         csrf_required=auth_required,
-        csrf_token=session.csrf_token if session is not None else None,
+        csrf_token=csrf_token_for_session(request, session),
     )
 
 

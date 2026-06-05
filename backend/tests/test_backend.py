@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
+from http.cookies import SimpleCookie
 import io
 import json
 import sqlite3
@@ -23,8 +24,9 @@ from app.auth import (
     is_supported_admin_password_hash,
     verify_admin_password,
 )
-from app.auth_state_sqlite import SQLiteAuthStateStore
+from app.auth_state_sqlite import SQLiteAdminSessionStore, SQLiteAuthStateError, SQLiteAuthStateStore
 from app.config import (
+    DEFAULT_AUTH_STATE_STORE,
     DEFAULT_AUTH_MODE,
     DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES,
     DEFAULT_LOGIN_ATTEMPT_MAX_KEYS,
@@ -104,6 +106,12 @@ def make_admin_password_hash(password: str = ADMIN_PASSWORD_FIXTURE, salt: str =
         MIN_ADMIN_PASSWORD_HASH_ITERATIONS,
     ).hex()
     return f"{ADMIN_PASSWORD_HASH_SCHEME}${MIN_ADMIN_PASSWORD_HASH_ITERATIONS}${salt}${digest}"
+
+
+def session_cookie_value(response) -> str:
+    cookie = SimpleCookie()
+    cookie.load(response.headers.get("set-cookie", ""))
+    return cookie[ADMIN_SESSION_COOKIE_NAME].value
 
 
 class NoopAuditService:
@@ -213,7 +221,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.auth_mode = get_auth_mode(settings)
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
-    app.state.admin_sessions = AdminSessionStore(settings.session_ttl_seconds)
+    app.state.admin_sessions = backend_main.create_admin_session_store(settings)
     app.state.login_attempts = LoginAttemptStore(
         window_seconds=settings.login_attempt_window_seconds,
         max_failures=settings.login_attempt_max_failures,
@@ -865,6 +873,59 @@ def test_login_attempt_config_defaults_and_env_override(monkeypatch, tmp_path):
     assert app.state.login_attempts.max_keys == 8
 
 
+def test_auth_state_store_config_defaults_and_sqlite_override(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+
+    assert app.state.settings.auth_state_store == DEFAULT_AUTH_STATE_STORE
+    assert app.state.settings.resolved_auth_state_db_path == tmp_path / "runtime" / "auth_state.sqlite3"
+    assert isinstance(app.state.admin_sessions, AdminSessionStore)
+
+    db_path = tmp_path / "custom-runtime" / "auth.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    configure_test_state(monkeypatch, tmp_path)
+
+    assert app.state.settings.auth_state_store == "sqlite"
+    assert app.state.settings.resolved_auth_state_db_path == db_path
+    assert isinstance(app.state.admin_sessions, SQLiteAdminSessionStore)
+    assert isinstance(app.state.login_attempts, LoginAttemptStore)
+    assert db_path.exists()
+
+
+def test_auth_state_store_sqlite_is_ignored_for_trusted_local(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime" / "trusted-local-auth.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    configure_test_state(monkeypatch, tmp_path)
+
+    assert app.state.settings.auth_state_store == "sqlite"
+    assert isinstance(app.state.admin_sessions, AdminSessionStore)
+    assert not isinstance(app.state.admin_sessions, SQLiteAdminSessionStore)
+    assert db_path.exists() is False
+
+
+def test_auth_state_store_config_rejects_unknown_store(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "postgres")
+
+    with pytest.raises(ValueError, match="INSPECTRA_AUTH_STATE_STORE"):
+        load_settings()
+
+
+def test_self_hosted_sqlite_session_store_init_failure_fails_closed(monkeypatch, tmp_path):
+    db_path = tmp_path / "auth-state-directory"
+    db_path.mkdir()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+
+    with pytest.raises(SQLiteAuthStateError, match="Unable to initialize"):
+        configure_test_state(monkeypatch, tmp_path)
+
+
 @pytest.mark.parametrize("raw_value", ["0", "-1", "not-a-number"])
 def test_session_ttl_config_rejects_invalid_values(monkeypatch, tmp_path, raw_value):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
@@ -1378,6 +1439,166 @@ async def test_self_hosted_logout_requires_csrf_and_clears_session(monkeypatch, 
     assert denied_response.status_code == 401
     assert denied_response.json() == {"detail": AUTH_REQUIRED_DETAIL}
     assert second_logout_response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_self_hosted_sqlite_session_persists_auth_status_and_rotates_csrf_after_store_recreate(
+    monkeypatch,
+    tmp_path,
+):
+    admin_hash = make_admin_password_hash()
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        first_status_response = await client.get("/auth/status")
+        session_cookie = session_cookie_value(login_response)
+        first_csrf_token = first_status_response.json()["csrf_token"]
+
+        app.state.admin_sessions = backend_main.create_admin_session_store(app.state.settings)
+
+        restarted_status_response = await client.get("/auth/status")
+        restarted_csrf_token = restarted_status_response.json()["csrf_token"]
+        upload_response = await client.post(
+            "/files/pdf",
+            headers={"X-CSRF-Token": restarted_csrf_token},
+            files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+        )
+
+    assert login_response.status_code == 200
+    assert first_status_response.status_code == 200
+    assert restarted_status_response.status_code == 200
+    assert restarted_status_response.json()["authenticated"] is True
+    assert restarted_status_response.json()["operator_id"] == "local-admin"
+    assert isinstance(restarted_csrf_token, str)
+    assert len(restarted_csrf_token) >= 32
+    assert upload_response.status_code == 201
+    db_bytes = db_path.read_bytes()
+    assert session_cookie.encode("utf-8") not in db_bytes
+    assert first_csrf_token.encode("utf-8") not in db_bytes
+    assert restarted_csrf_token.encode("utf-8") not in db_bytes
+    assert admin_hash.encode("utf-8") not in db_bytes
+
+
+@pytest.mark.anyio
+async def test_self_hosted_sqlite_session_accepts_existing_csrf_hash_after_store_recreate(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        status_response = await client.get("/auth/status")
+        csrf_token = status_response.json()["csrf_token"]
+
+        app.state.admin_sessions = backend_main.create_admin_session_store(app.state.settings)
+
+        upload_response = await client.post(
+            "/files/pdf",
+            headers={"X-CSRF-Token": csrf_token},
+            files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")},
+        )
+
+    assert login_response.status_code == 200
+    assert status_response.status_code == 200
+    assert upload_response.status_code == 201
+    assert csrf_token.encode("utf-8") not in db_path.read_bytes()
+
+
+@pytest.mark.anyio
+async def test_self_hosted_sqlite_logout_revokes_session_persistently(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        session_cookie = session_cookie_value(login_response)
+        status_response = await client.get("/auth/status")
+        logout_response = await client.post(
+            "/auth/logout",
+            headers={"X-CSRF-Token": status_response.json()["csrf_token"]},
+        )
+
+    app.state.admin_sessions = backend_main.create_admin_session_store(app.state.settings)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"Cookie": f"{ADMIN_SESSION_COOKIE_NAME}={session_cookie}"},
+    ) as restarted_client:
+        denied_response = await restarted_client.get("/files")
+        restarted_status_response = await restarted_client.get("/auth/status")
+
+    assert login_response.status_code == 200
+    assert logout_response.status_code == 200
+    assert denied_response.status_code == 401
+    assert restarted_status_response.status_code == 200
+    assert restarted_status_response.json()["authenticated"] is False
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute("SELECT revoked_at, revocation_reason FROM auth_sessions").fetchone()
+    assert row is not None
+    assert row[0] is not None
+    assert row[1] == "logout"
+
+
+@pytest.mark.anyio
+async def test_self_hosted_sqlite_expired_session_is_rejected(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(db_path))
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("UPDATE auth_sessions SET expires_at = 0")
+            connection.commit()
+        app.state.admin_sessions = backend_main.create_admin_session_store(app.state.settings)
+        denied_response = await client.get("/files")
+        status_response = await client.get("/auth/status")
+
+    assert login_response.status_code == 200
+    assert denied_response.status_code == 401
+    assert status_response.status_code == 200
+    assert status_response.json()["authenticated"] is False
+
+
+@pytest.mark.anyio
+async def test_self_hosted_sqlite_keeps_login_attempt_rate_limit_in_memory(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(tmp_path / "runtime" / "auth_state.sqlite3"))
+    monkeypatch.setenv("INSPECTRA_LOGIN_ATTEMPT_MAX_FAILURES", "1")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_failure = await client.post("/auth/login", json={"password": "wrong-admin-password"})
+        locked_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+
+    assert isinstance(app.state.admin_sessions, SQLiteAdminSessionStore)
+    assert isinstance(app.state.login_attempts, LoginAttemptStore)
+    assert first_failure.status_code == 401
+    assert locked_response.status_code == 429
+    assert locked_response.json() == {"detail": RATE_LIMITED_DETAIL}
 
 
 @pytest.mark.anyio

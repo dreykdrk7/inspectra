@@ -59,12 +59,14 @@ DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS = 600
 DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES = 5
 DEFAULT_LOGIN_LOCKOUT_SECONDS = 900
 DEFAULT_LOGIN_ATTEMPT_MAX_KEYS = 1024
+DEFAULT_AUTH_STATE_STORE = "memory"
 SUPPORTED_AUTH_MODES = (
     "trusted_local_no_auth",
     "self_hosted_single_admin",
     "private_team_lightweight_users",
     "public_community_limited_instance",
 )
+SUPPORTED_AUTH_STATE_STORES = ("memory", "sqlite")
 
 AuthMode = Literal[
     "trusted_local_no_auth",
@@ -72,6 +74,7 @@ AuthMode = Literal[
     "private_team_lightweight_users",
     "public_community_limited_instance",
 ]
+AuthStateStore = Literal["memory", "sqlite"]
 
 
 @dataclass(frozen=True)
@@ -148,6 +151,8 @@ class Settings:
     login_attempt_max_failures: int = DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES
     login_lockout_seconds: int = DEFAULT_LOGIN_LOCKOUT_SECONDS
     login_attempt_max_keys: int = DEFAULT_LOGIN_ATTEMPT_MAX_KEYS
+    auth_state_store: AuthStateStore = DEFAULT_AUTH_STATE_STORE
+    auth_state_db_path: Path | None = None
 
     @property
     def upload_dir(self) -> Path:
@@ -161,6 +166,14 @@ class Settings:
     def jobs_dir(self) -> Path:
         return self.results_dir / "jobs"
 
+    @property
+    def default_auth_state_db_path(self) -> Path:
+        return self.data_dir / "runtime" / "auth_state.sqlite3"
+
+    @property
+    def resolved_auth_state_db_path(self) -> Path:
+        return self.auth_state_db_path or self.default_auth_state_db_path
+
     def ensure_directories(self) -> None:
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -170,6 +183,7 @@ def load_settings() -> Settings:
     data_dir = Path(os.getenv("INSPECTRA_DATA_DIR", "data")).resolve()
     tool_runner_url = os.getenv("INSPECTRA_TOOL_RUNNER_URL", "http://audit-tools:8081").rstrip("/")
     auth_mode = _auth_mode_from_env("INSPECTRA_AUTH_MODE", DEFAULT_AUTH_MODE)
+    auth_state_store = _auth_state_store_from_env("INSPECTRA_AUTH_STATE_STORE", DEFAULT_AUTH_STATE_STORE)
     admin_password_hash = _optional_secret_from_env("INSPECTRA_ADMIN_PASSWORD_HASH")
     max_upload_bytes = _positive_int_from_env("INSPECTRA_MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)
     cors_origins = _csv_from_env("INSPECTRA_CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
@@ -360,10 +374,13 @@ def load_settings() -> Settings:
         "INSPECTRA_LOGIN_ATTEMPT_MAX_KEYS",
         DEFAULT_LOGIN_ATTEMPT_MAX_KEYS,
     )
+    auth_state_db_path = _optional_path_from_env("INSPECTRA_AUTH_STATE_DB_PATH")
     return Settings(
         data_dir=data_dir,
         tool_runner_url=tool_runner_url,
         auth_mode=auth_mode,
+        auth_state_store=auth_state_store,
+        auth_state_db_path=auth_state_db_path,
         admin_password_hash=admin_password_hash,
         max_upload_bytes=max_upload_bytes,
         cors_origins=cors_origins,
@@ -451,6 +468,17 @@ def _auth_mode_from_env(name: str, default: AuthMode) -> AuthMode:
     raise ValueError(f"{name} must be one of: {allowed}.")
 
 
+def _auth_state_store_from_env(name: str, default: AuthStateStore) -> AuthStateStore:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower().replace("-", "_")
+    if normalized in SUPPORTED_AUTH_STATE_STORES:
+        return cast(AuthStateStore, normalized)
+    allowed = ", ".join(SUPPORTED_AUTH_STATE_STORES)
+    raise ValueError(f"{name} must be one of: {allowed}.")
+
+
 def _optional_secret_from_env(name: str) -> str | None:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -459,6 +487,16 @@ def _optional_secret_from_env(name: str) -> str | None:
     if not value:
         return None
     return value
+
+
+def _optional_path_from_env(name: str) -> Path | None:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return None
+    value = raw_value.strip()
+    if not value:
+        return None
+    return Path(value).expanduser().resolve()
 
 
 def _positive_int_from_env(name: str, default: int) -> int:
