@@ -162,6 +162,8 @@ Passive Alpha deployment hardening runbook decision: `PASSIVE_ALPHA_DEPLOYMENT_H
 
 Passive Alpha README launch-copy polish decision: `PASSIVE_ALPHA_README_LAUNCH_COPY_POLISH_ACCEPTED`. README positioning now summarizes Passive Alpha as local-first, self-hosted-first, passive analysis with private single-admin alpha boundaries, deployment-hardening references, explicit non-production/no-public/no-SaaS/no-Nmap scope, and an immediate roadmap. This is docs-only and does not add runtime behavior, production readiness, public/community runtime, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
 
+Passive Alpha deployment hardening closeout decision: `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_CLOSED`. The deployment hardening docs line is closed across design, runbook, and README polish. This records private/self-hosted alpha expectations for HTTPS/TLS, reverse proxy placement, no direct backend internet exposure, explicit origins, no wildcard credentialed CORS, and sensitive-log avoidance, while keeping production readiness, public/community runtime, SaaS/billing/quota behavior, Nmap, broader Active behavior, and new capabilities out of scope. Persistent auth state remains the next design block.
+
 Tools used in this phase:
 
 - `pdfinfo`

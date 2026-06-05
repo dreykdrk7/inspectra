@@ -25,6 +25,7 @@ Reference docs:
 - self-hosted alpha release notes: `docs/future/passive-alpha-self-hosted-release-notes.md`
 - deployment hardening design: `docs/future/passive-alpha-deployment-hardening-design.md`
 - deployment hardening runbook: `docs/future/passive-alpha-deployment-hardening-runbook.md`
+- deployment hardening closeout: `docs/future/passive-alpha-deployment-hardening-closeout.md`
 
 ### What Passive Alpha Does Not Promise
 
@@ -52,11 +53,10 @@ Reference docs:
 
 ### Immediate Roadmap
 
-1. Deployment hardening closeout.
-2. Persistent auth state design and implementation planning.
-3. Release candidate checklist.
-4. Tag, release, and push decision.
-5. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
+1. Persistent auth state design and implementation planning.
+2. Release candidate checklist.
+3. Tag, release, and push decision.
+4. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
 
 ## What This MVP Does
 

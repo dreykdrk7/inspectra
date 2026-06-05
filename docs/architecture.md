@@ -109,6 +109,8 @@ The Passive Alpha deployment hardening runbook decision is `PASSIVE_ALPHA_DEPLOY
 
 The Passive Alpha README launch-copy polish decision is `PASSIVE_ALPHA_README_LAUNCH_COPY_POLISH_ACCEPTED`. The README now has a concise private-alpha entry point covering Passive Alpha positioning, `trusted_local_no_auth`, `self_hosted_single_admin`, deployment hardening references, explicit no-scope, and immediate roadmap. This is docs-only and does not change runtime behavior, approve production/public/community readiness, add SaaS/billing behavior, add Nmap, or add new Active behavior.
 
+The Passive Alpha deployment hardening closeout decision is `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_CLOSED`. It closes the docs-only Pathing B line across deployment hardening design, operator runbook, and README launch-copy polish. Accepted posture remains private/self-hosted alpha with TLS/reverse-proxy expectations before exposure, no direct backend internet exposure, explicit origins, no wildcard credentialed CORS, sensitive-log avoidance, and no production/public/community/SaaS/Nmap approval. Residual in-memory session and login-attempt gaps move to persistent auth-state design.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
