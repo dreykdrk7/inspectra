@@ -29,6 +29,7 @@ Reference docs:
 - persistent auth state design: `docs/future/passive-alpha-persistent-auth-state-design.md`
 - SQLite auth store scaffold: `docs/future/passive-alpha-sqlite-auth-store-scaffold.md`
 - persistent session store integration: `docs/future/passive-alpha-persistent-session-store-integration.md`
+- persistent login-attempt store design: `docs/future/passive-alpha-persistent-login-attempt-store-design.md`
 
 ### What Passive Alpha Does Not Promise
 
@@ -56,7 +57,7 @@ Reference docs:
 
 ### Immediate Roadmap
 
-1. Persistent login-attempt store design, kept separate from session persistence.
+1. Persistent login-attempt store integration, kept separate from session persistence.
 2. Release candidate checklist.
 3. Tag, release, and push decision.
 4. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
@@ -162,6 +163,8 @@ The persistent auth state design is documented in `docs/future/passive-alpha-per
 The SQLite auth store scaffold is documented in `docs/future/passive-alpha-sqlite-auth-store-scaffold.md`; it adds an isolated backend store and tests for hashed session, CSRF, and login-attempt state.
 
 Persistent session-store integration is documented in `docs/future/passive-alpha-persistent-session-store-integration.md`; it wires SQLite-backed sessions into `self_hosted_single_admin` when `INSPECTRA_AUTH_STATE_STORE=sqlite`, while keeping default trusted-local behavior and login attempts in memory.
+
+Persistent login-attempt store design is documented in `docs/future/passive-alpha-persistent-login-attempt-store-design.md`; it accepts SQLite-backed login-attempt persistence as the next runtime direction for `self_hosted_single_admin` when `INSPECTRA_AUTH_STATE_STORE=sqlite`, but it does not integrate that runtime behavior yet.
 
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 

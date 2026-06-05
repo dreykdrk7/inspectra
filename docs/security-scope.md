@@ -170,6 +170,8 @@ Passive Alpha SQLite auth store scaffold decision: `PASSIVE_ALPHA_SQLITE_AUTH_ST
 
 Passive Alpha persistent session store integration decision: `PASSIVE_ALPHA_PERSISTENT_SESSION_STORE_INTEGRATED`. `self_hosted_single_admin` can now use SQLite-backed persistent sessions when `INSPECTRA_AUTH_STATE_STORE=sqlite` is explicitly configured. The default remains memory-backed, `trusted_local_no_auth` does not require persistent auth state, and login-attempt/rate-limit state remains in memory. The SQLite session integration stores hashed session and CSRF material, preserves existing login/logout/status/cookie/CSRF/owner-scope contracts, and does not add frontend behavior, public/community runtime, production readiness, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
 
+Passive Alpha persistent login-attempt store design decision: `PASSIVE_ALPHA_PERSISTENT_LOGIN_ATTEMPT_STORE_DESIGN_ACCEPTED`. Future private `self_hosted_single_admin` auth hardening should persist login-attempt/rate-limit state in the existing SQLite auth-state DB when `INSPECTRA_AUTH_STATE_STORE=sqlite`, using hashed client keys and current backend-observed client-key semantics. The design keeps memory as the default, keeps `trusted_local_no_auth` unaffected, preserves generic `429` and safe `Retry-After`, and does not implement runtime wiring, frontend changes, trusted proxy handling, recovery endpoints, public/community anti-abuse, production readiness, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`
