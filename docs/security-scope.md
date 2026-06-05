@@ -176,6 +176,8 @@ Passive Alpha persistent login-attempt store integration decision: `PASSIVE_ALPH
 
 Passive Alpha auth-state cleanup/rotation design decision: `PASSIVE_ALPHA_AUTH_STATE_CLEANUP_ROTATION_DESIGN_ACCEPTED`. The SQLite auth-state DB cleanup and rotation model is accepted as docs-first design: expired/revoked sessions and expired/completed login attempts must remain invalid, bounded cleanup/pruning should control growth, the local DB is sensitive operational state, backups/snapshots require care, and local/offline intervention remains separate from the HTTP app. This does not add runtime behavior, frontend behavior, API/cookie/session/CSRF changes, admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, public/community anti-abuse, production readiness, SaaS/billing/quota behavior, Nmap, broader Active behavior, release, tag, or push.
 
+Passive Alpha auth-state cleanup/rotation smoke decision: `PASSIVE_ALPHA_AUTH_STATE_CLEANUP_ROTATION_SMOKE_PASSED`. Backend smoke coverage validates existing SQLite auth-state cleanup, revocation, expiration, login-attempt pruning, restart/store recreation, DB-byte redaction, ignored forwarded headers, and preserved auth contracts. This does not add frontend behavior, admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, public/community anti-abuse, production readiness, SaaS/billing/quota behavior, Nmap, broader Active behavior, release, tag, or push.
+
 Tools used in this phase:
 
 - `pdfinfo`

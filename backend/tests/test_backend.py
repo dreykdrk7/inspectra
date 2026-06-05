@@ -688,6 +688,45 @@ def test_sqlite_auth_state_cleanup_removes_expired_and_old_revoked_sessions(tmp_
     assert row_count == 1
 
 
+def test_sqlite_auth_state_cleanup_retains_recent_revoked_session_row_but_rejects_it(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = SQLiteAuthStateStore(db_path)
+
+    store.create_session(
+        "recent-revoked-session-token",
+        "recent-revoked-csrf-token",
+        DEFAULT_LOCAL_OPERATOR.id,
+        expires_at=current_time + timedelta(seconds=120),
+        now=current_time - timedelta(seconds=60),
+    )
+    store.create_session(
+        "active-retained-session-token",
+        "active-retained-csrf-token",
+        DEFAULT_LOCAL_OPERATOR.id,
+        expires_at=current_time + timedelta(seconds=120),
+        now=current_time,
+    )
+    assert store.revoke_session(
+        "recent-revoked-session-token",
+        "logout",
+        now=current_time - timedelta(seconds=5),
+    )
+
+    assert store.get_session("recent-revoked-session-token", now=current_time) is None
+    assert store.cleanup_sessions(now=current_time, revoked_retention_seconds=30) == 0
+    assert store.get_session("active-retained-session-token", now=current_time) is not None
+    with sqlite3.connect(db_path) as connection:
+        row_count = connection.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0]
+    assert row_count == 2
+
+    assert store.cleanup_sessions(now=current_time + timedelta(seconds=26), revoked_retention_seconds=30) == 1
+    assert store.get_session("active-retained-session-token", now=current_time + timedelta(seconds=26)) is not None
+    with sqlite3.connect(db_path) as connection:
+        row_count_after_retention = connection.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0]
+    assert row_count_after_retention == 1
+
+
 def test_sqlite_auth_state_login_attempt_window_and_lockout(tmp_path):
     db_path = tmp_path / "auth_state.sqlite3"
     current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -895,6 +934,34 @@ def test_sqlite_login_attempt_store_cleanup_and_pruning_are_bounded(tmp_path):
     assert lockout_store.purge_expired() >= 1
     assert lockout_store.is_locked("203.0.113.133") is False
     assert b"203.0.113.133" not in db_path.read_bytes()
+
+
+def test_sqlite_login_attempt_pruning_keeps_active_lockout_under_row_pressure(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = SQLiteLoginAttemptStore(
+        db_path,
+        window_seconds=120,
+        max_failures=2,
+        lockout_seconds=300,
+        max_keys=2,
+        now_func=lambda: current_time,
+    )
+
+    store.record_failure("203.0.113.150")
+    current_time = current_time + timedelta(seconds=1)
+    store.record_failure("203.0.113.150")
+    assert store.is_locked("203.0.113.150") is True
+
+    current_time = current_time + timedelta(seconds=1)
+    store.record_failure("203.0.113.151")
+    current_time = current_time + timedelta(seconds=1)
+    store.record_failure("203.0.113.152")
+
+    assert store.record_count() == 2
+    assert store.is_locked("203.0.113.150") is True
+    assert store.failure_count("203.0.113.151") == 0
+    assert store.failure_count("203.0.113.152") == 1
 
 
 def test_session_cookie_settings_are_safe_by_default():
