@@ -166,6 +166,8 @@ Passive Alpha deployment hardening closeout decision: `PASSIVE_ALPHA_DEPLOYMENT_
 
 Passive Alpha persistent auth state design decision: `PASSIVE_ALPHA_PERSISTENT_AUTH_STATE_DESIGN_ACCEPTED`. Future private/self-hosted auth hardening should use a local SQLite auth-state store for session and login-attempt persistence, with hashed session/CSRF material, restart-stable logout/expiration/lockout semantics, and no password, admin hash, cookie, request-body, upload, report, Raw JSON, or secret storage. This is docs-only and does not implement runtime behavior, public/community runtime, production readiness, SaaS/billing/quota behavior, OAuth/OIDC, multi-user auth, Nmap, broader Active behavior, or new capabilities.
 
+Passive Alpha SQLite auth store scaffold decision: `PASSIVE_ALPHA_SQLITE_AUTH_STORE_SCAFFOLD_ACCEPTED`. The backend has an isolated SQLite auth-state module and tests that store hashed session, CSRF, and client-key material for future persistent auth work. The live auth flow still uses the current in-memory stores, and this scaffold does not change frontend behavior, API/cookie contracts, public/community runtime, production readiness, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

@@ -27,6 +27,7 @@ Reference docs:
 - deployment hardening runbook: `docs/future/passive-alpha-deployment-hardening-runbook.md`
 - deployment hardening closeout: `docs/future/passive-alpha-deployment-hardening-closeout.md`
 - persistent auth state design: `docs/future/passive-alpha-persistent-auth-state-design.md`
+- SQLite auth store scaffold: `docs/future/passive-alpha-sqlite-auth-store-scaffold.md`
 
 ### What Passive Alpha Does Not Promise
 
@@ -54,7 +55,7 @@ Reference docs:
 
 ### Immediate Roadmap
 
-1. Persistent auth state implementation planning from the accepted SQLite-backed design.
+1. Persistent session-store integration from the isolated SQLite auth-state scaffold.
 2. Release candidate checklist.
 3. Tag, release, and push decision.
 4. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
@@ -156,6 +157,8 @@ The private self-hosted deployment hardening design is documented in `docs/futur
 The private self-hosted deployment hardening runbook is documented in `docs/future/passive-alpha-deployment-hardening-runbook.md`; it gives operators a pre-exposure checklist for mode selection, reverse proxy posture, cookies/sessions, rate limiting, CORS, logging, and red flags without executing deployment steps or approving production/public use.
 
 The persistent auth state design is documented in `docs/future/passive-alpha-persistent-auth-state-design.md`; it accepts a future local SQLite auth-state store for private/self-hosted sessions and login attempts without implementing runtime changes, public/community readiness, production approval, SaaS/billing behavior, or multi-user auth.
+
+The SQLite auth store scaffold is documented in `docs/future/passive-alpha-sqlite-auth-store-scaffold.md`; it adds an isolated backend store and tests for hashed session, CSRF, and login-attempt state, but it is not wired into live auth routes yet.
 
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 

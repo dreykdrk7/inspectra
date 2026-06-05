@@ -1,0 +1,431 @@
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import hmac
+from pathlib import Path
+import sqlite3
+from typing import Any
+
+
+AUTH_STATE_SCHEMA_VERSION = 1
+_HASH_PREFIX = "inspectra-auth-state-v1"
+
+
+class SQLiteAuthStateError(RuntimeError):
+    """Controlled error for isolated auth-state store failures."""
+
+
+@dataclass(frozen=True)
+class SQLiteAuthSession:
+    operator_id: str
+    auth_mode: str
+    created_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None = None
+    revocation_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class SQLiteLoginAttempt:
+    failure_count: int
+    first_failed_at: datetime
+    last_failed_at: datetime
+    locked_until: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SQLiteAuthStateStore:
+    def __init__(self, db_path: str | Path) -> None:
+        self.db_path = Path(db_path)
+        self._initialize_schema()
+
+    def create_session(
+        self,
+        session_id: str,
+        csrf_token: str,
+        operator_id: str,
+        auth_mode: str = "self_hosted_single_admin",
+        *,
+        expires_at: datetime | float | int,
+        now: datetime | float | int | None = None,
+        client_key: str | None = None,
+        user_agent: str | None = None,
+    ) -> SQLiteAuthSession:
+        self._require_non_blank("session_id", session_id)
+        self._require_non_blank("csrf_token", csrf_token)
+        self._require_non_blank("operator_id", operator_id)
+        self._require_non_blank("auth_mode", auth_mode)
+
+        now_ts = _timestamp(now)
+        expires_ts = _timestamp(expires_at)
+        session_hash = hash_session_id(session_id)
+        csrf_hash = hash_csrf_token(csrf_token)
+        client_key_hash = hash_client_key(client_key) if client_key is not None else None
+        user_agent_hash = _hash_value("user_agent", user_agent) if user_agent is not None else None
+
+        self._execute(
+            """
+            INSERT OR REPLACE INTO auth_sessions (
+                session_id_hash,
+                csrf_token_hash,
+                operator_id,
+                auth_mode,
+                created_at,
+                last_seen_at,
+                expires_at,
+                revoked_at,
+                revocation_reason,
+                client_key_hash,
+                user_agent_hash
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (
+                session_hash,
+                csrf_hash,
+                operator_id,
+                auth_mode,
+                now_ts,
+                now_ts,
+                expires_ts,
+                client_key_hash,
+                user_agent_hash,
+            ),
+        )
+        return SQLiteAuthSession(
+            operator_id=operator_id,
+            auth_mode=auth_mode,
+            created_at=_datetime_from_timestamp(now_ts),
+            last_seen_at=_datetime_from_timestamp(now_ts),
+            expires_at=_datetime_from_timestamp(expires_ts),
+        )
+
+    def get_session(self, session_id: str | None, *, now: datetime | float | int | None = None) -> SQLiteAuthSession | None:
+        if not isinstance(session_id, str) or not session_id:
+            return None
+
+        session_hash = hash_session_id(session_id)
+        row = self._fetchone("SELECT * FROM auth_sessions WHERE session_id_hash = ?", (session_hash,))
+        if row is None or not hmac.compare_digest(str(row["session_id_hash"]), session_hash):
+            return None
+
+        now_ts = _timestamp(now)
+        if row["revoked_at"] is not None or float(row["expires_at"]) <= now_ts:
+            return None
+
+        return _session_from_row(row)
+
+    def revoke_session(
+        self,
+        session_id: str | None,
+        reason: str | None = None,
+        *,
+        now: datetime | float | int | None = None,
+    ) -> bool:
+        if not isinstance(session_id, str) or not session_id:
+            return False
+
+        cursor = self._execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = ?, revocation_reason = ?
+            WHERE session_id_hash = ? AND revoked_at IS NULL
+            """,
+            (_timestamp(now), _safe_reason(reason), hash_session_id(session_id)),
+        )
+        return cursor.rowcount > 0
+
+    def touch_session(self, session_id: str | None, *, now: datetime | float | int | None = None) -> bool:
+        if not isinstance(session_id, str) or not session_id:
+            return False
+
+        now_ts = _timestamp(now)
+        cursor = self._execute(
+            """
+            UPDATE auth_sessions
+            SET last_seen_at = ?
+            WHERE session_id_hash = ?
+              AND revoked_at IS NULL
+              AND expires_at > ?
+            """,
+            (now_ts, hash_session_id(session_id), now_ts),
+        )
+        return cursor.rowcount > 0
+
+    def cleanup_sessions(
+        self,
+        *,
+        now: datetime | float | int | None = None,
+        revoked_retention_seconds: int = 0,
+    ) -> int:
+        now_ts = _timestamp(now)
+        retention_seconds = max(0, int(revoked_retention_seconds))
+        cursor = self._execute(
+            """
+            DELETE FROM auth_sessions
+            WHERE expires_at <= ?
+               OR (revoked_at IS NOT NULL AND revoked_at <= ?)
+            """,
+            (now_ts, now_ts - retention_seconds),
+        )
+        return max(0, cursor.rowcount)
+
+    def record_login_failure(
+        self,
+        client_key: str,
+        *,
+        now: datetime | float | int | None = None,
+        window_seconds: int,
+        max_failures: int,
+        lockout_seconds: int,
+    ) -> SQLiteLoginAttempt:
+        key_hash = hash_client_key(client_key)
+        now_ts = _timestamp(now)
+        window = max(1, int(window_seconds))
+        threshold = max(1, int(max_failures))
+        lockout = max(1, int(lockout_seconds))
+        existing = self._fetchone("SELECT * FROM auth_login_attempts WHERE client_key_hash = ?", (key_hash,))
+
+        if existing is None or _login_attempt_expired(existing, now_ts, window):
+            failure_count = 1
+            first_failed_at = now_ts
+        elif existing["locked_until"] is not None and float(existing["locked_until"]) > now_ts:
+            return _login_attempt_from_row(existing)
+        else:
+            failure_count = int(existing["failure_count"]) + 1
+            first_failed_at = float(existing["first_failed_at"])
+
+        locked_until = now_ts + lockout if failure_count >= threshold else None
+        self._execute(
+            """
+            INSERT OR REPLACE INTO auth_login_attempts (
+                client_key_hash,
+                failure_count,
+                first_failed_at,
+                last_failed_at,
+                locked_until,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (key_hash, failure_count, first_failed_at, now_ts, locked_until, now_ts),
+        )
+        return SQLiteLoginAttempt(
+            failure_count=failure_count,
+            first_failed_at=_datetime_from_timestamp(first_failed_at),
+            last_failed_at=_datetime_from_timestamp(now_ts),
+            locked_until=_datetime_from_timestamp(locked_until) if locked_until is not None else None,
+            updated_at=_datetime_from_timestamp(now_ts),
+        )
+
+    def get_login_attempt(self, client_key: str) -> SQLiteLoginAttempt | None:
+        row = self._fetchone("SELECT * FROM auth_login_attempts WHERE client_key_hash = ?", (hash_client_key(client_key),))
+        if row is None:
+            return None
+        return _login_attempt_from_row(row)
+
+    def reset_login_attempt(self, client_key: str) -> bool:
+        cursor = self._execute(
+            "DELETE FROM auth_login_attempts WHERE client_key_hash = ?",
+            (hash_client_key(client_key),),
+        )
+        return cursor.rowcount > 0
+
+    def cleanup_login_attempts(
+        self,
+        *,
+        now: datetime | float | int | None = None,
+        window_seconds: int,
+    ) -> int:
+        now_ts = _timestamp(now)
+        window = max(1, int(window_seconds))
+        cursor = self._execute(
+            """
+            DELETE FROM auth_login_attempts
+            WHERE (locked_until IS NOT NULL AND locked_until <= ?)
+               OR (locked_until IS NULL AND last_failed_at + ? <= ?)
+            """,
+            (now_ts, window, now_ts),
+        )
+        return max(0, cursor.rowcount)
+
+    def get_schema_version(self) -> int | None:
+        row = self._fetchone("SELECT value FROM auth_state_metadata WHERE key = 'schema_version'")
+        if row is None:
+            return None
+        try:
+            return int(row["value"])
+        except (TypeError, ValueError):
+            return None
+
+    def _initialize_schema(self) -> None:
+        try:
+            if self.db_path.parent:
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            connection = self._connect()
+            try:
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS auth_sessions (
+                        session_id_hash TEXT PRIMARY KEY,
+                        csrf_token_hash TEXT NOT NULL,
+                        operator_id TEXT NOT NULL,
+                        auth_mode TEXT NOT NULL,
+                        created_at REAL NOT NULL,
+                        last_seen_at REAL NOT NULL,
+                        expires_at REAL NOT NULL,
+                        revoked_at REAL NULL,
+                        revocation_reason TEXT NULL,
+                        client_key_hash TEXT NULL,
+                        user_agent_hash TEXT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at
+                        ON auth_sessions (expires_at);
+                    CREATE INDEX IF NOT EXISTS idx_auth_sessions_revoked_at
+                        ON auth_sessions (revoked_at);
+                    CREATE INDEX IF NOT EXISTS idx_auth_sessions_operator_id
+                        ON auth_sessions (operator_id);
+                    CREATE TABLE IF NOT EXISTS auth_login_attempts (
+                        client_key_hash TEXT PRIMARY KEY,
+                        failure_count INTEGER NOT NULL,
+                        first_failed_at REAL NOT NULL,
+                        last_failed_at REAL NOT NULL,
+                        locked_until REAL NULL,
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_locked_until
+                        ON auth_login_attempts (locked_until);
+                    CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_updated_at
+                        ON auth_login_attempts (updated_at);
+                    CREATE TABLE IF NOT EXISTS auth_state_metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO auth_state_metadata (key, value, updated_at)
+                    VALUES ('schema_version', ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    (str(AUTH_STATE_SCHEMA_VERSION), _timestamp(None)),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error) as exc:
+            raise SQLiteAuthStateError("Unable to initialize SQLite auth state store.") from exc
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def _execute(self, query: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
+        try:
+            connection = self._connect()
+            try:
+                cursor = connection.execute(query, params)
+                connection.commit()
+                return cursor
+            finally:
+                connection.close()
+        except sqlite3.Error as exc:
+            raise SQLiteAuthStateError("SQLite auth state operation failed.") from exc
+
+    def _fetchone(self, query: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
+        try:
+            connection = self._connect()
+            try:
+                cursor = connection.execute(query, params)
+                return cursor.fetchone()
+            finally:
+                connection.close()
+        except sqlite3.Error as exc:
+            raise SQLiteAuthStateError("SQLite auth state operation failed.") from exc
+
+    @staticmethod
+    def _require_non_blank(field_name: str, value: str) -> None:
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field_name} is required")
+
+
+def hash_session_id(session_id: str) -> str:
+    return _hash_value("session", session_id)
+
+
+def hash_csrf_token(csrf_token: str) -> str:
+    return _hash_value("csrf", csrf_token)
+
+
+def hash_client_key(client_key: str | None) -> str:
+    if not isinstance(client_key, str):
+        normalized = "unknown"
+    else:
+        normalized = client_key.strip() or "unknown"
+    return _hash_value("client_key", normalized)
+
+
+def _hash_value(purpose: str, value: str | None) -> str:
+    if not isinstance(value, str):
+        value = ""
+    payload = f"{_HASH_PREFIX}:{purpose}\0{value}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _timestamp(value: datetime | float | int | None) -> float:
+    if value is None:
+        return datetime.now(timezone.utc).timestamp()
+    if isinstance(value, datetime):
+        current = value
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return current.astimezone(timezone.utc).timestamp()
+    return float(value)
+
+
+def _datetime_from_timestamp(value: float | int) -> datetime:
+    return datetime.fromtimestamp(float(value), tz=timezone.utc)
+
+
+def _session_from_row(row: sqlite3.Row) -> SQLiteAuthSession:
+    return SQLiteAuthSession(
+        operator_id=str(row["operator_id"]),
+        auth_mode=str(row["auth_mode"]),
+        created_at=_datetime_from_timestamp(row["created_at"]),
+        last_seen_at=_datetime_from_timestamp(row["last_seen_at"]),
+        expires_at=_datetime_from_timestamp(row["expires_at"]),
+        revoked_at=_datetime_from_timestamp(row["revoked_at"]) if row["revoked_at"] is not None else None,
+        revocation_reason=str(row["revocation_reason"]) if row["revocation_reason"] is not None else None,
+    )
+
+
+def _login_attempt_from_row(row: sqlite3.Row) -> SQLiteLoginAttempt:
+    return SQLiteLoginAttempt(
+        failure_count=int(row["failure_count"]),
+        first_failed_at=_datetime_from_timestamp(row["first_failed_at"]),
+        last_failed_at=_datetime_from_timestamp(row["last_failed_at"]),
+        locked_until=_datetime_from_timestamp(row["locked_until"]) if row["locked_until"] is not None else None,
+        updated_at=_datetime_from_timestamp(row["updated_at"]),
+    )
+
+
+def _login_attempt_expired(row: sqlite3.Row, now_ts: float, window_seconds: int) -> bool:
+    locked_until = row["locked_until"]
+    if locked_until is not None:
+        return float(locked_until) <= now_ts
+    return float(row["last_failed_at"]) + window_seconds <= now_ts
+
+
+def _safe_reason(reason: str | None) -> str | None:
+    if not isinstance(reason, str):
+        return None
+    normalized = reason.strip()
+    if not normalized:
+        return None
+    return normalized[:120]

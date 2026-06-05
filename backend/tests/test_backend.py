@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import json
+import sqlite3
 import tarfile
 import threading
 from xml.etree import ElementTree
@@ -22,6 +23,7 @@ from app.auth import (
     is_supported_admin_password_hash,
     verify_admin_password,
 )
+from app.auth_state_sqlite import SQLiteAuthStateStore
 from app.config import (
     DEFAULT_AUTH_MODE,
     DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES,
@@ -534,6 +536,273 @@ def test_login_attempt_store_does_not_store_secret_material():
     assert "session" not in serialized_records.lower()
     assert "hash" not in serialized_records.lower()
     assert "password" not in serialized_records.lower()
+
+
+def test_sqlite_auth_state_schema_initializes_idempotently(tmp_path):
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+
+    store = SQLiteAuthStateStore(db_path)
+    second_store = SQLiteAuthStateStore(db_path)
+
+    assert store.get_schema_version() == 1
+    assert second_store.get_schema_version() == 1
+    with sqlite3.connect(db_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        indexes = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+
+    assert {"auth_sessions", "auth_login_attempts", "auth_state_metadata"}.issubset(tables)
+    assert "idx_auth_sessions_expires_at" in indexes
+    assert "idx_auth_sessions_revoked_at" in indexes
+    assert "idx_auth_sessions_operator_id" in indexes
+    assert "idx_auth_login_attempts_locked_until" in indexes
+    assert "idx_auth_login_attempts_updated_at" in indexes
+
+
+def test_sqlite_auth_state_create_get_session_redacts_raw_tokens(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    store = SQLiteAuthStateStore(db_path)
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    session_id = "plain-session-id-should-not-render"
+    csrf_token = "plain-csrf-token-should-not-render"
+
+    created = store.create_session(
+        session_id,
+        csrf_token,
+        DEFAULT_LOCAL_OPERATOR.id,
+        expires_at=current_time + timedelta(seconds=60),
+        now=current_time,
+        client_key="203.0.113.70",
+        user_agent="Inspectra Test Browser",
+    )
+    loaded = store.get_session(session_id, now=current_time)
+
+    assert loaded == created
+    assert loaded is not None
+    assert loaded.operator_id == DEFAULT_LOCAL_OPERATOR.id
+    assert loaded.auth_mode == "self_hosted_single_admin"
+    assert loaded.expires_at == current_time + timedelta(seconds=60)
+    serialized_loaded = json.dumps(loaded.__dict__, default=str, sort_keys=True)
+    db_bytes = db_path.read_bytes()
+    assert session_id not in serialized_loaded
+    assert csrf_token not in serialized_loaded
+    assert session_id.encode("utf-8") not in db_bytes
+    assert csrf_token.encode("utf-8") not in db_bytes
+
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT session_id_hash, csrf_token_hash, client_key_hash, user_agent_hash FROM auth_sessions"
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] != session_id
+    assert row[1] != csrf_token
+    assert row[2] != "203.0.113.70"
+    assert row[3] != "Inspectra Test Browser"
+    assert len(row[0]) == 64
+    assert len(row[1]) == 64
+
+
+def test_sqlite_auth_state_expired_and_revoked_sessions_are_invalid(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = SQLiteAuthStateStore(db_path)
+
+    store.create_session(
+        "expired-session-token",
+        "expired-csrf-token",
+        DEFAULT_LOCAL_OPERATOR.id,
+        expires_at=current_time + timedelta(seconds=10),
+        now=current_time,
+    )
+    store.create_session(
+        "revoked-session-token",
+        "revoked-csrf-token",
+        DEFAULT_LOCAL_OPERATOR.id,
+        expires_at=current_time + timedelta(seconds=120),
+        now=current_time,
+    )
+
+    assert store.get_session("expired-session-token", now=current_time + timedelta(seconds=11)) is None
+    assert store.revoke_session("revoked-session-token", "logout", now=current_time + timedelta(seconds=1)) is True
+    assert store.get_session("revoked-session-token", now=current_time + timedelta(seconds=2)) is None
+
+    restarted_store = SQLiteAuthStateStore(db_path)
+    assert restarted_store.get_session("revoked-session-token", now=current_time + timedelta(seconds=2)) is None
+    with sqlite3.connect(db_path) as connection:
+        revoked_at = connection.execute(
+            "SELECT revoked_at FROM auth_sessions WHERE revocation_reason = 'logout'"
+        ).fetchone()[0]
+    assert revoked_at is not None
+
+
+def test_sqlite_auth_state_cleanup_removes_expired_and_old_revoked_sessions(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = SQLiteAuthStateStore(db_path)
+
+    store.create_session(
+        "expired-cleanup-session",
+        "expired-cleanup-csrf",
+        DEFAULT_LOCAL_OPERATOR.id,
+        expires_at=current_time - timedelta(seconds=1),
+        now=current_time - timedelta(seconds=120),
+    )
+    store.create_session(
+        "revoked-cleanup-session",
+        "revoked-cleanup-csrf",
+        DEFAULT_LOCAL_OPERATOR.id,
+        expires_at=current_time + timedelta(seconds=120),
+        now=current_time - timedelta(seconds=120),
+    )
+    store.create_session(
+        "active-cleanup-session",
+        "active-cleanup-csrf",
+        DEFAULT_LOCAL_OPERATOR.id,
+        expires_at=current_time + timedelta(seconds=120),
+        now=current_time,
+    )
+    store.revoke_session("revoked-cleanup-session", "logout", now=current_time - timedelta(seconds=90))
+
+    assert store.cleanup_sessions(now=current_time, revoked_retention_seconds=30) == 2
+    assert store.get_session("active-cleanup-session", now=current_time) is not None
+    with sqlite3.connect(db_path) as connection:
+        row_count = connection.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0]
+    assert row_count == 1
+
+
+def test_sqlite_auth_state_login_attempt_window_and_lockout(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = SQLiteAuthStateStore(db_path)
+
+    first = store.record_login_failure(
+        "203.0.113.80",
+        now=current_time,
+        window_seconds=60,
+        max_failures=3,
+        lockout_seconds=900,
+    )
+    second = store.record_login_failure(
+        "203.0.113.80",
+        now=current_time + timedelta(seconds=10),
+        window_seconds=60,
+        max_failures=3,
+        lockout_seconds=900,
+    )
+    locked = store.record_login_failure(
+        "203.0.113.80",
+        now=current_time + timedelta(seconds=20),
+        window_seconds=60,
+        max_failures=3,
+        lockout_seconds=900,
+    )
+    reset_window = store.record_login_failure(
+        "203.0.113.81",
+        now=current_time + timedelta(seconds=90),
+        window_seconds=60,
+        max_failures=3,
+        lockout_seconds=900,
+    )
+
+    assert first.failure_count == 1
+    assert second.failure_count == 2
+    assert locked.failure_count == 3
+    assert locked.locked_until == current_time + timedelta(seconds=920)
+    assert reset_window.failure_count == 1
+    outside_window = store.record_login_failure(
+        "203.0.113.81",
+        now=current_time + timedelta(seconds=151),
+        window_seconds=60,
+        max_failures=3,
+        lockout_seconds=900,
+    )
+    assert outside_window.failure_count == 1
+
+
+def test_sqlite_auth_state_login_attempt_persists_and_resets(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = SQLiteAuthStateStore(db_path)
+
+    store.record_login_failure(
+        "203.0.113.90",
+        now=current_time,
+        window_seconds=60,
+        max_failures=1,
+        lockout_seconds=900,
+    )
+    restarted_store = SQLiteAuthStateStore(db_path)
+    persisted = restarted_store.get_login_attempt("203.0.113.90")
+
+    assert persisted is not None
+    assert persisted.failure_count == 1
+    assert persisted.locked_until == current_time + timedelta(seconds=900)
+    assert restarted_store.reset_login_attempt("203.0.113.90") is True
+    assert store.get_login_attempt("203.0.113.90") is None
+
+
+def test_sqlite_auth_state_multiple_instances_share_session_and_attempt_state(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    first_store = SQLiteAuthStateStore(db_path)
+    second_store = SQLiteAuthStateStore(db_path)
+
+    first_store.create_session(
+        "shared-session-token",
+        "shared-csrf-token",
+        DEFAULT_LOCAL_OPERATOR.id,
+        expires_at=current_time + timedelta(seconds=60),
+        now=current_time,
+    )
+    second_store.record_login_failure(
+        "203.0.113.100",
+        now=current_time,
+        window_seconds=60,
+        max_failures=2,
+        lockout_seconds=900,
+    )
+
+    assert second_store.get_session("shared-session-token", now=current_time) is not None
+    assert first_store.get_login_attempt("203.0.113.100").failure_count == 1
+    assert second_store.touch_session("shared-session-token", now=current_time + timedelta(seconds=10)) is True
+    assert first_store.get_session("shared-session-token", now=current_time + timedelta(seconds=10)).last_seen_at == (
+        current_time + timedelta(seconds=10)
+    )
+
+
+def test_sqlite_auth_state_cleanup_login_attempts(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = SQLiteAuthStateStore(db_path)
+
+    store.record_login_failure(
+        "203.0.113.110",
+        now=current_time,
+        window_seconds=60,
+        max_failures=3,
+        lockout_seconds=900,
+    )
+    store.record_login_failure(
+        "203.0.113.111",
+        now=current_time,
+        window_seconds=60,
+        max_failures=1,
+        lockout_seconds=30,
+    )
+
+    assert store.cleanup_login_attempts(now=current_time + timedelta(seconds=61), window_seconds=60) == 2
+    assert store.get_login_attempt("203.0.113.110") is None
+    assert store.get_login_attempt("203.0.113.111") is None
 
 
 def test_session_cookie_settings_are_safe_by_default():

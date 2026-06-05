@@ -113,6 +113,8 @@ The Passive Alpha deployment hardening closeout decision is `PASSIVE_ALPHA_DEPLO
 
 The Passive Alpha persistent auth state design decision is `PASSIVE_ALPHA_PERSISTENT_AUTH_STATE_DESIGN_ACCEPTED`. It accepts a future local SQLite auth-state store for private/self-hosted sessions and login attempt lockout state, preserving current auth contracts while addressing restart and multiprocess gaps. It is docs-only and does not implement runtime behavior, public/community runtime, production readiness, SaaS/billing/quota behavior, OAuth/OIDC, multi-user auth, Nmap, broader Active behavior, or new capabilities.
 
+The Passive Alpha SQLite auth store scaffold decision is `PASSIVE_ALPHA_SQLITE_AUTH_STORE_SCAFFOLD_ACCEPTED`. The backend now has an isolated `SQLiteAuthStateStore` with schema initialization, hashed session/CSRF/client-key state, session and login-attempt methods, metadata versioning, and focused unit tests. It is not connected to live login/session routes yet and does not change frontend behavior, API/cookie contracts, public/community runtime, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
