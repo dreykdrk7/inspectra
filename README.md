@@ -26,6 +26,7 @@ Reference docs:
 - deployment hardening design: `docs/future/passive-alpha-deployment-hardening-design.md`
 - deployment hardening runbook: `docs/future/passive-alpha-deployment-hardening-runbook.md`
 - deployment hardening closeout: `docs/future/passive-alpha-deployment-hardening-closeout.md`
+- persistent auth state design: `docs/future/passive-alpha-persistent-auth-state-design.md`
 
 ### What Passive Alpha Does Not Promise
 
@@ -53,7 +54,7 @@ Reference docs:
 
 ### Immediate Roadmap
 
-1. Persistent auth state design and implementation planning.
+1. Persistent auth state implementation planning from the accepted SQLite-backed design.
 2. Release candidate checklist.
 3. Tag, release, and push decision.
 4. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
@@ -153,6 +154,8 @@ Private self-hosted alpha release notes are available at `docs/future/passive-al
 The private self-hosted deployment hardening design is documented in `docs/future/passive-alpha-deployment-hardening-design.md`; it covers TLS, reverse proxy expectations, secure-cookie direction, and trusted proxy header policy without implementing runtime changes or approving public/community or production-ready deployment.
 
 The private self-hosted deployment hardening runbook is documented in `docs/future/passive-alpha-deployment-hardening-runbook.md`; it gives operators a pre-exposure checklist for mode selection, reverse proxy posture, cookies/sessions, rate limiting, CORS, logging, and red flags without executing deployment steps or approving production/public use.
+
+The persistent auth state design is documented in `docs/future/passive-alpha-persistent-auth-state-design.md`; it accepts a future local SQLite auth-state store for private/self-hosted sessions and login attempts without implementing runtime changes, public/community readiness, production approval, SaaS/billing behavior, or multi-user auth.
 
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 

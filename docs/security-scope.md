@@ -164,6 +164,8 @@ Passive Alpha README launch-copy polish decision: `PASSIVE_ALPHA_README_LAUNCH_C
 
 Passive Alpha deployment hardening closeout decision: `PASSIVE_ALPHA_DEPLOYMENT_HARDENING_CLOSED`. The deployment hardening docs line is closed across design, runbook, and README polish. This records private/self-hosted alpha expectations for HTTPS/TLS, reverse proxy placement, no direct backend internet exposure, explicit origins, no wildcard credentialed CORS, and sensitive-log avoidance, while keeping production readiness, public/community runtime, SaaS/billing/quota behavior, Nmap, broader Active behavior, and new capabilities out of scope. Persistent auth state remains the next design block.
 
+Passive Alpha persistent auth state design decision: `PASSIVE_ALPHA_PERSISTENT_AUTH_STATE_DESIGN_ACCEPTED`. Future private/self-hosted auth hardening should use a local SQLite auth-state store for session and login-attempt persistence, with hashed session/CSRF material, restart-stable logout/expiration/lockout semantics, and no password, admin hash, cookie, request-body, upload, report, Raw JSON, or secret storage. This is docs-only and does not implement runtime behavior, public/community runtime, production readiness, SaaS/billing/quota behavior, OAuth/OIDC, multi-user auth, Nmap, broader Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`
