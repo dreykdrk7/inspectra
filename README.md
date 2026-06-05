@@ -31,6 +31,7 @@ Reference docs:
 - persistent session store integration: `docs/future/passive-alpha-persistent-session-store-integration.md`
 - persistent login-attempt store design: `docs/future/passive-alpha-persistent-login-attempt-store-design.md`
 - persistent login-attempt store integration: `docs/future/passive-alpha-persistent-login-attempt-store-integration.md`
+- auth-state cleanup and rotation design: `docs/future/passive-alpha-auth-state-cleanup-rotation-design.md`
 
 ### What Passive Alpha Does Not Promise
 
@@ -57,10 +58,11 @@ Reference docs:
 
 ### Immediate Roadmap
 
-1. Auth-state cleanup and rotation design.
-2. Release candidate checklist.
-3. Tag, release, and push decision.
-4. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
+1. Auth-state cleanup/rotation smoke.
+2. Persistent auth closeout.
+3. Release candidate checklist.
+4. Tag, release, and push decision.
+5. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
 
 ## What This MVP Does
 
@@ -167,6 +169,8 @@ Persistent session-store integration is documented in `docs/future/passive-alpha
 Persistent login-attempt store design is documented in `docs/future/passive-alpha-persistent-login-attempt-store-design.md`; it accepted SQLite-backed login-attempt persistence as the runtime direction for `self_hosted_single_admin` when `INSPECTRA_AUTH_STATE_STORE=sqlite`.
 
 Persistent login-attempt store integration is documented in `docs/future/passive-alpha-persistent-login-attempt-store-integration.md`; it wires SQLite-backed login-attempt/rate-limit state into `self_hosted_single_admin` when `INSPECTRA_AUTH_STATE_STORE=sqlite`, while preserving memory defaults, generic `429`, safe `Retry-After`, and current backend-observed client-key semantics.
+
+Auth-state cleanup and rotation design is documented in `docs/future/passive-alpha-auth-state-cleanup-rotation-design.md`; it defines docs-first expectations for session/attempt cleanup, local DB rotation, backup sensitivity, offline operator intervention, and next smoke criteria without adding runtime behavior.
 
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 
