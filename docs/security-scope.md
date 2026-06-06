@@ -180,6 +180,8 @@ Passive Alpha auth-state cleanup/rotation smoke decision: `PASSIVE_ALPHA_AUTH_ST
 
 Passive Alpha persistent auth closeout decision: `PASSIVE_ALPHA_PERSISTENT_AUTH_CLOSED`. The private/self-hosted persistent auth-state line is closed across SQLite auth-state design, scaffold, persistent sessions, persistent login attempts, cleanup/rotation design, and smoke evidence. `INSPECTRA_AUTH_STATE_STORE=memory` remains the default, SQLite auth state remains opt-in for `self_hosted_single_admin`, and this does not approve production/public/community use, admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, SaaS/billing/quota behavior, Nmap, broader Active behavior, release, tag, or push.
 
+Passive Alpha persistent auth final regression smoke decision: `PASSIVE_ALPHA_PERSISTENT_AUTH_FINAL_REGRESSION_SMOKE_PASSED`. Backend compile, focused persistent-auth tests, full backend tests, frontend App tests, full frontend tests, frontend build, browser-storage search, and no-scope search passed for Pathing C. This does not add runtime behavior, change auth contracts, add admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, public/community anti-abuse, production approval, SaaS/billing/quota behavior, Nmap, broader Active behavior, release, tag, or push.
+
 Tools used in this phase:
 
 - `pdfinfo`

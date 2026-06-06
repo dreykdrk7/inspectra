@@ -34,6 +34,7 @@ Reference docs:
 - auth-state cleanup and rotation design: `docs/future/passive-alpha-auth-state-cleanup-rotation-design.md`
 - auth-state cleanup and rotation smoke: `docs/future/passive-alpha-auth-state-cleanup-rotation-smoke.md`
 - persistent auth closeout: `docs/future/passive-alpha-persistent-auth-closeout.md`
+- persistent auth final regression smoke: `docs/future/passive-alpha-persistent-auth-final-regression-smoke.md`
 
 ### What Passive Alpha Does Not Promise
 
@@ -175,6 +176,8 @@ Auth-state cleanup and rotation design is documented in `docs/future/passive-alp
 Auth-state cleanup and rotation smoke is documented in `docs/future/passive-alpha-auth-state-cleanup-rotation-smoke.md`; it validates current SQLite session and login-attempt cleanup, pruning, revocation, expiration, restart/store recreation, redaction, and auth-contract behavior without frontend runtime changes.
 
 Persistent auth closeout is documented in `docs/future/passive-alpha-persistent-auth-closeout.md`; it closes Pathing C for private/self-hosted alpha by consolidating SQLite auth-state design, scaffold, persistent sessions, persistent login attempts, cleanup/rotation design, and smoke evidence without adding runtime behavior or approving production/public/community readiness.
+
+Persistent auth final regression smoke is documented in `docs/future/passive-alpha-persistent-auth-final-regression-smoke.md`; it records a green backend/frontend/build regression pass for Pathing C without adding runtime behavior or changing auth contracts.
 
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 

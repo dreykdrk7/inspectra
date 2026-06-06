@@ -127,6 +127,8 @@ The Passive Alpha auth-state cleanup/rotation smoke decision is `PASSIVE_ALPHA_A
 
 The Passive Alpha persistent auth closeout decision is `PASSIVE_ALPHA_PERSISTENT_AUTH_CLOSED`. Pathing C is closed across SQLite auth-state design, scaffold, persistent sessions, persistent login attempts, cleanup/rotation design, and smoke evidence. `INSPECTRA_AUTH_STATE_STORE=memory` remains the default, `self_hosted_single_admin` may opt in to SQLite auth state with `INSPECTRA_AUTH_STATE_STORE=sqlite`, and production/public/community readiness, admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, SaaS/billing behavior, Nmap, broader Active behavior, and release/tag state remain out of scope.
 
+The Passive Alpha persistent auth final regression smoke decision is `PASSIVE_ALPHA_PERSISTENT_AUTH_FINAL_REGRESSION_SMOKE_PASSED`. Backend compile, focused persistent-auth tests, full backend tests, frontend App tests, full frontend tests, frontend build, browser-storage search, and no-scope search passed without changing frontend runtime, backend runtime, auth contracts, admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, Nmap, Active behavior, or release/tag state.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
