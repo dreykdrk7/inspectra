@@ -186,6 +186,10 @@ Passive Alpha release candidate checklist decision: `PASSIVE_ALPHA_RELEASE_CANDI
 
 Passive Alpha tag/release prep decision: `PASSIVE_ALPHA_TAG_RELEASE_PREP_READY`. The preferred tag candidate is `v0.1.0-alpha.1`, the release title is `Inspectra Passive Alpha v0.1.0-alpha.1`, and publication remains `NOT_PUBLISHED_YET`. This is docs-only and does not create release/tag/push state, change runtime behavior, approve production/public/community use, add admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
 
+Passive Alpha GitHub release publication decision: `PASSIVE_ALPHA_GITHUB_RELEASE_PUBLISHED`. The `v0.1.0-alpha.1` tag and GitHub release are published with release notes in `docs/future/passive-alpha-v0.1.0-alpha.1-release-notes.md` and publication closeout in `docs/future/passive-alpha-publish-github-release.md`. Publication does not change runtime behavior, approve production/public/community use, add admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, SaaS/billing/quota behavior, Nmap, CVE matching, broader Active behavior, or new capabilities.
+
+Passive Alpha post-release technical pause decision: `PASSIVE_ALPHA_POST_RELEASE_TECHNICAL_PAUSE_RECORDED`. The pause records what shipped, what did not ship, accepted debt, and next pathing after publication. It does not change runtime behavior, approve production/public/community use, add admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, SaaS/billing/quota behavior, Docker/Nmap/probes, CVE matching, broader Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

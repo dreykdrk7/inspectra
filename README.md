@@ -37,6 +37,7 @@ Reference docs:
 - persistent auth final regression smoke: `docs/future/passive-alpha-persistent-auth-final-regression-smoke.md`
 - release candidate checklist: `docs/future/passive-alpha-release-candidate-checklist.md`
 - tag/release prep: `docs/future/passive-alpha-tag-release-prep.md`
+- post-release technical pause: `docs/future/passive-alpha-post-release-technical-pause.md`
 
 ### What Passive Alpha Does Not Promise
 
@@ -63,9 +64,9 @@ Reference docs:
 
 ### Immediate Roadmap
 
-1. Push/release publication decision.
-2. Product technical pause.
-3. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
+1. Passive Alpha `v0.1.0-alpha.1` publication is complete.
+2. Product technical pause is recorded in `docs/future/passive-alpha-post-release-technical-pause.md`.
+3. Next design should be `ACTIVE-NMAP-BASIC-DESIGN`, with `CVE-VERSION-MATCHING-DESIGN` as the lower-risk passive-first alternative.
 
 ## What This MVP Does
 
@@ -184,6 +185,8 @@ Persistent auth final regression smoke is documented in `docs/future/passive-alp
 The Passive Alpha release candidate checklist is documented in `docs/future/passive-alpha-release-candidate-checklist.md`; it consolidates the private/self-hosted alpha state, release blockers, residual gaps, and pre-tag validation path without creating a tag, release, push, or runtime expansion.
 
 The Passive Alpha tag/release prep is documented in `docs/future/passive-alpha-tag-release-prep.md`; it freezes `v0.1.0-alpha.1` as the preferred tag candidate and `Inspectra Passive Alpha v0.1.0-alpha.1` as the release title without creating a tag, release, push, or runtime expansion.
+
+The Passive Alpha post-release technical pause is documented in `docs/future/passive-alpha-post-release-technical-pause.md`; it records the published `v0.1.0-alpha.1` state, accepted residual debt, and next pathing without adding runtime behavior, a new tag/release, Docker/Nmap/probes, CVE matching, or production/public/community readiness.
 
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 

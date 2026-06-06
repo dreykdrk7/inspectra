@@ -133,6 +133,10 @@ The Passive Alpha release candidate checklist decision is `PASSIVE_ALPHA_RELEASE
 
 The Passive Alpha tag/release prep decision is `PASSIVE_ALPHA_TAG_RELEASE_PREP_READY`. It accepts `v0.1.0-alpha.1` as the preferred tag candidate, `Inspectra Passive Alpha v0.1.0-alpha.1` as the release title, and a copy-ready release body while keeping publication as `NOT_PUBLISHED_YET`. This is docs-only and does not create a release, tag, push, runtime behavior, API/cookie/session/CSRF changes, public/community readiness, SaaS/billing behavior, Nmap, broader Active behavior, or new analyzers.
 
+The Passive Alpha GitHub release publication decision is `PASSIVE_ALPHA_GITHUB_RELEASE_PUBLISHED`. It published `v0.1.0-alpha.1` with release title `Inspectra Passive Alpha v0.1.0-alpha.1`, tag target `4d4a5a0 docs(alpha): add v0.1.0 alpha release notes`, and publication closeout `docs/future/passive-alpha-publish-github-release.md` without adding runtime behavior, API/cookie/session/CSRF changes, public/community readiness, SaaS/billing behavior, Nmap, CVE matching, broader Active behavior, or new analyzers.
+
+The Passive Alpha post-release technical pause decision is `PASSIVE_ALPHA_POST_RELEASE_TECHNICAL_PAUSE_RECORDED`. It records the published state, accepted security/deployment/product/operational debt, and next pathing recommendations after `v0.1.0-alpha.1`; it does not add runtime behavior, new tag/release state, production/public/community readiness, SaaS/billing behavior, Docker/Nmap/probes, CVE matching, or broader Active behavior.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
