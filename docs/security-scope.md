@@ -178,6 +178,8 @@ Passive Alpha auth-state cleanup/rotation design decision: `PASSIVE_ALPHA_AUTH_S
 
 Passive Alpha auth-state cleanup/rotation smoke decision: `PASSIVE_ALPHA_AUTH_STATE_CLEANUP_ROTATION_SMOKE_PASSED`. Backend smoke coverage validates existing SQLite auth-state cleanup, revocation, expiration, login-attempt pruning, restart/store recreation, DB-byte redaction, ignored forwarded headers, and preserved auth contracts. This does not add frontend behavior, admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, public/community anti-abuse, production readiness, SaaS/billing/quota behavior, Nmap, broader Active behavior, release, tag, or push.
 
+Passive Alpha persistent auth closeout decision: `PASSIVE_ALPHA_PERSISTENT_AUTH_CLOSED`. The private/self-hosted persistent auth-state line is closed across SQLite auth-state design, scaffold, persistent sessions, persistent login attempts, cleanup/rotation design, and smoke evidence. `INSPECTRA_AUTH_STATE_STORE=memory` remains the default, SQLite auth state remains opt-in for `self_hosted_single_admin`, and this does not approve production/public/community use, admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, SaaS/billing/quota behavior, Nmap, broader Active behavior, release, tag, or push.
+
 Tools used in this phase:
 
 - `pdfinfo`
