@@ -184,6 +184,8 @@ Passive Alpha persistent auth final regression smoke decision: `PASSIVE_ALPHA_PE
 
 Passive Alpha release candidate checklist decision: `PASSIVE_ALPHA_RELEASE_CANDIDATE_CHECKLIST_READY`. The private/self-hosted Passive Alpha RC checklist is ready with supported-state confirmation, explicit blockers, final pre-tag validation expectations, and accepted residual gaps. This is docs-only and does not create release/tag/push state, change runtime behavior, approve production/public/community use, add admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
 
+Passive Alpha tag/release prep decision: `PASSIVE_ALPHA_TAG_RELEASE_PREP_READY`. The preferred tag candidate is `v0.1.0-alpha.1`, the release title is `Inspectra Passive Alpha v0.1.0-alpha.1`, and publication remains `NOT_PUBLISHED_YET`. This is docs-only and does not create release/tag/push state, change runtime behavior, approve production/public/community use, add admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

@@ -131,6 +131,8 @@ The Passive Alpha persistent auth final regression smoke decision is `PASSIVE_AL
 
 The Passive Alpha release candidate checklist decision is `PASSIVE_ALPHA_RELEASE_CANDIDATE_CHECKLIST_READY`. It consolidates Pathing B deployment hardening and Pathing C persistent auth into a private/self-hosted technical RC checklist with explicit release blockers, residual gaps, and final pre-tag validation expectations. This is docs-only and does not create a release, tag, push, runtime behavior, API/cookie/session/CSRF changes, public/community readiness, SaaS/billing behavior, Nmap, broader Active behavior, or new analyzers.
 
+The Passive Alpha tag/release prep decision is `PASSIVE_ALPHA_TAG_RELEASE_PREP_READY`. It accepts `v0.1.0-alpha.1` as the preferred tag candidate, `Inspectra Passive Alpha v0.1.0-alpha.1` as the release title, and a copy-ready release body while keeping publication as `NOT_PUBLISHED_YET`. This is docs-only and does not create a release, tag, push, runtime behavior, API/cookie/session/CSRF changes, public/community readiness, SaaS/billing behavior, Nmap, broader Active behavior, or new analyzers.
+
 ## Active/Network Design
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
