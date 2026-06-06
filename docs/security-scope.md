@@ -182,6 +182,8 @@ Passive Alpha persistent auth closeout decision: `PASSIVE_ALPHA_PERSISTENT_AUTH_
 
 Passive Alpha persistent auth final regression smoke decision: `PASSIVE_ALPHA_PERSISTENT_AUTH_FINAL_REGRESSION_SMOKE_PASSED`. Backend compile, focused persistent-auth tests, full backend tests, frontend App tests, full frontend tests, frontend build, browser-storage search, and no-scope search passed for Pathing C. This does not add runtime behavior, change auth contracts, add admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, public/community anti-abuse, production approval, SaaS/billing/quota behavior, Nmap, broader Active behavior, release, tag, or push.
 
+Passive Alpha release candidate checklist decision: `PASSIVE_ALPHA_RELEASE_CANDIDATE_CHECKLIST_READY`. The private/self-hosted Passive Alpha RC checklist is ready with supported-state confirmation, explicit blockers, final pre-tag validation expectations, and accepted residual gaps. This is docs-only and does not create release/tag/push state, change runtime behavior, approve production/public/community use, add admin recovery, trusted-proxy runtime behavior, secure-cookie enforcement, SaaS/billing/quota behavior, Nmap, broader Active behavior, or new capabilities.
+
 Tools used in this phase:
 
 - `pdfinfo`

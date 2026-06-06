@@ -35,6 +35,7 @@ Reference docs:
 - auth-state cleanup and rotation smoke: `docs/future/passive-alpha-auth-state-cleanup-rotation-smoke.md`
 - persistent auth closeout: `docs/future/passive-alpha-persistent-auth-closeout.md`
 - persistent auth final regression smoke: `docs/future/passive-alpha-persistent-auth-final-regression-smoke.md`
+- release candidate checklist: `docs/future/passive-alpha-release-candidate-checklist.md`
 
 ### What Passive Alpha Does Not Promise
 
@@ -61,8 +62,8 @@ Reference docs:
 
 ### Immediate Roadmap
 
-1. Release candidate checklist.
-2. Tag, release, and push decision.
+1. Tag/release preparation decision.
+2. Push/release publication decision.
 3. Deeper Active/Nmap/CVE audits only under separate docs-first, opt-in, bounded design.
 
 ## What This MVP Does
@@ -178,6 +179,8 @@ Auth-state cleanup and rotation smoke is documented in `docs/future/passive-alph
 Persistent auth closeout is documented in `docs/future/passive-alpha-persistent-auth-closeout.md`; it closes Pathing C for private/self-hosted alpha by consolidating SQLite auth-state design, scaffold, persistent sessions, persistent login attempts, cleanup/rotation design, and smoke evidence without adding runtime behavior or approving production/public/community readiness.
 
 Persistent auth final regression smoke is documented in `docs/future/passive-alpha-persistent-auth-final-regression-smoke.md`; it records a green backend/frontend/build regression pass for Pathing C without adding runtime behavior or changing auth contracts.
+
+The Passive Alpha release candidate checklist is documented in `docs/future/passive-alpha-release-candidate-checklist.md`; it consolidates the private/self-hosted alpha state, release blockers, residual gaps, and pre-tag validation path without creating a tag, release, push, or runtime expansion.
 
 Do not upload real secrets or production archives for demos. Inspectra redacts sensitive-looking values in results, exports, and Raw JSON with `[REDACTED]`, but redaction does not sanitize the original uploaded file stored locally.
 
