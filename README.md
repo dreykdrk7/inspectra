@@ -66,7 +66,8 @@ Reference docs:
 
 1. Passive Alpha `v0.1.0-alpha.1` publication is complete.
 2. Product technical pause is recorded in `docs/future/passive-alpha-post-release-technical-pause.md`.
-3. Next design should be `ACTIVE-NMAP-BASIC-DESIGN`, with `CVE-VERSION-MATCHING-DESIGN` as the lower-risk passive-first alternative.
+3. Active Nmap Basic design is frozen in `docs/future/active-nmap-basic-design.md` as docs-only future scope; no Nmap runtime, port-scanning implementation, or broader Active capability is added.
+4. Any future `active_nmap_basic` implementation must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
 
 ## What This MVP Does
 
@@ -195,6 +196,8 @@ Release notes for the local passive alpha tag `v0.1.0-passive-alpha` are availab
 Active Alpha is internal and limited. It includes `active_network_dry_run` as no-network planning and `active_http_header_probe` as the only limited live capability: opt-in, disabled by default, explicitly authorized, double-confirmed, target-based, and capped to one HTTP `HEAD` request with no redirects and no response body read. It does not add Nmap, port scanning, crawling, custom headers, auth/cookies, fuzzing, exploitation, credential validation, production readiness, external-user readiness, policy relaxation, or additional Active capabilities.
 
 Active Alpha references: operator guide `docs/future/active-network-block-22-active-alpha-operator-guide.md`, test-double smoke execution `docs/future/active-network-block-23-limited-live-smoke-test-execution.md`, closeout `docs/future/active-network-block-25-active-alpha-closeout.md`, passive readiness recheck `docs/future/active-network-block-26-passive-alpha-readiness-recheck.md`, and security scope `docs/security-scope.md`. The smoke record passed runner, backend/API/reporting/export, and frontend mocked subsets without external target traffic. The closeout decision is internal and limited; it is not production readiness, external-user readiness, Nmap readiness, or approval for broader Active behavior.
+
+Active Nmap Basic future design is documented in `docs/future/active-nmap-basic-design.md` with decision `ACTIVE_NMAP_BASIC_DESIGN_FROZEN`. It is docs-only and does not add Nmap runtime, arbitrary internet scanning, broad ranges, stealth, evasion, aggressive NSE defaults, brute force, exploit scripts, credential validation, crawling, DNS expansion, custom scripts, SaaS/public scanner behavior, frontend/backend/runner changes, Docker execution, tags, or releases.
 
 ## Requirements
 
