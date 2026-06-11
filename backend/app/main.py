@@ -281,6 +281,136 @@ def owner_id_for_file_job(request: Request, stored_file: StoredFile) -> str:
     return stored_file.owner_id or current_owner_id_for_request(request)
 
 
+ACTIVE_NMAP_BASIC_MODE = "live_nmap_basic"
+ACTIVE_NMAP_BASIC_PROFILE = "tcp_connect_small"
+ACTIVE_NMAP_BASIC_MAX_TARGETS = 3
+ACTIVE_NMAP_BASIC_MAX_TARGET_LENGTH = 253
+ACTIVE_NMAP_BASIC_MAX_PORTS_PER_TARGET = 32
+ACTIVE_NMAP_BASIC_MAX_TOTAL_TARGET_PORT_CHECKS = 96
+ACTIVE_NMAP_BASIC_ALLOWED_FIELDS = frozenset(
+    {
+        "mode",
+        "profile",
+        "targets",
+        "ports",
+        "authorization_confirmed",
+        "local_private_scope_confirmed",
+        "live_traffic_confirmed",
+    }
+)
+ACTIVE_NMAP_BASIC_TARGET_RANGE_MARKERS = frozenset({"*", "/", ","})
+ACTIVE_NMAP_BASIC_CONFIRMATION_FIELDS = (
+    "authorization_confirmed",
+    "local_private_scope_confirmed",
+    "live_traffic_confirmed",
+)
+ACTIVE_NMAP_BASIC_CONTRACT_LIMITS = {
+    "max_targets": ACTIVE_NMAP_BASIC_MAX_TARGETS,
+    "max_ports_per_target": ACTIVE_NMAP_BASIC_MAX_PORTS_PER_TARGET,
+    "max_total_target_port_checks": ACTIVE_NMAP_BASIC_MAX_TOTAL_TARGET_PORT_CHECKS,
+}
+
+
+def validate_active_nmap_basic_contract(payload: Any) -> dict[str, int]:
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_nmap_basic request body must be a JSON object.",
+        )
+
+    fields = set(payload)
+    if fields - ACTIVE_NMAP_BASIC_ALLOWED_FIELDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported active_nmap_basic request field.",
+        )
+    if ACTIVE_NMAP_BASIC_ALLOWED_FIELDS - fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_nmap_basic request is missing required fields.",
+        )
+
+    if payload.get("mode") != ACTIVE_NMAP_BASIC_MODE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_nmap_basic mode must be live_nmap_basic.",
+        )
+    if payload.get("profile") != ACTIVE_NMAP_BASIC_PROFILE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_nmap_basic profile must be tcp_connect_small.",
+        )
+
+    for field_name in ACTIVE_NMAP_BASIC_CONFIRMATION_FIELDS:
+        if payload.get(field_name) is not True:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field_name} must be true.")
+
+    targets = payload.get("targets")
+    if not isinstance(targets, list) or not targets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_nmap_basic targets must be a non-empty list.",
+        )
+    if len(targets) > ACTIVE_NMAP_BASIC_MAX_TARGETS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_nmap_basic target count exceeds the allowed limit.",
+        )
+    for target in targets:
+        if not isinstance(target, str) or not target.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="active_nmap_basic targets must be non-empty strings.",
+            )
+        if len(target.strip()) > ACTIVE_NMAP_BASIC_MAX_TARGET_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="active_nmap_basic target length exceeds the allowed limit.",
+            )
+        if any(character.isspace() for character in target):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="active_nmap_basic targets must be explicit single targets.",
+            )
+        if any(marker in target for marker in ACTIVE_NMAP_BASIC_TARGET_RANGE_MARKERS):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="active_nmap_basic targets must be explicit single targets.",
+            )
+
+    ports = payload.get("ports")
+    if not isinstance(ports, list) or not ports:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_nmap_basic ports must be a non-empty list.",
+        )
+    if len(ports) > ACTIVE_NMAP_BASIC_MAX_PORTS_PER_TARGET:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_nmap_basic port count exceeds the allowed limit.",
+        )
+    for port in ports:
+        if isinstance(port, bool) or not isinstance(port, int):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="active_nmap_basic ports must be integer TCP ports.",
+            )
+        if port < 1 or port > 65535:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="active_nmap_basic ports must be between 1 and 65535.",
+            )
+
+    total_checks = len(targets) * len(ports)
+    if total_checks > ACTIVE_NMAP_BASIC_MAX_TOTAL_TARGET_PORT_CHECKS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_nmap_basic target-port count exceeds the allowed limit.",
+        )
+
+    return {"target_count": len(targets), "port_count": len(ports), "target_port_checks": total_checks}
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "inspectra-backend"}
@@ -632,6 +762,31 @@ async def launch_active_http_header_probe(
     job = request.app.state.jobs.create_active_http_header_probe_job(target_display, owner_id=current_owner_id_for_request(request))
     background_tasks.add_task(request.app.state.active_http_header_probes.run_active_http_header_probe_analysis, job.id, active_request)
     return job
+
+
+@app.post("/active/network/nmap-basic")
+async def launch_active_nmap_basic(request: Request, payload: Any = Body(...)) -> JSONResponse:
+    if not request.app.state.settings.active_nmap_basic_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="active_nmap_basic is disabled in this environment.",
+        )
+
+    contract = validate_active_nmap_basic_contract(payload)
+    return JSONResponse(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        content={
+            "audit_type": "active_nmap_basic",
+            "status": "not_implemented",
+            "execution_state": "not_executed",
+            "job_created": False,
+            "detail": "active_nmap_basic execution is not implemented in this phase.",
+            "target_count": contract["target_count"],
+            "port_count": contract["port_count"],
+            "target_port_checks": contract["target_port_checks"],
+            "limits": ACTIVE_NMAP_BASIC_CONTRACT_LIMITS,
+        },
+    )
 
 
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)

@@ -181,6 +181,18 @@ Suggested commit:
 feat(active): add nmap basic backend contract gate
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_01_BACKEND_CONTRACT_GATE_ACCEPTED` implements this
+microphase as a backend contract gate only. `POST /active/network/nmap-basic`
+is disabled by default through `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=false`.
+When explicitly enabled, it validates the exact `live_nmap_basic` /
+`tcp_connect_small` request shape, required confirmations, and bounded
+target/port lists, then returns `not_implemented` / `not_executed` without
+creating a job, calling a runner, constructing commands, using subprocesses,
+executing Nmap, resolving DNS, sending probes, making external HTTP requests,
+adding frontend behavior, or integrating with archive/run-all flows.
+
 ## Microphase 02: Target Policy Validator
 
 Objective:

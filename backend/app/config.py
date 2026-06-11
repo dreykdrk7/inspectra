@@ -54,6 +54,7 @@ DEFAULT_REDIS_CONFIG_MAX_FILE_BYTES = 524_288
 DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_ACTIVE_DRY_RUN_ENABLED = False
 DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED = False
+DEFAULT_ACTIVE_NMAP_BASIC_ENABLED = False
 DEFAULT_SESSION_TTL_SECONDS = 3600
 DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS = 600
 DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES = 5
@@ -146,6 +147,7 @@ class Settings:
     redis_config_max_total_bytes: int = DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES
     active_dry_run_enabled: bool = DEFAULT_ACTIVE_DRY_RUN_ENABLED
     active_http_header_probe_enabled: bool = DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED
+    active_nmap_basic_enabled: bool = DEFAULT_ACTIVE_NMAP_BASIC_ENABLED
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
     login_attempt_window_seconds: int = DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS
     login_attempt_max_failures: int = DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES
@@ -357,6 +359,10 @@ def load_settings() -> Settings:
         "INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED",
         DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED,
     )
+    active_nmap_basic_enabled = _bool_from_env(
+        "INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED",
+        DEFAULT_ACTIVE_NMAP_BASIC_ENABLED,
+    )
     session_ttl_seconds = _positive_int_from_env("INSPECTRA_SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS)
     login_attempt_window_seconds = _positive_int_from_env(
         "INSPECTRA_LOGIN_ATTEMPT_WINDOW_SECONDS",
@@ -431,6 +437,7 @@ def load_settings() -> Settings:
         redis_config_max_total_bytes=redis_config_max_total_bytes,
         active_dry_run_enabled=active_dry_run_enabled,
         active_http_header_probe_enabled=active_http_header_probe_enabled,
+        active_nmap_basic_enabled=active_nmap_basic_enabled,
         session_ttl_seconds=session_ttl_seconds,
         login_attempt_window_seconds=login_attempt_window_seconds,
         login_attempt_max_failures=login_attempt_max_failures,

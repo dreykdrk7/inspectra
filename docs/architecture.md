@@ -206,6 +206,8 @@ The Active Nmap Basic design decision is `ACTIVE_NMAP_BASIC_DESIGN_FROZEN`. It a
 
 The Active Nmap Basic implementation-plan decision is `ACTIVE_NMAP_BASIC_IMPLEMENTATION_PLAN_FROZEN`. It sequences any future implementation into separate backend contract, target policy, command builder, no-Nmap runner skeleton, controlled subprocess, bounded parser, redaction/reporting, frontend, test, and local-smoke microphases. It is docs-only and does not add endpoints, backend runtime, frontend runtime, runner behavior, Docker changes, Nmap execution, probes, DNS checks, external HTTP checks, migrations, tags, releases, arbitrary internet scanning, or public scanner behavior.
 
+The Active Nmap Basic backend contract gate decision is `ACTIVE_NMAP_BASIC_01_BACKEND_CONTRACT_GATE_ACCEPTED`. The backend now reads `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=false` by default and exposes `POST /active/network/nmap-basic` as a contract gate only. Disabled mode rejects without creating jobs. Enabled mode validates the exact `live_nmap_basic` / `tcp_connect_small` request shape, required confirmations, and bounded target/port lists, then returns `not_implemented` / `not_executed` without creating a job, calling a runner, constructing commands, using subprocesses, executing Nmap, resolving DNS, sending probes, making external HTTP requests, adding frontend behavior, adding migrations, or integrating with archive/run-all flows.
+
 ## Components
 
 ### Backend

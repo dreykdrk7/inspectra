@@ -31,6 +31,7 @@ from app.auth_state_sqlite import (
     SQLiteLoginAttemptStore,
 )
 from app.config import (
+    DEFAULT_ACTIVE_NMAP_BASIC_ENABLED,
     DEFAULT_AUTH_STATE_STORE,
     DEFAULT_AUTH_MODE,
     DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES,
@@ -1978,6 +1979,7 @@ async def test_self_hosted_single_admin_denies_anonymous_target_and_active_route
     monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
     monkeypatch.setenv("INSPECTRA_ACTIVE_DRY_RUN_ENABLED", "true")
     monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
 
@@ -1988,6 +1990,7 @@ async def test_self_hosted_single_admin_denies_anonymous_target_and_active_route
             await client.post("/audits/subdomains/basic", json={}),
             await client.post("/active/network/dry-run", json={}),
             await client.post("/active/network/http-header-probe", json={}),
+            await client.post("/active/network/nmap-basic", json={}),
         ]
 
     for response in responses:
@@ -4267,6 +4270,197 @@ def make_active_http_header_probe_payload(target: str = "https://example.test/pa
     return payload
 
 
+def make_active_nmap_basic_payload(**overrides) -> dict:
+    payload = {
+        "mode": "live_nmap_basic",
+        "profile": "tcp_connect_small",
+        "targets": ["192.168.56.10"],
+        "ports": [22, 80, 443],
+        "authorization_confirmed": True,
+        "local_private_scope_confirmed": True,
+        "live_traffic_confirmed": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_disabled_by_default_rejects_without_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    payload = make_active_nmap_basic_payload(targets=["token_should_never_render"])
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/nmap-basic", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "active_nmap_basic is disabled in this environment."
+    assert "token_should_never_render" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_enabled_returns_not_implemented_without_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/nmap-basic", json=make_active_nmap_basic_payload())
+        jobs_response = await client.get("/jobs")
+
+    payload = response.json()
+    assert response.status_code == 501
+    assert payload["audit_type"] == "active_nmap_basic"
+    assert payload["status"] == "not_implemented"
+    assert payload["execution_state"] == "not_executed"
+    assert payload["job_created"] is False
+    assert payload["target_count"] == 1
+    assert payload["port_count"] == 3
+    assert payload["target_port_checks"] == 3
+    assert payload["limits"]["max_targets"] == 3
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_enabled_requires_mode_and_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payloads = [
+        make_active_nmap_basic_payload(mode="dry_run"),
+        make_active_nmap_basic_payload(profile="nmap_plan"),
+        make_active_nmap_basic_payload(),
+        make_active_nmap_basic_payload(),
+    ]
+    payloads[2].pop("mode")
+    payloads[3].pop("profile")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [await client.post("/active/network/nmap-basic", json=payload) for payload in payloads]
+        jobs_response = await client.get("/jobs")
+
+    assert [response.status_code for response in responses] == [400, 400, 400, 400]
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_requires_authorization_confirmations(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    confirmation_fields = [
+        "authorization_confirmed",
+        "local_private_scope_confirmed",
+        "live_traffic_confirmed",
+    ]
+    payloads = []
+    for field_name in confirmation_fields:
+        payloads.append(make_active_nmap_basic_payload(**{field_name: False}))
+        missing_payload = make_active_nmap_basic_payload()
+        missing_payload.pop(field_name)
+        payloads.append(missing_payload)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [await client.post("/active/network/nmap-basic", json=payload) for payload in payloads]
+        jobs_response = await client.get("/jobs")
+
+    assert [response.status_code for response in responses] == [400] * len(payloads)
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "raw_flags",
+        "extra_args",
+        "scripts",
+        "credentials",
+        "cookies",
+        "tokens",
+        "headers",
+        "target_files",
+        "shell_command",
+        "custom_profile",
+        "command",
+        "args",
+    ],
+)
+async def test_active_nmap_basic_rejects_arbitrary_execution_fields_without_job(monkeypatch, tmp_path, field_name):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_nmap_basic_payload(**{field_name: "token_should_never_render"})
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/nmap-basic", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unsupported active_nmap_basic request field."
+    assert "token_should_never_render" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"targets": None},
+        {"targets": []},
+        {"targets": "192.168.56.10"},
+        {"targets": [""]},
+        {"targets": [42]},
+        {"targets": ["a" * 254]},
+        {"targets": ["192.168.56.0/24"]},
+        {"targets": ["*.example.test"]},
+        {"targets": ["192.168.56.10,192.168.56.11"]},
+        {"targets": ["192.168.56.10 192.168.56.11"]},
+        {"targets": ["192.168.56.10", "192.168.56.11", "192.168.56.12", "192.168.56.13"]},
+        {"ports": None},
+        {"ports": []},
+        {"ports": "22"},
+        {"ports": ["22"]},
+        {"ports": [True]},
+        {"ports": [0]},
+        {"ports": [65536]},
+        {"ports": list(range(1, 34))},
+    ],
+)
+async def test_active_nmap_basic_rejects_malformed_targets_and_ports(monkeypatch, tmp_path, override):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_nmap_basic_payload(**override)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/nmap-basic", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 400
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_auth_required_anonymous_fails_before_validation(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_nmap_basic_payload(raw_flags="token_should_never_render")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/nmap-basic", json=payload)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": AUTH_REQUIRED_DETAIL}
+    assert "Unsupported active_nmap_basic request field" not in response.text
+    assert "token_should_never_render" not in response.text
+    assert app.state.jobs.list() == []
+
+
 @pytest.mark.anyio
 async def test_active_network_dry_run_disabled_by_default_no_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
@@ -5433,6 +5627,21 @@ def test_default_auth_mode_is_trusted_local(monkeypatch, tmp_path):
 
     assert settings.auth_mode == DEFAULT_AUTH_MODE
     assert get_auth_mode(settings) == "trusted_local_no_auth"
+
+
+def test_active_nmap_basic_feature_flag_is_disabled_by_default_and_configurable(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+
+    settings = load_settings()
+
+    assert DEFAULT_ACTIVE_NMAP_BASIC_ENABLED is False
+    assert settings.active_nmap_basic_enabled is False
+
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+
+    enabled_settings = load_settings()
+
+    assert enabled_settings.active_nmap_basic_enabled is True
 
 
 def test_default_local_operator_has_stable_id(monkeypatch, tmp_path):

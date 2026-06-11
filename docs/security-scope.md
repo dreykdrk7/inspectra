@@ -285,6 +285,8 @@ Active Nmap Basic design decision: `ACTIVE_NMAP_BASIC_DESIGN_FROZEN`.
 
 Active Nmap Basic implementation-plan decision: `ACTIVE_NMAP_BASIC_IMPLEMENTATION_PLAN_FROZEN`.
 
+Active Nmap Basic backend contract gate decision: `ACTIVE_NMAP_BASIC_01_BACKEND_CONTRACT_GATE_ACCEPTED`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
@@ -319,6 +321,7 @@ This means:
 - The Passive Alpha readiness recheck found no blocker for the current trusted local/passive alpha posture and keeps public/external-user hardening separate from Nmap, new Active capability, and new analyzer implementation.
 - The Active Nmap Basic design is docs-only future scope. It requires any future `active_nmap_basic` implementation to be disabled by default, explicitly opt-in, local/private/self-hosted, target-authorized, bounded by target count, port count, timeouts, output, and storage, built from allowlisted Nmap command profiles, and reported as observed exposure or review indicators. It does not add Nmap runtime, arbitrary internet scanning, broad ranges, stealth, evasion, aggressive NSE defaults, brute force, exploit scripts, credential validation, crawling, DNS expansion, custom scripts, SaaS/public scanner behavior, or runtime changes.
 - The Active Nmap Basic implementation plan is docs-only future sequencing. It splits possible implementation into backend contract, target policy, command builder, runner skeleton, controlled subprocess, parser, redaction/reporting, frontend, test, and local-smoke phases without adding endpoints, Nmap execution, Docker behavior, runtime changes, migrations, tags, releases, broad scanning, or public scanner behavior.
+- The Active Nmap Basic backend contract gate now exists as `POST /active/network/nmap-basic`, disabled by default through `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=false`. When explicitly enabled, it validates only the exact `live_nmap_basic` / `tcp_connect_small` contract, required confirmations, and bounded target/port lists, then returns `not_implemented` / `not_executed` without creating a job, calling a runner, constructing commands, using subprocesses, executing Nmap, resolving DNS, sending probes, making external HTTP requests, adding frontend behavior, or integrating with archive/run-all flows.
 - Nmap remains unimplemented and out of scope.
 
 The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.
