@@ -744,6 +744,19 @@ Suggested commit:
 feat(active): add nmap basic panel shell
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_08_FRONTEND_PANEL_SHELL_ACCEPTED` implements this
+microphase as a frontend-only informational panel. The UI renders a separate
+`Active / Nmap basic` shell with disabled/prepared availability states, bounded
+local/private/self-hosted and authorized-target copy, live-traffic warning,
+manual-validation wording, and explicit no-scope limits. It does not add a
+functional submit, create Nmap jobs, call the backend Nmap contract, connect the
+backend to the runner executor, add runner endpoints, render full frontend
+reports, expose raw flags or credential/header/cookie/token fields, integrate
+with archive/run-all actions, run Nmap, run Docker, perform probes, perform DNS
+checks, or send external HTTP traffic.
+
 ## Microphase 09: Frontend Confirmations And Submit Contract
 
 Objective:

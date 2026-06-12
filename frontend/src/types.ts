@@ -1,6 +1,11 @@
 export type HealthResponse = {
   status: string;
   service: string;
+  active_nmap_basic?: {
+    enabled?: boolean;
+    available?: boolean;
+    status?: string;
+  } | null;
 };
 
 export type AuthMode =

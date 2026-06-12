@@ -220,6 +220,8 @@ The Active Nmap Basic bounded parser decision is `ACTIVE_NMAP_BASIC_06_BOUNDED_P
 
 The Active Nmap Basic redaction/reporting decision is `ACTIVE_NMAP_BASIC_07_REDACTION_REPORTING_ACCEPTED`. Backend reporting now handles already-structured `active_nmap_basic` payloads in job detail, summaries, Markdown, HTML, XML, PDF, and redacted Raw JSON. It redacts raw targets, command fragments, stdout/stderr, raw XML, service/banner fields, embedded hostnames/IPs, headers, cookies, tokens, credentials, and malformed nested sensitive strings, and renders TCP observations only as observed exposure and review indicators requiring manual validation. This does not add backend-to-runner execution, real Nmap jobs, runner HTTP endpoints, frontend behavior, archive/run-all integration, CVE matching, raw XML export, vulnerability/exploitability inference, Docker changes, migrations, tags, releases, or integration with `tools/runner/main.py`.
 
+The Active Nmap Basic frontend panel shell decision is `ACTIVE_NMAP_BASIC_08_FRONTEND_PANEL_SHELL_ACCEPTED`. The frontend now renders a separate `Active / Nmap basic` informational panel with disabled/prepared availability states, local/private/self-hosted and authorized-target guardrails, live-traffic warning copy, observed-exposure/review-indicator wording, and a disabled nonfunctional button. It does not add a functional submit, create Nmap jobs, call the backend Nmap contract, connect backend to runner execution, add runner endpoints, render full frontend Nmap reports, expose raw flags or credential/header/cookie/token fields, integrate with archive/run-all actions, run Nmap, run Docker, perform probes, perform DNS checks, or send external HTTP traffic.
+
 ## Components
 
 ### Backend

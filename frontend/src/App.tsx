@@ -19,6 +19,7 @@ import { ActiveDryRunJobReport } from "./ActiveDryRunJobReport";
 import { redactActiveDryRunText } from "./activeDryRunReport";
 import { ActiveHttpHeaderProbeJobReport } from "./ActiveHttpHeaderProbeJobReport";
 import { redactActiveHttpHeaderProbeText } from "./activeHttpHeaderProbeReport";
+import { ActiveNmapBasicPanel } from "./ActiveNmapBasicPanel";
 import {
   auditTypeCategoryLabel,
   auditTypeLabel,
@@ -1070,6 +1071,8 @@ export function App() {
           </form>
           {activeHttpHeaderProbeState.error ? <p className="error-text">{activeHttpHeaderProbeState.error}</p> : null}
         </Panel>
+
+        <ActiveNmapBasicPanel health={health} />
       </section>
 
       <section className="content-grid">

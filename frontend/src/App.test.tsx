@@ -535,6 +535,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Subdomain Inventory" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Active / Network dry-run" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Authorized HTTP Header Probe" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Active / Nmap basic" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Jobs" })).toBeInTheDocument();
     const demoNote = screen.getByRole("note", { name: "Local alpha demo fixture note" });
@@ -1319,6 +1320,45 @@ describe("App", () => {
     ).toHaveLength(1);
   });
 
+  it("renders the Active Nmap basic shell without submit or job creation calls", async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalled();
+    });
+    vi.mocked(globalThis.fetch).mockClear();
+
+    const heading = screen.getByRole("heading", { name: "Active / Nmap basic" });
+    const panel = heading.closest("section");
+    expect(panel).not.toBeNull();
+    const scoped = within(panel as HTMLElement);
+    const panelText = panel?.textContent ?? "";
+
+    expect(panelText).toContain("Local/private/self-hosted");
+    expect(panelText).toContain("Authorized targets only");
+    expect(panelText).toContain("Observed TCP exposure / Review indicator");
+    expect(panelText).toContain("Manual validation required");
+    expect(panelText).toContain("no confirmed vulnerability asserted");
+    expect(panelText).toContain("No raw flags");
+    expect(panelText).toContain("no credential validation");
+    expect(panelText).not.toContain("full network scan");
+    expect(panelText).not.toContain("scan the internet");
+    expect(panelText).not.toContain("target is safe");
+    expect(panelText).not.toContain("exploitable");
+    expect(scoped.getByRole("button", { name: "Prepared only" })).toBeDisabled();
+    expect(panel?.querySelector("form")).toBeNull();
+    expect(panel?.querySelector("input")).toBeNull();
+    expect(panel?.querySelector("textarea")).toBeNull();
+
+    fireEvent.click(scoped.getByRole("button", { name: "Prepared only" }));
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.some(([input]) => String(input).endsWith("/active/network/nmap-basic"))
+    ).toBe(false);
+  });
+
   it("renders Active dry-run jobs with redacted target table and report payload", async () => {
     const activeJob = {
       id: "job-active-legacy-1",
@@ -1596,6 +1636,8 @@ describe("App", () => {
     expect(archiveRow?.textContent).not.toContain("Create dry-run plan");
     expect(archiveRow?.textContent).not.toContain("Authorized HTTP Header Probe");
     expect(archiveRow?.textContent).not.toContain("Create authorized header probe job");
+    expect(archiveRow?.textContent).not.toContain("Active / Nmap basic");
+    expect(archiveRow?.textContent).not.toContain("Prepared only");
     expect(pdfRow?.textContent).not.toContain("Start here");
     expect(pdfRow?.textContent).not.toContain("Data layer");
 
