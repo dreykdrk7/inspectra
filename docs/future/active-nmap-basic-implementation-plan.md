@@ -1823,6 +1823,90 @@ privileged container, no Docker socket, bounded execution, redacted logs, and
 continued separation from backend subprocess execution, archive/run-all, and
 `tools/runner/main.py`.
 
+## Microphase 21: Active Tools Docker Scaffold No-Run
+
+Objective:
+
+Create the initial `active-tools` Docker/Compose scaffold for future review
+without building images, running Docker, executing Nmap, changing backend,
+frontend, runner runtime, adding runner HTTP endpoints, or wiring backend live
+calls.
+
+Probable files:
+
+- `docker/active-tools/Dockerfile`
+- `docker/active-tools/Dockerfile.dockerignore`
+- `docker-compose.active-tools.example.yml`
+- `tools/tests/test_active_tools_docker_scaffold_static.py`
+- `docs/future/active-nmap-basic-active-tools-docker-scaffold-no-run.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Docker build.
+- No Docker Compose run.
+- No Nmap execution.
+- No Nmap smoke.
+- No backend integration.
+- No runner HTTP endpoint.
+- No service availability runtime.
+- No target approval.
+- No feature flag change.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No LAN/VPS/domain/public target approval.
+- No public scanner behavior.
+
+Expected validations:
+
+- Dockerfile exists and uses a minimal Python slim base aligned with current
+  service images;
+- Dockerfile declares Nmap packaging without running Nmap at build time;
+- Dockerfile copies only `tools/active_runner`, not `tools/runner/main.py`;
+- Dockerfile exposes no port and defines no scanning healthcheck;
+- Compose example is separate from main `docker-compose.yml`;
+- Compose example uses profile `active`;
+- Compose example has no published ports, no host network, no privileged
+  container, no Docker socket, and no passive runner integration;
+- Dockerfile ignore excludes `.env`, `.env.*`, `.envrc`, runtime data,
+  node modules, caches, and local virtualenvs;
+- static tests pass without Docker or Nmap.
+
+Risks:
+
+- Treating scaffold as build/run approval.
+- Accidentally letting normal `docker compose up` start `active-tools`.
+- Copying passive runner code into the Active image.
+- Publishing ports or adding host network to simplify later smoke work.
+
+Acceptance criteria:
+
+- Scaffold files exist and are static-reviewable.
+- Main `docker-compose.yml` behavior is unchanged.
+- Static tests verify the no-run/no-public/no-passive-runner guardrails.
+- Documentation states that `active-tools` is not built, run, or wired yet.
+- No Docker, Nmap, probe, DNS, external HTTP, runtime, endpoint, migration, tag,
+  or release action occurs.
+
+Suggested commit:
+
+```text
+chore(active): scaffold active tools docker packaging
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_21_ACTIVE_TOOLS_DOCKER_SCAFFOLD_NO_RUN_ACCEPTED` records the
+initial `active-tools` Dockerfile, Dockerfile-specific ignore file, separate
+Compose example, and static test scaffold. The scaffold remains disabled/no-run:
+no Docker build, Docker run, Nmap execution, backend integration, runner HTTP
+endpoint, archive/run-all integration, or `tools/runner/main.py` integration was
+added.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

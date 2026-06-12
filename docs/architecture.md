@@ -244,6 +244,8 @@ The Active Nmap Basic Nmap availability and packaging decision is `ACTIVE_NMAP_B
 
 The Active Nmap Basic Active Tools Docker design decision is `ACTIVE_NMAP_BASIC_20_ACTIVE_TOOLS_DOCKER_DESIGN_ACCEPTED`. It designs a future `active-tools` Dockerized Active runner service/image that remains separate from backend, frontend, audit-tools/passive runner, and `tools/runner/main.py`. The design requires disabled-by-default activation, no public port by default, no host network by default, no privileged container, no Docker socket, bounded execution, redacted logs, and clear container-loopback semantics before any Dockerized smoke is approved. This docs-only phase does not modify Dockerfile or Compose, build images, start containers, install Nmap, execute Nmap, change runtime, add runner endpoints, integrate archive/run-all, approve LAN/VPS/domain/public targets, or add public scanner behavior.
 
+The Active Nmap Basic Active Tools Docker scaffold decision is `ACTIVE_NMAP_BASIC_21_ACTIVE_TOOLS_DOCKER_SCAFFOLD_NO_RUN_ACCEPTED`. It adds an initial `active-tools` Dockerfile, Dockerfile-specific ignore file, separate Compose example, and static guardrail tests. The scaffold keeps `active-tools` separate from backend, frontend, audit-tools/passive runner, and `tools/runner/main.py`; the main `docker-compose.yml` is unchanged. This scaffold has not been built or run, does not execute Nmap, does not add runner endpoints, does not wire backend live calls, does not integrate archive/run-all, and does not approve LAN/VPS/domain/public targets or public scanner behavior.
+
 ## Components
 
 ### Backend

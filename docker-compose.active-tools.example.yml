@@ -1,0 +1,30 @@
+# Example-only scaffold for the future active-tools service.
+# Do not include this file in normal `docker compose up` flows until a later
+# phase explicitly approves build/run validation.
+
+name: inspectra-active-tools-example
+
+services:
+  active-tools:
+    profiles: ["active"]
+    build:
+      context: .
+      dockerfile: docker/active-tools/Dockerfile
+    container_name: inspectra-active-tools
+    environment:
+      INSPECTRA_ACTIVE_TOOLS_MODE: scaffold_no_run
+    networks:
+      - inspectra_internal
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+
+networks:
+  inspectra_internal:
+    internal: true

@@ -1,0 +1,28 @@
+# Ignore file for builds using docker/active-tools/Dockerfile from the repo
+# root context. It intentionally excludes secrets, runtime data, caches, and
+# unrelated app artifacts.
+
+.env
+.env.*
+.envrc
+
+.git
+.github
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+
+data
+data/uploads
+data/results
+
+frontend/node_modules
+frontend/dist
+node_modules
+
+*.log
+*.tmp
