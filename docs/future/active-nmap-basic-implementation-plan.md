@@ -406,6 +406,69 @@ communication, endpoint, parser, Nmap execution, subprocess use, DNS checks,
 network probes, Docker behavior, frontend behavior, archive/run-all
 integration, or passive runner integration.
 
+## Microphase 04A: Pre-Execution Review
+
+Objective:
+
+Review all accepted `active_nmap_basic` implementation slices before any real
+Nmap execution, subprocess control, parser, frontend, Docker change, migration,
+tag, or release can proceed.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-pre-execution-review.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+
+No-scope:
+
+- No runtime behavior changes.
+- No backend execution changes.
+- No frontend changes.
+- No runner endpoint.
+- No Nmap execution.
+- No subprocess use.
+- No parser.
+- No Docker changes.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+- backend contract, target policy, builder, and skeleton reviewed together;
+- source searches confirm no unexpected execution path;
+- tests still pass without Nmap installed;
+- gaps before Microphase 05 are recorded explicitly.
+
+Risks:
+
+- Treating a docs-only review as permission for broad scanning.
+- Missing a duplicated-contract drift risk before execution.
+- Letting Microphase 05 introduce subprocess behavior before runner-side target
+  policy and output controls are in place.
+
+Acceptance criteria:
+
+- A review record states whether Microphase 05 may proceed.
+- The record includes reviewed files, findings, residual risks, gaps, validation
+  evidence, and explicit confirmation that no Nmap or external traffic ran.
+
+Suggested commit:
+
+```text
+docs(active): review nmap basic before execution
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_04A_PRE_EXECUTION_REVIEW_PASSED` is recorded in
+`docs/future/active-nmap-basic-pre-execution-review.md`. The review found no
+blocking issues and permits Microphase 05 to proceed only as a tightly bounded
+subprocess-execution implementation phase. It records a required condition that
+the execution boundary must enforce or mirror the backend target policy before
+any real subprocess can be reachable. The review did not add runtime behavior,
+backend execution, frontend behavior, runner endpoints, parsers, Docker changes,
+migrations, tags, releases, Nmap execution, DNS checks, probes, external HTTP
+traffic, archive/run-all integration, or passive runner integration.
+
 ## Microphase 05: Controlled Nmap Subprocess Execution
 
 Objective:
