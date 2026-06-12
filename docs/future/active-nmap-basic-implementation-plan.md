@@ -3002,6 +3002,106 @@ runner HTTP endpoints, create real jobs or exports, integrate archive/run-all,
 integrate `tools/runner/main.py`, approve new targets, or create release/tag
 state.
 
+## Microphase 33: Backend Report Redaction Real Shape, No Live
+
+Objective:
+
+Add backend/report/export/Raw JSON coverage for the hardened
+`active_nmap_basic` shape derived from real-output parser hardening. Use
+already-structured synthetic payloads to verify PTR hostnames, resolved IPs for
+FQDN targets, raw XML, raw args, commands, stdout/stderr, service/banner/version
+details, stylesheet references, and script/NSE-like output do not appear in
+backend public surfaces.
+
+Probable files:
+
+- `backend/tests/test_backend.py`
+- `backend/app/reporting.py`
+- `docs/future/active-nmap-basic-backend-report-redaction-real-shape-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No DNS checks.
+- No probes.
+- No external HTTP checks.
+- No `curl` or browser checks.
+- No Compose.
+- No backend-to-active-tools live calls.
+- No runner HTTP endpoint.
+- No real jobs created from `active-tools`.
+- No real exports from live execution.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No frontend runtime changes.
+- No target approval for `www.vildek.es`.
+- No target approval for `app.vildek.es`.
+- No approval for port `80`.
+- No public scanner behavior.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap or nmap_basic or redaction"
+.venv/bin/python -m pytest tools/tests/test_active_runner_nmap_basic_parser_redaction.py
+.venv/bin/python -m pytest tools/tests/test_active_runner_nmap_basic_parser.py
+rg -n "PTR|redacted-ptr|203.0.113.10|raw_xml|raw args|resolved_ip|ptr_hostname|Raw JSON|observed_exposure_review_indicator|manual_validation_required|stylesheet|script_output" backend tools docs README.md
+rg -n "vps-40567620|51.38.225.243" backend tools/tests || true
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Backend Raw JSON, report, or export surfaces expose fields that pure parser
+  helpers already omit.
+- Legacy or malformed payloads smuggle sensitive values through new key names
+  such as `resolved_ip`, `ptr_hostname`, `stylesheet`, or `script_output`.
+- Wording drifts from observed exposure / review indicator into vulnerability,
+  exploitability, target-safety, full-scan, or all-ports-found claims.
+- Wrong-owner reads reveal target metadata through errors or exports.
+
+Acceptance criteria:
+
+- Synthetic backend payload uses only synthetic/documentary values.
+- Job detail, list summary, Markdown, HTML, XML, PDF, and backend Redacted Raw
+  JSON omit PTR, FQDN resolved IP, raw XML, raw args, commands, stdout/stderr,
+  service/banner/version, stylesheet, script/NSE-like output, credentials,
+  headers, cookies, and tokens.
+- `manual_validation_required` and
+  `result_interpretation: observed_exposure_review_indicator` remain visible.
+- Allowed observation fields preserve port, protocol, state, and reason.
+- Wrong-owner detail/export reads return generic not found.
+- No Docker, Nmap, DNS/HTTP, Compose, live backend-to-active-tools call, runner
+  HTTP endpoint, active-tools-created job, live export, archive/run-all, or
+  `tools/runner/main.py` integration is added.
+
+Suggested commit:
+
+```text
+test(active): harden backend nmap report redaction
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_33_BACKEND_REPORT_REDACTION_REAL_SHAPE_NO_LIVE_ACCEPTED`
+adds backend/report/export/Raw JSON tests for the hardened real-output-like
+shape and extends backend reporting redaction key coverage for PTR, resolved IP,
+stylesheet, and script/NSE-like fields. It does not run Docker or Nmap, perform
+DNS/HTTP checks, add live backend-to-active-tools calls, add runner HTTP
+endpoints, create real jobs or exports, integrate archive/run-all, integrate
+`tools/runner/main.py`, approve new targets, or create release/tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

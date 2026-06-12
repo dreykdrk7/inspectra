@@ -5676,6 +5676,174 @@ async def test_active_nmap_basic_synthetic_payload_exports_render_and_redact(mon
 
 
 @pytest.mark.anyio
+async def test_active_nmap_basic_real_shape_backend_surfaces_redact_without_live_runtime(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    rich_payload = {
+        "audit_type": "active_nmap_basic",
+        "capability": "active_nmap_basic",
+        "mode": "live_nmap_basic",
+        "profile": "tcp_connect_small",
+        "status": "completed",
+        "target_kind": "authorized_fqdn",
+        "target_display": "authorized target",
+        "manual_validation_required": True,
+        "result_interpretation": "observed_exposure_review_indicator",
+        "port_observations": [
+            {
+                "port": 443,
+                "protocol": "tcp",
+                "state": "open",
+                "reason": "syn-ack",
+                "manual_validation_required": True,
+                "result_interpretation": "observed_exposure_review_indicator",
+            }
+        ],
+        "observation_count": 1,
+        "limits": {"output_truncated": False, "stderr_truncated": False, "timed_out": False},
+        "summary": {"observation_count": 1},
+        "raw_xml": "<nmaprun args='nmap -sT -p 443 authorized.example.test'><host /></nmaprun>",
+        "stdout": "stdout includes 203.0.113.10 redacted-ptr.example.internal <nmaprun />",
+        "stderr": "stderr includes redacted-ptr.example.internal token_should_never_render",
+        "args": "raw args nmap -sT -p 443 authorized.example.test --script default",
+        "command": "nmap -sT -Pn -oX - -p 443 -- authorized.example.test",
+        "resolved_ip": "203.0.113.10",
+        "ptr_hostname": "redacted-ptr.example.internal",
+        "hostnames": ["authorized.example.test", "unexpected-alias.example.internal"],
+        "service": "https-private-service-label",
+        "banner": "SyntheticPrivateServer synthetic-banner",
+        "version": "9.9.9",
+        "stylesheet": "file:///usr/share/nmap/nmap.xsl",
+        "script_output": "synthetic NSE-like output",
+        "nse": {"id": "ssl-cert", "output": "synthetic NSE-like output"},
+        "credentials": {"username": "operator", "password": "super-secret-password"},
+        "headers": {"Authorization": "Bearer token_should_never_render"},
+        "cookies": {"session": "secret-session-cookie"},
+        "tokens": ["token_should_never_render"],
+        "nested": {
+            "resolved_ip": "203.0.113.10",
+            "ptr_hostname": "redacted-ptr.example.internal",
+            "notes": "203.0.113.10 redacted-ptr.example.internal synthetic NSE-like output",
+        },
+    }
+    job = JobRecord(
+        id="e" * 31 + "2",
+        audit_type="active_nmap_basic",
+        file_id=None,
+        target_url="authorized.example.test",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result=rich_payload,
+        error="nmap -sT authorized.example.test 203.0.113.10 redacted-ptr.example.internal",
+    )
+    wrong_owner_job = JobRecord(
+        id="e" * 31 + "3",
+        owner_id="other-owner",
+        audit_type="active_nmap_basic",
+        file_id=None,
+        target_url="redacted-ptr.example.internal",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result=rich_payload,
+        error="203.0.113.10 redacted-ptr.example.internal",
+    )
+    app.state.jobs.save(job)
+    app.state.jobs.save(wrong_owner_job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
+        jobs_response = await client.get("/jobs")
+        exports = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+        wrong_detail_response = await client.get(f"/jobs/{wrong_owner_job.id}")
+        wrong_export_responses = [
+            await client.get(f"/jobs/{wrong_owner_job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        ]
+
+    assert api_response.status_code == 200
+    assert all(response.status_code == 200 for response in exports.values())
+    assert ElementTree.fromstring(exports["xml"].text).findtext("./job/auditType") == "active_nmap_basic"
+    assert exports["pdf"].content.startswith(b"%PDF")
+    assert wrong_detail_response.status_code == 404
+    assert all(response.status_code == 404 for response in wrong_export_responses)
+    assert wrong_owner_job.id not in json.dumps(jobs_response.json(), sort_keys=True)
+
+    api_result = api_response.json()["result"]
+    assert api_result["manual_validation_required"] is True
+    assert api_result["result_interpretation"] == "observed_exposure_review_indicator"
+    assert api_result["port_observations"] == rich_payload["port_observations"]
+    for redacted_key in (
+        "raw_xml",
+        "stdout",
+        "stderr",
+        "args",
+        "command",
+        "resolved_ip",
+        "ptr_hostname",
+        "hostnames",
+        "service",
+        "banner",
+        "version",
+        "stylesheet",
+        "script_output",
+        "nse",
+        "credentials",
+        "headers",
+        "cookies",
+        "tokens",
+    ):
+        assert api_result[redacted_key] == "[REDACTED]"
+    assert api_result["nested"]["resolved_ip"] == "[REDACTED]"
+    assert api_result["nested"]["ptr_hostname"] == "[REDACTED]"
+
+    combined = json.dumps({"api": api_response.json(), "jobs": jobs_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in exports.items()
+    )
+    assert "Observed TCP exposure" in combined
+    assert "Review indicator" in combined
+    assert "Manual validation required" in combined
+    assert "observed_exposure_review_indicator" in combined
+    assert "manual_validation_required" in combined
+    assert "443" in combined
+    assert "open" in combined
+    assert "syn-ack" in combined
+    for forbidden in (
+        "203.0.113.10",
+        "redacted-ptr.example.internal",
+        "unexpected-alias.example.internal",
+        "authorized.example.test",
+        "raw args",
+        "nmap -sT",
+        "<nmaprun",
+        "stdout includes",
+        "stderr includes",
+        "https-private-service-label",
+        "SyntheticPrivateServer",
+        "synthetic-banner",
+        "9.9.9",
+        "file:///usr/share/nmap/nmap.xsl",
+        "synthetic NSE-like output",
+        "super-secret-password",
+        "token_should_never_render",
+        "secret-session-cookie",
+        "confirmed vulnerability",
+        "exploitable",
+        "target is safe",
+        "full scan",
+        "all ports found",
+    ):
+        assert forbidden not in combined
+
+
+@pytest.mark.anyio
 async def test_active_nmap_basic_fake_execution_parser_payload_exports_no_live(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     fake_execution = {

@@ -271,6 +271,8 @@ The Active Nmap Basic real-output redaction hardening design decision is `ACTIVE
 
 The Active Nmap Basic parser/redaction tests decision is `ACTIVE_NMAP_BASIC_32_REAL_OUTPUT_PARSER_REDACTION_TESTS_NO_RUNTIME_ACCEPTED`. It adds synthetic XML fixtures and offline tests for the pure `tools/active_runner/nmap_basic` parser/result helpers. The helper hardening rejects unsupported multi-host and script/OS-output shapes, enforces accepted ports when supplied, propagates safe target kind, and keeps visible payloads to minimal TCP observations with `manual_validation_required: true` and `result_interpretation: observed_exposure_review_indicator`. It does not add live runner behavior, backend live calls, runner HTTP endpoints, real jobs, exports, archive/run-all, `tools/runner/main.py` integration, Docker/Nmap/DNS/HTTP checks, new target approval, release, or tag state.
 
+The Active Nmap Basic backend report redaction real-shape decision is `ACTIVE_NMAP_BASIC_33_BACKEND_REPORT_REDACTION_REAL_SHAPE_NO_LIVE_ACCEPTED`. It adds backend job detail, list summary, Markdown/HTML/XML/PDF export, Redacted Raw JSON, and wrong-owner denial coverage for synthetic real-output-like `active_nmap_basic` payloads. Backend reporting treats resolved IP, PTR hostname, stylesheet, and script/NSE-like fields as sensitive for this audit type, while preserving minimal TCP observations with observed exposure / review indicator wording. It does not add live runner behavior, backend-to-active-tools calls, runner HTTP endpoints, active-tools-created jobs, live exports, archive/run-all integration, `tools/runner/main.py` integration, Docker/Nmap/DNS/HTTP checks, new target approval, release, or tag state.
+
 ## Components
 
 ### Backend
