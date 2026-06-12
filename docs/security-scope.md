@@ -291,6 +291,12 @@ Active Nmap Basic target policy decision: `ACTIVE_NMAP_BASIC_02_TARGET_POLICY_AC
 
 Active Nmap Basic command builder decision: `ACTIVE_NMAP_BASIC_03_COMMAND_BUILDER_ACCEPTED`.
 
+Active Nmap Basic runner skeleton decision: `ACTIVE_NMAP_BASIC_04_RUNNER_SKELETON_ACCEPTED`.
+
+Active Nmap Basic controlled subprocess decision: `ACTIVE_NMAP_BASIC_05_CONTROLLED_SUBPROCESS_ACCEPTED`.
+
+Active Nmap Basic bounded parser decision: `ACTIVE_NMAP_BASIC_06_BOUNDED_PARSER_ACCEPTED`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
@@ -330,6 +336,7 @@ This means:
 - The Active Nmap Basic command builder is isolated in `tools/active_runner/nmap_basic/command_builder.py` and is pure/offline. It emits only an argv list for the fixed `tcp_connect_small` profile and does not accept raw flags, script options, shell strings, command execution, subprocess use, Nmap binary lookup, DNS resolution, runner endpoints, parsers, frontend behavior, or passive runner integration.
 - The Active Nmap Basic runner skeleton is isolated in `tools/active_runner/nmap_basic/service.py` and remains offline. It validates structured inputs, required confirmations, and unsupported command-like fields, calls the allowlisted builder only as a construction check, discards the argv, and returns `not_executed` metadata without raw command, raw target, stdout, stderr, evidence, job creation, backend communication, runner endpoints, Nmap execution, subprocess use, DNS checks, probes, external HTTP traffic, frontend behavior, archive/run-all integration, or passive runner integration.
 - The Active Nmap Basic controlled executor is isolated in `tools/active_runner/nmap_basic/executor.py` with a runner-side target-policy mirror in `tools/active_runner/nmap_basic/target_policy.py`. It accepts structured inputs only, applies target policy before execution, uses only allowlisted argv from the command builder, uses `subprocess.run` with `shell=False`, bounds timeout/stdout/stderr, redacts raw target values from returned output, and returns controlled `completed`, `failed`, `timed_out`, or `nmap_missing` states. It does not add parser behavior, findings, jobs, backend calls, runner HTTP endpoints, frontend behavior, archive/run-all integration, Docker changes, migrations, tags, releases, raw flags, scripts, NSE, stealth/evasion, UDP, OS/service/version detection, brute force, exploits, credential validation, crawling, DNS expansion, broad ranges, public scanner behavior, or passive runner integration. Tests use fakes by default and do not require Nmap installed.
+- The Active Nmap Basic bounded parser is isolated in `tools/active_runner/nmap_basic/parser.py` and remains offline. It accepts only bounded XML/stdout bytes or strings, returns minimal TCP port observations and controlled parse states, ignores host address/hostname and service/version/banner data, does not return raw XML, raw targets, commands, stdout/stderr, findings, reports, or vulnerability claims, and is not wired into backend jobs, frontend UI, report rendering, archive/run-all, Nmap execution, DNS/probe/HTTP behavior, Docker, migrations, tags, releases, broad scans, NSE/scripts, brute force, exploits, credential validation, crawling, public scanner behavior, or passive runner integration. Tests use synthetic XML only and do not require Nmap installed.
 - No released or UI-exposed Nmap workflow exists.
 
 The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.

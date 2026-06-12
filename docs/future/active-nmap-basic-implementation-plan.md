@@ -606,6 +606,21 @@ Suggested commit:
 feat(active): parse bounded nmap basic output
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_06_BOUNDED_PARSER_ACCEPTED` implements this microphase as
+an isolated parser at `tools/active_runner/nmap_basic/parser.py`. The parser
+accepts only bounded XML/stdout bytes or strings, rejects unsupported XML
+shapes, returns controlled `completed`, `empty`, `malformed`,
+`unsupported_shape`, `truncated`, or `no_ports` states, extracts only minimal
+TCP port observations, bounds observation count, marks oversized input as
+truncated before parsing, normalizes unknown states conservatively, and keeps
+raw XML, raw target values, command details, service/version/banner data,
+findings, reports, jobs, backend calls, frontend behavior, archive/run-all
+integration, and passive runner integration out of scope. Tests use synthetic
+fixtures only and do not require Nmap, Docker, DNS, probes, external HTTP, or
+network access.
+
 ## Microphase 07: Redaction And Report Integration
 
 Objective:

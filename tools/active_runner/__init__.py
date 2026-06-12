@@ -8,6 +8,7 @@ from .nmap_basic import (
     build_active_nmap_basic_argv,
     execute_active_nmap_basic,
     handle_active_nmap_basic_skeleton,
+    parse_active_nmap_basic_xml,
     validate_active_nmap_basic_execution_target,
 )
 from .models import (
@@ -38,6 +39,7 @@ __all__ = [
     "build_active_nmap_basic_argv",
     "execute_active_nmap_basic",
     "handle_active_nmap_basic_skeleton",
+    "parse_active_nmap_basic_xml",
     "run_authorized_http_header_probe",
     "run_active_network_dry_run",
     "validate_active_nmap_basic_execution_target",
