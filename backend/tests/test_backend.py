@@ -3,6 +3,7 @@ import hashlib
 from http.cookies import SimpleCookie
 import io
 import json
+from pathlib import Path
 import sqlite3
 import tarfile
 import threading
@@ -5164,6 +5165,179 @@ async def test_active_http_header_probe_sparse_jobs_export_without_breaking(monk
                 assert response.status_code == 200
                 body = response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
                 assert "token_should_never_render" not in body
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_synthetic_payload_exports_render_and_redact(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    job = JobRecord(
+        id="e" * 31 + "1",
+        audit_type="active_nmap_basic",
+        file_id=None,
+        target_url="192.168.56.10",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "audit_type": "active_nmap_basic",
+            "capability": "active_nmap_basic",
+            "mode": "live_nmap_basic",
+            "profile": "tcp_connect_small",
+            "status": "completed",
+            "target": {"raw": "192.168.56.10", "hostname": "secret-lab.internal"},
+            "command": "nmap -sT -Pn -n -oX - -p 22,443 -- 192.168.56.10",
+            "stdout": "stdout with 192.168.56.10 and <nmaprun><host><address addr='192.168.56.10'/></host></nmaprun>",
+            "stderr": "stderr for secret-lab.internal Authorization: Bearer token_should_never_render",
+            "raw_xml": "<nmaprun args='nmap -sT 192.168.56.10'><host><ports /></host></nmaprun>",
+            "port_observations": [
+                {"port": 443, "protocol": "tcp", "state": "open", "reason": "syn-ack"},
+                {"port": 22, "protocol": "tcp", "state": "closed", "reason": "reset"},
+            ],
+            "observation_count": 2,
+            "limits": {"output_truncated": False, "stderr_truncated": True, "timed_out": False},
+            "legacy": {
+                "service_banner": "OpenSSH_9.9 secret-service-banner",
+                "notes": "confirmed vulnerability exploitable target is safe all ports found full network scan",
+                "headers": {"Cookie": "sessionid=secret-session-cookie"},
+            },
+            "summary": {"observation_count": 2},
+            "errors": ["nmap -sT 192.168.56.10 failed with token_should_never_render"],
+        },
+        error="nmap -sT 192.168.56.10 PRIVATE KEY token_should_never_render",
+    )
+    app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
+        jobs_response = await client.get("/jobs")
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        if report_format == "xml":
+            assert ElementTree.fromstring(response.text).findtext("./job/auditType") == "active_nmap_basic"
+        elif report_format == "pdf":
+            assert response.content.startswith(b"%PDF")
+
+    combined = json.dumps({"api": api_response.json(), "jobs": jobs_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in responses.items()
+    )
+    assert "Observed TCP exposure" in combined
+    assert "Review indicator" in combined
+    assert "Manual validation required" in combined
+    assert "No vulnerability confirmation is asserted" in combined
+    assert "Observation 1 Port" in combined
+    assert "443" in combined
+    assert "active_nmap_basic" in combined
+    summary = next(item for item in jobs_response.json() if item["id"] == job.id)["summary"]
+    assert summary["capability"] == "active_nmap_basic"
+    assert summary["profile"] == "tcp_connect_small"
+    assert summary["result_status"] == "completed"
+    assert summary["observation_count"] == 2
+    assert summary["open_tcp_observations_count"] == 1
+    assert summary["stderr_truncated"] is True
+    assert api_response.json()["result"]["target"] == "[REDACTED]"
+    assert api_response.json()["result"]["command"] == "[REDACTED]"
+
+    for forbidden in (
+        "192.168.56.10",
+        "secret-lab.internal",
+        "nmap -sT",
+        "stdout with",
+        "stderr for",
+        "<nmaprun",
+        "OpenSSH_9.9",
+        "secret-service-banner",
+        "token_should_never_render",
+        "Authorization: Bearer token_should_never_render",
+        "sessionid=secret-session-cookie",
+        "PRIVATE KEY",
+        "confirmed vulnerability",
+        "exploitable",
+        "target is safe",
+        "all ports found",
+        "full network scan",
+    ):
+        assert forbidden not in combined
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_controlled_states_and_legacy_payloads_do_not_crash(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    statuses = ["failed", "timed_out", "truncated", "malformed", "nmap_missing", "no_ports"]
+    jobs = [
+        JobRecord(
+            id=f"{index:032x}",
+            audit_type="active_nmap_basic",
+            file_id=None,
+            target_url="lab-router",
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result={
+                "audit_type": "active_nmap_basic",
+                "capability": "active_nmap_basic",
+                "profile": "tcp_connect_small",
+                "status": result_status,
+                "target": "lab-router.internal",
+                "port_observations": [] if result_status == "no_ports" else "malformed",
+                "limits": {"output_truncated": result_status == "truncated", "stderr_truncated": False, "timed_out": result_status == "timed_out"},
+                "errors": [{"message": "nmap -sT lab-router.internal Cookie: sessionid=secret-session-cookie"}],
+                "nested": {"raw_command": "nmap -sT -- lab-router.internal", "stderr": "lab-router.internal token_should_never_render"},
+            },
+        )
+        for index, result_status in enumerate(statuses, start=1)
+    ]
+    for job in jobs:
+        app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for job, expected_status in zip(jobs, statuses, strict=True):
+            job_response = await client.get(f"/jobs/{job.id}")
+            assert job_response.status_code == 200
+            for report_format in ("markdown", "html", "xml", "pdf"):
+                response = await client.get(f"/jobs/{job.id}/export/{report_format}")
+                assert response.status_code == 200
+                body = response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+                assert expected_status in body
+                assert "Controlled" in body or report_format == "xml"
+                assert "lab-router" not in body
+                assert "lab-router.internal" not in body
+                assert "nmap -sT" not in body
+                assert "token_should_never_render" not in body
+                assert "sessionid=secret-session-cookie" not in body
+                assert "confirmed vulnerability" not in body
+                assert "exploitable" not in body
+                assert "target is safe" not in body
+
+
+def test_active_nmap_basic_reporting_source_has_no_runner_subprocess_or_frontend_integration():
+    reporting_source = Path("backend/app/reporting.py").read_text(encoding="utf-8")
+    storage_source = Path("backend/app/storage.py").read_text(encoding="utf-8")
+    combined = reporting_source + "\n" + storage_source
+
+    for forbidden in (
+        "import " + "subprocess",
+        "subprocess.",
+        "shell" + "=True",
+        "os." + "system",
+        "po" + "pen",
+        "P" + "open(",
+        "execute_active_nmap_basic",
+        "run_active_nmap",
+        "tools.runner",
+        "frontend/src",
+    ):
+        assert forbidden not in combined
 
 
 @pytest.mark.anyio

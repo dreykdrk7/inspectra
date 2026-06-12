@@ -838,6 +838,7 @@ async def get_job(request: Request, job_id: str) -> JobRecord:
         "redis_config_basic",
         "active_network_dry_run",
         "active_http_header_probe",
+        "active_nmap_basic",
     }:
         return job.model_copy(
             update={

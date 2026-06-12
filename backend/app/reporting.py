@@ -51,6 +51,74 @@ SECRET_LIKE_MAPPING_TOKENS = (
     "auth",
     "key",
 )
+ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS = {
+    "address",
+    "addresses",
+    "args",
+    "argv",
+    "argv_preview",
+    "authorization",
+    "banner",
+    "banners",
+    "cmd",
+    "command",
+    "command_line",
+    "cookie",
+    "cookies",
+    "credential",
+    "credentials",
+    "extra_args",
+    "header",
+    "headers",
+    "host",
+    "hostname",
+    "hostnames",
+    "ip",
+    "ips",
+    "nmap_xml",
+    "product",
+    "raw",
+    "raw_command",
+    "raw_output",
+    "raw_stderr",
+    "raw_stdout",
+    "raw_target",
+    "raw_xml",
+    "request",
+    "response",
+    "script",
+    "scripts",
+    "service",
+    "service_banner",
+    "service_name",
+    "service_product",
+    "services",
+    "stderr",
+    "statement",
+    "stdout",
+    "target",
+    "target_display",
+    "target_url",
+    "targets",
+    "token",
+    "tokens",
+    "userinfo",
+    "version",
+    "xml",
+}
+ACTIVE_NMAP_BASIC_TOKEN_SOURCE_KEYS = ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS | {"normalized", "normalized_target"}
+ACTIVE_NMAP_BASIC_TEXT_REDACT_PATTERNS = (
+    re.compile(r"<\?xml\b.*?</nmaprun\s*>", flags=re.IGNORECASE | re.DOTALL),
+    re.compile(r"<nmaprun\b.*?</nmaprun\s*>", flags=re.IGNORECASE | re.DOTALL),
+    re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s\"'<>)]+", flags=re.IGNORECASE),
+    re.compile(r"\bnmap(?:\s+[^\n\r<>{}\[\]]+){1,64}", flags=re.IGNORECASE),
+    re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    re.compile(r"\b(?:[A-F0-9]{1,4}:){2,}[A-F0-9:]{1,}\b", flags=re.IGNORECASE),
+    re.compile(r"\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\b", flags=re.IGNORECASE),
+    re.compile(r"(?i)\b(?:Cookie|Set-Cookie|X-Api-Key|X-Auth-Token)\s*:\s*[^\n\r;]+"),
+    re.compile(r"(?i)\b(?:service(?:_banner)?|banner|product|version)\s*[:=]\s*[^\n\r,;}\]]+"),
+    re.compile(r"(?i)\b(?:confirmed vulnerability|exploitable|target is safe|all ports found|full network scan|scan the internet)\b"),
+)
 
 
 @dataclass(frozen=True)
@@ -232,6 +300,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_active_network_dry_run_sections(result))
     elif job.audit_type == "active_http_header_probe":
         sections.extend(build_active_http_header_probe_sections(result))
+    elif job.audit_type == "active_nmap_basic":
+        sections.extend(build_active_nmap_basic_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -656,6 +726,75 @@ def build_active_http_header_probe_sections(result: dict[str, Any]) -> list[Repo
         ReportSection("Errors", flatten_list(public_result.get("errors"))),
         ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
     ]
+
+
+def build_active_nmap_basic_sections(result: dict[str, Any]) -> list[ReportSection]:
+    public_result = as_dict(redact_active_nmap_basic_value(result))
+    summary = as_dict(public_result.get("summary"))
+    limits = as_dict(public_result.get("limits"))
+    observations = flatten_active_nmap_basic_observations(public_result.get("port_observations"))
+    raw_json = json.dumps(public_result, indent=2, sort_keys=True)
+    status_text = stringify(public_result.get("status", "N/A"))
+    observation_count = summary.get("observation_count", public_result.get("observation_count", len(observations)))
+    return [
+        ReportSection(
+            "Active Nmap Basic Scope Notice",
+            [
+                ("Result wording", "Observed TCP exposure; Review indicator; Manual validation required."),
+                ("Assertion boundary", "No vulnerability confirmation is asserted."),
+                ("Authorization boundary", "Operator confirmation is required but is not proof of target ownership."),
+                ("Completeness boundary", "This bounded result does not claim complete port coverage."),
+            ],
+        ),
+        ReportSection(
+            "Active Nmap Basic Summary",
+            [
+                ("Capability", stringify(public_result.get("capability", "active_nmap_basic"))),
+                ("Profile", stringify(public_result.get("profile", "N/A"))),
+                ("Result status", status_text),
+                ("Controlled state", active_nmap_basic_status_label(status_text)),
+                ("Observation count", stringify(observation_count)),
+            ],
+        ),
+        ReportSection(
+            "Observed TCP Exposure",
+            observations or [("Observation status", "No TCP port observations were provided; manual validation remains required.")],
+        ),
+        ReportSection("Limits", flatten_mapping(limits)),
+        ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
+    ]
+
+
+def flatten_active_nmap_basic_observations(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("Port", "port"),
+        ("Protocol", "protocol"),
+        ("State", "state"),
+        ("Reason", "reason"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Observation {index}", stringify(redact_active_nmap_basic_value(item))))
+            continue
+        append_preferred_rows(rows, f"Observation {index}", record, preferred_keys)
+        rows.append((f"Observation {index} Interpretation", "Observed TCP exposure; Review indicator; Manual validation required."))
+    return rows
+
+
+def active_nmap_basic_status_label(status_text: str) -> str:
+    return {
+        "completed": "Completed structured result; observations are review indicators only.",
+        "failed": "Controlled failed state; no vulnerability assertion is made.",
+        "timed_out": "Controlled timed-out state; output may be incomplete.",
+        "nmap_missing": "Controlled missing-tool state; no result assertion is made.",
+        "malformed": "Controlled malformed state; parser could not use the payload safely.",
+        "truncated": "Controlled truncated state; output was bounded before reporting.",
+        "no_ports": "No TCP port observations were provided; this is not a target safety claim.",
+    }.get(status_text, "Controlled state; manual validation required.")
 
 
 def flatten_django_detected_files(value: Any) -> list[tuple[str, str]]:
@@ -1230,6 +1369,26 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
             if isinstance(reason, dict) and reason.get("code") is not None
         ]
         data["policy_version"] = policy.get("policy_version", "N/A")
+    elif job.audit_type == "active_nmap_basic":
+        limits = as_dict(result.get("limits"))
+        observations = result.get("port_observations")
+        if not isinstance(observations, list):
+            observations = []
+        data["capability"] = result.get("capability", "active_nmap_basic")
+        data["profile"] = result.get("profile", "N/A")
+        data["result_status"] = result.get("status", "N/A")
+        data["observation_count"] = result.get("observation_count", len(observations))
+        data["open_tcp_observations_count"] = sum(
+            1
+            for observation in observations
+            if isinstance(observation, dict)
+            and str(observation.get("protocol", "")).lower() == "tcp"
+            and str(observation.get("state", "")).lower() == "open"
+        )
+        data["output_truncated"] = limits.get("output_truncated", result.get("output_truncated", "N/A"))
+        data["stderr_truncated"] = limits.get("stderr_truncated", result.get("stderr_truncated", "N/A"))
+        data["timed_out"] = limits.get("timed_out", result.get("timed_out", "N/A"))
+        data["evidence_wording"] = "Observed TCP exposure; Review indicator; Manual validation required."
     return data
 
 
@@ -1285,6 +1444,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_redis_config_value(result))
     if job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         return as_dict(redact_active_config_value(result))
+    if job.audit_type == "active_nmap_basic":
+        return as_dict(redact_active_nmap_basic_value(result))
     return result
 
 
@@ -1293,6 +1454,8 @@ def public_job_target_url(job: JobRecord) -> str:
         return ""
     if job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         return redact_active_secret_text(job.target_url)
+    if job.audit_type == "active_nmap_basic":
+        return "[REDACTED_TARGET]"
     return redact_url_query(job.target_url)
 
 
@@ -1327,6 +1490,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_redis_secret_text(job.error)
     if job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         return redact_active_secret_text(job.error)
+    if job.audit_type == "active_nmap_basic":
+        return redact_active_nmap_basic_text(job.error, collect_active_nmap_basic_sensitive_tokens(job.result or {}))
     return job.error
 
 
@@ -2145,6 +2310,68 @@ def redact_active_secret_text(value: str) -> str:
         redacted,
     )
     redacted = redacted.replace("PRIVATE KEY", "[REDACTED]")
+    return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
+
+
+def redact_active_nmap_basic_value(value: Any, sensitive_tokens: set[str] | None = None) -> Any:
+    tokens = sensitive_tokens if sensitive_tokens is not None else collect_active_nmap_basic_sensitive_tokens(value)
+    if isinstance(value, str):
+        return redact_active_nmap_basic_text(value, tokens)
+    if isinstance(value, list):
+        return [redact_active_nmap_basic_value(item, tokens) for item in value]
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            normalized_key = str(key).lower().replace("-", "_")
+            if normalized_key in ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS or is_active_secret_mapping_key(str(key)):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_active_nmap_basic_value(item, tokens)
+        return redacted
+    return value
+
+
+def collect_active_nmap_basic_sensitive_tokens(value: Any) -> set[str]:
+    tokens: set[str] = set()
+
+    def collect(item: Any, *, sensitive_context: bool = False) -> None:
+        if isinstance(item, str):
+            token = item.strip()
+            if sensitive_context and 3 <= len(token) <= 256:
+                tokens.add(token)
+            return
+        if isinstance(item, list):
+            for child in item:
+                collect(child, sensitive_context=sensitive_context)
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                normalized_key = str(key).lower().replace("-", "_")
+                collect(child, sensitive_context=sensitive_context or normalized_key in ACTIVE_NMAP_BASIC_TOKEN_SOURCE_KEYS)
+
+    collect(value)
+    return tokens
+
+
+def redact_active_nmap_basic_text(value: str, sensitive_tokens: set[str] | None = None) -> str:
+    redacted = redact_active_secret_text(value)
+    for token in sorted(sensitive_tokens or set(), key=len, reverse=True):
+        if token:
+            redacted = redacted.replace(token, "[REDACTED]")
+    replacements = (
+        "[REDACTED_XML]",
+        "[REDACTED_XML]",
+        "[REDACTED_TARGET]",
+        "nmap [REDACTED_COMMAND]",
+        "[REDACTED_TARGET]",
+        "[REDACTED_TARGET]",
+        "[REDACTED_TARGET]",
+        "[REDACTED_HEADER]",
+        "[REDACTED_BANNER]",
+        "[REDACTED_CLAIM]",
+    )
+    for pattern, replacement in zip(ACTIVE_NMAP_BASIC_TEXT_REDACT_PATTERNS, replacements, strict=True):
+        redacted = pattern.sub(replacement, redacted)
     return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
 
 

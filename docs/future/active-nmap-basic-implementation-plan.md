@@ -676,6 +676,22 @@ Suggested commit:
 feat(active): report bounded nmap observations
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_07_REDACTION_REPORTING_ACCEPTED` implements this
+microphase as backend reporting/redaction support for already-structured
+`active_nmap_basic` payloads. Job detail, summaries, Markdown, HTML, XML, PDF,
+and redacted Raw JSON now handle synthetic bounded Nmap observation results
+without creating Nmap execution jobs, connecting backend to the runner executor,
+adding runner HTTP endpoints, touching frontend runtime, integrating with
+archive/run-all, storing raw XML, exposing raw target values, exposing raw
+commands, or trusting stdout/stderr/service banners. Reports render minimal TCP
+port observations as observed exposure and review indicators with manual
+validation required. Controlled `failed`, `timed_out`, `nmap_missing`,
+`malformed`, `truncated`, and `no_ports` states render without crashing or
+claiming complete coverage, target safety, exploitability, or vulnerability
+confirmation.
+
 ## Microphase 08: Frontend Panel Disabled/Enabled States
 
 Objective:

@@ -490,6 +490,8 @@ class JobStore:
         target_url = record.target_url
         if record.audit_type in {"active_network_dry_run", "active_http_header_probe"} and target_url:
             target_url = _redact_active_summary_text(target_url)
+        if record.audit_type == "active_nmap_basic" and target_url:
+            target_url = "[REDACTED_TARGET]"
         return JobListItem(
             id=record.id,
             owner_id=record.owner_id,
@@ -843,6 +845,27 @@ def _job_summary(record: JobRecord) -> dict | None:
                 if isinstance(reason, dict) and reason.get("code") is not None
             ]
             summary["policy_version"] = policy.get("policy_version")
+        if record.audit_type == "active_nmap_basic":
+            limits = record.result.get("limits")
+            observations = record.result.get("port_observations")
+            if not isinstance(limits, dict):
+                limits = {}
+            if not isinstance(observations, list):
+                observations = []
+            summary["capability"] = record.result.get("capability", "active_nmap_basic")
+            summary["profile"] = record.result.get("profile")
+            summary["result_status"] = record.result.get("status")
+            summary["observation_count"] = record.result.get("observation_count", len(observations))
+            summary["open_tcp_observations_count"] = sum(
+                1
+                for observation in observations
+                if isinstance(observation, dict)
+                and str(observation.get("protocol", "")).lower() == "tcp"
+                and str(observation.get("state", "")).lower() == "open"
+            )
+            summary["output_truncated"] = limits.get("output_truncated", record.result.get("output_truncated"))
+            summary["stderr_truncated"] = limits.get("stderr_truncated", record.result.get("stderr_truncated"))
+            summary["timed_out"] = limits.get("timed_out", record.result.get("timed_out"))
         return summary
     if record.error:
         return {"error": record.error}

@@ -28,6 +28,7 @@ AuditType = Literal[
     "redis_config_basic",
     "active_network_dry_run",
     "active_http_header_probe",
+    "active_nmap_basic",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 AuthMode = Literal[
