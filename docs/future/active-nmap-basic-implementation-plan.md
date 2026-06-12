@@ -1432,6 +1432,87 @@ HTTP traffic, backend/frontend/runner runtime changes, runner HTTP endpoints,
 archive/run-all integration, `tools/runner/main.py` integration, migrations,
 tags, releases, or public scanner behavior.
 
+## Microphase 16: No-Live Smoke Execution
+
+Objective:
+
+Execute the first `active_nmap_basic` smoke using only Option A no-live
+fake/mocked adapter validation. This phase validates backend lifecycle,
+owner scope, reporting/export, Raw JSON, frontend controlled states, and
+absence of unauthorized traffic without running real Nmap.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-no-live-smoke-execution.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No real Nmap execution.
+- No Docker execution.
+- No probes, DNS checks, or external HTTP traffic.
+- No real external target, VPS, or domain.
+- No backend, frontend, or runner runtime changes.
+- No backend direct call to the real active-runner executor.
+- No backend subprocess invocation.
+- No runner HTTP endpoint.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No target-policy relaxation.
+- No feature-flag default relaxation.
+- No raw flags, scripts, NSE, brute force, credential validation, crawling, DNS
+  expansion, broad ranges, or public scanner behavior.
+
+Expected validations:
+
+- disabled feature flag rejects without creating a job;
+- enabled test configuration creates owner-scoped `active_nmap_basic` jobs with
+  `file_id: null`;
+- no-live metadata records no execution, no Nmap, no subprocess, no network
+  requests, and no DNS queries;
+- mocked states cover `completed`, `failed`, `timed_out`, `nmap_missing`,
+  `malformed`, `truncated`, `no_ports`, and `not_executed`;
+- job detail, summary, Markdown, HTML, XML, PDF, and Raw JSON stay redacted;
+- frontend disabled/unavailable, `not_executed`, and mocked completed states
+  render as controlled states or observed TCP exposure / review indicators;
+- source searches confirm no backend real executor wiring, no runner endpoint,
+  no archive/run-all integration, and no passive-runner integration.
+
+Risks:
+
+- Treating no-live smoke as approval for real local Nmap execution.
+- Treating mocked completed observations as live scan evidence.
+- Missing a future accidental integration point in broad source searches.
+
+Acceptance criteria:
+
+- All no-live backend, runner, frontend, build, and source-search validations
+  pass.
+- The smoke record documents commands, results, lifecycle evidence,
+  redaction/export evidence, frontend evidence, and no-go checks.
+- Documentation confirms that real local Nmap smoke remains blocked pending a
+  later target-freeze/readiness gate.
+
+Suggested commit:
+
+```text
+test(active): execute nmap basic no-live smoke
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_16_NO_LIVE_SMOKE_EXECUTION_PASSED` records this smoke in
+`docs/future/active-nmap-basic-no-live-smoke-execution.md`. The smoke passed
+with no-live fake/mocked adapter validation only: backend focused and full
+tests, active-runner fake-based tests, frontend focused and full tests, build,
+compile checks, and source searches all passed. It did not run Nmap, Docker,
+probes, DNS checks, external HTTP traffic, real external targets, VPS/domain
+smoke, backend subprocesses, runner HTTP endpoints, archive/run-all, or
+`tools/runner/main.py` integration. Real local Nmap smoke remains blocked.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

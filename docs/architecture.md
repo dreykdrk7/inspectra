@@ -234,6 +234,8 @@ The Active Nmap Basic backend executor-interface mocked/no-live decision is `ACT
 
 The Active Nmap Basic local smoke planning decision is `ACTIVE_NMAP_BASIC_15_LOCAL_SMOKE_PLAN_NO_UNAUTHORIZED_TRAFFIC_ACCEPTED`. It accepts only a docs-only plan for the first smoke and recommends Option A no-live fake/mocked adapter validation first. Real local authorized Nmap smoke remains blocked until a later execution phase freezes an exact loopback/local controlled target, exact ports, exact timeouts, cleanup, and evidence limits. Own VPS/domain smoke remains blocked for the first smoke. This does not run Nmap, run Docker, perform probes, perform DNS checks, make external HTTP requests, add runner HTTP endpoints, integrate archive/run-all, integrate with `tools/runner/main.py`, or change backend/frontend/runner runtime.
 
+The Active Nmap Basic no-live smoke execution decision is `ACTIVE_NMAP_BASIC_16_NO_LIVE_SMOKE_EXECUTION_PASSED`. It records the first Option A smoke using only fake/mocked adapters and existing no-live flows. Backend focused/full tests, active-runner fake-based tests, frontend focused/full tests, frontend build, compile checks, and source searches passed. The smoke does not approve real Nmap execution, Docker/Nmap packaging, local authorized Nmap smoke, VPS/domain smoke, backend subprocesses, runner HTTP endpoints, archive/run-all integration, `tools/runner/main.py` integration, target-policy relaxation, feature-flag default relaxation, broad scanning, public scanner behavior, or confirmed-vulnerability/exploitability claims.
+
 ## Components
 
 ### Backend
