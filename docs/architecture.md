@@ -275,6 +275,8 @@ The Active Nmap Basic backend report redaction real-shape decision is `ACTIVE_NM
 
 The Active Nmap Basic backend active-tools boundary design decision is `ACTIVE_NMAP_BASIC_34_BACKEND_ACTIVE_TOOLS_BOUNDARY_DESIGN_ACCEPTED`. It recommends a future private internal service boundary with no public host port, backend-owned auth/owner scope/request validation/target policy/job lifecycle/storage/reporting/redaction, and `active-tools` limited to bounded executor execution with structured minimal responses. Backend direct subprocess/import, Docker socket control, backend-managed `docker exec`, public scanner behavior, archive/run-all, and `tools/runner/main.py` integration are rejected for real execution. This docs-only phase does not add runtime wiring, live calls, runner HTTP endpoints, jobs, exports, Docker/Nmap/DNS/HTTP execution, new target approval, release, or tag state.
 
+The Active Nmap Basic backend active-tools boundary contract tests decision is `ACTIVE_NMAP_BASIC_35_BACKEND_ACTIVE_TOOLS_BOUNDARY_CONTRACT_TESTS_NO_LIVE_ACCEPTED`. Backend now has pure boundary contract helpers and no-live tests for one-unit request building, response allowlisting, controlled boundary error mapping, policy drift, owner scope, redaction, and source-boundary checks. The helpers do not add an `active-tools` endpoint, backend live call, Docker/Nmap execution, Compose wiring, runner HTTP endpoint, live jobs, live exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime changes, new target approval, release, or tag state.
+
 ## Components
 
 ### Backend

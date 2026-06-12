@@ -3206,6 +3206,116 @@ socket control, public scanner behavior, archive/run-all, and
 Docker/Nmap execution, live calls, runner endpoints, jobs, exports, targets,
 tags, or releases.
 
+## Microphase 35: Backend Active Tools Boundary Contract Tests, No Live
+
+Objective:
+
+Add no-live backend contract tests for the future backend to `active-tools`
+boundary. Validate request and response shapes, response allowlists, redaction,
+controlled error states, and policy drift handling using only pure helpers and
+fakes. Do not implement an `active-tools` endpoint, backend live call, Docker or
+Nmap execution, Compose wiring, real active-tools jobs, live exports,
+archive/run-all, or `tools/runner/main.py` integration.
+
+Probable files:
+
+- `backend/app/active_nmap_boundary.py`
+- `backend/tests/test_backend.py`
+- `docs/future/active-nmap-basic-backend-active-tools-boundary-contract-tests-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No `curl` or browser checks.
+- No Compose.
+- No real `active-tools` endpoint.
+- No backend-to-active-tools live calls.
+- No real jobs created from `active-tools`.
+- No real exports from live execution.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No frontend runtime changes.
+- No target approval for `www.vildek.es`.
+- No target approval for `app.vildek.es`.
+- No approval for port `80`.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap or nmap_basic or boundary or redaction"
+.venv/bin/python -m pytest tools/tests/test_active_runner_nmap_basic_parser_redaction.py
+.venv/bin/python -m pytest tools/tests/test_active_runner_nmap_basic_parser.py
+rg -n "active_tools_unavailable|active_tools_timeout|policy_drift|result_too_large|unexpected_fields|fqdn_resolution_failed|manual_validation_required|observed_exposure_review_indicator|raw_xml|ptr_hostname|resolved_ip|boundary" backend docs README.md
+rg -n "vps-40567620|51.38.225.243" backend tools/tests || true
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Contract helper drifts toward live HTTP behavior or endpoint implementation.
+- Request shape leaks raw flags, scripts, credentials, target files, or shell
+  command fields.
+- Response validation allows raw XML, stdout/stderr, args, PTR, resolved IP,
+  local paths, service/banner/version data, script output, or unsafe claims.
+- Policy drift from `active-tools` is mistaken for a normal completed result.
+- Wrong-owner reads expose target metadata.
+
+Acceptance criteria:
+
+- Boundary request builder emits one validated target unit with mode, profile,
+  target kind, exact accepted ports, neutral ids, backend-verified
+  confirmations, and explicit limits.
+- Request builder includes no raw flags, extra args, scripts/NSE, credentials,
+  headers, cookies, tokens, target files, target ranges, or shell commands.
+- Response validator accepts minimal completed observations and preserves
+  `manual_validation_required: true` and
+  `result_interpretation: observed_exposure_review_indicator`.
+- Response validator rejects or blocks unexpected sensitive fields and response
+  ports outside the accepted set.
+- Response validator blocks oversized boundary payloads as controlled
+  `result_too_large` failures with `output_truncated: true`.
+- Error mapping covers `active_tools_unavailable`, `active_tools_timeout`,
+  `nmap_missing`, `malformed_output`, `unsupported_shape`, `policy_drift`,
+  `result_too_large`, `unexpected_fields`, `network_failure`, and
+  `fqdn_resolution_failed`.
+- Wrong-owner synthetic reads remain generic 404.
+- Archive/run-all and `tools/runner/main.py` remain outside Active Nmap.
+- No runtime, Docker, Nmap, DNS/HTTP, Compose, live call, endpoint, real job,
+  live export, frontend runtime, target approval, tag, or release is added.
+
+Suggested commit:
+
+```text
+test(active): add active tools boundary contract tests
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_35_BACKEND_ACTIVE_TOOLS_BOUNDARY_CONTRACT_TESTS_NO_LIVE_ACCEPTED`
+adds pure backend boundary contract helpers and no-live tests for request
+building, response validation, controlled error mapping, policy drift, owner
+scope, redaction, and source-boundary checks. It does not add an
+`active-tools` endpoint, backend live call, Docker/Nmap execution, Compose
+wiring, real active-tools jobs, live exports, archive/run-all,
+`tools/runner/main.py` integration, frontend runtime changes, target approval,
+tags, or releases.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

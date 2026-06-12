@@ -47,6 +47,12 @@ from app.config import (
     load_settings,
 )
 from app.domain_security import normalize_domain, normalize_subdomain_candidate
+from app.active_nmap_boundary import (
+    build_active_nmap_basic_boundary_request,
+    map_active_nmap_basic_boundary_error,
+    validate_active_nmap_basic_boundary_response,
+)
+from app.active_nmap_handoff import build_active_nmap_basic_handoff_plan
 from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
 from app.models import JobRecord
 from app.reporting import markdown_block_value, markdown_inline_value
@@ -4329,6 +4335,319 @@ def mocked_nmap_completed_xml() -> str:
       </host>
     </nmaprun>
     """
+
+
+def test_active_nmap_basic_boundary_request_builder_produces_single_safe_handoff_unit():
+    plan = build_active_nmap_basic_handoff_plan(make_active_nmap_basic_payload(targets=["192.168.56.10"], ports=[443]))
+    assert len(plan.units) == 1
+
+    request = build_active_nmap_basic_boundary_request(
+        plan.units[0],
+        job_id="job-123",
+        request_id="request-123",
+        correlation_id="corr-123",
+    )
+
+    assert request["mode"] == "live_nmap_basic"
+    assert request["profile"] == "tcp_connect_small"
+    assert request["request_id"] == "request-123"
+    assert request["job_id"] == "job-123"
+    assert request["correlation_id"] == "corr-123"
+    assert request["confirmations_verified_by_backend"] is True
+    assert request["target_unit"] == {
+        "target": "192.168.56.10",
+        "target_kind": "private_ip",
+        "accepted_ports": [443],
+    }
+    assert request["limits"]["process_timeout_seconds"] > 0
+    assert request["limits"]["stdout_max_bytes"] > 0
+    assert request["limits"]["stderr_max_bytes"] > 0
+    assert request["limits"]["response_max_bytes"] > 0
+    serialized = json.dumps(request, sort_keys=True)
+    for forbidden in (
+        "raw_flags",
+        "extra_args",
+        "scripts",
+        "credentials",
+        "headers",
+        "cookies",
+        "tokens",
+        "target_files",
+        "shell_command",
+        "--script",
+        "nmap -sT",
+    ):
+        assert forbidden not in serialized
+
+
+def test_active_nmap_basic_boundary_request_builder_sanitizes_neutral_ids_without_target_leak():
+    plan = build_active_nmap_basic_handoff_plan(make_active_nmap_basic_payload(targets=["lab.internal"], ports=[22]))
+
+    request = build_active_nmap_basic_boundary_request(
+        plan.units[0],
+        job_id="job id with spaces 192.168.56.10",
+        request_id="request/id?with#markers",
+        correlation_id="corr token 192.168.56.10",
+    )
+
+    assert request["request_id"] == "request-id-with-markers"
+    assert " " not in request["job_id"]
+    assert " " not in request["correlation_id"]
+    assert "192.168.56.10" not in request["job_id"]
+    assert "192.168.56.10" not in request["correlation_id"]
+    assert request["target_unit"]["target"] == "lab.internal"
+    assert request["target_unit"]["target_kind"] == "private_hostname"
+
+
+def test_active_nmap_basic_boundary_response_validator_accepts_minimal_completed_observation():
+    response = validate_active_nmap_basic_boundary_response(
+        {
+            "status": "completed",
+            "profile": "tcp_connect_small",
+            "target_kind": "private_ip",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "observations": [
+                {
+                    "port": 443,
+                    "protocol": "tcp",
+                    "state": "open",
+                    "reason": "syn-ack",
+                    "manual_validation_required": True,
+                    "result_interpretation": "observed_exposure_review_indicator",
+                }
+            ],
+            "output_truncated": False,
+            "execution_metadata": {
+                "executor": "active_nmap_basic",
+                "nmap_invoked": True,
+                "subprocess_invoked_inside_active_tools": True,
+                "duration_ms": 1234,
+            },
+            "warnings": [],
+            "errors": [],
+        },
+        accepted_ports=(443,),
+    )
+
+    assert response["status"] == "completed"
+    assert response["profile"] == "tcp_connect_small"
+    assert response["target_kind"] == "private_ip"
+    assert response["manual_validation_required"] is True
+    assert response["result_interpretation"] == "observed_exposure_review_indicator"
+    assert response["observations"] == [
+        {
+            "port": 443,
+            "protocol": "tcp",
+            "state": "open",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "reason": "syn-ack",
+        }
+    ]
+    assert response["execution_metadata"]["executor"] == "active_nmap_basic"
+
+
+def test_active_nmap_basic_boundary_response_validator_rejects_sensitive_unexpected_fields():
+    response = validate_active_nmap_basic_boundary_response(
+        {
+            "status": "completed",
+            "profile": "tcp_connect_small",
+            "manual_validation_required": False,
+            "result_interpretation": "confirmed vulnerability",
+            "observations": [{"port": 443, "protocol": "tcp", "state": "open"}],
+            "raw_xml": "<nmaprun args='nmap -sT 203.0.113.10' />",
+            "ptr_hostname": "redacted-ptr.example.internal",
+            "resolved_ip": "203.0.113.10",
+            "stdout": "stdout token_should_never_render",
+            "stderr": "stderr token_should_never_render",
+            "command": "nmap -sT --script default",
+            "service": "https",
+            "banner": "SyntheticPrivateServer",
+            "version": "9.9.9",
+            "script_output": "synthetic NSE-like output",
+            "credentials": {"password": "super-secret-password"},
+            "headers": {"Authorization": "Bearer token_should_never_render"},
+            "cookies": {"session": "secret-session-cookie"},
+            "tokens": ["token_should_never_render"],
+        },
+        accepted_ports=(443,),
+    )
+
+    assert response["status"] == "blocked"
+    assert response["manual_validation_required"] is True
+    assert response["result_interpretation"] == "observed_exposure_review_indicator"
+    assert response["errors"] == ["unexpected_fields"]
+    serialized = json.dumps(response, sort_keys=True)
+    for forbidden in (
+        "203.0.113.10",
+        "redacted-ptr.example.internal",
+        "<nmaprun",
+        "nmap -sT",
+        "stdout token_should_never_render",
+        "stderr token_should_never_render",
+        "SyntheticPrivateServer",
+        "9.9.9",
+        "synthetic NSE-like output",
+        "super-secret-password",
+        "token_should_never_render",
+        "secret-session-cookie",
+        "confirmed vulnerability",
+    ):
+        assert forbidden not in serialized
+
+
+def test_active_nmap_basic_boundary_response_validator_detects_policy_drift_port():
+    response = validate_active_nmap_basic_boundary_response(
+        {
+            "status": "completed",
+            "profile": "tcp_connect_small",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "observations": [{"port": 8443, "protocol": "tcp", "state": "open", "reason": "syn-ack"}],
+        },
+        accepted_ports=(443,),
+    )
+
+    assert response["status"] == "blocked"
+    assert response["errors"] == ["policy_drift"]
+    assert response["observations"] == []
+
+
+def test_active_nmap_basic_boundary_response_validator_blocks_oversized_payload():
+    response = validate_active_nmap_basic_boundary_response(
+        {
+            "status": "completed",
+            "profile": "tcp_connect_small",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "observations": [],
+            "warnings": ["active_tools_unavailable"],
+            "errors": ["network_failure"],
+            "padding": "x" * 40_000,
+        },
+        accepted_ports=(443,),
+    )
+
+    assert response["status"] == "failed"
+    assert response["errors"] == ["result_too_large"]
+    assert response["output_truncated"] is True
+    assert response["observations"] == []
+
+
+def test_active_nmap_basic_boundary_error_mapping_covers_controlled_states():
+    expected = {
+        "active_tools_unavailable": "failed",
+        "active_tools_timeout": "timed_out",
+        "nmap_missing": "nmap_missing",
+        "malformed_output": "malformed",
+        "unsupported_shape": "unsupported_shape",
+        "policy_drift": "blocked",
+        "result_too_large": "failed",
+        "unexpected_fields": "blocked",
+        "network_failure": "failed",
+        "fqdn_resolution_failed": "failed",
+    }
+
+    for error_code, status in expected.items():
+        response = map_active_nmap_basic_boundary_error(error_code)
+        assert response["status"] == status
+        assert response["errors"] == [error_code]
+        assert response["manual_validation_required"] is True
+        assert response["result_interpretation"] == "observed_exposure_review_indicator"
+        assert "target" not in json.dumps(response, sort_keys=True)
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_boundary_policy_drift_job_is_redacted_and_wrong_owner_generic(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    result = validate_active_nmap_basic_boundary_response(
+        {
+            "status": "blocked",
+            "profile": "tcp_connect_small",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "observations": [],
+            "errors": ["policy_drift"],
+            "warnings": [],
+            "execution_metadata": {"executor": "active_nmap_basic", "duration_ms": 12},
+        },
+        accepted_ports=(443,),
+    )
+    job = JobRecord(
+        id="b" * 31 + "1",
+        audit_type="active_nmap_basic",
+        file_id=None,
+        target_url="192.168.56.10",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result=result,
+        error="policy_drift for 192.168.56.10 redacted-ptr.example.internal",
+    )
+    wrong_owner_job = JobRecord(
+        id="b" * 31 + "2",
+        owner_id="other-owner",
+        audit_type="active_nmap_basic",
+        file_id=None,
+        target_url="redacted-ptr.example.internal",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result=result,
+        error="policy_drift for redacted-ptr.example.internal",
+    )
+    app.state.jobs.save(job)
+    app.state.jobs.save(wrong_owner_job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        job_response = await client.get(f"/jobs/{job.id}")
+        wrong_owner_response = await client.get(f"/jobs/{wrong_owner_job.id}")
+        exports = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    assert job_response.status_code == 200
+    assert job_response.json()["result"]["status"] == "blocked"
+    assert job_response.json()["result"]["errors"] == ["policy_drift"]
+    assert wrong_owner_response.status_code == 404
+    combined = json.dumps(job_response.json(), sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in exports.items()
+    )
+    assert "policy_drift" in combined
+    assert "Observed TCP exposure" in combined
+    assert "Review indicator" in combined
+    assert "Manual validation required" in combined
+    for forbidden in ("192.168.56.10", "redacted-ptr.example.internal", "confirmed vulnerability", "exploitable", "target is safe"):
+        assert forbidden not in combined
+
+
+def test_active_nmap_basic_boundary_source_has_no_live_endpoint_archive_or_runner_integration():
+    boundary_source = Path("backend/app/active_nmap_boundary.py").read_text(encoding="utf-8")
+    runner_source = Path("tools/runner/main.py").read_text(encoding="utf-8")
+    archive_source = Path("backend/app/main.py").read_text(encoding="utf-8")
+
+    for forbidden in (
+        "import " + "subprocess",
+        "subprocess.",
+        "shell" + "=True",
+        "os." + "system",
+        "po" + "pen",
+        "P" + "open(",
+        "httpx.",
+        "docker",
+        "compose",
+        "curl",
+    ):
+        assert forbidden not in boundary_source.lower()
+    assert "active_nmap_basic" not in runner_source
+    assert "nmap_basic" not in runner_source
+    assert "active_nmap_basic" not in archive_source[archive_source.find("async def launch_archive_audit") : archive_source.find("async def launch_manifest_audit")]
 
 
 @pytest.mark.anyio
