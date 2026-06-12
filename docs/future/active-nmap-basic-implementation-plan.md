@@ -2571,6 +2571,131 @@ checks in this phase. The proposed command is documented but not executed.
 integration, runner endpoints, archive/run-all, `tools/runner/main.py`
 integration, public scanner behavior, and release/tag state remain blocked.
 
+## Microphase 29: Own-Domain Authorized Smoke Execution
+
+Objective:
+
+Execute exactly one own-domain authorized `active-tools` Nmap smoke using the
+frozen target `www.urlbreve.es`, port `443`, and the `tcp_connect_small` command
+shape. Preserve one-shot scope, no raw flags, no scripts/NSE, no manual DNS
+checks, no manual HTTP checks, no Compose, no backend integration, no runner
+endpoint, no jobs, no exports, and no scope expansion.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-own-domain-authorized-smoke-execution.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No target other than `www.urlbreve.es`.
+- No `www.vildek.es`.
+- No `app.vildek.es`.
+- No more than one domain.
+- No port other than `443`.
+- No port `80`.
+- No ranges, `-p-`, or top ports.
+- No LAN target.
+- No generic VPS target.
+- No third-party target.
+- No arbitrary public target.
+- No manual DNS checks with `dig`, `host`, `nslookup`, or similar tools.
+- No `curl`.
+- No browser.
+- No manual HTTP checks.
+- No Compose.
+- No published ports.
+- No host network.
+- No privileged container.
+- No Docker socket mount.
+- No bind-mounted target files.
+- No sensitive environment variables.
+- No raw user flags.
+- No NSE or `--script`.
+- No service/version detection.
+- No OS detection.
+- No UDP or SYN scan.
+- No brute force.
+- No credential validation.
+- No crawling.
+- No DNS expansion.
+- No subdomain discovery.
+- No backend/frontend/runner runtime changes.
+- No runner HTTP endpoint.
+- No backend-to-active-tools live call.
+- No jobs.
+- No exports.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest tools/tests/test_active_tools_docker_scaffold_static.py
+.venv/bin/python -c "import pathlib, yaml; yaml.safe_load(pathlib.Path('docker-compose.active-tools.example.yml').read_text()); print('PyYAML available'); print('YAML parsed')"
+docker image inspect inspectra-active-tools:build-smoke
+docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL --security-opt no-new-privileges:true inspectra-active-tools:build-smoke nmap -sT -Pn --max-retries 1 --host-timeout 30s -oX - -p 443 -- www.urlbreve.es
+rg -n "active-tools|active_nmap_basic|Nmap|nmap|own-domain|authorized|[www.urlbreve.es|www.vildek.es|app.vildek.es|443|DNS|target](http://www.urlbreve.es|www.vildek.es|app.vildek.es|443|DNS|target) freeze|smoke execution" docker docs README.md tools
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" docker docs README.md tools
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Treating an `open` result as a confirmed vulnerability.
+- Treating the result as proof that production is secure or insecure.
+- Treating Nmap's default PTR hostname output as approval for reverse-DNS
+  workflow expansion.
+- Accidentally approving `www.vildek.es`, `app.vildek.es`, port `80`, or a
+  generic public scan after the first domain smoke.
+- Letting the smoke imply backend integration readiness.
+
+Acceptance criteria:
+
+- Image metadata is recorded.
+- Command is executed exactly once.
+- Command uses only target `www.urlbreve.es`.
+- Command uses only port `443`.
+- Command does not use `-n`, matching the FQDN/DNS Option A freeze.
+- Command uses no raw flags, scripts/NSE, service/version detection, OS
+  detection, UDP, SYN scan, brute force, credential validation, crawling,
+  subdomain discovery, or DNS expansion flags.
+- Output is captured as bounded XML.
+- Result is interpreted only as observed TCP exposure / review indicator.
+- Documentation confirms no manual DNS checks, manual HTTP checks, `curl`,
+  browser, Compose, backend integration, jobs, exports, runner endpoints,
+  archive/run-all, runtime changes, tags, releases, or public scanner approval.
+
+Suggested commit:
+
+```text
+test(active): run own domain nmap smoke
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_29_OWN_DOMAIN_AUTHORIZED_SMOKE_EXECUTION_PASSED` records
+that the first own-domain authorized `active-tools` Nmap smoke ran once against
+exact target `www.urlbreve.es`, exact port `443`, and the frozen
+`tcp_connect_small` command shape. Nmap reported `443/tcp` as `open` with
+reason `syn-ack`. This is only an observed TCP exposure / review indicator for
+that exact FQDN at that moment. Nmap also emitted a PTR hostname in XML; no
+manual DNS check or reverse-DNS sweep command was run, and future hardening may
+prefer IP-freeze plus `-n` if PTR output should be avoided. The phase does not
+approve vulnerability claims, exploitability claims, target-safety claims,
+full-scan claims, all-ports-found claims, `www.vildek.es`, `app.vildek.es`,
+port `80`, backend integration, runner endpoints, jobs, exports,
+archive/run-all integration, `tools/runner/main.py` integration, runtime
+changes, public scanner behavior, or release/tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
