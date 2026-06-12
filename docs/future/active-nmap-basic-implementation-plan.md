@@ -2178,6 +2178,100 @@ startup, published ports, backend live calls, runner HTTP endpoints,
 archive/run-all integration, `tools/runner/main.py` integration, LAN/VPS/domain
 targets, public scanner behavior, or release/tag state.
 
+## Microphase 25: Active Tools Nmap Version No-Target
+
+Objective:
+
+Run exactly `nmap --version` inside the built `active-tools` image under
+`--network none` and strict Docker runtime flags. Confirm Nmap version/presence
+without a target, without scan behavior, without probes, without DNS checks,
+without external HTTP target traffic, without Compose, and without backend,
+frontend, or runner runtime changes.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-active-tools-nmap-version-no-target.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No target-bearing Nmap command.
+- No `nmap 127.0.0.1`.
+- No `nmap localhost`.
+- No `nmap <hostname>`.
+- No `nmap --script`.
+- No NSE execution.
+- No probes.
+- No DNS checks.
+- No external HTTP target traffic.
+- No `docker compose up`.
+- No Compose service start.
+- No published ports.
+- No host network.
+- No privileged container.
+- No Docker socket mount.
+- No unnecessary bind mounts.
+- No sensitive environment variables.
+- No backend runtime changes.
+- No frontend runtime changes.
+- No runner runtime changes.
+- No runner HTTP endpoint.
+- No backend-to-active-tools live call.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No LAN/VPS/domain/public target approval.
+- No public scanner behavior.
+
+Expected validations:
+
+- existing static scaffold tests pass;
+- Compose example parses locally when PyYAML is available;
+- `docker image inspect inspectra-active-tools:build-smoke` confirms image
+  metadata;
+- `docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL --security-opt no-new-privileges:true inspectra-active-tools:build-smoke nmap --version`
+  exits successfully;
+- output records Nmap version only;
+- source searches confirm no passive-runner absorption or no-scope wording
+  regression.
+
+Risks:
+
+- Treating `nmap --version` as approval for target-bearing Nmap execution.
+- Accidentally adding a target argument or script flag.
+- Treating version readiness as backend integration readiness.
+- Letting the observed package version imply reproducible pinning.
+
+Acceptance criteria:
+
+- The version command exits successfully with strict no-target Docker flags.
+- Output contains Nmap version information.
+- No target is supplied.
+- No scan is run.
+- No probes, DNS checks, or external HTTP target traffic occur.
+- No Compose service is started.
+- Documentation records command, observed output, version, no-target
+  confirmation, remaining gaps, and final decision.
+
+Suggested commit:
+
+```text
+test(active): record active tools nmap version
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_25_ACTIVE_TOOLS_NMAP_VERSION_NO_TARGET_PASSED` records that
+`docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL --security-opt no-new-privileges:true inspectra-active-tools:build-smoke nmap --version`
+exited successfully and reported Nmap version `7.95`. The phase does not
+approve target-bearing Nmap execution, probes, DNS checks, external HTTP target
+traffic, Compose service startup, published ports, backend live calls, runner
+HTTP endpoints, archive/run-all integration, `tools/runner/main.py`
+integration, LAN/VPS/domain targets, public scanner behavior, or release/tag
+state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
