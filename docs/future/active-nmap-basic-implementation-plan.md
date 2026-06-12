@@ -253,6 +253,19 @@ Suggested commit:
 feat(active): add nmap basic target policy
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_02_TARGET_POLICY_ACCEPTED` implements this microphase as a
+small backend policy module, `backend/app/active_nmap_policy.py`, plus endpoint
+integration. The policy validates exact local/private/self-hosted IP or hostname
+inputs without DNS resolution, reverse DNS, hostname generation, IP generation,
+runner calls, command building, subprocess use, Nmap execution, Docker, frontend
+changes, archive/run-all integration, or traffic. It fails closed for CIDR,
+dash ranges, wildcard targets, pasted target lists, URL-shaped values, paths,
+queries, fragments, userinfo, metadata/control-plane names, special-purpose IP
+ranges, public-looking hostnames, too many targets, overlong targets, and
+duplicate normalized targets.
+
 ## Microphase 03: Allowlisted Command Builder, No Execution
 
 Objective:

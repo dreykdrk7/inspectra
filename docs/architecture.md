@@ -208,6 +208,8 @@ The Active Nmap Basic implementation-plan decision is `ACTIVE_NMAP_BASIC_IMPLEME
 
 The Active Nmap Basic backend contract gate decision is `ACTIVE_NMAP_BASIC_01_BACKEND_CONTRACT_GATE_ACCEPTED`. The backend now reads `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=false` by default and exposes `POST /active/network/nmap-basic` as a contract gate only. Disabled mode rejects without creating jobs. Enabled mode validates the exact `live_nmap_basic` / `tcp_connect_small` request shape, required confirmations, and bounded target/port lists, then returns `not_implemented` / `not_executed` without creating a job, calling a runner, constructing commands, using subprocesses, executing Nmap, resolving DNS, sending probes, making external HTTP requests, adding frontend behavior, adding migrations, or integrating with archive/run-all flows.
 
+The Active Nmap Basic target policy decision is `ACTIVE_NMAP_BASIC_02_TARGET_POLICY_ACCEPTED`. The backend now keeps exact-target validation in the small reusable `backend/app/active_nmap_policy.py` module and calls it from the contract gate before any future runner boundary. The policy accepts only explicit local/private/self-hosted IP or hostname inputs, performs no DNS or reverse-DNS work, generates no targets, and fails closed for expansion syntax, URL-shaped values, userinfo, pasted lists, metadata/control-plane names, special-purpose IP ranges, public-looking hostnames, excessive targets, overlong targets, and duplicates. This does not add a runner, command builder, subprocess use, Nmap execution, frontend behavior, migrations, archive/run-all integration, or traffic.
+
 ## Components
 
 ### Backend

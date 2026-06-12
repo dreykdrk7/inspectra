@@ -287,6 +287,8 @@ Active Nmap Basic implementation-plan decision: `ACTIVE_NMAP_BASIC_IMPLEMENTATIO
 
 Active Nmap Basic backend contract gate decision: `ACTIVE_NMAP_BASIC_01_BACKEND_CONTRACT_GATE_ACCEPTED`.
 
+Active Nmap Basic target policy decision: `ACTIVE_NMAP_BASIC_02_TARGET_POLICY_ACCEPTED`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
@@ -322,6 +324,7 @@ This means:
 - The Active Nmap Basic design is docs-only future scope. It requires any future `active_nmap_basic` implementation to be disabled by default, explicitly opt-in, local/private/self-hosted, target-authorized, bounded by target count, port count, timeouts, output, and storage, built from allowlisted Nmap command profiles, and reported as observed exposure or review indicators. It does not add Nmap runtime, arbitrary internet scanning, broad ranges, stealth, evasion, aggressive NSE defaults, brute force, exploit scripts, credential validation, crawling, DNS expansion, custom scripts, SaaS/public scanner behavior, or runtime changes.
 - The Active Nmap Basic implementation plan is docs-only future sequencing. It splits possible implementation into backend contract, target policy, command builder, runner skeleton, controlled subprocess, parser, redaction/reporting, frontend, test, and local-smoke phases without adding endpoints, Nmap execution, Docker behavior, runtime changes, migrations, tags, releases, broad scanning, or public scanner behavior.
 - The Active Nmap Basic backend contract gate now exists as `POST /active/network/nmap-basic`, disabled by default through `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=false`. When explicitly enabled, it validates only the exact `live_nmap_basic` / `tcp_connect_small` contract, required confirmations, and bounded target/port lists, then returns `not_implemented` / `not_executed` without creating a job, calling a runner, constructing commands, using subprocesses, executing Nmap, resolving DNS, sending probes, making external HTTP requests, adding frontend behavior, or integrating with archive/run-all flows.
+- The Active Nmap Basic target policy is isolated in `backend/app/active_nmap_policy.py` and is reusable/testable offline. It accepts only exact local/private/self-hosted IP or hostname inputs and rejects CIDR, dash ranges, wildcards, pasted lists, URL-shaped values, paths, queries, fragments, userinfo, metadata/control-plane names, special-purpose IP ranges, public-looking hostnames, excessive targets, overlong targets, and duplicates without DNS resolution, target generation, runner calls, command building, subprocess use, Nmap execution, or traffic.
 - Nmap remains unimplemented and out of scope.
 
 The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.

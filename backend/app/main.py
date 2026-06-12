@@ -5,6 +5,12 @@ from fastapi import BackgroundTasks, Body, FastAPI, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.active_nmap_policy import (
+    ACTIVE_NMAP_BASIC_MAX_TARGETS,
+    ActiveNmapTargetPolicyError,
+    ActiveNmapTargetPolicyResult,
+    validate_active_nmap_basic_targets,
+)
 from app.auth import (
     ADMIN_CSRF_HEADER_NAME,
     ADMIN_SESSION_COOKIE_NAME,
@@ -283,8 +289,6 @@ def owner_id_for_file_job(request: Request, stored_file: StoredFile) -> str:
 
 ACTIVE_NMAP_BASIC_MODE = "live_nmap_basic"
 ACTIVE_NMAP_BASIC_PROFILE = "tcp_connect_small"
-ACTIVE_NMAP_BASIC_MAX_TARGETS = 3
-ACTIVE_NMAP_BASIC_MAX_TARGET_LENGTH = 253
 ACTIVE_NMAP_BASIC_MAX_PORTS_PER_TARGET = 32
 ACTIVE_NMAP_BASIC_MAX_TOTAL_TARGET_PORT_CHECKS = 96
 ACTIVE_NMAP_BASIC_ALLOWED_FIELDS = frozenset(
@@ -298,7 +302,6 @@ ACTIVE_NMAP_BASIC_ALLOWED_FIELDS = frozenset(
         "live_traffic_confirmed",
     }
 )
-ACTIVE_NMAP_BASIC_TARGET_RANGE_MARKERS = frozenset({"*", "/", ","})
 ACTIVE_NMAP_BASIC_CONFIRMATION_FIELDS = (
     "authorization_confirmed",
     "local_private_scope_confirmed",
@@ -346,37 +349,7 @@ def validate_active_nmap_basic_contract(payload: Any) -> dict[str, int]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field_name} must be true.")
 
     targets = payload.get("targets")
-    if not isinstance(targets, list) or not targets:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="active_nmap_basic targets must be a non-empty list.",
-        )
-    if len(targets) > ACTIVE_NMAP_BASIC_MAX_TARGETS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="active_nmap_basic target count exceeds the allowed limit.",
-        )
-    for target in targets:
-        if not isinstance(target, str) or not target.strip():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="active_nmap_basic targets must be non-empty strings.",
-            )
-        if len(target.strip()) > ACTIVE_NMAP_BASIC_MAX_TARGET_LENGTH:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="active_nmap_basic target length exceeds the allowed limit.",
-            )
-        if any(character.isspace() for character in target):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="active_nmap_basic targets must be explicit single targets.",
-            )
-        if any(marker in target for marker in ACTIVE_NMAP_BASIC_TARGET_RANGE_MARKERS):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="active_nmap_basic targets must be explicit single targets.",
-            )
+    target_policy = validate_active_nmap_basic_target_policy(targets)
 
     ports = payload.get("ports")
     if not isinstance(ports, list) or not ports:
@@ -401,14 +374,24 @@ def validate_active_nmap_basic_contract(payload: Any) -> dict[str, int]:
                 detail="active_nmap_basic ports must be between 1 and 65535.",
             )
 
-    total_checks = len(targets) * len(ports)
+    total_checks = target_policy.target_count * len(ports)
     if total_checks > ACTIVE_NMAP_BASIC_MAX_TOTAL_TARGET_PORT_CHECKS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="active_nmap_basic target-port count exceeds the allowed limit.",
         )
 
-    return {"target_count": len(targets), "port_count": len(ports), "target_port_checks": total_checks}
+    return {"target_count": target_policy.target_count, "port_count": len(ports), "target_port_checks": total_checks}
+
+
+def validate_active_nmap_basic_target_policy(targets: object) -> ActiveNmapTargetPolicyResult:
+    try:
+        return validate_active_nmap_basic_targets(targets)
+    except ActiveNmapTargetPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"active_nmap_basic target policy rejected the request: {exc.reason_code}.",
+        ) from exc
 
 
 @app.get("/health")
