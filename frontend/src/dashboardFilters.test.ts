@@ -311,6 +311,18 @@ const jobs: JobListItem[] = [
     updated_at: "2026-05-26T10:46:00Z",
     source_file_deleted_at: null,
     summary: { allowed: true, network_requests_sent: 1, redirects_followed: 0, body_bytes_read: 0 }
+  },
+  {
+    id: "job-active-nmap-basic-completed",
+    audit_type: "active_nmap_basic",
+    file_id: null,
+    target_url: "192.168.56.10",
+    target_domain: null,
+    status: "completed",
+    created_at: "2026-05-26T10:47:00Z",
+    updated_at: "2026-05-26T10:48:00Z",
+    source_file_deleted_at: null,
+    summary: { capability: "active_nmap_basic", result_status: "completed", observation_count: 1 }
   }
 ];
 
@@ -350,6 +362,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "sql_database_config_basic", "")).toEqual([jobs[19]]);
     expect(filterJobs(jobs, "all", "active_network_dry_run", "")).toEqual([jobs[20]]);
     expect(filterJobs(jobs, "all", "active_http_header_probe", "")).toEqual([jobs[21]]);
+    expect(filterJobs(jobs, "all", "active_nmap_basic", "")).toEqual([jobs[22]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
@@ -376,6 +389,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "REDIS_CONFIG")).toEqual([jobs[18]]);
     expect(filterJobs(jobs, "all", "all", "ACTIVE_NETWORK")).toEqual([jobs[20]]);
     expect(filterJobs(jobs, "all", "all", "ACTIVE_HTTP_HEADER")).toEqual([jobs[21]]);
+    expect(filterJobs(jobs, "all", "all", "ACTIVE_NMAP")).toEqual([jobs[22]]);
   });
 
   it("searches jobs by human audit label and category", () => {
@@ -383,7 +397,8 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "Data layer")).toEqual([jobs[17], jobs[18], jobs[19]]);
     expect(filterJobs(jobs, "all", "all", "Active network dry-run")).toEqual([jobs[20]]);
     expect(filterJobs(jobs, "all", "all", "Authorized HTTP header probe")).toEqual([jobs[21]]);
-    expect(filterJobs(jobs, "all", "all", "Active / Network")).toEqual([jobs[20], jobs[21]]);
+    expect(filterJobs(jobs, "all", "all", "Active Nmap basic")).toEqual([jobs[22]]);
+    expect(filterJobs(jobs, "all", "all", "Active / Network")).toEqual([jobs[20], jobs[21], jobs[22]]);
     expect(filterJobs(jobs, "all", "all", "Infrastructure & deployment")).toEqual([jobs[12], jobs[13], jobs[14]]);
   });
 
@@ -394,8 +409,8 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 22,
-      completedJobs: 19,
+      totalJobs: 23,
+      completedJobs: 20,
       failedJobs: 1,
       activeJobs: 2
     });
@@ -441,13 +456,19 @@ describe("dashboard filters", () => {
     expect(auditTypeLabel("sql_database_config_basic")).toBe("SQL DB config");
     expect(auditTypeLabel("active_network_dry_run")).toBe("Active network dry-run");
     expect(auditTypeLabel("active_http_header_probe")).toBe("Authorized HTTP header probe");
+    expect(auditTypeLabel("active_nmap_basic")).toBe("Active Nmap basic");
     expect(auditTypeCategoryLabel("redis_config_basic")).toBe("Data layer");
     expect(auditTypeCategoryLabel("sql_database_config_basic")).toBe("Data layer");
     expect(auditTypeCategoryLabel("active_network_dry_run")).toBe("Active / Network");
     expect(auditTypeCategoryLabel("active_http_header_probe")).toBe("Active / Network");
+    expect(auditTypeCategoryLabel("active_nmap_basic")).toBe("Active / Network");
     expect(getAuditTypeMetadata("active_http_header_probe")).toMatchObject({
       sourceFamily: "target",
       shortDescription: "Sends one authorized HTTP HEAD request and records redacted headers; no redirects or body read."
+    });
+    expect(getAuditTypeMetadata("active_nmap_basic")).toMatchObject({
+      sourceFamily: "target",
+      shortDescription: "Renders bounded authorized TCP observations as review indicators with redacted evidence."
     });
   });
 

@@ -35,6 +35,7 @@ export const AUDIT_TYPE_ORDER: AuditType[] = [
   "subdomain_inventory_basic",
   "active_network_dry_run",
   "active_http_header_probe",
+  "active_nmap_basic",
   "django_config_basic",
   "docker_config_basic",
   "secrets_review_basic",
@@ -114,6 +115,13 @@ export const AUDIT_TYPE_CATALOG: Record<AuditType, AuditTypeMetadata> = {
     "active_network",
     "target",
     "Sends one authorized HTTP HEAD request and records redacted headers; no redirects or body read."
+  ),
+  active_nmap_basic: metadata(
+    "active_nmap_basic",
+    "Active Nmap basic",
+    "active_network",
+    "target",
+    "Renders bounded authorized TCP observations as review indicators with redacted evidence."
   ),
   django_config_basic: metadata("django_config_basic", "Django config", "app_config", "archive", "Passive Django config review."),
   docker_config_basic: metadata("docker_config_basic", "Docker config", "containers_wiring", "archive", "Passive Docker config review."),

@@ -19,7 +19,9 @@ import { ActiveDryRunJobReport } from "./ActiveDryRunJobReport";
 import { redactActiveDryRunText } from "./activeDryRunReport";
 import { ActiveHttpHeaderProbeJobReport } from "./ActiveHttpHeaderProbeJobReport";
 import { redactActiveHttpHeaderProbeText } from "./activeHttpHeaderProbeReport";
+import { ActiveNmapBasicJobReport } from "./ActiveNmapBasicJobReport";
 import { ActiveNmapBasicPanel } from "./ActiveNmapBasicPanel";
+import { redactActiveNmapBasicText } from "./activeNmapBasicReport";
 import {
   auditTypeCategoryLabel,
   auditTypeLabel,
@@ -1241,7 +1243,9 @@ export function App() {
         {selectedJob ? (
           <>
             <ExportActions job={selectedJob} />
-            {selectedJob.audit_type === "pdf_basic" ? (
+            {isActiveNmapBasicJob(selectedJob) ? (
+              <ActiveNmapBasicJobReport job={selectedJob} />
+            ) : selectedJob.audit_type === "pdf_basic" ? (
               <PdfJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "image_basic" ? (
               <ImageJobReport job={selectedJob} file={selectedJobFile} />
@@ -1449,7 +1453,14 @@ function jobTargetDisplay(job: JobListItem): string {
   if (job.audit_type === "active_http_header_probe") {
     return redactActiveHttpHeaderProbeText(target);
   }
+  if (job.audit_type === "active_nmap_basic") {
+    return redactActiveNmapBasicText(target);
+  }
   return target;
+}
+
+function isActiveNmapBasicJob(job: JobRecord): boolean {
+  return job.audit_type === "active_nmap_basic" || job.result?.capability === "active_nmap_basic";
 }
 
 function acceptForKind(kind: FileRecord["kind"]): string {

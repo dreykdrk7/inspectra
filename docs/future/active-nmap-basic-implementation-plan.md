@@ -878,6 +878,25 @@ Suggested commit:
 feat(active): render nmap basic reports
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_10_FRONTEND_REPORT_RENDERING_ACCEPTED` implements this
+microphase as frontend-only report and Raw JSON rendering for already
+structured `active_nmap_basic` payloads. The renderer handles completed,
+failed, timed-out, `nmap_missing`, malformed, truncated, no-ports, and sparse
+payloads without adding backend runtime behavior, runner endpoints, real Nmap
+jobs, archive/run-all integration, raw flags input, target files,
+CIDR/range/wildcard UI, custom profiles, advanced scan settings, credential/
+header/cookie/token fields, crawling options, raw XML display, raw command
+display, raw target display, or stdout/stderr display without frontend
+defensive redaction. Port rows are rendered as observed TCP exposure and review
+indicators with manual validation required. Raw JSON receives additional
+frontend redaction for target values, command fragments, raw XML, stdout/
+stderr, service/banner fields, headers, cookies, tokens, credentials, and
+legacy/malformed nested sensitive fields. The report does not infer
+vulnerabilities, exploitability, target safety, complete coverage, CVE matches,
+or high severity from open ports.
+
 ## Microphase 11: Backend Tests
 
 Objective:

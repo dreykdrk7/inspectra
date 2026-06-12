@@ -56,6 +56,7 @@ export type AuditType =
   | 'subdomain_inventory_basic'
   | 'active_network_dry_run'
   | 'active_http_header_probe'
+  | 'active_nmap_basic'
   | 'django_config_basic'
   | 'docker_config_basic'
   | 'secrets_review_basic'
