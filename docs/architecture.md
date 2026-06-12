@@ -212,6 +212,8 @@ The Active Nmap Basic target policy decision is `ACTIVE_NMAP_BASIC_02_TARGET_POL
 
 The Active Nmap Basic command builder decision is `ACTIVE_NMAP_BASIC_03_COMMAND_BUILDER_ACCEPTED`. The Active runner package now has a modular `tools/active_runner/nmap_basic/command_builder.py` builder plus small shared contracts in `tools/active_runner/contracts.py`. The builder is pure/offline: it converts already-validated structured inputs into an argv list for the fixed `tcp_connect_small` profile, with no shell string, no raw flags, no NSE/script flags, no command execution, no subprocess use, no Nmap binary lookup, no DNS resolution, no runner endpoint, no parser, no frontend behavior, and no integration with `tools/runner/main.py`.
 
+The Active Nmap Basic runner skeleton decision is `ACTIVE_NMAP_BASIC_04_RUNNER_SKELETON_ACCEPTED`. The skeleton is a small offline handler at `tools/active_runner/nmap_basic/service.py`. It validates the exact `live_nmap_basic` / `tcp_connect_small` structured request and required confirmations, rejects raw flags, extra args, script fields, shell fields, and other command-like inputs, invokes the allowlisted builder only as a construction check, discards the argv, and returns `not_executed` metadata without target or command preview. It does not create jobs, call the backend, expose a runner endpoint, parse Nmap output, use subprocesses, execute Nmap, resolve DNS, send probes, make external HTTP requests, touch frontend code, integrate with archive/run-all, or integrate with `tools/runner/main.py`.
+
 ## Components
 
 ### Backend

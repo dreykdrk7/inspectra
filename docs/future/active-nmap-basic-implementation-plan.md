@@ -391,6 +391,21 @@ Suggested commit:
 feat(active): add nmap basic runner skeleton
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_04_RUNNER_SKELETON_ACCEPTED` implements this microphase as a
+small offline handler in `tools/active_runner/nmap_basic/service.py`, reusing
+the shared contracts and allowlisted command builder. The handler accepts a
+structured single-target request, requires the exact `live_nmap_basic` /
+`tcp_connect_small` contract and all three confirmations, rejects raw flags,
+extra args, script fields, shell fields, and other unsupported command-like
+inputs, calls the builder only to verify argv construction, then discards the
+argv and returns a controlled `not_executed` response with no raw command,
+target, stdout, stderr, evidence, vulnerability claim, job creation, backend
+communication, endpoint, parser, Nmap execution, subprocess use, DNS checks,
+network probes, Docker behavior, frontend behavior, archive/run-all
+integration, or passive runner integration.
+
 ## Microphase 05: Controlled Nmap Subprocess Execution
 
 Objective:
