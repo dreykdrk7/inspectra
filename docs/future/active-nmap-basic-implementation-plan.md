@@ -1513,6 +1513,84 @@ probes, DNS checks, external HTTP traffic, real external targets, VPS/domain
 smoke, backend subprocesses, runner HTTP endpoints, archive/run-all, or
 `tools/runner/main.py` integration. Real local Nmap smoke remains blocked.
 
+## Microphase 17: Real Local Smoke Target Freeze
+
+Objective:
+
+Freeze the exact target, ports, feature-flag handling, future commands,
+cleanup, rollback, and no-go criteria for a later real local authorized smoke
+without executing Nmap in this phase.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-real-local-smoke-target-freeze.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Nmap execution.
+- No Docker execution.
+- No probes, DNS checks, or external HTTP traffic.
+- No backend, frontend, or runner runtime changes.
+- No backend real-executor default wiring.
+- No backend subprocess invocation.
+- No runner HTTP endpoint.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No real external target, VPS, domain, third-party host, LAN target, container
+  target, hostname, or `localhost`.
+- No raw flags, scripts, NSE, UDP, SYN scan, OS detection, service/version
+  detection, brute force, credential validation, crawling, DNS expansion, broad
+  ranges, or public scanner behavior.
+
+Expected validations:
+
+- target is frozen to exactly `127.0.0.1`;
+- port set is frozen to exactly `[65000]`;
+- optional `::1`, `localhost`, LAN, VPS, domain, and public targets remain
+  blocked;
+- future command shape preserves `live_nmap_basic`, `tcp_connect_small`, one
+  target, one port, no DNS expansion, and allowlisted argv only;
+- future feature-flag enablement is temporary and disabled after the smoke;
+- future evidence checklist avoids raw target/command/XML/stdout/stderr leakage
+  and avoids confirmed-vulnerability/exploitability wording.
+
+Risks:
+
+- Target-freeze text could be mistaken for execution approval.
+- Operators could replace `127.0.0.1` with `localhost` or a LAN address.
+- A closed-port smoke could be overinterpreted as target safety.
+
+Acceptance criteria:
+
+- The target-freeze document states that no real execution is approved.
+- Only `127.0.0.1` and `[65000]` are accepted for the next smoke.
+- All commands are clearly marked as future commands, not executed in this
+  phase.
+- Documentation keeps real local execution blocked until a separate execution
+  phase.
+
+Suggested commit:
+
+```text
+docs(active): freeze nmap basic real local smoke target
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_17_REAL_LOCAL_SMOKE_TARGET_FREEZE_ACCEPTED` freezes the
+future real local smoke to target `127.0.0.1`, port `[65000]`, mode
+`live_nmap_basic`, profile `tcp_connect_small`, temporary feature-flag
+enablement, allowlisted argv shape, cleanup, rollback, evidence checklist, and
+no-go criteria. It does not run Nmap, Docker, probes, DNS checks, external HTTP
+traffic, backend/frontend/runner runtime changes, real executor default wiring,
+backend subprocesses, runner HTTP endpoints, archive/run-all, or
+`tools/runner/main.py` integration. Real local execution remains blocked until
+a later execution phase explicitly approves it.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
