@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from active_runner import (
+from active_runner.nmap_basic.service import (
     ActiveNmapBasicServiceError,
     ActiveNmapBasicServiceRequest,
     handle_active_nmap_basic_skeleton,

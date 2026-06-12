@@ -2,12 +2,12 @@ import json
 import subprocess
 from pathlib import Path
 
-from active_runner import execute_active_nmap_basic
 from active_runner.contracts import (
     ACTIVE_NMAP_BASIC_CAPABILITY,
     ACTIVE_NMAP_BASIC_PROFILE,
     ACTIVE_NMAP_BASIC_PROCESS_TIMEOUT_SECONDS,
 )
+from active_runner.nmap_basic.executor import execute_active_nmap_basic
 
 
 def make_request(**overrides):

@@ -1,5 +1,4 @@
 from .command_builder import FORBIDDEN_NMAP_BASIC_FLAGS, build_active_nmap_basic_argv
-from .executor import execute_active_nmap_basic
 from .parser import parse_active_nmap_basic_xml
 from .result import build_active_nmap_basic_result_payload
 from .service import (
@@ -24,7 +23,6 @@ __all__ = [
     "build_active_nmap_basic_argv",
     "build_active_nmap_basic_result_payload",
     "coerce_active_nmap_basic_service_request",
-    "execute_active_nmap_basic",
     "handle_active_nmap_basic_skeleton",
     "parse_active_nmap_basic_xml",
     "validate_active_nmap_basic_execution_target",

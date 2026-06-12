@@ -1332,6 +1332,20 @@ Suggested commit:
 feat(active): wire nmap basic executor interface with mocks
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_14_BACKEND_EXECUTOR_WIRING_MOCKED_NO_LIVE_ACCEPTED`
+implements this microphase with a backend `ActiveNmapBasicService`, an
+injectable executor adapter protocol, a default no-live adapter, tests that
+inject mocked executor states, parser/result composition from synthetic output,
+redacted owner-scoped storage, and backend/frontend/runner regression coverage.
+It preserves disabled-by-default behavior, exact request validation, target
+policy, owner scope, redacted reporting, no archive/run-all integration, no
+`tools/runner/main.py` integration, no runner HTTP endpoint, no backend
+subprocess use, no real Nmap execution, no Docker, no probes, no DNS checks,
+and no external HTTP traffic. Real Nmap smoke remains blocked pending a
+separate approved phase.
+
 ## Microphase 15: Final Local Smoke, No Unauthorized External Traffic
 
 Objective:

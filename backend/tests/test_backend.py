@@ -54,7 +54,7 @@ from app.sbom import extract_components_from_job, generate_cyclonedx_json, gener
 from app.services import (
     ArchiveAuditService,
     ActiveHttpHeaderProbeService,
-    ActiveNmapBasicNoLiveService,
+    ActiveNmapBasicService,
     ActiveNetworkDryRunService,
     CiCdConfigAuditService,
     ComposeConfigAuditService,
@@ -82,7 +82,8 @@ from app.storage import FileStore, JobStore
 from app import main as backend_main
 from app import services as audit_services
 from app import web_security
-from active_runner import build_active_nmap_basic_result_payload, parse_active_nmap_basic_xml
+from active_runner.nmap_basic.parser import parse_active_nmap_basic_xml
+from active_runner.nmap_basic.result import build_active_nmap_basic_result_payload
 
 
 SAMPLE_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
@@ -181,7 +182,7 @@ class NoopAuditService:
     async def run_active_http_header_probe_analysis(self, job_id: str, active_request=None) -> None:
         return None
 
-    async def record_no_live_result(self, job_id: str, handoff_plan=None) -> None:
+    async def run_active_nmap_basic_analysis(self, job_id: str, handoff_plan=None) -> None:
         return None
 
     async def run_web_analysis(self, job_id: str, request_url: str | None = None) -> None:
@@ -221,6 +222,22 @@ class FakeRunnerResponse:
         return self._payload
 
 
+class FakeActiveNmapBasicExecutorAdapter:
+    adapter_name = "mocked_executor"
+
+    def __init__(self, results: list[dict]) -> None:
+        self.results = results
+        self.calls = []
+
+    def execute(self, unit) -> dict:
+        self.calls.append(unit)
+        if not self.results:
+            raise AssertionError("unexpected active_nmap_basic executor call")
+        if len(self.results) == 1:
+            return self.results[0]
+        return self.results.pop(0)
+
+
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
     if max_upload_bytes is not None:
@@ -257,7 +274,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
     app.state.active_network_dry_runs = ActiveNetworkDryRunService(settings, job_store)
     app.state.active_http_header_probes = ActiveHttpHeaderProbeService(settings, job_store)
-    app.state.active_nmap_basic_no_live = ActiveNmapBasicNoLiveService(settings, job_store)
+    app.state.active_nmap_basic_service = ActiveNmapBasicService(settings, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -4291,6 +4308,29 @@ def make_active_nmap_basic_payload(**overrides) -> dict:
     return payload
 
 
+def install_active_nmap_basic_fake_executor(results: list[dict]) -> FakeActiveNmapBasicExecutorAdapter:
+    adapter = FakeActiveNmapBasicExecutorAdapter(results)
+    app.state.active_nmap_basic_service = ActiveNmapBasicService(app.state.settings, app.state.jobs, adapter)
+    return adapter
+
+
+def mocked_nmap_completed_xml() -> str:
+    return """
+    <nmaprun args="nmap -sT -p 443 192.168.56.10">
+      <host>
+        <address addr="192.168.56.10"/>
+        <hostnames><hostname name="secret-lab.internal"/></hostnames>
+        <ports>
+          <port protocol="tcp" portid="443">
+            <state state="open" reason="syn-ack"/>
+            <service name="https" product="PrivateServer" version="9.9.9"/>
+          </port>
+        </ports>
+      </host>
+    </nmaprun>
+    """
+
+
 @pytest.mark.anyio
 async def test_active_nmap_basic_disabled_by_default_rejects_without_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
@@ -4357,6 +4397,192 @@ async def test_active_nmap_basic_enabled_creates_no_live_job(monkeypatch, tmp_pa
     serialized = json.dumps(stored.result, sort_keys=True)
     for forbidden in ("192.168.56.10", "nmap -sT", "<nmaprun", "stdout with", "stderr for", "confirmed vulnerability", "exploitable"):
         assert forbidden not in serialized
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_enabled_with_mock_completed_creates_redacted_structured_result(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    adapter = install_active_nmap_basic_fake_executor(
+        [
+            {
+                "status": "completed",
+                "execution_attempted": True,
+                "reason": "raw_bounded",
+                "stdout": mocked_nmap_completed_xml(),
+                "stderr": "stderr for 192.168.56.10 token_should_never_render",
+                "output_truncated": False,
+                "stderr_truncated": True,
+                "timed_out": False,
+            }
+        ]
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post("/active/network/nmap-basic", json=make_active_nmap_basic_payload())
+        job_response = await client.get(f"/jobs/{create_response.json()['id']}")
+
+    assert create_response.status_code == 202
+    assert len(adapter.calls) == 1
+    unit = adapter.calls[0]
+    assert unit.target == "192.168.56.10"
+    assert unit.ports == (22, 80, 443)
+    stored = app.state.jobs.get(create_response.json()["id"])
+    assert stored.audit_type == "active_nmap_basic"
+    assert stored.file_id is None
+    assert stored.owner_id == DEFAULT_LOCAL_OPERATOR.id
+    assert stored.result["status"] == "completed"
+    assert stored.result["execution_state"] == "completed"
+    assert stored.result["execution_attempted"] is True
+    assert stored.result["parser_ran"] is True
+    assert stored.result["adapter"] == "mocked_executor"
+    assert stored.result["executor_adapter_invoked"] is True
+    assert stored.result["runner_connected"] is False
+    assert stored.result["nmap_executed"] is False
+    assert stored.result["subprocess_invoked"] is False
+    assert stored.result["network_requests_sent"] == 0
+    assert stored.result["dns_queries_sent"] == 0
+    assert stored.result["port_observations"] == [{"port": 443, "protocol": "tcp", "state": "open", "reason": "syn-ack"}]
+    assert job_response.json()["result"]["port_observations"][0]["state"] == "open"
+    serialized = json.dumps({"stored": stored.result, "api": job_response.json()}, sort_keys=True)
+    for forbidden in (
+        "192.168.56.10",
+        "secret-lab.internal",
+        "PrivateServer",
+        "9.9.9",
+        "nmap -sT",
+        "<nmaprun",
+        "stderr for",
+        "token_should_never_render",
+        "confirmed vulnerability",
+        "exploitable",
+        "target is safe",
+    ):
+        assert forbidden not in serialized
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("result_status", "execution_result"),
+    [
+        (
+            "failed",
+            {
+                "status": "failed",
+                "execution_attempted": True,
+                "reason": "nmap_nonzero_exit",
+                "stderr": "failed for 192.168.56.10 token_should_never_render",
+            },
+        ),
+        (
+            "timed_out",
+            {
+                "status": "timed_out",
+                "execution_attempted": True,
+                "reason": "process_timeout",
+                "stdout": "partial 192.168.56.10",
+                "stderr": "late 192.168.56.10 token_should_never_render",
+                "timed_out": True,
+                "output_truncated": True,
+                "stderr_truncated": True,
+            },
+        ),
+        (
+            "nmap_missing",
+            {
+                "status": "nmap_missing",
+                "execution_attempted": True,
+                "reason": "nmap_missing",
+            },
+        ),
+        (
+            "malformed",
+            {
+                "status": "completed",
+                "execution_attempted": True,
+                "reason": "raw_bounded",
+                "stdout": "<nmaprun><host>",
+            },
+        ),
+        (
+            "truncated",
+            {
+                "status": "completed",
+                "execution_attempted": True,
+                "reason": "raw_bounded",
+                "stdout": "x" * 131_073,
+            },
+        ),
+        (
+            "no_ports",
+            {
+                "status": "completed",
+                "execution_attempted": True,
+                "reason": "raw_bounded",
+                "stdout": "<nmaprun><host><ports /></host></nmaprun>",
+            },
+        ),
+    ],
+)
+async def test_active_nmap_basic_mocked_executor_controlled_states_store_and_export_redacted(monkeypatch, tmp_path, result_status, execution_result):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    adapter = install_active_nmap_basic_fake_executor([execution_result])
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post("/active/network/nmap-basic", json=make_active_nmap_basic_payload())
+        job_id = create_response.json()["id"]
+        job_response = await client.get(f"/jobs/{job_id}")
+        exports = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    assert create_response.status_code == 202
+    assert len(adapter.calls) == 1
+    stored = app.state.jobs.get(job_id)
+    assert stored.status == "completed"
+    assert stored.result["status"] == result_status
+    assert stored.result["execution_state"] == result_status
+    assert stored.result["adapter"] == "mocked_executor"
+    assert stored.result["runner_connected"] is False
+    assert stored.result["nmap_executed"] is False
+    assert stored.result["subprocess_invoked"] is False
+    assert stored.result["network_requests_sent"] == 0
+    assert stored.result["dns_queries_sent"] == 0
+    assert job_response.status_code == 200
+    assert job_response.json()["result"]["status"] == result_status
+    for response in exports.values():
+        assert response.status_code == 200
+
+    combined = json.dumps({"api": job_response.json(), "stored": stored.result}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in exports.items()
+    )
+    assert result_status in combined
+    assert "Observed TCP exposure" in combined
+    assert "Review indicator" in combined
+    assert "No vulnerability confirmation is asserted" in combined
+    for forbidden in (
+        "192.168.56.10",
+        "secret-lab.internal",
+        "PrivateServer",
+        "9.9.9",
+        "nmap -sT",
+        "<nmaprun",
+        "partial 192.168.56.10",
+        "late 192.168.56.10",
+        "failed for 192.168.56.10",
+        "token_should_never_render",
+        "confirmed vulnerability",
+        "exploitable",
+        "target is safe",
+        "all ports found",
+    ):
+        assert forbidden not in combined
 
 
 @pytest.mark.anyio
@@ -5597,6 +5823,7 @@ def test_active_nmap_basic_backend_source_has_no_real_executor_subprocess_or_fro
         "os." + "system",
         "po" + "pen",
         "P" + "open(",
+        "from active_runner import",
         "execute_active_nmap_basic",
         "nmap_basic.executor",
         "tools.runner",

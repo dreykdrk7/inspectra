@@ -219,6 +219,8 @@ Active Nmap Basic Microphase 12 is implemented as backend job lifecycle wiring t
 
 Active Nmap Basic Microphase 13 is documented as a live wiring readiness review only. The decision `ACTIVE_NMAP_BASIC_13_LIVE_WIRING_READINESS_REVIEW_PASSED` allows only a future mocked/no-live backend slice toward an injectable executor interface. It does not approve real Nmap execution, Docker/Nmap packaging, local authorized Nmap smoke, runner HTTP endpoints, archive/run-all integration, `tools/runner/main.py` integration, broader fanout, target expansion, raw flags, custom scripts, NSE, stealth/evasion, brute force, credential validation, crawling, DNS expansion, public scanner behavior, or confirmed-vulnerability/exploitability claims.
 
+Active Nmap Basic Microphase 14 wires backend job lifecycle to an injectable executor adapter with mocks/fakes only. The default adapter still returns controlled no-live `not_executed`, while tests can inject synthetic `completed`, `failed`, `timed_out`, `nmap_missing`, `malformed`, `truncated`, and `no_ports` states for parser/result/report coverage. It does not execute Nmap, invoke backend subprocesses, add runner HTTP endpoints, run Docker, perform probes, perform DNS checks, make external HTTP requests, integrate archive/run-all, integrate `tools/runner/main.py`, relax target policy or owner scope, or make confirmed-vulnerability/exploitability claims.
+
 ## Requirements
 
 - Docker

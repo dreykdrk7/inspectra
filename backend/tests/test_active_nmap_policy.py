@@ -2,7 +2,7 @@ import socket
 
 import pytest
 
-from active_runner import (
+from active_runner.nmap_basic.target_policy import (
     ActiveNmapBasicTargetPolicyError,
     validate_active_nmap_basic_execution_target,
 )

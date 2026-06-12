@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-from active_runner import build_active_nmap_basic_result_payload, parse_active_nmap_basic_xml
+from active_runner.nmap_basic.parser import parse_active_nmap_basic_xml
+from active_runner.nmap_basic.result import build_active_nmap_basic_result_payload
 
 
 def serialized(payload) -> str:

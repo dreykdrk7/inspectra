@@ -3,13 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from active_runner import FORBIDDEN_NMAP_BASIC_FLAGS, build_active_nmap_basic_argv
 from active_runner.contracts import (
     ACTIVE_NMAP_BASIC_BINARY,
     ACTIVE_NMAP_BASIC_MAX_PORTS,
     ACTIVE_NMAP_BASIC_PROFILE,
     ActiveNmapBasicCommandError,
 )
+from active_runner.nmap_basic.command_builder import FORBIDDEN_NMAP_BASIC_FLAGS, build_active_nmap_basic_argv
 
 
 def test_nmap_basic_builder_returns_argv_list_not_shell_string():

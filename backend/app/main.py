@@ -60,7 +60,7 @@ from app.sbom import build_sbom_filename, generate_cyclonedx_json, generate_spdx
 from app.services import (
     ArchiveAuditService,
     ActiveHttpHeaderProbeService,
-    ActiveNmapBasicNoLiveService,
+    ActiveNmapBasicService,
     ActiveNetworkDryRunService,
     CiCdConfigAuditService,
     ComposeConfigAuditService,
@@ -84,7 +84,7 @@ from app.services import (
 )
 from app.storage import FileStore, JobStore
 from app.web_security import redact_url_query, validate_web_target_url
-from active_runner import ActiveDryRunRequest, ActiveHttpHeaderProbeRequest
+from active_runner.models import ActiveDryRunRequest, ActiveHttpHeaderProbeRequest
 
 
 @asynccontextmanager
@@ -122,7 +122,7 @@ async def lifespan(app: FastAPI):
     app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
     app.state.active_network_dry_runs = ActiveNetworkDryRunService(settings, job_store)
     app.state.active_http_header_probes = ActiveHttpHeaderProbeService(settings, job_store)
-    app.state.active_nmap_basic_no_live = ActiveNmapBasicNoLiveService(settings, job_store)
+    app.state.active_nmap_basic_service = ActiveNmapBasicService(settings, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -769,7 +769,7 @@ async def launch_active_nmap_basic(
         target_display,
         owner_id=current_owner_id_for_request(request),
     )
-    background_tasks.add_task(request.app.state.active_nmap_basic_no_live.record_no_live_result, job.id, handoff_plan)
+    background_tasks.add_task(request.app.state.active_nmap_basic_service.run_active_nmap_basic_analysis, job.id, handoff_plan)
     return job
 
 
