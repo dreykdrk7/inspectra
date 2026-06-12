@@ -1907,6 +1907,99 @@ no Docker build, Docker run, Nmap execution, backend integration, runner HTTP
 endpoint, archive/run-all integration, or `tools/runner/main.py` integration was
 added.
 
+## Microphase 22: Active Tools Docker Static Review
+
+Objective:
+
+Statically review the `active-tools` Docker/Compose scaffold before any future
+build. Decide whether the scaffold is safe to advance to a later build-only
+phase without running Docker, building images, starting containers, executing
+Nmap, changing runtime, or widening target scope.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-active-tools-docker-static-review.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Docker build.
+- No Docker Compose run.
+- No container start.
+- No Nmap execution.
+- No probes.
+- No DNS checks.
+- No external HTTP traffic.
+- No backend runtime changes.
+- No frontend runtime changes.
+- No runner runtime changes.
+- No runner HTTP endpoint.
+- No backend-to-active-tools live call.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No LAN/VPS/domain/public target approval.
+- No broad ranges, target expansion, NSE/scripts, raw flags, stealth, evasion,
+  brute force, exploits, credential validation, crawling, or public scanner
+  behavior.
+
+Expected validations:
+
+- Dockerfile uses the accepted minimal Python slim base direction;
+- Dockerfile does not run Nmap at build time or as its default command;
+- Dockerfile copies only the isolated Active runner package;
+- Dockerfile exposes no port and defines no scanning healthcheck;
+- Dockerfile does not install broad scanner, exploitation, brute-force,
+  crawling, credential, fuzzing, or custom-script tooling;
+- Dockerfile switches to a non-root user;
+- Dockerfile-specific ignore excludes local environment files, runtime data,
+  caches, node modules, frontend build output, and local virtualenvs;
+- Compose example is separate from the main Compose file and requires profile
+  `active`;
+- Compose example publishes no ports, uses no host network, sets no privileged
+  mode, mounts no Docker socket, and keeps an internal network;
+- static scaffold tests pass without Docker or Nmap;
+- documentation records gaps and residual risks before any build-only phase.
+
+Risks:
+
+- Treating static review as approval to build, run, or smoke-test the service.
+- Treating package presence as authorization to run scans.
+- Forgetting that container loopback is not the same as host loopback.
+- Relying on Dockerfile-specific ignore behavior without validating it in the
+  future build phase.
+- Allowing package drift without base-image digest pinning, Nmap version
+  metadata, or build provenance.
+
+Acceptance criteria:
+
+- Static review document exists and names the reviewed files.
+- Findings, gaps, residual risks, and remaining blocked work are documented.
+- The review explicitly allows only a future separately approved build-only
+  phase.
+- It preserves no-run/no-Nmap/no-target-traffic/no-runtime boundaries.
+- It keeps backend direct subprocess execution, runner HTTP endpoints,
+  archive/run-all integration, and passive runner integration blocked.
+
+Suggested commit:
+
+```text
+docs(active): review active tools docker scaffold
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_22_ACTIVE_TOOLS_DOCKER_STATIC_REVIEW_PASSED` records that the
+`active-tools` Docker/Compose scaffold passes static review for a future
+separately approved build-only phase. The scaffold remains unbuilt, unrun,
+disconnected from backend live execution, disconnected from runner HTTP
+endpoints, disconnected from archive/run-all, separated from `tools/runner/main.py`,
+and not approved for Nmap execution, probes, DNS checks, external HTTP traffic,
+or target scanning.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
