@@ -273,6 +273,8 @@ The Active Nmap Basic parser/redaction tests decision is `ACTIVE_NMAP_BASIC_32_R
 
 The Active Nmap Basic backend report redaction real-shape decision is `ACTIVE_NMAP_BASIC_33_BACKEND_REPORT_REDACTION_REAL_SHAPE_NO_LIVE_ACCEPTED`. It adds backend job detail, list summary, Markdown/HTML/XML/PDF export, Redacted Raw JSON, and wrong-owner denial coverage for synthetic real-output-like `active_nmap_basic` payloads. Backend reporting treats resolved IP, PTR hostname, stylesheet, and script/NSE-like fields as sensitive for this audit type, while preserving minimal TCP observations with observed exposure / review indicator wording. It does not add live runner behavior, backend-to-active-tools calls, runner HTTP endpoints, active-tools-created jobs, live exports, archive/run-all integration, `tools/runner/main.py` integration, Docker/Nmap/DNS/HTTP checks, new target approval, release, or tag state.
 
+The Active Nmap Basic backend active-tools boundary design decision is `ACTIVE_NMAP_BASIC_34_BACKEND_ACTIVE_TOOLS_BOUNDARY_DESIGN_ACCEPTED`. It recommends a future private internal service boundary with no public host port, backend-owned auth/owner scope/request validation/target policy/job lifecycle/storage/reporting/redaction, and `active-tools` limited to bounded executor execution with structured minimal responses. Backend direct subprocess/import, Docker socket control, backend-managed `docker exec`, public scanner behavior, archive/run-all, and `tools/runner/main.py` integration are rejected for real execution. This docs-only phase does not add runtime wiring, live calls, runner HTTP endpoints, jobs, exports, Docker/Nmap/DNS/HTTP execution, new target approval, release, or tag state.
+
 ## Components
 
 ### Backend

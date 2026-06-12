@@ -3102,6 +3102,110 @@ DNS/HTTP checks, add live backend-to-active-tools calls, add runner HTTP
 endpoints, create real jobs or exports, integrate archive/run-all, integrate
 `tools/runner/main.py`, approve new targets, or create release/tag state.
 
+## Microphase 34: Backend Active Tools Boundary Design
+
+Objective:
+
+Design the future backend to `active-tools` boundary for `active_nmap_basic`
+before any live calls, runner HTTP endpoint, real jobs, Docker/Nmap execution,
+Compose wiring, or runtime changes. Decide architecture, contracts, security,
+logging, job lifecycle, error handling, target/DNS policy, redaction, and next
+steps.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-backend-active-tools-boundary-design.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No `curl` or browser checks.
+- No Compose.
+- No backend runtime changes.
+- No frontend runtime changes.
+- No runner runtime changes.
+- No runner HTTP endpoint.
+- No backend-to-active-tools live calls.
+- No real jobs.
+- No real exports.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No target approval for `www.vildek.es`.
+- No target approval for `app.vildek.es`.
+- No approval for port `80`.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+rg -n "ACTIVE_NMAP_BASIC_3[0-4]|active-tools|backend-to-active-tools|boundary|runner HTTP|internal service|Docker socket|archive/run-all|tools/runner/main.py|redaction|Raw JSON|PTR|resolved IP|tcp_connect_small" docs README.md
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Letting boundary design imply live execution approval.
+- Letting `active-tools` become the authorization or ownership authority.
+- Accepting backend direct subprocess/import or Docker socket control because
+  it appears simpler.
+- Exposing a public scanner endpoint or public host port.
+- Returning raw XML, stdout/stderr, args, PTR, resolved IP for FQDN, service
+  details, local paths, or script output through the boundary.
+
+Acceptance criteria:
+
+- Backend remains responsible for auth, owner scope, request validation, target
+  policy, job lifecycle, storage, reporting, and redaction.
+- `active-tools` is responsible only for bounded executor execution and
+  structured minimal responses.
+- Internal private service boundary is the preferred direction, only with no
+  public port, private network, feature flag, prior contract validation, double
+  timeout, minimal response, redacted logs, and no raw XML/args/stdout/stderr.
+- Backend direct subprocess/import, Docker socket, and backend-managed
+  `docker exec` are rejected for real execution.
+- Future request/response contracts are documented with one target unit,
+  accepted ports, neutral correlation, safe statuses, minimal observations,
+  manual validation, and observed exposure / review indicator semantics.
+- Security, logging, job lifecycle, error handling, target/DNS policy, testing
+  roadmap, and still-blocked scope are explicit.
+- No runtime, Docker, Nmap, DNS/HTTP, Compose, live call, endpoint, job, export,
+  archive/run-all, `tools/runner/main.py`, target approval, tag, or release is
+  added.
+
+Suggested commit:
+
+```text
+docs(active): design backend active tools boundary
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_34_BACKEND_ACTIVE_TOOLS_BOUNDARY_DESIGN_ACCEPTED` accepts a
+docs-only architecture direction for a private internal backend to `active-tools`
+boundary. Backend remains the authority for auth, owner scope, validation,
+target policy, jobs, storage, reporting, and redaction; `active-tools` remains a
+bounded executor only. The design prefers a no-public-port internal service
+boundary for future work and rejects backend direct subprocess/import, Docker
+socket control, public scanner behavior, archive/run-all, and
+`tools/runner/main.py` integration. It does not implement runtime changes,
+Docker/Nmap execution, live calls, runner endpoints, jobs, exports, targets,
+tags, or releases.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
