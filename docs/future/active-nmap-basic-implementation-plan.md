@@ -1738,6 +1738,91 @@ normal Inspectra requirement, backend direct Nmap execution remains blocked,
 the passive runner must not absorb Active/Nmap, and no Docker/Nmap/runtime
 changes were made in this docs-only phase.
 
+## Microphase 20: Active Tools Docker Design
+
+Objective:
+
+Design the future Docker/Compose architecture for a separate Active runner
+service/image, tentatively `active-tools`, that packages Nmap for
+`active_nmap_basic` without implementing Dockerfile, Compose, runtime, service
+endpoints, Nmap installation, or Nmap execution.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-active-tools-docker-design.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Nmap installation.
+- No Nmap execution.
+- No Docker execution.
+- No Dockerfile changes.
+- No Compose changes.
+- No image build.
+- No container startup.
+- No backend, frontend, or runner runtime changes.
+- No runner HTTP endpoint.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No host network approval.
+- No privileged container approval.
+- No LAN/VPS/domain/public target approval.
+- No public scanner behavior.
+
+Expected validations:
+
+- design names the tentative `active-tools` service/image;
+- design keeps `active-tools` separate from backend, frontend, audit-tools, and
+  `tools/runner/main.py`;
+- design proposes a minimal pinned image strategy and future Nmap installation
+  strategy without implementing it;
+- design proposes disabled-by-default Compose activation with no public port by
+  default;
+- design covers capabilities, filesystem, tmpfs, resource limits, logs, and
+  cleanup;
+- design compares internal HTTP, CLI wrapper, and backend internal adapter
+  boundary options;
+- design explains container loopback versus host loopback;
+- design keeps smoke execution blocked until a later phase freezes the
+  Dockerized target semantics.
+
+Risks:
+
+- Treating Docker design as approval to modify Compose or Dockerfiles.
+- Confusing `127.0.0.1` inside `active-tools` with host loopback.
+- Using host network, privileged containers, or broad capabilities to make a
+  smoke easier.
+- Accidentally exposing `active-tools` as a public scanner.
+
+Acceptance criteria:
+
+- The design accepts `ACTIVE_NMAP_BASIC_20_ACTIVE_TOOLS_DOCKER_DESIGN_ACCEPTED`.
+- The design recommends a separate `active-tools` Dockerized Active boundary.
+- The design keeps backend direct subprocess execution, passive runner
+  absorption, archive/run-all, public targets, LAN/VPS/domain smoke, and public
+  scanner behavior blocked.
+- No Dockerfile, Compose, runtime, Nmap installation, or Nmap execution changes
+  are made.
+
+Suggested commit:
+
+```text
+docs(active): design active tools docker packaging
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_20_ACTIVE_TOOLS_DOCKER_DESIGN_ACCEPTED` records a docs-only
+Docker/Compose architecture for `active-tools`: separate service/image,
+disabled by default, no public port by default, no host network by default, no
+privileged container, no Docker socket, bounded execution, redacted logs, and
+continued separation from backend subprocess execution, archive/run-all, and
+`tools/runner/main.py`.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

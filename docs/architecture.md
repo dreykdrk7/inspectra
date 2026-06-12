@@ -242,6 +242,8 @@ The Active Nmap Basic real local smoke execution decision is `ACTIVE_NMAP_BASIC_
 
 The Active Nmap Basic Nmap availability and packaging decision is `ACTIVE_NMAP_BASIC_19_NMAP_PACKAGING_PLAN_ACTIVE_RUNNER_RECOMMENDED`. Future Nmap availability should be provided by a separate Dockerized Active runner/image such as `active-tools`, not by requiring normal host-local Nmap installation, not by backend direct subprocess execution, and not by adding Active/Nmap to the passive runner monolith. This docs-only phase does not install Nmap, execute Nmap, run Docker, change Dockerfile or Compose, change backend/frontend/runner runtime, add runner endpoints, integrate archive/run-all, approve LAN/VPS/domain targets, or add public scanner behavior.
 
+The Active Nmap Basic Active Tools Docker design decision is `ACTIVE_NMAP_BASIC_20_ACTIVE_TOOLS_DOCKER_DESIGN_ACCEPTED`. It designs a future `active-tools` Dockerized Active runner service/image that remains separate from backend, frontend, audit-tools/passive runner, and `tools/runner/main.py`. The design requires disabled-by-default activation, no public port by default, no host network by default, no privileged container, no Docker socket, bounded execution, redacted logs, and clear container-loopback semantics before any Dockerized smoke is approved. This docs-only phase does not modify Dockerfile or Compose, build images, start containers, install Nmap, execute Nmap, change runtime, add runner endpoints, integrate archive/run-all, approve LAN/VPS/domain/public targets, or add public scanner behavior.
+
 ## Components
 
 ### Backend
