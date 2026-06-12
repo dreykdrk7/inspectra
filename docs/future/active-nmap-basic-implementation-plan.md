@@ -2798,6 +2798,105 @@ raw flags, scripts/NSE, service/version detection, brute force, credential
 validation, crawling, DNS expansion, reverse-DNS sweep, vulnerability claims,
 exploitability claims, target-safety claims, release, or tag state.
 
+## Microphase 31: Real Output Redaction Hardening Design
+
+Objective:
+
+Design parser and redaction hardening for real `active_nmap_basic` output before
+any backend/jobs/reports/Raw JSON integration with live Nmap results. Use the
+documented `www.urlbreve.es:443` smoke as reference, especially the observed
+resolved IP and PTR hostname in XML.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-real-output-redaction-hardening-design.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No parser implementation.
+- No redaction runtime implementation.
+- No Docker execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No probes.
+- No DNS checks.
+- No HTTP checks.
+- No `curl` or browser checks.
+- No Compose.
+- No backend runtime changes.
+- No frontend runtime changes.
+- No runner runtime changes.
+- No backend-to-active-tools live call.
+- No runner HTTP endpoint.
+- No real jobs.
+- No exports with real live Nmap output.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No approval for `www.vildek.es`.
+- No approval for `app.vildek.es`.
+- No approval for port `80`.
+- No public scanner behavior.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+rg -n "ACTIVE_NMAP_BASIC_30|ACTIVE_NMAP_BASIC_31|PTR|hostname|hostnames|raw XML|raw args|resolved IP|redaction|Raw JSON|observed TCP exposure|review indicator|www\\.urlbreve\\.es|51\\.38\\.225\\.243|vps-40567620" docs README.md
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Treating PTR hostnames as harmless display data.
+- Showing resolved IPs for FQDN targets by default in reports or Raw JSON.
+- Letting raw XML, raw args, stdout, stderr, stylesheet references, service
+  labels, or timestamps become stable user-facing contract fields.
+- Using reason strings such as `syn-ack` as vulnerability or exploitability
+  evidence.
+
+Acceptance criteria:
+
+- Final decision is recorded as
+  `ACTIVE_NMAP_BASIC_31_REAL_OUTPUT_REDACTION_HARDENING_DESIGN_ACCEPTED`.
+- The design classifies target FQDN, resolved IP, PTR hostname, port/protocol/
+  state/reason, service table label, raw args, timestamps, stylesheet reference,
+  and runstats.
+- Payload v0 allows only minimal structured TCP observations and
+  `result_interpretation: observed_exposure_review_indicator`.
+- PTR is blocked from UI/API/report/export/Raw JSON.
+- Resolved IP for exact FQDN targets is omitted from report/Raw JSON by default.
+- Future parser hardening handles malformed/truncated XML, multiple hosts,
+  unexpected hostnames, unexpected addresses, and unexpected ports as controlled
+  states.
+- Future tests cover PTR, service labels, raw args, multiple hostnames,
+  malformed/truncated XML, redaction surfaces, and conservative observation
+  rendering.
+
+Suggested commit:
+
+```text
+docs(active): design real nmap output redaction hardening
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_31_REAL_OUTPUT_REDACTION_HARDENING_DESIGN_ACCEPTED`
+accepts only a docs-first redaction hardening design. It keeps raw XML, raw
+args, stdout, stderr, PTR hostnames, non-user hostnames, reverse-DNS data,
+stylesheet references, service/banner/version details, and default FQDN resolved
+IP display out of future report/export/Raw JSON surfaces. It does not implement
+parser or redaction runtime, add backend integration, add runner endpoints,
+create jobs, create exports, run Docker, run Nmap, perform DNS/HTTP checks,
+approve new targets, or create release/tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
