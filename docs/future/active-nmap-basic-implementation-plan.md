@@ -1346,41 +1346,53 @@ subprocess use, no real Nmap execution, no Docker, no probes, no DNS checks,
 and no external HTTP traffic. Real Nmap smoke remains blocked pending a
 separate approved phase.
 
-## Microphase 15: Final Local Smoke, No Unauthorized External Traffic
+## Microphase 15: Local Smoke Plan, No Unauthorized Traffic
 
 Objective:
 
-Record a final controlled local smoke after implementation and tests are green.
-This smoke must not use third-party targets or unauthorized external traffic.
+Plan the first controlled local smoke method before any execution. The plan must
+decide whether the first smoke is no-live mocked or real local authorized, and
+must keep third-party targets, external DNS, public internet targets, and
+unauthorized external traffic out of scope.
 
 Probable files:
 
-- `docs/future/active-nmap-basic-local-smoke.md`
-- maybe test harness docs if a local fake Nmap fixture is used
-- no runtime files unless a defect fix is separately scoped
+- `docs/future/active-nmap-basic-local-smoke-plan-no-unauthorized-traffic.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
 
 No-scope:
 
+- No real smoke execution in this phase.
+- No Nmap execution.
+- No Docker execution.
+- No probes, DNS checks, or external HTTP traffic.
+- No backend, frontend, or runner runtime changes.
 - No public internet targets.
 - No arbitrary internet scanning.
 - No broad ranges.
 - No third-party demo targets.
 - No production policy relaxation.
 - No Nmap run against unauthorized hosts.
-- No Docker execution unless a separate smoke block explicitly approves it.
+- No runner HTTP endpoint.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
 - No tags or releases.
 
 Expected validations:
 
-- default disabled flag rejects job creation;
-- enabled local/private/self-hosted configuration is explicit;
-- smoke target is controlled and authorized, or Nmap is faked/mocked;
-- target count and port count are within frozen limits;
-- no raw flags are accepted;
-- no shell execution is observed;
-- no NSE, stealth, evasion, brute force, exploit, credential validation,
-  crawling, or DNS expansion behavior occurs;
-- reports and Raw JSON remain redacted;
+- the new plan recommends no-live fake/mocked smoke first;
+- real local Nmap smoke remains blocked unless a later phase freezes an exact
+  loopback/local controlled target and exact bounded ports/timeouts;
+- VPS/domain smoke remains blocked for the first smoke;
+- the target-control method excludes third parties, public domains, CIDR/ranges,
+  wildcards, target files, and DNS expansion;
+- feature-flag enablement is explicit, temporary, and disabled after any future
+  smoke;
+- future validations are listed without running Nmap, Docker, probes, DNS
+  checks, or external HTTP traffic in this phase;
 - no-scope search confirms no broad scanning or confirmed-vulnerability claims.
 
 Risks:
@@ -1392,16 +1404,33 @@ Risks:
 
 Acceptance criteria:
 
-- Smoke record names the target-control method.
-- No unauthorized external traffic is used.
-- The result remains internal/local/private, not production or public readiness.
-- Any defects are fixed in separate commits before closeout.
+- The smoke plan names Option A no-live mocked smoke as the first recommended
+  path.
+- Option B real local authorized smoke is allowed only as a later separately
+  approved execution phase with exact loopback/local target control.
+- Option C own VPS/domain smoke is blocked for the first smoke.
+- No unauthorized traffic is approved or generated.
+- Documentation states that this is internal/local/private planning, not
+  production or public readiness.
 
 Suggested commit:
 
 ```text
-test(active): record nmap basic local smoke
+docs(active): plan nmap basic local smoke
 ```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_15_LOCAL_SMOKE_PLAN_NO_UNAUTHORIZED_TRAFFIC_ACCEPTED`
+implements this docs-only planning checkpoint. The accepted first smoke method
+is Option A no-live fake/mocked adapter validation. Option B real local
+authorized Nmap smoke remains blocked until a later execution phase freezes an
+exact loopback/local controlled target, exact ports, exact timeouts, cleanup,
+and evidence limits. Option C own VPS/domain smoke remains blocked for the
+first smoke. This phase does not run Nmap, Docker, probes, DNS checks, external
+HTTP traffic, backend/frontend/runner runtime changes, runner HTTP endpoints,
+archive/run-all integration, `tools/runner/main.py` integration, migrations,
+tags, releases, or public scanner behavior.
 
 ## Cross-Phase Validation Checklist
 
