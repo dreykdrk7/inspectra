@@ -210,6 +210,8 @@ The Active Nmap Basic backend contract gate decision is `ACTIVE_NMAP_BASIC_01_BA
 
 The Active Nmap Basic target policy decision is `ACTIVE_NMAP_BASIC_02_TARGET_POLICY_ACCEPTED`. The backend now keeps exact-target validation in the small reusable `backend/app/active_nmap_policy.py` module and calls it from the contract gate before any future runner boundary. The policy accepts only explicit local/private/self-hosted IP or hostname inputs, performs no DNS or reverse-DNS work, generates no targets, and fails closed for expansion syntax, URL-shaped values, userinfo, pasted lists, metadata/control-plane names, special-purpose IP ranges, public-looking hostnames, excessive targets, overlong targets, and duplicates. This does not add a runner, command builder, subprocess use, Nmap execution, frontend behavior, migrations, archive/run-all integration, or traffic.
 
+The Active Nmap Basic command builder decision is `ACTIVE_NMAP_BASIC_03_COMMAND_BUILDER_ACCEPTED`. The Active runner package now has a modular `tools/active_runner/nmap_basic/command_builder.py` builder plus small shared contracts in `tools/active_runner/contracts.py`. The builder is pure/offline: it converts already-validated structured inputs into an argv list for the fixed `tcp_connect_small` profile, with no shell string, no raw flags, no NSE/script flags, no command execution, no subprocess use, no Nmap binary lookup, no DNS resolution, no runner endpoint, no parser, no frontend behavior, and no integration with `tools/runner/main.py`.
+
 ## Components
 
 ### Backend

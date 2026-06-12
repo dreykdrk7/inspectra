@@ -324,6 +324,18 @@ Suggested commit:
 feat(active): add nmap basic allowlisted command builder
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_03_COMMAND_BUILDER_ACCEPTED` implements this microphase as a
+pure offline builder under `tools/active_runner/nmap_basic/command_builder.py`
+with small shared constants in `tools/active_runner/contracts.py`. It accepts
+structured inputs only, emits an argv list with the fixed `tcp_connect_small`
+profile, fixed TCP-connect/no-discovery/no-reverse-DNS/bounded-timeout flags,
+numeric bounded TCP ports, XML output to stdout, and the explicit target after
+`--`. It does not add a runner endpoint, parser, subprocess use, shell command,
+Nmap execution, binary lookup, DNS resolution, probes, external HTTP traffic,
+frontend behavior, archive/run-all integration, or passive runner integration.
+
 ## Microphase 04: Active Runner Skeleton, No Real Nmap
 
 Objective:

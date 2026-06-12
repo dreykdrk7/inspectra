@@ -289,6 +289,8 @@ Active Nmap Basic backend contract gate decision: `ACTIVE_NMAP_BASIC_01_BACKEND_
 
 Active Nmap Basic target policy decision: `ACTIVE_NMAP_BASIC_02_TARGET_POLICY_ACCEPTED`.
 
+Active Nmap Basic command builder decision: `ACTIVE_NMAP_BASIC_03_COMMAND_BUILDER_ACCEPTED`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
@@ -325,6 +327,7 @@ This means:
 - The Active Nmap Basic implementation plan is docs-only future sequencing. It splits possible implementation into backend contract, target policy, command builder, runner skeleton, controlled subprocess, parser, redaction/reporting, frontend, test, and local-smoke phases without adding endpoints, Nmap execution, Docker behavior, runtime changes, migrations, tags, releases, broad scanning, or public scanner behavior.
 - The Active Nmap Basic backend contract gate now exists as `POST /active/network/nmap-basic`, disabled by default through `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=false`. When explicitly enabled, it validates only the exact `live_nmap_basic` / `tcp_connect_small` contract, required confirmations, and bounded target/port lists, then returns `not_implemented` / `not_executed` without creating a job, calling a runner, constructing commands, using subprocesses, executing Nmap, resolving DNS, sending probes, making external HTTP requests, adding frontend behavior, or integrating with archive/run-all flows.
 - The Active Nmap Basic target policy is isolated in `backend/app/active_nmap_policy.py` and is reusable/testable offline. It accepts only exact local/private/self-hosted IP or hostname inputs and rejects CIDR, dash ranges, wildcards, pasted lists, URL-shaped values, paths, queries, fragments, userinfo, metadata/control-plane names, special-purpose IP ranges, public-looking hostnames, excessive targets, overlong targets, and duplicates without DNS resolution, target generation, runner calls, command building, subprocess use, Nmap execution, or traffic.
+- The Active Nmap Basic command builder is isolated in `tools/active_runner/nmap_basic/command_builder.py` and is pure/offline. It emits only an argv list for the fixed `tcp_connect_small` profile and does not accept raw flags, script options, shell strings, command execution, subprocess use, Nmap binary lookup, DNS resolution, runner endpoints, parsers, frontend behavior, or passive runner integration.
 - Nmap remains unimplemented and out of scope.
 
 The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.
