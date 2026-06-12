@@ -238,6 +238,8 @@ The Active Nmap Basic no-live smoke execution decision is `ACTIVE_NMAP_BASIC_16_
 
 The Active Nmap Basic real local smoke target-freeze decision is `ACTIVE_NMAP_BASIC_17_REAL_LOCAL_SMOKE_TARGET_FREEZE_ACCEPTED`. It freezes a future real local smoke to numeric loopback `127.0.0.1`, port `[65000]`, `live_nmap_basic`, `tcp_connect_small`, temporary feature-flag enablement, allowlisted argv shape, cleanup, rollback, and no-go criteria. It does not run Nmap, run Docker, perform probes, perform DNS checks, make external HTTP requests, change backend/frontend/runner runtime, wire a real executor by default, use `localhost`, use a domain/VPS/LAN target, add runner HTTP endpoints, integrate archive/run-all, integrate `tools/runner/main.py`, or approve real execution in this phase.
 
+The Active Nmap Basic real local smoke execution decision is `ACTIVE_NMAP_BASIC_18_REAL_LOCAL_SMOKE_EXECUTION_BLOCKED_NMAP_MISSING`. The preflight found no local Nmap binary via `command -v nmap`, so the real smoke was not executed and no Nmap installation was attempted. The frozen argv for `127.0.0.1` and `[65000]` still matches the allowlisted builder, and no-live backend, active-runner, and frontend validations passed. No backend smoke server, live request, job creation, export, DNS check, external HTTP traffic, target change, port change, runner endpoint, archive/run-all integration, or `tools/runner/main.py` integration occurred.
+
 ## Components
 
 ### Backend

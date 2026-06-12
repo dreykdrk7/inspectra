@@ -1591,6 +1591,78 @@ backend subprocesses, runner HTTP endpoints, archive/run-all, or
 `tools/runner/main.py` integration. Real local execution remains blocked until
 a later execution phase explicitly approves it.
 
+## Microphase 18: Real Local Smoke Execution
+
+Objective:
+
+Run the frozen real local smoke only if local Nmap is available. The smoke must
+use exactly target `127.0.0.1`, port `[65000]`, mode `live_nmap_basic`, profile
+`tcp_connect_small`, and temporary feature-flag enablement.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-real-local-smoke-execution.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Nmap installation.
+- No Docker execution.
+- No DNS checks.
+- No external HTTP traffic.
+- No target other than `127.0.0.1`.
+- No port other than `65000`.
+- No `localhost`, `::1`, hostname, domain, VPS, LAN, container, or third-party
+  target.
+- No raw flags, NSE, `--script`, UDP, SYN scan, OS detection, service/version
+  detection, brute force, credential validation, crawling, DNS expansion, broad
+  ranges, archive/run-all integration, runner HTTP endpoints, or
+  `tools/runner/main.py` integration.
+
+Expected validations:
+
+- `command -v nmap` gates execution;
+- missing Nmap blocks the phase without installation;
+- allowlisted builder still emits the frozen argv;
+- no-live backend/runner/frontend tests pass before any real execution;
+- if Nmap is available in a later rerun, backend launch uses an inline temporary
+  feature flag and binds only to `127.0.0.1`;
+- request body uses only `targets: ["127.0.0.1"]` and `ports: [65000]`;
+- cleanup stops the backend and leaves the feature flag disabled.
+
+Risks:
+
+- Treating missing Nmap as a reason to install tooling inside the phase.
+- Accidentally replacing numeric loopback with `localhost`.
+- Treating a blocked smoke as evidence of real Nmap execution.
+
+Acceptance criteria:
+
+- If Nmap is missing, document
+  `ACTIVE_NMAP_BASIC_18_REAL_LOCAL_SMOKE_EXECUTION_BLOCKED_NMAP_MISSING`.
+- If Nmap is available, execute only the frozen smoke and document either pass
+  or no-go failure.
+- Documentation states exactly what ran and what stayed blocked.
+
+Suggested commit:
+
+```text
+test(active): execute nmap basic real local smoke
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_18_REAL_LOCAL_SMOKE_EXECUTION_BLOCKED_NMAP_MISSING` records
+that `command -v nmap` returned no local binary. No Nmap installation, Docker,
+backend smoke server, live request, job creation, export, DNS check, external
+HTTP traffic, target change, port change, raw flags, runner HTTP endpoint,
+archive/run-all integration, or `tools/runner/main.py` integration occurred.
+The frozen argv was rechecked through the allowlisted builder, and no-live
+backend, active-runner, and frontend tests passed.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
