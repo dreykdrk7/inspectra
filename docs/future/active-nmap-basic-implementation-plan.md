@@ -2696,6 +2696,108 @@ port `80`, backend integration, runner endpoints, jobs, exports,
 archive/run-all integration, `tools/runner/main.py` integration, runtime
 changes, public scanner behavior, or release/tag state.
 
+## Microphase 30: Active Nmap V0 Technical Smoke Closeout
+
+Objective:
+
+Consolidate the bounded `active-tools` technical smoke block after build-only,
+no-target readiness, Nmap version, container-loopback smoke, and the first
+own-domain authorized smoke. Freeze what is approved, what is not approved,
+residual risks, and the recommended roadmap before any future backend-to-
+active-tools integration.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-v0-technical-smoke-closeout.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No `curl` or browser checks.
+- No Compose.
+- No backend runtime changes.
+- No frontend runtime changes.
+- No runner runtime changes.
+- No backend-to-active-tools live call.
+- No runner HTTP endpoint.
+- No real jobs.
+- No exports with real live Nmap output.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No approval for `www.vildek.es`.
+- No approval for `app.vildek.es`.
+- No approval for port `80`.
+- No multi-domain scans.
+- No LAN, generic VPS, arbitrary public, or public-scanner targets.
+- No raw flags, NSE/scripts, service/version detection, OS detection, UDP/SYN,
+  brute force, credential validation, crawling, DNS expansion, or reverse-DNS
+  sweep.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+rg -n "ACTIVE_NMAP_BASIC_2[3-9]|ACTIVE_NMAP_BASIC_30|active-tools|active_nmap_basic|[www.urlbreve.es|www.vildek.es|app.vildek.es|PTR|443|65000|observed](http://www.urlbreve.es|www.vildek.es|app.vildek.es|PTR|443|65000|observed) TCP exposure|review indicator|closeout" docs README.md
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Treating the first own-domain smoke as approval for more domains or ports.
+- Treating PTR output as acceptable for future backend reports without redaction
+  review.
+- Letting the smoke block imply backend integration, jobs, exports, or release
+  readiness.
+- Treating the observed open TCP state as a confirmed vulnerability or
+  exploitability finding.
+
+Acceptance criteria:
+
+- Final decision is recorded as
+  `ACTIVE_NMAP_BASIC_30_ACTIVE_NMAP_V0_TECHNICAL_SMOKE_CLOSEOUT_ACCEPTED`.
+- Documentation summarizes the `inspectra-active-tools:build-smoke` image,
+  Nmap `7.95`, `127.0.0.1:65000` closed/conn-refused, and
+  `www.urlbreve.es:443` open/syn-ack.
+- The PTR hostname observed in XML is recorded as a hardening gap.
+- Approved and not-approved scope is explicit.
+- Roadmap requires redaction/parser hardening, optional IP-freeze plus `-n`,
+  backend-to-active-tools boundary design, controlled job lifecycle, and
+  separately frozen future targets.
+- No runtime, Docker, Nmap, DNS, HTTP, Compose, backend integration, runner
+  endpoint, archive/run-all, job, export, tag, or release change is made.
+
+Suggested commit:
+
+```text
+docs(active): close active nmap technical smoke v0
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_30_ACTIVE_NMAP_V0_TECHNICAL_SMOKE_CLOSEOUT_ACCEPTED`
+consolidates the bounded `active-tools` technical smoke block. It approves
+`active-tools` only as viable technical packaging and preserves the executed
+`www.urlbreve.es:443` smoke as historical evidence only. It does not approve
+backend integration, runner endpoints, jobs, exports, archive/run-all,
+`tools/runner/main.py`, `www.vildek.es`, `app.vildek.es`, port `80`,
+multi-domain scans, LAN/VPS/public target expansion, public scanner behavior,
+raw flags, scripts/NSE, service/version detection, brute force, credential
+validation, crawling, DNS expansion, reverse-DNS sweep, vulnerability claims,
+exploitability claims, target-safety claims, release, or tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
