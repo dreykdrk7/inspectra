@@ -254,6 +254,8 @@ The Active Nmap Basic Active Tools run no-target readiness decision is `ACTIVE_N
 
 The Active Nmap Basic Active Tools Nmap version no-target decision is `ACTIVE_NMAP_BASIC_25_ACTIVE_TOOLS_NMAP_VERSION_NO_TARGET_PASSED`. The built `inspectra-active-tools:build-smoke` image runs only `nmap --version` with `--network none`, read-only filesystem, tmpfs `/tmp`, dropped capabilities, and `no-new-privileges`, reporting Nmap `7.95`. This confirms only no-target version readiness; it does not execute Nmap against a target, run scripts/NSE, approve targets, expose a service, use Compose, publish ports, add backend live calls, add runner HTTP endpoints, integrate archive/run-all, integrate `tools/runner/main.py`, approve public scanner behavior, or create release/tag state.
 
+The Active Nmap Basic Active Tools local smoke target-freeze decision is `ACTIVE_NMAP_BASIC_26_ACTIVE_TOOLS_LOCAL_SMOKE_TARGET_FREEZE_ACCEPTED`. It clarifies that `127.0.0.1` inside `active-tools` means container loopback, not host loopback, and recommends the first future Dockerized target-bearing smoke use only target `127.0.0.1`, port `65000`, and `--network none`, interpreted as a closed-port local container loopback smoke. It records `www.vildek.es`, `app.vildek.es`, and `www.urlbreve.es` only as future owned-domain candidates and does not approve them now. This docs-only phase does not run Docker or Nmap, perform probes, perform DNS checks, send external HTTP target traffic, use Compose, publish ports, approve LAN/VPS/domain/public targets, add backend live calls, add runner HTTP endpoints, integrate archive/run-all, integrate `tools/runner/main.py`, approve public scanner behavior, or create release/tag state.
+
 ## Components
 
 ### Backend

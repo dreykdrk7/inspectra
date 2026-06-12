@@ -2272,6 +2272,100 @@ HTTP endpoints, archive/run-all integration, `tools/runner/main.py`
 integration, LAN/VPS/domain targets, public scanner behavior, or release/tag
 state.
 
+## Microphase 26: Active Tools Local Smoke Target Freeze
+
+Objective:
+
+Freeze Dockerized `active-tools` local smoke target semantics before any Nmap
+command is run with a target. Clarify that `127.0.0.1` inside `active-tools` is
+container loopback, not host loopback, and keep LAN/VPS/domain/public targets
+blocked.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-active-tools-local-smoke-target-freeze.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No target-bearing Nmap command.
+- No probes.
+- No DNS checks.
+- No external HTTP target traffic.
+- No Compose.
+- No published ports.
+- No host network.
+- No privileged container.
+- No Docker socket mount.
+- No backend runtime changes.
+- No frontend runtime changes.
+- No runner runtime changes.
+- No backend-to-active-tools live call.
+- No runner HTTP endpoint.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No approval for LAN, VPS, domain, or public targets.
+- No public scanner behavior.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+rg -n "active-tools|active_nmap_basic|Nmap|nmap|127.0.0.1|65000|loopback|container|own-domain|vildek|urlbreve|target freeze" docs README.md
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Confusing container loopback with host loopback.
+- Treating a future `127.0.0.1:65000` container smoke as evidence of external
+  exposure.
+- Treating operator-owned domains as approved targets before a separate
+  own-domain freeze.
+- Letting a target freeze become backend integration or public scanner approval.
+
+Acceptance criteria:
+
+- Documentation states that `127.0.0.1` inside `active-tools` is container
+  loopback.
+- Documentation states that the earlier host-local `127.0.0.1:65000` freeze
+  does not automatically equal the Dockerized smoke.
+- Option A is recommended for a later first target-bearing Docker smoke:
+  exact target `127.0.0.1`, exact port `65000`, Docker `--network none`.
+- The future interpretation is "closed-port local container loopback smoke".
+- Owned domains `www.vildek.es`, `app.vildek.es`, and `www.urlbreve.es` are
+  recorded only as future candidates and remain blocked in this phase.
+- LAN/VPS/domain/public targets, Compose service targets, backend integration,
+  runner endpoints, archive/run-all, and public scanner behavior remain blocked.
+
+Suggested commit:
+
+```text
+docs(active): freeze active tools local smoke target
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_26_ACTIVE_TOOLS_LOCAL_SMOKE_TARGET_FREEZE_ACCEPTED` records
+that the first future Dockerized target-bearing smoke should use only
+container-loopback target `127.0.0.1`, port `65000`, and Docker network
+disabled with `--network none`, interpreted as a closed-port local container
+loopback smoke. The phase does not run Docker or Nmap, does not approve
+owned-domain, LAN, VPS, Compose,
+or public targets, and does not approve backend live calls, runner endpoints,
+archive/run-all integration, `tools/runner/main.py` integration, public scanner
+behavior, or release/tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
