@@ -1663,6 +1663,81 @@ archive/run-all integration, or `tools/runner/main.py` integration occurred.
 The frozen argv was rechecked through the allowlisted builder, and no-live
 backend, active-runner, and frontend tests passed.
 
+## Microphase 19: Nmap Availability And Packaging Plan
+
+Objective:
+
+Decide how Nmap should become available to Inspectra after the correct
+Microphase 18 block for missing local Nmap. This phase is docs-only and chooses
+a packaged Active runner/image path instead of a normal host-local manual Nmap
+dependency.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-nmap-availability-and-packaging-plan.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Nmap installation.
+- No Nmap execution.
+- No Docker execution.
+- No Dockerfile or Compose changes.
+- No backend, frontend, or runner runtime changes.
+- No backend direct subprocess execution for Nmap.
+- No runner HTTP endpoint.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No LAN target approval.
+- No VPS/domain smoke approval.
+- No public scanner behavior.
+
+Expected validations:
+
+- documentation explains the Microphase 18 missing-binary block;
+- host-local manual Nmap install is rejected as the normal Inspectra path;
+- adding Nmap to the passive runner is discouraged;
+- a separate Dockerized Active runner/image, tentatively `active-tools`, is
+  recommended;
+- mocked/no-live behavior remains the fallback until packaging and execution
+  are separately implemented;
+- disabled-by-default, opt-in, authorization, target, time, output, storage,
+  redaction, and wording guardrails remain unchanged.
+
+Risks:
+
+- Treating a packaging plan as approval to build or run Docker.
+- Treating `active-tools` as a public scanner service.
+- Letting the passive runner monolith absorb Active/Nmap.
+- Reintroducing host-local Nmap installation as a hidden product dependency.
+
+Acceptance criteria:
+
+- The plan recommends `active-tools` / separate Active runner packaging.
+- The plan explicitly rejects host-local Nmap as the default requirement.
+- The plan keeps backend direct Nmap subprocess execution blocked.
+- The plan keeps `tools/runner/main.py`, archive/run-all, LAN targets,
+  VPS/domain smoke, and public scanner behavior blocked.
+- No runtime, Docker, or Nmap execution changes are made.
+
+Suggested commit:
+
+```text
+docs(active): plan nmap availability and packaging
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_19_NMAP_PACKAGING_PLAN_ACTIVE_RUNNER_RECOMMENDED` records
+that future Nmap availability should be provided by a separate Dockerized Active
+runner/image such as `active-tools`. Host-local Nmap installation is not the
+normal Inspectra requirement, backend direct Nmap execution remains blocked,
+the passive runner must not absorb Active/Nmap, and no Docker/Nmap/runtime
+changes were made in this docs-only phase.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
