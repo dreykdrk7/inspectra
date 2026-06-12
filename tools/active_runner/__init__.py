@@ -4,8 +4,11 @@ from .nmap_basic import (
     FORBIDDEN_NMAP_BASIC_FLAGS,
     ActiveNmapBasicServiceError,
     ActiveNmapBasicServiceRequest,
+    ActiveNmapBasicTargetPolicyError,
     build_active_nmap_basic_argv,
+    execute_active_nmap_basic,
     handle_active_nmap_basic_skeleton,
+    validate_active_nmap_basic_execution_target,
 )
 from .models import (
     ActiveAuthorization,
@@ -29,10 +32,13 @@ __all__ = [
     "ActiveHttpHeaderProbeResult",
     "ActiveNmapBasicServiceError",
     "ActiveNmapBasicServiceRequest",
+    "ActiveNmapBasicTargetPolicyError",
     "FORBIDDEN_NMAP_BASIC_FLAGS",
     "HeadResponse",
     "build_active_nmap_basic_argv",
+    "execute_active_nmap_basic",
     "handle_active_nmap_basic_skeleton",
     "run_authorized_http_header_probe",
     "run_active_network_dry_run",
+    "validate_active_nmap_basic_execution_target",
 ]

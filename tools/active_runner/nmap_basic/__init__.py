@@ -1,16 +1,28 @@
 from .command_builder import FORBIDDEN_NMAP_BASIC_FLAGS, build_active_nmap_basic_argv
+from .executor import execute_active_nmap_basic
 from .service import (
     ActiveNmapBasicServiceError,
     ActiveNmapBasicServiceRequest,
     UNSUPPORTED_NMAP_BASIC_SERVICE_FIELDS,
+    coerce_active_nmap_basic_service_request,
     handle_active_nmap_basic_skeleton,
+    validate_active_nmap_basic_service_contract,
+)
+from .target_policy import (
+    ActiveNmapBasicTargetPolicyError,
+    validate_active_nmap_basic_execution_target,
 )
 
 __all__ = [
     "ActiveNmapBasicServiceError",
     "ActiveNmapBasicServiceRequest",
+    "ActiveNmapBasicTargetPolicyError",
     "FORBIDDEN_NMAP_BASIC_FLAGS",
     "UNSUPPORTED_NMAP_BASIC_SERVICE_FIELDS",
     "build_active_nmap_basic_argv",
+    "coerce_active_nmap_basic_service_request",
+    "execute_active_nmap_basic",
     "handle_active_nmap_basic_skeleton",
+    "validate_active_nmap_basic_execution_target",
+    "validate_active_nmap_basic_service_contract",
 ]

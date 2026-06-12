@@ -95,8 +95,8 @@ class ActiveNmapBasicServiceRequest:
 def handle_active_nmap_basic_skeleton(
     request: ActiveNmapBasicServiceRequest | Mapping[str, Any],
 ) -> ActiveNmapBasicSkeletonResult:
-    normalized_request = _coerce_request(request)
-    _validate_contract(normalized_request)
+    normalized_request = coerce_active_nmap_basic_service_request(request)
+    validate_active_nmap_basic_service_contract(normalized_request)
 
     try:
         argv = build_active_nmap_basic_argv(
@@ -133,7 +133,9 @@ def handle_active_nmap_basic_skeleton(
     }
 
 
-def _coerce_request(request: ActiveNmapBasicServiceRequest | Mapping[str, Any]) -> ActiveNmapBasicServiceRequest:
+def coerce_active_nmap_basic_service_request(
+    request: ActiveNmapBasicServiceRequest | Mapping[str, Any],
+) -> ActiveNmapBasicServiceRequest:
     if isinstance(request, ActiveNmapBasicServiceRequest):
         return request
     if isinstance(request, Mapping):
@@ -141,7 +143,7 @@ def _coerce_request(request: ActiveNmapBasicServiceRequest | Mapping[str, Any]) 
     raise ActiveNmapBasicServiceError("request_not_mapping")
 
 
-def _validate_contract(request: ActiveNmapBasicServiceRequest) -> None:
+def validate_active_nmap_basic_service_contract(request: ActiveNmapBasicServiceRequest) -> None:
     if request.mode != ACTIVE_NMAP_BASIC_MODE:
         raise ActiveNmapBasicServiceError("unsupported_mode")
     if request.profile != ACTIVE_NMAP_BASIC_PROFILE:

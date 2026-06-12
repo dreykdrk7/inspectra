@@ -533,6 +533,26 @@ Suggested commit:
 feat(active): execute bounded nmap basic command
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_05_CONTROLLED_SUBPROCESS_ACCEPTED` implements this
+microphase as a small modular executor under
+`tools/active_runner/nmap_basic/executor.py`, plus a runner-side target policy
+mirror under `tools/active_runner/nmap_basic/target_policy.py`. The executor
+accepts only structured inputs, validates the existing service contract, applies
+target policy before subprocess execution, builds argv exclusively through the
+allowlisted command builder, invokes the provided runner or `subprocess.run`
+with an argv list and `shell=False`, enforces a bounded process timeout, bounds
+stdout and stderr before returning them, redacts raw target values and forbidden
+claim wording from output, and returns controlled `completed`, `failed`,
+`timed_out`, or `nmap_missing` states. Tests use fakes/mocks by default and do
+not require Nmap to be installed. This phase does not add raw flags, shell
+commands, custom scripts, NSE, stealth, evasion, OS/service/version detection,
+UDP, brute force, exploit scripts, credential validation, crawling, DNS
+expansion, broad ranges, XML parsing, findings, jobs, backend calls, runner
+HTTP endpoints, frontend behavior, archive/run-all integration, Docker changes,
+migrations, tags, releases, or passive runner integration.
+
 ## Microphase 06: Bounded Machine-Readable Parser
 
 Objective:
