@@ -109,8 +109,9 @@ The future work should be split into small reviewable commits:
 10A. End-to-end contract review before live backend-to-runner wiring.
 11. Pre-wiring hardening, no-live.
 12. Backend job lifecycle wiring to a test-double adapter, no-live.
-13. Runner and frontend regression tests before any real live wiring.
-14. Final local smoke with no unauthorized external traffic.
+13. Live wiring readiness review.
+14. Backend executor-interface wiring with mocks, no-live.
+15. Final local smoke with no unauthorized external traffic.
 
 Each microphase should be accepted only when its own validation passes and the
 next phase remains separately gated.
@@ -1164,60 +1165,174 @@ external HTTP requests, integrate archive/run-all, integrate
 brute force, add credential validation, add crawling, add DNS expansion, or
 add broad ranges.
 
-## Microphase 13: Frontend Tests
+## Microphase 13: Live Wiring Readiness Review
 
 Objective:
 
-Run focused and full frontend tests for the panel, confirmations, request body,
-catalog/filter metadata, reports, and Raw JSON redaction.
+Perform a docs-only/read-only readiness review before allowing backend wiring
+toward the real executor interface. This phase decides whether the next
+backend slice may call an injectable executor boundary under mocks, while still
+blocking real Nmap execution.
 
 Probable files:
 
-- `frontend/src/App.test.tsx`
-- `frontend/src/ActiveNmapBasicJobReport.test.tsx`
-- `frontend/src/dashboardFilters.test.ts`
-- `frontend/src/reportHelpers.test.ts`
-- optional frontend review doc
+- `docs/future/active-nmap-basic-live-wiring-readiness-review.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+- existing backend, runner, and frontend source files for read-only review
 
 No-scope:
 
-- No backend changes.
-- No runner changes.
+- No backend runtime changes.
+- No frontend runtime changes.
+- No runner runtime changes.
+- No backend-to-runner live wiring.
+- No backend call to the real executor.
+- No runner HTTP endpoint.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
 - No Nmap execution.
+- No subprocess invocation from backend.
+- No Docker execution.
+- No probes.
+- No DNS checks.
 - No external traffic.
-- No browser storage auth state changes.
+- No migrations, tags, or releases.
+- No broad ranges, raw flags, custom scripts, NSE, stealth, evasion, brute
+  force, credential validation, crawling, DNS expansion, or public scanner
+  behavior.
 
 Expected validations:
 
-- disabled-state copy;
-- enabled panel copy;
-- confirmation gating;
-- exact request payload;
-- blocked/failed/completed/truncated/malformed report rendering;
-- job table target redaction;
-- Raw JSON redaction;
-- forbidden-copy absence;
-- no archive action integration.
+- backend lifecycle still uses the disabled-by-default gate;
+- disabled mode creates no job;
+- enabled valid requests still create only owner-scoped no-live jobs;
+- auth-required anonymous requests fail before validation detail;
+- backend does not import or call the real active-runner executor;
+- backend does not import subprocess for `active_nmap_basic`;
+- `tools/runner/main.py`, archive/run-all, and runner HTTP endpoint paths
+  remain unintegrated;
+- handoff remains target-bounded and single-concurrency;
+- parser/result/reporting redaction remains bounded and conservative;
+- frontend report and Raw JSON rendering still distinguish no-live from live
+  execution;
+- focused and full backend, runner, frontend, build, source-search, and
+  no-scope validations pass without Docker, Nmap, probes, DNS checks, or
+  external HTTP traffic.
 
 Risks:
 
-- UI tests miss copy that implies broad scanning.
-- Raw JSON viewer diverges from report redaction.
-- Dashboard filter labels imply production readiness.
+- A review could accidentally be interpreted as approval for real Nmap smoke.
+- Backend executor-interface wiring could be bundled with packaging or
+  subprocess execution.
+- Test-double job results could be mistaken for completed live scans.
+- Future stdout/stderr/parser failures may contain new strings that require
+  another redaction pass.
 
 Acceptance criteria:
 
-- Focused frontend tests pass.
-- Full frontend test run and build pass when appropriate.
-- No forbidden copy appears in frontend source or rendered output.
+- A review document records the files reviewed, findings, blockers, residual
+  risks, validation evidence, decision, and next recommended microphase.
+- The decision explicitly allows only mocked/no-live backend wiring toward an
+  executor interface.
+- Real Nmap execution, Docker/Nmap packaging, live local smoke, runner HTTP
+  endpoints, archive/run-all, and passive-runner integration remain blocked.
+- Documentation keeps observed exposure / review indicator wording and avoids
+  confirmed-vulnerability, exploitability, target-safety, and complete-coverage
+  claims.
 
 Suggested commit:
 
 ```text
-test(active): cover nmap basic frontend flow
+docs(active): review nmap basic live wiring readiness
 ```
 
-## Microphase 14: Final Local Smoke, No Unauthorized External Traffic
+Status:
+
+`ACTIVE_NMAP_BASIC_13_LIVE_WIRING_READINESS_REVIEW_PASSED` records this
+docs-only/read-only checkpoint in
+`docs/future/active-nmap-basic-live-wiring-readiness-review.md`. The review
+finds no blocker for a next mocked/no-live backend slice that calls an
+injectable executor interface, but it does not approve real Nmap execution,
+Docker/Nmap packaging, local authorized Nmap smoke, runner HTTP endpoints,
+archive/run-all integration, `tools/runner/main.py` integration, broader
+fanout, target expansion, raw flags, NSE, stealth/evasion, brute force,
+credential validation, crawling, DNS expansion, public scanner behavior, or
+confirmed-vulnerability/exploitability claims.
+
+## Microphase 14: Backend Executor Wiring, Mocked No-Live
+
+Objective:
+
+Connect the backend job lifecycle to an injectable active-runner executor
+interface while tests use mocks/fakes only. This phase may exercise
+parser/result composition with synthetic executor outputs, but must not invoke
+real Nmap or backend subprocesses.
+
+Probable files:
+
+- `backend/app/main.py`
+- `backend/app/services.py`
+- `backend/app/storage.py`
+- `backend/app/active_nmap_handoff.py`
+- `backend/tests/test_backend.py`
+- focused runner parser/result fixtures if needed
+- `docs/future/active-nmap-basic-backend-executor-wiring-mocked-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+
+No-scope:
+
+- No real Nmap execution.
+- No backend subprocess invocation.
+- No unmocked executor call in tests.
+- No Docker execution or Nmap packaging.
+- No runner HTTP endpoint.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No probes, DNS checks, or external HTTP traffic.
+- No raw flags, custom scripts, NSE, stealth, evasion, brute force, credential
+  validation, crawling, DNS expansion, broad ranges, target-policy relaxation,
+  concurrency expansion, or public scanner behavior.
+
+Expected validations:
+
+- disabled flag still rejects without creating a job;
+- enabled valid requests call only the injected executor interface in tests;
+- mocked completed, failed, timed-out, `nmap_missing`, malformed, truncated,
+  and no-ports executor/parser states store redacted results;
+- no raw target, command, XML, stdout, stderr, service, or banner values appear
+  in API, reports, exports, or Raw JSON;
+- wrong-owner reads and exports remain generic not-found responses;
+- backend source search shows no direct `subprocess` or real executor default
+  path used by tests;
+- runner focused tests still pass without Nmap installed;
+- frontend controlled-state rendering remains stable.
+
+Risks:
+
+- Dependency injection could hide an accidental real executor default.
+- Mocked completed states could make UI copy look like approved live scanning.
+- Synthetic parser output might miss redaction strings from real Nmap output.
+- Background job timing could make status transitions harder to reason about.
+
+Acceptance criteria:
+
+- The backend can be tested against an executor interface without real Nmap.
+- All stored and rendered results remain bounded, owner-scoped, and redacted.
+- Source searches confirm no backend subprocess path, runner HTTP endpoint,
+  archive/run-all integration, or passive-runner integration.
+- Documentation states that real Nmap smoke remains a later separately
+  approved phase.
+
+Suggested commit:
+
+```text
+feat(active): wire nmap basic executor interface with mocks
+```
+
+## Microphase 15: Final Local Smoke, No Unauthorized External Traffic
 
 Objective:
 

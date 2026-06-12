@@ -217,6 +217,8 @@ Active Nmap Basic Microphase 10 is implemented as frontend report and Raw JSON r
 
 Active Nmap Basic Microphase 12 is implemented as backend job lifecycle wiring to a no-live test-double only. When `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=true`, valid requests create owner-scoped `active_nmap_basic` jobs with `file_id: null`, redacted target metadata, bounded handoff counts, and a structured `not_executed` result from the backend no-live adapter. It does not call the real active-runner executor, execute Nmap, invoke subprocesses from backend, add runner HTTP endpoints, run Docker, perform probes, perform DNS checks, make external HTTP requests, integrate archive/run-all, integrate `tools/runner/main.py`, accept raw flags, add custom scripts, add NSE, add brute force, add credential validation, add crawling, add DNS expansion, add broad ranges, or treat test-double results as real Nmap scans.
 
+Active Nmap Basic Microphase 13 is documented as a live wiring readiness review only. The decision `ACTIVE_NMAP_BASIC_13_LIVE_WIRING_READINESS_REVIEW_PASSED` allows only a future mocked/no-live backend slice toward an injectable executor interface. It does not approve real Nmap execution, Docker/Nmap packaging, local authorized Nmap smoke, runner HTTP endpoints, archive/run-all integration, `tools/runner/main.py` integration, broader fanout, target expansion, raw flags, custom scripts, NSE, stealth/evasion, brute force, credential validation, crawling, DNS expansion, public scanner behavior, or confirmed-vulnerability/exploitability claims.
+
 ## Requirements
 
 - Docker
