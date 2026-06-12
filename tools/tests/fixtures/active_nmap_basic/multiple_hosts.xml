@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sT -Pn -oX - -p 443 -- www.urlbreve.es other.example.internal" version="7.95">
+  <host>
+    <address addr="203.0.113.10" addrtype="ipv4"/>
+    <hostnames><hostname name="www.urlbreve.es" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="443"><state state="open" reason="syn-ack"/></port>
+    </ports>
+  </host>
+  <host>
+    <address addr="203.0.113.11" addrtype="ipv4"/>
+    <hostnames><hostname name="other.example.internal" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="443"><state state="open" reason="syn-ack"/></port>
+    </ports>
+  </host>
+</nmaprun>

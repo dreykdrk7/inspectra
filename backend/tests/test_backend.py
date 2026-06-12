@@ -4443,7 +4443,16 @@ async def test_active_nmap_basic_enabled_with_mock_completed_creates_redacted_st
     assert stored.result["subprocess_invoked"] is False
     assert stored.result["network_requests_sent"] == 0
     assert stored.result["dns_queries_sent"] == 0
-    assert stored.result["port_observations"] == [{"port": 443, "protocol": "tcp", "state": "open", "reason": "syn-ack"}]
+    assert stored.result["port_observations"] == [
+        {
+            "port": 443,
+            "protocol": "tcp",
+            "state": "open",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "reason": "syn-ack",
+        }
+    ]
     assert job_response.json()["result"]["port_observations"][0]["state"] == "open"
     serialized = json.dumps({"stored": stored.result, "api": job_response.json()}, sort_keys=True)
     for forbidden in (
@@ -5706,7 +5715,16 @@ async def test_active_nmap_basic_fake_execution_parser_payload_exports_no_live(m
     assert payload["command_returned"] is False
     assert payload["target_returned"] is False
     assert payload["raw_xml_returned"] is False
-    assert payload["port_observations"] == [{"port": 443, "protocol": "tcp", "state": "open", "reason": "syn-ack"}]
+    assert payload["port_observations"] == [
+        {
+            "port": 443,
+            "protocol": "tcp",
+            "state": "open",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "reason": "syn-ack",
+        }
+    ]
     for forbidden in ("192.168.56.10", "secret-lab.internal", "PrivateServer", "9.9.9", "nmap -sT", "<nmaprun", "stderr for"):
         assert forbidden not in payload_body
 

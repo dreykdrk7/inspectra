@@ -2897,6 +2897,111 @@ parser or redaction runtime, add backend integration, add runner endpoints,
 create jobs, create exports, run Docker, run Nmap, perform DNS/HTTP checks,
 approve new targets, or create release/tag state.
 
+## Microphase 32: Real Output Parser Redaction Tests, No Runtime
+
+Objective:
+
+Add synthetic fixtures and offline tests for the Microphase 31 parser/redaction
+hardening design. Validate PTR removal, FQDN resolved-IP omission, raw args/raw
+XML omission, controlled malformed/truncated states, unsupported multi-host
+shapes, accepted-port enforcement, and minimal observed TCP exposure review
+indicator payloads without live execution or runtime wiring.
+
+Probable files:
+
+- `tools/tests/fixtures/active_nmap_basic/*.xml`
+- `tools/tests/test_active_runner_nmap_basic_parser_redaction.py`
+- `tools/tests/test_active_runner_nmap_basic_parser.py`
+- `tools/active_runner/nmap_basic/parser.py`
+- `tools/active_runner/nmap_basic/result.py`
+- `backend/tests/test_backend.py`
+- `docs/future/active-nmap-basic-parser-redaction-tests-no-runtime.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No DNS checks.
+- No probes.
+- No HTTP checks.
+- No `curl` or browser checks.
+- No Compose.
+- No backend live endpoint changes.
+- No frontend runtime changes.
+- No runner HTTP endpoint.
+- No backend-to-active-tools live call.
+- No real jobs.
+- No real exports.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No approval for `www.vildek.es`.
+- No approval for `app.vildek.es`.
+- No approval for port `80`.
+- No public scanner behavior.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest tools/tests/test_active_runner_nmap_basic_parser_redaction.py
+.venv/bin/python -m pytest tools/tests/test_active_runner.py -k "nmap"
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap or nmap_basic or redaction"
+rg -n "PTR|redacted-ptr|203.0.113.10|raw args|resolved IP|Raw JSON|observed_exposure_review_indicator|manual_validation_required|unsupported_shape|malformed|truncated" tools docs README.md
+rg -n "vps-40567620|51.38.225.243" tools/tests || true
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Accidentally copying real IP/PTR data into fixtures.
+- Letting raw args, raw XML, stdout, stderr, service data, or script output
+  become user-visible payload fields.
+- Treating multiple hosts or unexpected ports as normal observations.
+- Changing live runner/backend behavior while trying to harden pure helpers.
+
+Acceptance criteria:
+
+- Synthetic fixtures use documentary/synthetic data only.
+- PTR, non-user hostnames, FQDN resolved IPs, raw args, raw XML, stdout/stderr,
+  stylesheet references, service/version/banner data, and script output do not
+  appear in parser/result payloads.
+- Minimal TCP observations preserve port, protocol, state, allowlisted reason,
+  `manual_validation_required: true`, and
+  `result_interpretation: observed_exposure_review_indicator`.
+- Container-loopback output keeps `target_kind: container_loopback` and no extra
+  hostname/IP display.
+- Multiple hosts, unexpected ports, malformed/truncated XML, and NSE-like output
+  return controlled states.
+- Tests pass without Docker, Nmap, DNS checks, HTTP traffic, Compose, live jobs,
+  exports, backend live calls, runner endpoints, archive/run-all, or
+  `tools/runner/main.py` integration.
+
+Suggested commit:
+
+```text
+test(active): harden nmap output redaction parser
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_32_REAL_OUTPUT_PARSER_REDACTION_TESTS_NO_RUNTIME_ACCEPTED`
+adds synthetic XML fixtures, offline parser/redaction tests, and pure helper
+hardening for accepted ports, target kind, multi-host rejection, script/OS
+section rejection, and conservative observation metadata. It does not run Docker
+or Nmap, perform DNS/HTTP checks, change backend/frontend live endpoints, add
+runner HTTP endpoints, create real jobs or exports, integrate archive/run-all,
+integrate `tools/runner/main.py`, approve new targets, or create release/tag
+state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

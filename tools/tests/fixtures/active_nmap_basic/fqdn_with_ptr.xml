@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet href="file:///usr/share/nmap/nmap.xsl" type="text/xsl"?>
+<nmaprun scanner="nmap" args="nmap -sT -Pn --max-retries 1 --host-timeout 30s -oX - -p 443 -- www.urlbreve.es" start="1781294405" version="7.95">
+  <scaninfo type="connect" protocol="tcp" numservices="1" services="443"/>
+  <host>
+    <status state="up" reason="user-set"/>
+    <address addr="203.0.113.10" addrtype="ipv4"/>
+    <hostnames>
+      <hostname name="www.urlbreve.es" type="user"/>
+      <hostname name="redacted-ptr.example.internal" type="PTR"/>
+    </hostnames>
+    <ports>
+      <port protocol="tcp" portid="443">
+        <state state="open" reason="syn-ack"/>
+        <service name="https" method="table" conf="3"/>
+      </port>
+    </ports>
+  </host>
+  <runstats>
+    <finished elapsed="0.31" exit="success"/>
+    <hosts up="1" down="0" total="1"/>
+  </runstats>
+</nmaprun>

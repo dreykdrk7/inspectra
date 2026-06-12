@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sT -Pn -oX - -p 443 -- www.urlbreve.es">
+  <host>
+    <address addr="203.0.113.10" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="443">
+        <state state="open" reason="syn-ack"/>

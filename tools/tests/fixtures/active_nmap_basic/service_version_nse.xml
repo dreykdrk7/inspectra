@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sT -Pn --script synthetic --version-all -oX - -p 443 -- www.urlbreve.es" version="7.95">
+  <host>
+    <address addr="203.0.113.10" addrtype="ipv4"/>
+    <hostnames><hostname name="www.urlbreve.es" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="443">
+        <state state="open" reason="syn-ack"/>
+        <service name="https" product="SyntheticPrivateServer" version="9.9.9" extrainfo="synthetic-banner"/>
+        <script id="synthetic-script" output="synthetic NSE-like output that must never appear"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>

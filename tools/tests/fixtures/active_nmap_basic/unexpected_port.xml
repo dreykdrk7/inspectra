@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sT -Pn -oX - -p 8443 -- www.urlbreve.es" version="7.95">
+  <host>
+    <address addr="203.0.113.10" addrtype="ipv4"/>
+    <hostnames><hostname name="www.urlbreve.es" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="8443">
+        <state state="open" reason="syn-ack"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>

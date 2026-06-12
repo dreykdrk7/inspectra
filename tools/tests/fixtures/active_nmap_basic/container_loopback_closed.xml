@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sT -Pn -n --max-retries 1 --host-timeout 30s -oX - -p 65000 -- 127.0.0.1" version="7.95">
+  <scaninfo type="connect" protocol="tcp" numservices="1" services="65000"/>
+  <host>
+    <status state="up" reason="user-set"/>
+    <address addr="127.0.0.1" addrtype="ipv4"/>
+    <hostnames/>
+    <ports>
+      <port protocol="tcp" portid="65000">
+        <state state="closed" reason="conn-refused"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>

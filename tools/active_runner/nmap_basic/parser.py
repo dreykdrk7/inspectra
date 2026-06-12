@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, TypeAlias
+from typing import Any, Collection, TypeAlias
 from xml.etree import ElementTree
 
 from active_runner.contracts import (
@@ -47,22 +47,25 @@ def parse_active_nmap_basic_xml(
     *,
     max_input_bytes: int = ACTIVE_NMAP_BASIC_MAX_PARSE_BYTES,
     max_port_observations: int = ACTIVE_NMAP_BASIC_MAX_PORT_OBSERVATIONS,
+    accepted_ports: Collection[int] | None = None,
+    target_kind: str | None = None,
 ) -> ActiveNmapBasicParseResult:
     max_bytes = _bounded_limit(max_input_bytes, ACTIVE_NMAP_BASIC_MAX_PARSE_BYTES)
     max_observations = _bounded_limit(max_port_observations, ACTIVE_NMAP_BASIC_MAX_PORT_OBSERVATIONS)
+    accepted_port_set = _normalize_accepted_ports(accepted_ports)
     raw = _coerce_output(output)
     if raw is None:
-        return _base_result("malformed") | {"parse_error": "unsupported_input_type"}
+        return _base_result("malformed", target_kind=target_kind) | {"parse_error": "unsupported_input_type"}
     if not raw.strip():
-        return _base_result("empty")
+        return _base_result("empty", target_kind=target_kind)
     if len(raw) > max_bytes:
-        return _base_result("truncated") | {
+        return _base_result("truncated", target_kind=target_kind) | {
             "output_truncated": True,
             "parse_error": "output_exceeds_parser_limit",
             "parser_warnings": ["input_truncated_before_parse"],
         }
     if _contains_unsupported_xml_shape(raw):
-        return _base_result("unsupported_shape") | {
+        return _base_result("unsupported_shape", target_kind=target_kind) | {
             "parse_error": "unsupported_xml_shape",
             "parser_warnings": ["doctype_or_entity_rejected"],
         }
@@ -70,20 +73,38 @@ def parse_active_nmap_basic_xml(
     try:
         root = ElementTree.fromstring(raw)
     except ElementTree.ParseError:
-        return _base_result("malformed") | {"parse_error": "malformed_xml"}
+        return _base_result("malformed", target_kind=target_kind) | {"parse_error": "malformed_xml"}
 
     if _tag_name(root) != "nmaprun":
-        return _base_result("unsupported_shape") | {"parse_error": "unexpected_root"}
+        return _base_result("unsupported_shape", target_kind=target_kind) | {"parse_error": "unexpected_root"}
+
+    hosts = root.findall(".//host")
+    if len(hosts) > 1:
+        return _base_result("unsupported_shape", target_kind=target_kind) | {
+            "parse_error": "multiple_hosts_unsupported",
+            "parser_warnings": ["multiple_hosts_rejected"],
+        }
+    if _contains_unsupported_live_sections(root):
+        return _base_result("unsupported_shape", target_kind=target_kind) | {
+            "parse_error": "unsupported_live_output_section",
+            "parser_warnings": ["script_or_os_output_rejected"],
+        }
 
     observations: list[dict[str, Any]] = []
     warnings: list[str] = []
     for port_node in root.findall(".//port"):
+        port_id = _extract_port_id(port_node)
+        if accepted_port_set is not None and port_id not in accepted_port_set:
+            return _base_result("unsupported_shape", target_kind=target_kind) | {
+                "parse_error": "unexpected_port",
+                "parser_warnings": ["unexpected_port_rejected"],
+            }
         observation = _parse_port_observation(port_node, warnings)
         if observation is None:
             continue
         if len(observations) >= max_observations:
             warnings.append("port_observation_limit_reached")
-            return _base_result("completed") | {
+            return _base_result("completed", target_kind=target_kind) | {
                 "port_observations": observations,
                 "observation_count": len(observations),
                 "output_truncated": True,
@@ -92,17 +113,17 @@ def parse_active_nmap_basic_xml(
         observations.append(observation)
 
     if not observations:
-        return _base_result("no_ports") | {"parser_warnings": _dedupe(warnings)}
+        return _base_result("no_ports", target_kind=target_kind) | {"parser_warnings": _dedupe(warnings)}
 
-    return _base_result("completed") | {
+    return _base_result("completed", target_kind=target_kind) | {
         "port_observations": observations,
         "observation_count": len(observations),
         "parser_warnings": _dedupe(warnings),
     }
 
 
-def _base_result(status: str) -> ActiveNmapBasicParseResult:
-    return {
+def _base_result(status: str, *, target_kind: str | None = None) -> ActiveNmapBasicParseResult:
+    result: ActiveNmapBasicParseResult = {
         "status": status,
         "port_observations": [],
         "output_truncated": False,
@@ -114,6 +135,10 @@ def _base_result(status: str) -> ActiveNmapBasicParseResult:
         "target_returned": False,
         "findings_created": False,
     }
+    safe_target_kind = _safe_target_kind(target_kind)
+    if safe_target_kind:
+        result["target_kind"] = safe_target_kind
+    return result
 
 
 def _coerce_output(output: bytes | str | None) -> bytes | None:
@@ -131,18 +156,28 @@ def _contains_unsupported_xml_shape(raw: bytes) -> bool:
     return b"<!doctype" in lowered or b"<!entity" in lowered
 
 
+def _contains_unsupported_live_sections(root: ElementTree.Element) -> bool:
+    return root.find(".//script") is not None or root.find(".//os") is not None
+
+
+def _extract_port_id(port_node: ElementTree.Element) -> int | None:
+    try:
+        port = int(str(port_node.attrib.get("portid", "")))
+    except ValueError:
+        return None
+    if port < 1 or port > 65535:
+        return None
+    return port
+
+
 def _parse_port_observation(port_node: ElementTree.Element, warnings: list[str]) -> dict[str, Any] | None:
     protocol = str(port_node.attrib.get("protocol", "")).lower()
     if protocol != "tcp":
         warnings.append("unsupported_protocol_ignored")
         return None
 
-    try:
-        port = int(str(port_node.attrib.get("portid", "")))
-    except ValueError:
-        warnings.append("invalid_port_ignored")
-        return None
-    if port < 1 or port > 65535:
+    port = _extract_port_id(port_node)
+    if port is None:
         warnings.append("invalid_port_ignored")
         return None
 
@@ -189,6 +224,21 @@ def _bounded_limit(value: int, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         return maximum
     return min(value, maximum)
+
+
+def _normalize_accepted_ports(value: Collection[int] | None) -> set[int] | None:
+    if value is None:
+        return None
+    ports: set[int] = set()
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int) or item < 1 or item > 65535:
+            continue
+        ports.add(item)
+    return ports
+
+
+def _safe_target_kind(value: str | None) -> str:
+    return value if value in {"authorized_fqdn", "container_loopback"} else ""
 
 
 def _dedupe(values: list[str]) -> list[str]:

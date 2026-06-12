@@ -325,7 +325,16 @@ def test_result_payload_composes_fake_execution_and_parser_without_raw_evidence(
     assert payload["command_returned"] is False
     assert payload["target_returned"] is False
     assert payload["raw_xml_returned"] is False
-    assert payload["port_observations"] == [{"port": 443, "protocol": "tcp", "state": "open", "reason": "syn-ack"}]
+    assert payload["port_observations"] == [
+        {
+            "port": 443,
+            "protocol": "tcp",
+            "state": "open",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "reason": "syn-ack",
+        }
+    ]
     assert payload["limits"]["stderr_truncated"] is True
     for forbidden in (
         "192.168.56.10",

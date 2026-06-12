@@ -7,6 +7,9 @@ from active_runner.contracts import ACTIVE_NMAP_BASIC_CAPABILITY, ACTIVE_NMAP_BA
 
 ActiveNmapBasicResultPayload: TypeAlias = dict[str, Any]
 
+_RESULT_INTERPRETATION = "observed_exposure_review_indicator"
+_ALLOWED_TARGET_KINDS = {"authorized_fqdn", "container_loopback"}
+
 
 def build_active_nmap_basic_result_payload(
     execution_result: Mapping[str, Any],
@@ -30,6 +33,7 @@ def build_active_nmap_basic_result_payload(
         "mode": "live_nmap_basic",
         "profile": ACTIVE_NMAP_BASIC_PROFILE,
         "status": status,
+        "target_kind": _safe_target_kind(parse_result.get("target_kind") if parse_result else None),
         "execution_attempted": bool(execution_result.get("execution_attempted")),
         "parser_ran": parser_ran,
         "findings_created": False,
@@ -38,6 +42,8 @@ def build_active_nmap_basic_result_payload(
         "target_returned": False,
         "stdout_returned": False,
         "stderr_returned": False,
+        "manual_validation_required": True,
+        "result_interpretation": _RESULT_INTERPRETATION,
         "port_observations": port_observations,
         "observation_count": observation_count,
         "parser_warnings": warnings,
@@ -72,7 +78,13 @@ def _safe_port_observations(value: Any) -> list[dict[str, Any]]:
             continue
         if protocol != "tcp":
             continue
-        observation: dict[str, Any] = {"port": port, "protocol": "tcp", "state": state or "unknown"}
+        observation: dict[str, Any] = {
+            "port": port,
+            "protocol": "tcp",
+            "state": state or "unknown",
+            "manual_validation_required": True,
+            "result_interpretation": _RESULT_INTERPRETATION,
+        }
         reason = item.get("reason")
         if isinstance(reason, str) and reason:
             observation["reason"] = reason
@@ -99,3 +111,7 @@ def _string_list(value: Any) -> list[str]:
 
 def _string_value(value: Any, default: str) -> str:
     return value if isinstance(value, str) and value else default
+
+
+def _safe_target_kind(value: Any) -> str | None:
+    return value if isinstance(value, str) and value in _ALLOWED_TARGET_KINDS else None
