@@ -148,8 +148,12 @@ export type ActiveNmapBasicRequest = {
 export type ActiveNmapBasicContractResponse = {
   audit_type: 'active_nmap_basic';
   status: string;
-  execution_state: string;
-  job_created: boolean;
+  id?: string;
+  file_id?: string | null;
+  target_url?: string | null;
+  result?: Record<string, unknown> | null;
+  execution_state?: string;
+  job_created?: boolean;
   detail?: string;
   target_count?: number;
   port_count?: number;

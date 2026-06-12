@@ -178,6 +178,55 @@ describe("ActiveNmapBasicPanel", () => {
     expect(screen.queryByText(/completed scan/i)).not.toBeInTheDocument();
   });
 
+  it("renders a created no-live job as controlled and not as a completed live scan", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        if (String(input).endsWith("/active/network/nmap-basic")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-active-nmap-basic",
+                audit_type: "active_nmap_basic",
+                file_id: null,
+                target_url: "[REDACTED_TARGET]",
+                status: "completed",
+                created_at: "2026-06-12T00:00:00Z",
+                updated_at: "2026-06-12T00:00:00Z",
+                source_file_deleted_at: null,
+                result: {
+                  audit_type: "active_nmap_basic",
+                  capability: "active_nmap_basic",
+                  status: "not_executed",
+                  execution_state: "not_executed",
+                  adapter: "test_double_no_live",
+                  execution_attempted: false
+                },
+                error: null
+              },
+              202
+            )
+          );
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+    render(<ActiveNmapBasicPanel health={{ status: "ok", service: "inspectra-backend", active_nmap_basic: { enabled: true } }} />);
+
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "router.local" } });
+    fireEvent.change(screen.getByLabelText("TCP ports"), { target: { value: "22" } });
+    fireEvent.click(screen.getByLabelText("I confirm I own or am authorized to test this target."));
+    fireEvent.click(screen.getByLabelText("I confirm this is local, private, or self-hosted scope."));
+    fireEvent.click(screen.getByLabelText("I understand this prepares live traffic and may be logged by the target."));
+    fireEvent.click(screen.getByRole("button", { name: /Prepare bounded request/i }));
+
+    expect(await screen.findByText(/controlled no-live test-double job/i)).toBeInTheDocument();
+    expect(screen.getByText(/Nmap was not executed/i)).toBeInTheDocument();
+    expect(screen.queryByText(/completed live scan/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/completed scan/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Nmap executed/i)).not.toBeInTheDocument();
+  });
+
   it("renders disabled backend errors generically without reflecting target details", async () => {
     vi.stubGlobal(
       "fetch",

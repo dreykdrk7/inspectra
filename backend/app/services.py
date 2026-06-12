@@ -19,7 +19,14 @@ from app.reporting import (
     redact_terraform_config_value,
 )
 from app.storage import FileStore, JobStore
-from active_runner import ActiveDryRunRequest, ActiveHttpHeaderProbeRequest, run_active_network_dry_run, run_authorized_http_header_probe
+from active_runner import (
+    ActiveDryRunRequest,
+    ActiveHttpHeaderProbeRequest,
+    build_active_nmap_basic_result_payload,
+    run_active_network_dry_run,
+    run_authorized_http_header_probe,
+)
+from app.active_nmap_handoff import ActiveNmapBasicHandoffPlan
 
 
 class PdfAuditService:
@@ -538,6 +545,58 @@ class ActiveHttpHeaderProbeService:
 
         redacted_result = redact_active_config_value(result)
         self.jobs.update(job_id, status="completed", result=redacted_result if isinstance(redacted_result, dict) else {"result": redacted_result})
+
+
+class ActiveNmapBasicNoLiveService:
+    def __init__(self, settings: Settings, jobs: JobStore) -> None:
+        self.settings = settings
+        self.jobs = jobs
+
+    async def record_no_live_result(self, job_id: str, handoff_plan: ActiveNmapBasicHandoffPlan) -> None:
+        self.jobs.update(job_id, status="running")
+        execution_result = {
+            "status": "not_executed",
+            "execution_attempted": False,
+            "output_truncated": False,
+            "stderr_truncated": False,
+            "timed_out": False,
+            "reason": "test_double_no_live",
+        }
+        result = build_active_nmap_basic_result_payload(execution_result, None)
+        result.update(
+            {
+                "execution_state": "not_executed",
+                "job_created": True,
+                "adapter": "test_double_no_live",
+                "runner_connected": False,
+                "nmap_executed": False,
+                "network_requests_sent": 0,
+                "dns_queries_sent": 0,
+                "subprocess_invoked": False,
+                "target_count": handoff_plan.target_count,
+                "port_count": handoff_plan.port_count,
+                "target_port_checks": handoff_plan.target_port_checks,
+                "implicit_concurrency": handoff_plan.implicit_concurrency,
+            }
+        )
+        result["limits"].update(
+            {
+                "max_targets": handoff_plan.target_count,
+                "max_ports_per_target": handoff_plan.port_count,
+                "max_total_target_port_checks": handoff_plan.target_port_checks,
+            }
+        )
+        result["summary"].update(
+            {
+                "target_count": handoff_plan.target_count,
+                "port_count": handoff_plan.port_count,
+                "target_port_checks": handoff_plan.target_port_checks,
+                "network_requests_sent": 0,
+                "dns_queries_sent": 0,
+                "adapter": "test_double_no_live",
+            }
+        )
+        self.jobs.update(job_id, status="completed", result=result)
 
 
 class WebAuditService:

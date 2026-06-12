@@ -11,6 +11,7 @@ from app.active_nmap_policy import (
     ActiveNmapTargetPolicyResult,
     validate_active_nmap_basic_targets,
 )
+from app.active_nmap_handoff import build_active_nmap_basic_handoff_plan
 from app.auth import (
     ADMIN_CSRF_HEADER_NAME,
     ADMIN_SESSION_COOKIE_NAME,
@@ -59,6 +60,7 @@ from app.sbom import build_sbom_filename, generate_cyclonedx_json, generate_spdx
 from app.services import (
     ArchiveAuditService,
     ActiveHttpHeaderProbeService,
+    ActiveNmapBasicNoLiveService,
     ActiveNetworkDryRunService,
     CiCdConfigAuditService,
     ComposeConfigAuditService,
@@ -120,6 +122,7 @@ async def lifespan(app: FastAPI):
     app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
     app.state.active_network_dry_runs = ActiveNetworkDryRunService(settings, job_store)
     app.state.active_http_header_probes = ActiveHttpHeaderProbeService(settings, job_store)
+    app.state.active_nmap_basic_no_live = ActiveNmapBasicNoLiveService(settings, job_store)
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -747,29 +750,27 @@ async def launch_active_http_header_probe(
     return job
 
 
-@app.post("/active/network/nmap-basic")
-async def launch_active_nmap_basic(request: Request, payload: Any = Body(...)) -> JSONResponse:
+@app.post("/active/network/nmap-basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+async def launch_active_nmap_basic(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    payload: Any = Body(...),
+) -> JobRecord:
     if not request.app.state.settings.active_nmap_basic_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="active_nmap_basic is disabled in this environment.",
         )
 
-    contract = validate_active_nmap_basic_contract(payload)
-    return JSONResponse(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        content={
-            "audit_type": "active_nmap_basic",
-            "status": "not_implemented",
-            "execution_state": "not_executed",
-            "job_created": False,
-            "detail": "active_nmap_basic execution is not implemented in this phase.",
-            "target_count": contract["target_count"],
-            "port_count": contract["port_count"],
-            "target_port_checks": contract["target_port_checks"],
-            "limits": ACTIVE_NMAP_BASIC_CONTRACT_LIMITS,
-        },
+    validate_active_nmap_basic_contract(payload)
+    handoff_plan = build_active_nmap_basic_handoff_plan(payload)
+    target_display = "[REDACTED_TARGETS]" if handoff_plan.target_count > 1 else "[REDACTED_TARGET]"
+    job = request.app.state.jobs.create_active_nmap_basic_job(
+        target_display,
+        owner_id=current_owner_id_for_request(request),
     )
+    background_tasks.add_task(request.app.state.active_nmap_basic_no_live.record_no_live_result, job.id, handoff_plan)
+    return job
 
 
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)

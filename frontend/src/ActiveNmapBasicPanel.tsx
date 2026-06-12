@@ -59,11 +59,13 @@ export function ActiveNmapBasicPanel({ health }: ActiveNmapBasicPanelProps) {
     setRequestState({ loading: true, error: null, result: null });
     try {
       const response = await api.createActiveNmapBasic(request);
-      if (response.status === "not_implemented" || response.execution_state === "not_executed") {
+      if (isActiveNmapBasicNoLiveResponse(response)) {
         setRequestState({
           loading: false,
           error: null,
-          result: "Request accepted by the backend contract. Execution is not implemented and was not executed."
+          result: response.id
+            ? "Backend created a controlled no-live test-double job. Nmap was not executed."
+            : "Request accepted by the backend contract. Execution is not implemented and was not executed."
         });
         return;
       }
@@ -199,6 +201,17 @@ export function ActiveNmapBasicPanel({ health }: ActiveNmapBasicPanelProps) {
       {requestState.error ? <p className="error-text">{requestState.error}</p> : null}
       {requestState.result ? <div className="query-warning" role="status">{requestState.result}</div> : null}
     </section>
+  );
+}
+
+function isActiveNmapBasicNoLiveResponse(response: { status?: string; execution_state?: string; result?: Record<string, unknown> | null }): boolean {
+  const result = response.result && typeof response.result === "object" ? response.result : {};
+  return (
+    response.status === "not_implemented" ||
+    response.execution_state === "not_executed" ||
+    result.status === "not_executed" ||
+    result.execution_state === "not_executed" ||
+    result.adapter === "test_double_no_live"
   );
 }
 

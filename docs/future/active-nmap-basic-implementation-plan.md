@@ -108,8 +108,8 @@ The future work should be split into small reviewable commits:
 10. Report and Raw JSON rendering.
 10A. End-to-end contract review before live backend-to-runner wiring.
 11. Pre-wiring hardening, no-live.
-12. Runner tests.
-13. Frontend tests.
+12. Backend job lifecycle wiring to a test-double adapter, no-live.
+13. Runner and frontend regression tests before any real live wiring.
 14. Final local smoke with no unauthorized external traffic.
 
 Each microphase should be accepted only when its own validation passes and the
@@ -1068,56 +1068,101 @@ external HTTP requests, integrate archive/run-all, integrate with
 force, add credential validation, add crawling, add DNS expansion, or add broad
 ranges.
 
-## Microphase 12: Runner Tests
+## Microphase 12: Backend Runner Wiring, Test-Double No-Live
 
 Objective:
 
-Run focused runner tests for target policy mirroring, command builder,
-subprocess control, output bounds, parser behavior, and redaction.
+Create real Inspectra `active_nmap_basic` jobs when the feature flag is enabled,
+but wire them only to a backend-owned no-live test-double adapter. This phase
+proves owner-scoped job lifecycle, handoff fanout, redacted storage, report
+exports, Raw JSON, frontend controlled-state handling, and source boundaries
+before any backend-to-runner live executor connection.
 
 Probable files:
 
-- `tools/tests/test_active_runner.py`
-- `tools/active_runner/active_nmap_basic.py`
-- controlled fixtures under `tools/tests/fixtures/` if needed
-- optional runner review doc
+- `backend/app/main.py`
+- `backend/app/services.py`
+- `backend/app/storage.py`
+- `backend/tests/test_backend.py`
+- `frontend/src/ActiveNmapBasicPanel.tsx`
+- `frontend/src/ActiveNmapBasicPanel.test.tsx`
+- `frontend/src/types.ts`
+- `docs/future/active-nmap-basic-backend-runner-wiring-test-double-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- README, architecture, or security-scope docs if the visible state changes
 
 No-scope:
 
-- No unauthorized external traffic.
-- No broad scan fixtures.
-- No real credentials.
-- No real `.env` contents.
-- No Docker execution as a test dependency.
+- No real Nmap execution.
+- No backend call to the real active-runner executor.
+- No subprocess from backend.
+- No runner HTTP endpoint.
+- No Docker execution.
+- No probes.
+- No DNS checks.
+- No external HTTP traffic.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No raw flags, custom scripts, NSE, brute force, credential validation,
+  crawling, DNS expansion, broad ranges, target-policy relaxation, or owner
+  scope relaxation.
 
 Expected validations:
 
-- command builder no-shell behavior;
-- forbidden flags absent;
-- fake subprocess receives allowlisted argv only;
-- timeout path kills fake process and truncates output;
-- parser handles completed, timed-out, truncated, malformed, sparse, and blocked
-  payloads;
-- redaction covers stdout, stderr, command fragments, and target display;
-- source search confirms no passive runner integration.
+- disabled flag still rejects without creating a job;
+- enabled valid requests create `active_nmap_basic` jobs with `file_id: null`;
+- no-live adapter records `not_executed`, `execution_attempted: false`, no
+  subprocess, no DNS, no network, and no Nmap execution;
+- `targets[]` handoff is bounded, redacted, and records `implicit_concurrency:
+  1`;
+- invalid contracts and target-policy rejections create no job;
+- auth-required anonymous requests fail before validation detail or job
+  creation;
+- owner-scoped detail/list/export/Raw JSON behavior holds for target-based jobs;
+- Markdown, HTML, XML, PDF, and Raw JSON remain redacted;
+- frontend successful submit with mocked job response is controlled no-live
+  copy, not a completed live scan;
+- archive/run-all and `tools/runner/main.py` remain unintegrated;
+- runner focused tests continue to pass without Nmap installed.
 
 Risks:
 
-- Mocked subprocess tests missing real process-control issues.
-- Fixture XML accidentally becoming too large or too revealing.
-- Tests allowing `subprocess(..., shell=True)`.
+- A test-double result being mistaken for real Nmap execution.
+- Owner-scoped target jobs leaking raw target metadata.
+- Background-task semantics making `not_executed` look like a completed live
+  scan in UI copy.
+- Backend source accidentally importing the real executor while tests still
+  mock behavior.
 
 Acceptance criteria:
 
-- Runner focused tests pass.
-- No real Nmap is required for default test execution.
-- Real Nmap smoke, if ever needed, is deferred to the final local smoke plan.
+- The feature remains disabled by default.
+- Enabled valid requests create exactly bounded target-based jobs and only run
+  the no-live adapter.
+- Backend, runner, frontend, build, source-search, and no-scope validations
+  pass.
+- Documentation records the no-live state, blocked behavior, validation
+  evidence, final decision, and next recommended microphase.
 
 Suggested commit:
 
 ```text
-test(active): cover nmap basic runner controls
+feat(active): wire nmap basic jobs to test double
 ```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_12_BACKEND_RUNNER_WIRING_TEST_DOUBLE_NO_LIVE_ACCEPTED`
+implements this microphase with real owner-scoped backend job creation, a
+backend no-live test-double service, redacted target metadata, handoff-derived
+bounded counts, frontend controlled-state copy for created no-live jobs, and
+backend/frontend/runner regression coverage. It does not call the real
+active-runner executor, execute Nmap, invoke subprocesses from backend, add a
+runner HTTP endpoint, run Docker, perform probes, perform DNS checks, make
+external HTTP requests, integrate archive/run-all, integrate
+`tools/runner/main.py`, accept raw flags, add custom scripts, add NSE, add
+brute force, add credential validation, add crawling, add DNS expansion, or
+add broad ranges.
 
 ## Microphase 13: Frontend Tests
 

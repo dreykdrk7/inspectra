@@ -372,6 +372,9 @@ class JobStore:
     def create_active_http_header_probe_job(self, target_display: str, *, owner_id: str | None = None) -> JobRecord:
         return self._create_job(None, "active_http_header_probe", target_url=target_display, owner_id=owner_id)
 
+    def create_active_nmap_basic_job(self, target_display: str, *, owner_id: str | None = None) -> JobRecord:
+        return self._create_job(None, "active_nmap_basic", target_url=target_display, owner_id=owner_id)
+
     def _create_job(
         self,
         file_id: str | None,
