@@ -70,7 +70,8 @@ Reference docs:
 4. Active Nmap Basic implementation planning is frozen in `docs/future/active-nmap-basic-implementation-plan.md` as docs-only future sequencing.
 5. Active Nmap Basic Microphase 01 adds only the backend contract gate: `POST /active/network/nmap-basic` is disabled by default through `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=false`; when explicitly enabled it validates the exact request contract and returns `not_implemented`/`not_executed` without creating jobs, calling a runner, adding frontend behavior, running Docker, executing Nmap, resolving DNS, sending probes, using subprocesses, or making external HTTP requests.
 6. Active Nmap Basic Microphase 08 adds only a frontend informational panel shell. It can show disabled/prepared availability copy and guardrails, but it has no submit, creates no jobs, does not call the backend Nmap contract, does not render full Nmap reports, and is not connected to archive/run-all actions.
-7. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
+7. Active Nmap Basic Microphase 09 wires the frontend form to the existing backend contract gate only. The UI requires one explicit target, bounded numeric TCP ports, fixed `live_nmap_basic` / `tcp_connect_small`, and the three confirmations; backend `403` and current `501` / `not_executed` states are controlled and no real Nmap jobs are created.
+8. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
 
 ## What This MVP Does
 
@@ -207,6 +208,8 @@ Active Nmap Basic implementation planning is documented in `docs/future/active-n
 Active Nmap Basic Microphase 01 is implemented as a backend contract gate only. The endpoint `POST /active/network/nmap-basic` is disabled by default through `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=false`; if explicitly enabled it validates `mode: live_nmap_basic`, `profile: tcp_connect_small`, bounded `targets` and `ports`, and all required confirmations, then returns `not_implemented`/`not_executed` without creating a job, calling a runner, adding frontend behavior, running Docker, executing Nmap, resolving DNS, sending probes, using subprocesses, or making external HTTP requests.
 
 Active Nmap Basic Microphase 08 is implemented as a frontend panel shell only. The `Active / Nmap basic` panel displays disabled/prepared availability states, local/private/self-hosted and authorized-target guardrails, live-traffic warning copy, observed-exposure/review-indicator wording, and a disabled nonfunctional button. It does not submit requests, create jobs, call `POST /active/network/nmap-basic`, run Nmap, render full Nmap reports, or integrate with archive/run-all actions.
+
+Active Nmap Basic Microphase 09 is implemented as a frontend confirmations and submit contract only. The panel now accepts one explicit target, bounded numeric TCP ports, and explicit authorization, local/private/self-hosted scope, and live-traffic confirmations before calling only `POST /active/network/nmap-basic`. Current disabled or `not_implemented` / `not_executed` backend responses are shown as controlled states, not completed scans. The backend still does not create real Nmap jobs, call a runner, execute Nmap, or connect to archive/run-all actions.
 
 ## Requirements
 

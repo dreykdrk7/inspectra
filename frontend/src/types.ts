@@ -133,3 +133,25 @@ export type ActiveHttpHeaderProbeRequest = {
     concurrency: 1;
   };
 };
+
+export type ActiveNmapBasicRequest = {
+  mode: 'live_nmap_basic';
+  profile: 'tcp_connect_small';
+  targets: string[];
+  ports: number[];
+  authorization_confirmed: true;
+  local_private_scope_confirmed: true;
+  live_traffic_confirmed: true;
+};
+
+export type ActiveNmapBasicContractResponse = {
+  audit_type: 'active_nmap_basic';
+  status: string;
+  execution_state: string;
+  job_created: boolean;
+  detail?: string;
+  target_count?: number;
+  port_count?: number;
+  target_port_checks?: number;
+  limits?: Record<string, number>;
+};

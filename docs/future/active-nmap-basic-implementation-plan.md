@@ -809,6 +809,23 @@ Suggested commit:
 feat(active): wire nmap basic confirmations
 ```
 
+Status:
+
+`ACTIVE_NMAP_BASIC_09_FRONTEND_CONFIRMATIONS_ACCEPTED` implements this
+microphase as a frontend-only form contract. The `Active / Nmap basic` panel
+accepts one explicit target, a small bounded numeric TCP port list, fixed
+`mode: live_nmap_basic`, fixed `profile: tcp_connect_small`, and the three
+required confirmations before submit. The request body sent to
+`POST /active/network/nmap-basic` matches the existing backend contract exactly.
+The UI treats backend `403` as disabled/unavailable and backend
+`501` / `not_implemented` / `not_executed` as the expected current state. It
+does not render the result as a completed scan, expose raw flags, target-file,
+CIDR/range/wildcard, custom-profile, advanced-scan, credential/header/cookie/
+token, or crawling controls, create real Nmap jobs, connect backend to the
+runner executor, add runner HTTP endpoints, render full frontend Nmap reports,
+integrate with archive/run-all, execute Nmap, run Docker, perform probes,
+perform DNS checks, or send external HTTP traffic outside mocked/local tests.
+
 ## Microphase 10: Report And Raw JSON Rendering
 
 Objective:

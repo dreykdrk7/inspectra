@@ -1320,7 +1320,7 @@ describe("App", () => {
     ).toHaveLength(1);
   });
 
-  it("renders the Active Nmap basic shell without submit or job creation calls", async () => {
+  it("renders the Active Nmap basic form without calling the API before confirmations", async () => {
     render(<App />);
 
     await waitFor(() => {
@@ -1338,19 +1338,30 @@ describe("App", () => {
     expect(panelText).toContain("Authorized targets only");
     expect(panelText).toContain("Observed TCP exposure / Review indicator");
     expect(panelText).toContain("Manual validation required");
-    expect(panelText).toContain("no confirmed vulnerability asserted");
+    expect(panelText).toContain("No confirmed vulnerability is asserted");
     expect(panelText).toContain("No raw flags");
     expect(panelText).toContain("no credential validation");
     expect(panelText).not.toContain("full network scan");
     expect(panelText).not.toContain("scan the internet");
+    expect(panelText).not.toContain("find assets");
     expect(panelText).not.toContain("target is safe");
     expect(panelText).not.toContain("exploitable");
-    expect(scoped.getByRole("button", { name: "Prepared only" })).toBeDisabled();
-    expect(panel?.querySelector("form")).toBeNull();
-    expect(panel?.querySelector("input")).toBeNull();
+    expect(panelText).not.toContain("all ports found");
+    expect(scoped.getByLabelText("Target")).toBeInTheDocument();
+    expect(scoped.getByLabelText("TCP ports")).toBeInTheDocument();
+    expect(scoped.getByRole("button", { name: /Prepare bounded request/i })).toBeDisabled();
+    expect(panel?.querySelector("form")).not.toBeNull();
+    expect(panel?.querySelector('input[type="file"]')).toBeNull();
     expect(panel?.querySelector("textarea")).toBeNull();
+    expect(scoped.queryByLabelText(/raw flags/i)).not.toBeInTheDocument();
+    expect(scoped.queryByLabelText(/credentials/i)).not.toBeInTheDocument();
+    expect(scoped.queryByLabelText(/cookies/i)).not.toBeInTheDocument();
+    expect(scoped.queryByLabelText(/headers/i)).not.toBeInTheDocument();
+    expect(scoped.queryByLabelText(/tokens/i)).not.toBeInTheDocument();
 
-    fireEvent.click(scoped.getByRole("button", { name: "Prepared only" }));
+    fireEvent.change(scoped.getByLabelText("Target"), { target: { value: "router.local" } });
+    fireEvent.change(scoped.getByLabelText("TCP ports"), { target: { value: "22, 443" } });
+    fireEvent.click(scoped.getByRole("button", { name: /Prepare bounded request/i }));
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(
       vi
@@ -1637,7 +1648,7 @@ describe("App", () => {
     expect(archiveRow?.textContent).not.toContain("Authorized HTTP Header Probe");
     expect(archiveRow?.textContent).not.toContain("Create authorized header probe job");
     expect(archiveRow?.textContent).not.toContain("Active / Nmap basic");
-    expect(archiveRow?.textContent).not.toContain("Prepared only");
+    expect(archiveRow?.textContent).not.toContain("Prepare bounded request");
     expect(pdfRow?.textContent).not.toContain("Start here");
     expect(pdfRow?.textContent).not.toContain("Data layer");
 

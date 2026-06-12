@@ -301,6 +301,8 @@ Active Nmap Basic redaction/reporting decision: `ACTIVE_NMAP_BASIC_07_REDACTION_
 
 Active Nmap Basic frontend panel shell decision: `ACTIVE_NMAP_BASIC_08_FRONTEND_PANEL_SHELL_ACCEPTED`.
 
+Active Nmap Basic frontend confirmations decision: `ACTIVE_NMAP_BASIC_09_FRONTEND_CONFIRMATIONS_ACCEPTED`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
@@ -343,7 +345,8 @@ This means:
 - The Active Nmap Basic bounded parser is isolated in `tools/active_runner/nmap_basic/parser.py` and remains offline. It accepts only bounded XML/stdout bytes or strings, returns minimal TCP port observations and controlled parse states, ignores host address/hostname and service/version/banner data, does not return raw XML, raw targets, commands, stdout/stderr, findings, reports, or vulnerability claims, and is not wired into backend jobs, frontend UI, report rendering, archive/run-all, Nmap execution, DNS/probe/HTTP behavior, Docker, migrations, tags, releases, broad scans, NSE/scripts, brute force, exploits, credential validation, crawling, public scanner behavior, or passive runner integration. Tests use synthetic XML only and do not require Nmap installed.
 - Active Nmap Basic backend reporting now supports already-structured `active_nmap_basic` payloads in job detail, summaries, Markdown, HTML, XML, PDF, and redacted Raw JSON. It redacts raw targets, command fragments, stdout/stderr, raw XML, service/banner fields, embedded hostnames/IPs, headers, cookies, tokens, credentials, and malformed nested sensitive strings, and renders TCP observations only as observed exposure and review indicators requiring manual validation. It does not connect backend to the runner executor, create real Nmap jobs, add runner HTTP endpoints, touch frontend runtime, integrate with archive/run-all, export raw XML, add CVE matching, or infer vulnerabilities, exploitability, target safety, or complete coverage.
 - The Active Nmap Basic frontend panel shell is informational only. It can display disabled/prepared availability states and guardrails, but it has no form, no functional submit, no Nmap creation API call, no archive/run-all integration, no raw flags input, and no credential/header/cookie/token fields. It states local/private/self-hosted use only, authorized targets only, bounded live TCP exposure review, manual validation required, and observed exposure/review indicator wording.
-- No released or functional UI-exposed Nmap workflow exists.
+- The Active Nmap Basic frontend confirmations form can call only the existing backend contract gate with one explicit target, bounded numeric TCP ports, fixed `live_nmap_basic` / `tcp_connect_small`, and the three required confirmations. Backend validation remains authoritative. Disabled or unavailable backend responses and current `not_implemented` / `not_executed` responses render as controlled states, not completed scans. The UI still exposes no raw flags, target-file, CIDR/range/wildcard, custom-profile, advanced-scan, credential/header/cookie/token, or crawling controls, and it does not integrate with archive/run-all actions.
+- No released or fully functional UI-exposed Nmap execution workflow exists.
 
 The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.
 
