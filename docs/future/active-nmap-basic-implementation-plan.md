@@ -2000,6 +2000,90 @@ endpoints, disconnected from archive/run-all, separated from `tools/runner/main.
 and not approved for Nmap execution, probes, DNS checks, external HTTP traffic,
 or target scanning.
 
+## Microphase 23: Active Tools Docker Build-Only
+
+Objective:
+
+Execute a build-only validation of the `active-tools` Docker scaffold. Confirm
+that the image can be built and inspected as local metadata without starting a
+container, executing Nmap, changing runtime, or approving any target traffic.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-active-tools-docker-build-only.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No `docker run`.
+- No `docker compose up`.
+- No `docker exec`.
+- No container startup.
+- No Nmap execution.
+- No `nmap --version` inside a container.
+- No probes.
+- No DNS checks.
+- No external HTTP target traffic.
+- No backend runtime changes.
+- No frontend runtime changes.
+- No runner runtime changes.
+- No runner HTTP endpoint.
+- No backend-to-active-tools live call.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No LAN/VPS/domain/public target approval.
+- No public scanner behavior.
+
+Expected validations:
+
+- existing static scaffold tests pass;
+- Compose example parses locally when PyYAML is available;
+- `docker build -f docker/active-tools/Dockerfile -t inspectra-active-tools:build-smoke .`
+  completes;
+- Docker build context remains small enough to support the ignore strategy;
+- `docker image inspect inspectra-active-tools:build-smoke` returns image
+  metadata without starting the image;
+- inspect metadata confirms non-root configured user and no-run scaffold command;
+- source searches confirm no passive-runner absorption or no-scope wording
+  regression.
+
+Risks:
+
+- Treating build success as approval to run containers or scans.
+- Treating package installation as Nmap execution evidence.
+- Forgetting that Docker build package traffic is not target traffic.
+- Leaving digest pinning and Nmap package pinning unresolved.
+- Treating local image metadata as runtime hardening proof.
+
+Acceptance criteria:
+
+- The image builds with the temporary local tag.
+- Only image metadata inspection is performed after build.
+- No container is started.
+- No Nmap command is executed.
+- No probes, DNS checks, or external HTTP target traffic occur.
+- Documentation records build evidence, local tag, inspect evidence, no-run
+  confirmation, gaps, and final decision.
+
+Suggested commit:
+
+```text
+test(active): build active tools docker image
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_23_ACTIVE_TOOLS_DOCKER_BUILD_ONLY_PASSED` records that
+`docker build -f docker/active-tools/Dockerfile -t inspectra-active-tools:build-smoke .`
+completed successfully and that `docker image inspect` returned image metadata
+without starting a container. The phase does not approve container runtime,
+Nmap execution, target traffic, backend live calls, runner HTTP endpoints,
+archive/run-all integration, `tools/runner/main.py` integration, LAN/VPS/domain
+targets, public scanner behavior, or release/tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

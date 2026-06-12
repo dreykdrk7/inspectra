@@ -81,7 +81,8 @@ Reference docs:
 15. Active Nmap Basic Microphase 20 designs the future `active-tools` Docker/Compose architecture: separate Active service/image, disabled by default, no public port by default, no host network by default, no privileged container, no Docker socket, and no passive runner absorption. It is docs-only and makes no Dockerfile, Compose, runtime, build, container, or Nmap execution changes.
 16. Active Nmap Basic Microphase 21 adds a no-run `active-tools` Docker scaffold: Dockerfile, Dockerfile-specific ignore, separate Compose example, and static guardrail tests. It does not modify the main Compose file, build images, run Docker, execute Nmap, change runtime, add endpoints, or approve targets.
 17. Active Nmap Basic Microphase 22 statically reviews the `active-tools` Docker scaffold and passes it only for a future separately approved build-only phase. It does not build images, run Docker, start containers, execute Nmap, change runtime, add endpoints, or approve targets.
-18. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
+18. Active Nmap Basic Microphase 23 builds the `active-tools` scaffold image with a temporary local tag and inspects image metadata only. It does not start containers, run Nmap, execute commands inside the image, change runtime, add endpoints, or approve targets.
+19. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
 
 ## What This MVP Does
 
@@ -244,6 +245,8 @@ Active Nmap Basic Microphase 20 is documented in `docs/future/active-nmap-basic-
 Active Nmap Basic Microphase 21 is documented in `docs/future/active-nmap-basic-active-tools-docker-scaffold-no-run.md` with decision `ACTIVE_NMAP_BASIC_21_ACTIVE_TOOLS_DOCKER_SCAFFOLD_NO_RUN_ACCEPTED`. It adds the initial `active-tools` Dockerfile, Dockerfile-specific ignore file, separate `docker-compose.active-tools.example.yml`, and static scaffold tests. The main `docker-compose.yml` is unchanged, the scaffold is not built or run, and no Nmap execution, backend live call, runner HTTP endpoint, archive/run-all integration, `tools/runner/main.py` integration, LAN/VPS/domain/public target approval, or public scanner behavior is added.
 
 Active Nmap Basic Microphase 22 is documented in `docs/future/active-nmap-basic-active-tools-docker-static-review.md` with decision `ACTIVE_NMAP_BASIC_22_ACTIVE_TOOLS_DOCKER_STATIC_REVIEW_PASSED`. It reviews the `active-tools` Dockerfile, Dockerfile-specific ignore, Compose example, and static scaffold tests and accepts the scaffold only for a future separately approved build-only phase. It does not build images, run Docker, start containers, execute Nmap, add backend live calls, add runner HTTP endpoints, integrate archive/run-all, integrate `tools/runner/main.py`, approve LAN/VPS/domain/public targets, or add public scanner behavior.
+
+Active Nmap Basic Microphase 23 is documented in `docs/future/active-nmap-basic-active-tools-docker-build-only.md` with decision `ACTIVE_NMAP_BASIC_23_ACTIVE_TOOLS_DOCKER_BUILD_ONLY_PASSED`. It builds the scaffold image as `inspectra-active-tools:build-smoke` and inspects image metadata only. It does not run `docker run`, run `docker compose up`, start containers, execute Nmap, run commands inside the image, add backend live calls, add runner HTTP endpoints, integrate archive/run-all, integrate `tools/runner/main.py`, approve LAN/VPS/domain/public targets, or add public scanner behavior.
 
 ## Requirements
 
