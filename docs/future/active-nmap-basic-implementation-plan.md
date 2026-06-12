@@ -2084,6 +2084,100 @@ Nmap execution, target traffic, backend live calls, runner HTTP endpoints,
 archive/run-all integration, `tools/runner/main.py` integration, LAN/VPS/domain
 targets, public scanner behavior, or release/tag state.
 
+## Microphase 24: Active Tools Run No-Target Readiness
+
+Objective:
+
+Start the built `active-tools` image exactly once in no-target readiness mode.
+Validate that the scaffold default command emits controlled readiness output
+under `--network none` without executing Nmap, probing targets, performing DNS
+checks, sending external HTTP traffic, changing runtime, or wiring backend
+integration.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-active-tools-run-no-target-readiness.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No `docker compose up`.
+- No Compose service start.
+- No published ports.
+- No host network.
+- No privileged container.
+- No Docker socket mount.
+- No bind mounts.
+- No sensitive environment variables.
+- No Nmap execution.
+- No `nmap 127.0.0.1`.
+- No `nmap localhost`.
+- No `nmap --script`.
+- No probes.
+- No DNS checks.
+- No external HTTP target traffic.
+- No backend runtime changes.
+- No frontend runtime changes.
+- No runner runtime changes.
+- No runner HTTP endpoint.
+- No backend-to-active-tools live call.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No LAN/VPS/domain/public target approval.
+- No public scanner behavior.
+
+Expected validations:
+
+- existing static scaffold tests pass;
+- Compose example parses locally when PyYAML is available;
+- `docker image inspect inspectra-active-tools:build-smoke` confirms image
+  metadata;
+- `docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL --security-opt no-new-privileges:true inspectra-active-tools:build-smoke`
+  exits successfully;
+- readiness output is controlled JSON with `mode: scaffold_no_run`;
+- readiness output may report `nmap_present: true` by path lookup only;
+- source searches confirm no passive-runner absorption or no-scope wording
+  regression.
+
+Risks:
+
+- Treating no-target container start as scan approval.
+- Treating path-based `nmap_present` as Nmap execution.
+- Accidentally adding network, published ports, host network, privileged mode,
+  Docker socket mounts, or target-bearing commands to make the run easier.
+- Letting no-target readiness imply backend integration readiness.
+
+Acceptance criteria:
+
+- The image starts and exits with the strict no-target Docker flags.
+- Output is controlled and contains `mode: scaffold_no_run`.
+- No Nmap command is executed.
+- No target is supplied.
+- No probes, DNS checks, or external HTTP target traffic occur.
+- No Compose service is started.
+- Documentation records run command, observed output, no-run/no-target
+  confirmation, remaining gaps, and final decision.
+
+Suggested commit:
+
+```text
+test(active): run active tools no-target readiness
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_24_ACTIVE_TOOLS_RUN_NO_TARGET_READINESS_PASSED` records that
+`docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL --security-opt no-new-privileges:true inspectra-active-tools:build-smoke`
+started and exited successfully with controlled scaffold JSON:
+`{"service": "active-tools", "mode": "scaffold_no_run", "nmap_present": true}`.
+The phase does not approve Nmap execution, target traffic, Compose service
+startup, published ports, backend live calls, runner HTTP endpoints,
+archive/run-all integration, `tools/runner/main.py` integration, LAN/VPS/domain
+targets, public scanner behavior, or release/tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

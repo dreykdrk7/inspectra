@@ -250,6 +250,8 @@ The Active Nmap Basic Active Tools Docker static review decision is `ACTIVE_NMAP
 
 The Active Nmap Basic Active Tools Docker build-only decision is `ACTIVE_NMAP_BASIC_23_ACTIVE_TOOLS_DOCKER_BUILD_ONLY_PASSED`. The scaffold image builds as `inspectra-active-tools:build-smoke` and image metadata inspection confirms the configured non-root user and scaffold no-run command without starting a container. This does not approve runtime service availability, Nmap execution, backend live calls, runner HTTP endpoints, archive/run-all integration, `tools/runner/main.py` integration, LAN/VPS/domain/public targets, public scanner behavior, or release/tag state. Base-image digest pinning, Nmap package pinning, runtime hardening exercise, and Dockerized no-target readiness remain future work.
 
+The Active Nmap Basic Active Tools run no-target readiness decision is `ACTIVE_NMAP_BASIC_24_ACTIVE_TOOLS_RUN_NO_TARGET_READINESS_PASSED`. The built `inspectra-active-tools:build-smoke` image starts once with `--network none`, read-only filesystem, tmpfs `/tmp`, dropped capabilities, and `no-new-privileges`, emits controlled scaffold JSON, and exits. This confirms only no-target scaffold readiness and path-based Nmap presence; it does not execute Nmap, approve targets, expose a service, use Compose, publish ports, add backend live calls, add runner HTTP endpoints, integrate archive/run-all, integrate `tools/runner/main.py`, approve public scanner behavior, or create release/tag state.
+
 ## Components
 
 ### Backend
