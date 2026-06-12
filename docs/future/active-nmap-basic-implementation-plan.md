@@ -106,6 +106,7 @@ The future work should be split into small reviewable commits:
 8. Frontend panel disabled/enabled states.
 9. Frontend confirmations and submit contract.
 10. Report and Raw JSON rendering.
+10A. End-to-end contract review before live backend-to-runner wiring.
 11. Backend tests.
 12. Runner tests.
 13. Frontend tests.
@@ -896,6 +897,88 @@ stderr, service/banner fields, headers, cookies, tokens, credentials, and
 legacy/malformed nested sensitive fields. The report does not infer
 vulnerabilities, exploitability, target safety, complete coverage, CVE matches,
 or high severity from open ports.
+
+## Microphase 10A: E2E Contract Review, No Live Wiring
+
+Objective:
+
+Review the current end-to-end `active_nmap_basic` contract before backend-to-
+runner live wiring. This checkpoint verifies that the backend, target policy,
+isolated runner modules, parser, reporting, frontend panel, and frontend report
+renderer still align with the frozen design and do not accidentally expose live
+Nmap execution.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-e2e-contract-review-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- existing backend, runner, reporting, and frontend tests as read-only review
+  evidence
+
+No-scope:
+
+- No backend-to-runner connection.
+- No real Nmap job creation.
+- No runner HTTP endpoint.
+- No Nmap execution.
+- No Docker execution.
+- No probes.
+- No DNS checks.
+- No external HTTP traffic.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No functional changes unless a separately scoped blocker is found.
+
+Expected validations:
+
+- backend contract remains disabled by default and returns `not_executed`
+  without job creation when explicitly enabled;
+- backend target policy and runner target policy remain fail-closed and
+  local/private/self-hosted only;
+- command builder remains allowlisted and argv-only;
+- executor remains isolated from backend and runner HTTP surfaces;
+- parser remains bounded and does not return raw XML, targets, commands,
+  stdout/stderr, service banners, or findings;
+- reporting and frontend Raw JSON redaction cover legacy and malformed payloads;
+- frontend submits only the exact contract after all confirmations;
+- source search confirms no active_nmap_basic integration in `tools/runner/main.py`
+  and no archive/run-all trigger path.
+
+Risks:
+
+- Policy drift between backend and runner validators before live wiring.
+- Backend `targets[]` shape and runner single-`target` shape need a carefully
+  bounded fanout contract.
+- Executor output and parser output are not yet composed into a stored job
+  result.
+- Tests may validate modules in isolation while missing cross-boundary
+  serialization and redaction behavior.
+
+Acceptance criteria:
+
+- Review document records files reviewed, findings, residual risks, gaps before
+  backend-to-runner wiring, and the next recommended microphase.
+- No live behavior is introduced.
+- The next phase remains separately gated and preferably no-live/test-double
+  before any real Nmap execution is wired.
+
+Suggested commit:
+
+```text
+docs(active): review nmap basic e2e contract before live wiring
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_10A_E2E_CONTRACT_REVIEW_NO_LIVE_PASSED` records the
+review-only checkpoint in
+`docs/future/active-nmap-basic-e2e-contract-review-no-live.md`. The review
+confirms that the current backend endpoint is still a disabled-by-default
+contract gate, the active runner modules remain isolated from backend job
+creation and from `tools/runner/main.py`, reporting and frontend Raw JSON use
+defensive redaction and review-indicator wording, and no real Nmap jobs,
+runner HTTP endpoints, archive/run-all integration, Docker, probes, DNS checks,
+external HTTP traffic, or backend-to-runner live wiring are introduced.
 
 ## Microphase 11: Backend Tests
 
