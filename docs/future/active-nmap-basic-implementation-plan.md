@@ -2361,10 +2361,116 @@ that the first future Dockerized target-bearing smoke should use only
 container-loopback target `127.0.0.1`, port `65000`, and Docker network
 disabled with `--network none`, interpreted as a closed-port local container
 loopback smoke. The phase does not run Docker or Nmap, does not approve
-owned-domain, LAN, VPS, Compose,
-or public targets, and does not approve backend live calls, runner endpoints,
+owned-domain, LAN, VPS, Compose, or public targets, and does not approve backend
+live calls, runner endpoints,
 archive/run-all integration, `tools/runner/main.py` integration, public scanner
 behavior, or release/tag state.
+
+## Microphase 27: Active Tools Container Loopback Smoke
+
+Objective:
+
+Execute the first target-bearing `active-tools` container smoke using only the
+frozen target `127.0.0.1`, port `65000`, and Docker `--network none`. Validate
+only that an allowlisted minimal Nmap invocation can run inside the container
+against its own loopback, without external network, DNS, Compose, backend
+integration, or approval for real targets.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-active-tools-container-loopback-smoke.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No target other than `127.0.0.1`.
+- No port other than `65000`.
+- No `localhost`, `::1`, hostname, domain, LAN, VPS, public, or third-party
+  target.
+- No `www.vildek.es`, `app.vildek.es`, or `www.urlbreve.es`.
+- No Compose.
+- No published ports.
+- No host network.
+- No privileged container.
+- No Docker socket mount.
+- No unnecessary bind mounts.
+- No sensitive environment variables.
+- No DNS checks.
+- No external HTTP traffic.
+- No crawling.
+- No NSE or `--script`.
+- No service/version detection.
+- No OS detection.
+- No UDP or SYN scan.
+- No brute force.
+- No credential validation.
+- No raw user flags.
+- No backend/frontend/runner runtime changes.
+- No runner HTTP endpoint.
+- No backend-to-active-tools live call.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest tools/tests/test_active_tools_docker_scaffold_static.py
+.venv/bin/python -c "import pathlib, yaml; yaml.safe_load(pathlib.Path('docker-compose.active-tools.example.yml').read_text()); print('PyYAML available'); print('YAML parsed')"
+docker image inspect inspectra-active-tools:build-smoke
+docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL --security-opt no-new-privileges:true inspectra-active-tools:build-smoke nmap -sT -Pn -n --max-retries 1 --host-timeout 30s -oX - -p 65000 -- 127.0.0.1
+rg -n "active-tools|active_nmap_basic|Nmap|nmap|127.0.0.1|65000|loopback|container|network none|container loopback smoke" docker docs README.md tools
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" docker docs README.md tools
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Treating a closed container-loopback result as host or domain exposure
+  evidence.
+- Re-running the target-bearing smoke outside the frozen command.
+- Accidentally using `localhost`, a hostname, an owned domain, LAN, VPS, or a
+  public target.
+- Letting a container-local smoke imply backend integration readiness.
+
+Acceptance criteria:
+
+- Image metadata is recorded.
+- The target-bearing command is executed exactly once.
+- Command uses only target `127.0.0.1` and port `65000`.
+- Command uses Docker `--network none`.
+- Command includes `-n` and does not perform DNS resolution.
+- Command uses no NSE, `--script`, raw flags, service/version detection, OS
+  detection, UDP, SYN scan, brute force, credential validation, crawling, or
+  target expansion.
+- Observed output is bounded and records only the container-loopback result.
+- Documentation states no Compose, backend integration, job, export, runner
+  endpoint, archive/run-all, owned-domain, LAN/VPS/public target, runtime
+  change, tag, or release is approved.
+
+Suggested commit:
+
+```text
+test(active): run active tools container loopback smoke
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_27_ACTIVE_TOOLS_CONTAINER_LOOPBACK_SMOKE_PASSED` records
+that the first target-bearing Dockerized `active-tools` smoke ran exactly once
+against container loopback `127.0.0.1:65000` with Docker `--network none` and
+the allowlisted `tcp_connect_small` argv shape. Nmap reported `65000/tcp` as
+`closed` with `conn-refused`. The phase does not approve host exposure claims,
+Compose connectivity, backend integration, jobs, exports, runner endpoints,
+archive/run-all integration, owned-domain targets, LAN/VPS/public targets,
+runtime changes, public scanner behavior, or release/tag state.
 
 ## Cross-Phase Validation Checklist
 
