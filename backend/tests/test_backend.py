@@ -81,6 +81,7 @@ from app.storage import FileStore, JobStore
 from app import main as backend_main
 from app import services as audit_services
 from app import web_security
+from active_runner import build_active_nmap_basic_result_payload, parse_active_nmap_basic_xml
 
 
 SAMPLE_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
@@ -5264,6 +5265,97 @@ async def test_active_nmap_basic_synthetic_payload_exports_render_and_redact(mon
         "target is safe",
         "all ports found",
         "full network scan",
+    ):
+        assert forbidden not in combined
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_fake_execution_parser_payload_exports_no_live(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    fake_execution = {
+        "status": "completed",
+        "capability": "active_nmap_basic",
+        "profile": "tcp_connect_small",
+        "execution_attempted": True,
+        "stdout": """
+        <nmaprun args="nmap -sT -p 443 192.168.56.10">
+          <host>
+            <address addr="192.168.56.10"/>
+            <hostnames><hostname name="secret-lab.internal"/></hostnames>
+            <ports>
+              <port protocol="tcp" portid="443">
+                <state state="open" reason="syn-ack"/>
+                <service name="https" product="PrivateServer" version="9.9.9"/>
+              </port>
+            </ports>
+          </host>
+        </nmaprun>
+        """,
+        "stderr": "stderr for 192.168.56.10 token_should_never_render",
+        "output_truncated": False,
+        "stderr_truncated": True,
+        "timed_out": False,
+        "reason": "raw_bounded",
+    }
+    parse_result = parse_active_nmap_basic_xml(fake_execution["stdout"])
+    payload = build_active_nmap_basic_result_payload(fake_execution, parse_result)
+    payload_body = json.dumps(payload, sort_keys=True)
+
+    assert payload["audit_type"] == "active_nmap_basic"
+    assert payload["status"] == "completed"
+    assert payload["parser_ran"] is True
+    assert payload["stdout_returned"] is False
+    assert payload["stderr_returned"] is False
+    assert payload["command_returned"] is False
+    assert payload["target_returned"] is False
+    assert payload["raw_xml_returned"] is False
+    assert payload["port_observations"] == [{"port": 443, "protocol": "tcp", "state": "open", "reason": "syn-ack"}]
+    for forbidden in ("192.168.56.10", "secret-lab.internal", "PrivateServer", "9.9.9", "nmap -sT", "<nmaprun", "stderr for"):
+        assert forbidden not in payload_body
+
+    now = datetime.now(timezone.utc)
+    job = JobRecord(
+        id="f" * 31 + "1",
+        audit_type="active_nmap_basic",
+        file_id=None,
+        target_url="192.168.56.10",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result=payload,
+        error="token_should_never_render",
+    )
+    app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        api_response = await client.get(f"/jobs/{job.id}")
+        jobs_response = await client.get("/jobs")
+        exports = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    combined = json.dumps({"api": api_response.json(), "jobs": jobs_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in exports.items()
+    )
+    assert "Observed TCP exposure" in combined
+    assert "Review indicator" in combined
+    assert "No vulnerability confirmation is asserted" in combined
+    for forbidden in (
+        "192.168.56.10",
+        "secret-lab.internal",
+        "PrivateServer",
+        "9.9.9",
+        "nmap -sT",
+        "<nmaprun",
+        "stderr for",
+        "token_should_never_render",
+        "confirmed vulnerability",
+        "exploitable",
+        "target is safe",
     ):
         assert forbidden not in combined
 

@@ -130,6 +130,31 @@ describe("ActiveNmapBasicJobReport", () => {
     expect(screen.getByText(/Sparse active_nmap_basic payload|Controlled active_nmap_basic state/)).toBeInTheDocument();
   });
 
+  it("renders not-executed as not connected rather than a completed scan", () => {
+    const { container } = render(
+      <ActiveNmapBasicJobReport
+        job={{
+          ...baseJob,
+          result: {
+            audit_type: "active_nmap_basic",
+            capability: "active_nmap_basic",
+            status: "not_executed",
+            execution_state: "not_executed",
+            job_created: false,
+            limits: { output_truncated: false, stderr_truncated: false, timed_out: false }
+          }
+        }}
+      />
+    );
+
+    const rendered = container.textContent ?? "";
+    expect(screen.getByText(/was not executed/i)).toBeInTheDocument();
+    expect(rendered).toContain("not_executed");
+    expect(rendered).not.toContain("completed scan");
+    expect(rendered).not.toContain("completed with bounded observations");
+    expect(rendered).not.toContain("Run Nmap");
+  });
+
   it("redacts raw target, command, XML, stdout, stderr, headers, cookies, tokens, credentials, and legacy claims", () => {
     const { container } = render(
       <ActiveNmapBasicJobReport

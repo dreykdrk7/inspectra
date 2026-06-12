@@ -107,7 +107,7 @@ The future work should be split into small reviewable commits:
 9. Frontend confirmations and submit contract.
 10. Report and Raw JSON rendering.
 10A. End-to-end contract review before live backend-to-runner wiring.
-11. Backend tests.
+11. Pre-wiring hardening, no-live.
 12. Runner tests.
 13. Frontend tests.
 14. Final local smoke with no unauthorized external traffic.
@@ -980,57 +980,93 @@ defensive redaction and review-indicator wording, and no real Nmap jobs,
 runner HTTP endpoints, archive/run-all integration, Docker, probes, DNS checks,
 external HTTP traffic, or backend-to-runner live wiring are introduced.
 
-## Microphase 11: Backend Tests
+## Microphase 11: Pre-Wiring Hardening, No-Live
 
 Objective:
 
-Run focused and full backend tests for the accepted backend/reporting contract.
-This phase may be a review/test-only commit if implementation commits were kept
-small.
+Close the no-live hardening gap before backend-to-runner wiring. This phase
+adds parity, serialization, handoff, composition, redaction, and frontend
+controlled-state tests using pure helpers, fakes, and synthetic fixtures only.
 
 Probable files:
 
+- `backend/app/active_nmap_handoff.py`
+- `backend/tests/test_active_nmap_policy.py`
 - `backend/tests/test_backend.py`
-- maybe backend report/export fixtures
-- `docs/future/active-nmap-basic-backend-review.md` if a review record is useful
+- `tools/active_runner/nmap_basic/result.py`
+- `tools/tests/test_active_runner_nmap_basic_parser.py`
+- `frontend/src/ActiveNmapBasicJobReport.test.tsx`
+- `docs/future/active-nmap-basic-pre-wiring-hardening-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
 
 No-scope:
 
-- No new runtime behavior.
+- No backend-to-runner live wiring.
+- No real Nmap job creation.
+- No background task execution for Nmap.
+- No runner HTTP endpoint.
 - No Nmap execution.
-- No frontend changes.
 - No Docker execution.
-- No external traffic.
+- No probes.
+- No DNS checks.
+- No external HTTP traffic.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No raw flags, custom scripts, NSE, brute force, credential validation,
+  crawling, DNS expansion, broad ranges, or public scanner behavior.
 
 Expected validations:
 
-- disabled-state contract;
-- enabled creation contract;
-- auth-required denial before validation detail;
-- owner-scoped reads/exports/Raw JSON;
-- target policy rejection;
-- port/target bounds;
-- report/export redaction;
-- no forbidden copy;
-- no archive action path.
+- backend and runner target-policy acceptance/rejection parity;
+- backend duplicate and too-many-target rejection remains batch-level;
+- backend `targets[]` serializes to one handoff unit per target;
+- handoff preserves confirmations and bounded ports;
+- handoff records `implicit_concurrency: 1`;
+- fake executor output plus synthetic parser output composes to structured
+  `active_nmap_basic` payload;
+- composed payload omits raw target, command, XML, stdout, stderr, service, and
+  banner evidence;
+- backend API/report/export surfaces keep the composed payload redacted;
+- frontend `not_executed` is rendered as not connected/not executed, not as a
+  completed scan;
+- source searches confirm no live runner path or archive/run-all trigger.
 
 Risks:
 
-- Focused tests passing while full suite reveals regressions.
-- Tests accidentally relying on local environment state.
-- Review docs drifting from actual test evidence.
+- Adding helper code that quietly becomes a live path.
+- Policy drift between backend and runner validators.
+- Accidentally widening `targets[]` into concurrent or broad batches.
+- Treating fake parser/result composition as release readiness.
+- Frontend copy implying completion for `not_executed`.
 
 Acceptance criteria:
 
-- Focused backend tests pass.
-- Full backend suite passes or any skipped scope is explicitly justified.
-- Test output records no Nmap, Docker, DNS, probe, or external HTTP execution.
+- Pure helpers are offline and do not call runners, create jobs, execute
+  commands, resolve DNS, send probes, or run Nmap.
+- Focused backend, runner, and frontend tests pass.
+- Full backend and frontend suites pass.
+- Documentation records gaps closed, tests added, still-blocked behavior,
+  validation evidence, and next recommended no-live step.
 
 Suggested commit:
 
 ```text
-test(active): cover nmap basic backend contract
+test(active): harden nmap basic before live wiring
 ```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_11_PRE_WIRING_HARDENING_NO_LIVE_ACCEPTED` implements this
+microphase with a pure backend handoff helper, a pure active-runner result
+composer, backend/runner target-policy parity tests, single-target handoff
+serialization tests, fake execution/parser/reporting redaction tests, and an
+extra frontend `not_executed` report test. It does not connect backend to the
+runner executor, create real Nmap jobs, add background tasks, add runner HTTP
+endpoints, execute Nmap, run Docker, perform probes, perform DNS checks, make
+external HTTP requests, integrate archive/run-all, integrate with
+`tools/runner/main.py`, add raw flags, add custom scripts, add NSE, add brute
+force, add credential validation, add crawling, add DNS expansion, or add broad
+ranges.
 
 ## Microphase 12: Runner Tests
 

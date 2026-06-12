@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from active_runner import parse_active_nmap_basic_xml
+from active_runner import build_active_nmap_basic_result_payload, parse_active_nmap_basic_xml
 
 
 def serialized(payload) -> str:
@@ -282,3 +282,57 @@ def test_parser_source_has_no_subprocess_dns_network_or_runner_integration():
     ]
     for term in forbidden_source_terms:
         assert term not in source
+
+
+def test_result_payload_composes_fake_execution_and_parser_without_raw_evidence():
+    execution_result = {
+        "status": "completed",
+        "capability": "active_nmap_basic",
+        "profile": "tcp_connect_small",
+        "execution_attempted": True,
+        "stdout": "nmap stdout for 192.168.56.10",
+        "stderr": "nmap stderr for secret-lab.internal",
+        "reason": "raw_bounded",
+        "output_truncated": False,
+        "stderr_truncated": True,
+        "timed_out": False,
+    }
+    parse_result = parse_active_nmap_basic_xml(
+        b"""
+        <nmaprun args="nmap -sT -p 443 192.168.56.10">
+          <host>
+            <address addr="192.168.56.10"/>
+            <hostnames><hostname name="secret-lab.internal"/></hostnames>
+            <ports>
+              <port protocol="tcp" portid="443">
+                <state state="open" reason="syn-ack"/>
+                <service name="https" product="confirmed vulnerability"/>
+              </port>
+            </ports>
+          </host>
+        </nmaprun>
+        """
+    )
+
+    payload = build_active_nmap_basic_result_payload(execution_result, parse_result)
+    body = serialized(payload)
+
+    assert payload["status"] == "completed"
+    assert payload["parser_ran"] is True
+    assert payload["stdout_returned"] is False
+    assert payload["stderr_returned"] is False
+    assert payload["command_returned"] is False
+    assert payload["target_returned"] is False
+    assert payload["raw_xml_returned"] is False
+    assert payload["port_observations"] == [{"port": 443, "protocol": "tcp", "state": "open", "reason": "syn-ack"}]
+    assert payload["limits"]["stderr_truncated"] is True
+    for forbidden in (
+        "192.168.56.10",
+        "secret-lab.internal",
+        "nmap -sT",
+        "<nmaprun",
+        "stdout for",
+        "stderr for",
+        "confirmed vulnerability",
+    ):
+        assert forbidden not in body
