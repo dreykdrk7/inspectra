@@ -2362,8 +2362,8 @@ container-loopback target `127.0.0.1`, port `65000`, and Docker network
 disabled with `--network none`, interpreted as a closed-port local container
 loopback smoke. The phase does not run Docker or Nmap, does not approve
 owned-domain, LAN, VPS, Compose, or public targets, and does not approve backend
-live calls, runner endpoints,
-archive/run-all integration, `tools/runner/main.py` integration, public scanner
+live calls, runner endpoints, archive/run-all integration,
+`tools/runner/main.py` integration, public scanner
 behavior, or release/tag state.
 
 ## Microphase 27: Active Tools Container Loopback Smoke
@@ -2471,6 +2471,105 @@ the allowlisted `tcp_connect_small` argv shape. Nmap reported `65000/tcp` as
 Compose connectivity, backend integration, jobs, exports, runner endpoints,
 archive/run-all integration, owned-domain targets, LAN/VPS/public targets,
 runtime changes, public scanner behavior, or release/tag state.
+
+## Microphase 28: Own-Domain Authorized Smoke Target Freeze
+
+Objective:
+
+Freeze one exact operator-authorized own-domain target for a future extremely
+limited `active-tools` Nmap smoke without executing Docker, Nmap, DNS checks,
+manual HTTP checks, probes, backend integration, runner endpoints, or
+archive/run-all. The freeze chooses only one domain and keeps the remaining
+candidate domains blocked.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-own-domain-authorized-smoke-target-freeze.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No probes.
+- No manual DNS checks.
+- No manual external HTTP checks.
+- No `curl` or browser checks against domains.
+- No Compose.
+- No published ports.
+- No host network.
+- No privileged container.
+- No Docker socket mount.
+- No backend/frontend/runner runtime changes.
+- No runner HTTP endpoint.
+- No backend-to-active-tools live call.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No migrations, tags, or releases.
+- No LAN targets.
+- No generic VPS target.
+- No arbitrary public target.
+- No public scanner behavior.
+- No approval of all candidate domains together.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+rg -n "active-tools|active_nmap_basic|Nmap|nmap|own-domain|authorized|[www.urlbreve.es|www.vildek.es|app.vildek.es|443|DNS|target](http://www.urlbreve.es|www.vildek.es|app.vildek.es|443|DNS|target) freeze" docs README.md
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Treating operator authorization context as independent proof of ownership.
+- Accidentally approving all three candidate domains instead of one.
+- Keeping `-n` while using an unresolved FQDN.
+- Letting a domain freeze imply approval for arbitrary public targets or public
+  scanner behavior.
+- Letting a future domain smoke add backend integration or runner endpoints in
+  the same phase.
+
+Acceptance criteria:
+
+- Exactly one domain is chosen.
+- Chosen domain is `www.urlbreve.es`.
+- `www.vildek.es` remains blocked.
+- `app.vildek.es` remains blocked for later phases because it is a business
+  application surface.
+- Frozen port set is exactly `[443]`.
+- Port `80`, ranges, top ports, `-p-`, and discovery-style port selection remain
+  blocked.
+- DNS decision is explicit.
+- Future command is documented and clearly marked as not executed.
+- No backend integration, runner endpoint, archive/run-all, `tools/runner/main.py`
+  integration, runtime change, tag, or release is approved.
+
+Suggested commit:
+
+```text
+docs(active): freeze own domain nmap smoke target
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_28_OWN_DOMAIN_AUTHORIZED_SMOKE_TARGET_FREEZE_ACCEPTED`
+freezes the first future own-domain smoke target to exactly `www.urlbreve.es`
+on port `443`. DNS decision Option A is accepted for a future execution: allow
+only the minimum Nmap DNS resolution required for that exact FQDN, with no DNS
+expansion, no subdomain discovery, no reverse-DNS sweep, and no manual DNS
+checks in this phase. The proposed command is documented but not executed.
+`www.vildek.es`, `app.vildek.es`, port `80`, LAN/VPS/public targets, backend
+integration, runner endpoints, archive/run-all, `tools/runner/main.py`
+integration, public scanner behavior, and release/tag state remain blocked.
 
 ## Cross-Phase Validation Checklist
 
