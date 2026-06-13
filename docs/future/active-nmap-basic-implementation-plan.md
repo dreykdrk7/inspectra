@@ -4545,6 +4545,107 @@ internal `active-tools` `/active/nmap-basic` call. It does not add runtime
 analysis invocation, target approval, Nmap execution, jobs, exports, frontend
 changes, archive/run-all, `tools/runner/main.py`, release, or tag state.
 
+## Microphase 47: Backend Active Nmap Job Lifecycle Skeleton No-Live
+
+Objective:
+
+Add an isolated backend lifecycle skeleton for a future `active_nmap_basic` job
+using only an injected fake/no-live client. Model configuration gates, internal
+approval gates, bounded prevalidated handoff input, fake-client invocation, and
+controlled result normalization without connecting the skeleton to runtime
+routes, real jobs, frontend, exports, archive/run-all, or `tools/runner/main.py`.
+
+Product direction:
+
+- Prepare the internal lifecycle shape before any real backend-to-active-tools
+  job integration.
+- Keep this phase no-live and fake-client-only.
+- Treat any result that implies execution, network traffic, job creation,
+  evidence, observations, or target expansion as a controlled error.
+
+Probable files:
+
+- `backend/app/active_nmap_lifecycle.py`
+- `backend/tests/test_backend.py`
+- `docs/future/active-nmap-basic-backend-active-nmap-job-lifecycle-skeleton-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No public endpoint that accepts targets.
+- No route integration.
+- No persistent job creation.
+- No storage persistence.
+- No live `active-tools` call.
+- No real `/active/nmap-basic` call.
+- No Nmap execution.
+- No `nmap --version`.
+- No Docker or Compose.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No VPS, LAN, real domains, or real targets.
+- No frontend runtime changes.
+- No exports.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No migrations, tags, releases, push, or target approval.
+
+Expected validations:
+
+```text
+git status --short --branch
+.venv/bin/python -m py_compile backend/app/active_nmap_lifecycle.py
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "lifecycle_skeleton or active_tools_nmap_basic_client or active_tools_health_client_source"
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_tools or active_nmap or nmap_basic or boundary or redaction"
+.venv/bin/python -m pytest backend/tests
+git diff --check
+git diff --cached --check
+rg -n "run_active_nmap_basic_lifecycle_skeleton|ActiveNmapBasicJobLifecycleSkeleton|blocked_unconfigured|blocked_missing_approval|client_error_controlled|completed_no_live|unsafe_client_result" backend docs README.md
+rg -n "run_active_nmap_basic_lifecycle_skeleton" backend/app/main.py backend/app/services.py backend/app/storage.py backend/app/reporting.py frontend tools/runner/main.py
+rg -n "subprocess|shell=True|os.system|popen|Popen\\(|nmap --version|nmap -sT|DockerClient|from docker|docker.sock|httpx|requests|dns|resolve|stdout|stderr|raw_xml|raw_command" backend/app/active_nmap_lifecycle.py
+```
+
+Risks:
+
+- Mistaking the skeleton for a public or usable Nmap capability.
+- Accidentally connecting it to routes, storage, exports, frontend, or runner
+  code.
+- Allowing a non-fake client to make a live `active-tools` call.
+- Reflecting targets or payload details in lifecycle errors.
+- Accepting fake-client results that imply real execution or evidence.
+
+Acceptance criteria:
+
+- Lifecycle blocks before any fake client call when configuration or internal
+  approval is missing.
+- Lifecycle requires an injected `fake_no_live` client marker.
+- Lifecycle accepts only a single bounded prevalidated target unit and one TCP
+  port in this no-live phase.
+- Success normalizes only no-live `not_executed` client results.
+- Client errors and unsafe fake-client flags are controlled and redact targets.
+- Source guardrails confirm no route, persistent job, storage, export,
+  frontend, archive/run-all, real active-tools, Nmap, Docker/Compose, DNS/probe,
+  external HTTP, or `tools/runner/main.py` integration.
+
+Suggested commit:
+
+```text
+test(active): add active nmap job lifecycle skeleton
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_47_BACKEND_ACTIVE_NMAP_JOB_LIFECYCLE_SKELETON_NO_LIVE_PASSED`
+records that backend has an isolated no-live lifecycle skeleton for a future
+`active_nmap_basic` job. It does not add route/runtime invocation, persistent
+jobs, storage, target approval, real `active-tools` calls, Nmap execution,
+exports, frontend changes, archive/run-all, `tools/runner/main.py`, release, or
+tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
