@@ -4236,6 +4236,115 @@ archive/run-all, or the passive runner; it does not execute Nmap, call
 `/active/nmap-basic`, perform DNS/probe/external target HTTP checks, approve
 targets, or create release/tag state.
 
+## Microphase 44: Backend Active Tools Health Compose Smoke No-Live
+
+Objective:
+
+Run a controlled smoke of the backend `check_active_tools_health` helper against
+the Compose-started `active-tools` ASGI service, querying only `/health` over a
+local/internal Docker network. Do not call `/active/nmap-basic`, execute Nmap,
+create jobs or exports, touch frontend runtime, integrate archive/run-all, or
+wire the helper into backend runtime flows.
+
+Product direction:
+
+- Keep progressing toward practical backend-to-`active-tools` integration.
+- Validate the first real helper-to-service contact.
+- Preserve the default no-public-port Compose posture.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-backend-active-tools-health-compose-smoke-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No backend runtime invocation of the helper.
+- No backend call to `/active/nmap-basic`.
+- No backend-to-`active-tools` execution request.
+- No Nmap execution.
+- No `nmap --version`.
+- No target-bearing scan command.
+- No probes.
+- No external DNS checks.
+- No external HTTP checks.
+- No committed Compose override.
+- No Dockerfile changes.
+- No real jobs created from `active-tools`.
+- No live exports.
+- No frontend runtime changes.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No use of `www.urlbreve.es`, `www.vildek.es`, or `app.vildek.es`.
+- No approval for port `443` or port `80`.
+- No LAN/VPS/public target expansion.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_tools or active_nmap or nmap_basic or boundary or redaction"
+.venv/bin/python -m pytest tools/tests/test_active_tools_asgi_service_skeleton.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_health_readiness.py
+docker compose -f docker-compose.active-tools.example.yml --profile active config
+docker compose -f docker-compose.active-tools.example.yml -f /tmp/inspectra-active-tools-health-smoke.override.yml --profile active config
+docker compose -f docker-compose.active-tools.example.yml -f /tmp/inspectra-active-tools-health-smoke.override.yml --profile active up -d --no-build --force-recreate active-tools
+docker run --rm --network inspectra-active-tools-example_inspectra_internal --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL --security-opt no-new-privileges:true -v "$PWD:/workspace:ro" -w /workspace -e PYTHONPATH=/workspace/backend:/workspace/tools:/workspace/.venv/lib/python3.10/site-packages inspectra-active-tools:asgi-smoke python -c "..."
+docker compose -f docker-compose.active-tools.example.yml -f /tmp/inspectra-active-tools-health-smoke.override.yml --profile active logs --tail 80 active-tools
+docker compose -f docker-compose.active-tools.example.yml -f /tmp/inspectra-active-tools-health-smoke.override.yml --profile active down
+docker ps -a --filter name=inspectra-active-tools --format "{{.Names}}"
+test ! -f /tmp/inspectra-active-tools-health-smoke.override.yml
+rg -n "active_tools_unconfigured|active_tools_unavailable|active_tools_timeout|active_tools_invalid_response|active_tools_unexpected_fields|active_tools_not_ready|disabled_no_scan|target_input_allowed|nmap_executed|network_requests_sent|health compose smoke" backend docs README.md
+rg -n "subprocess|docker.sock|DockerClient|from docker|nmap --version|nmap -sT|tools/runner/main.py" backend tools docs README.md
+rg -n "vps-40567620|51.38.225.243" backend tools/tests
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Mistaking a health-only smoke for backend runtime wiring.
+- Accidentally adding a default public port to `active-tools`.
+- Calling `/active/nmap-basic` instead of `/health`.
+- Letting temporary smoke override files into git.
+
+Acceptance criteria:
+
+- Compose config for the base file keeps no host-published ports.
+- Any temporary loopback override is not committed and is removed during
+  cleanup.
+- `active-tools` starts through profile `active`.
+- The backend helper reaches only `/health`.
+- The helper returns `available: true`, `status: scaffold_ready`,
+  `active_nmap_basic_status: disabled_no_scan`, `execution_enabled: false`,
+  `target_input_allowed: false`, `network_requests_sent: 0`, and
+  `nmap_executed: false`.
+- Logs show `GET /health` only, with no `/active/nmap-basic` request.
+- Cleanup removes the service container, network, and temporary override.
+
+Suggested commit:
+
+```text
+test(active): smoke backend active tools health client
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_44_BACKEND_ACTIVE_TOOLS_HEALTH_COMPOSE_SMOKE_NO_LIVE_PASSED`
+records that the backend health helper can reach Compose-started `active-tools`
+over the internal Docker network with controlled no-live readiness output. It
+does not add backend runtime invocation, jobs, exports, frontend changes,
+archive/run-all, `tools/runner/main.py`, Nmap execution, target approval,
+release, or tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
