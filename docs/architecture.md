@@ -287,6 +287,8 @@ The Active Nmap Basic active-tools ASGI service skeleton decision is `ACTIVE_NMA
 
 The Active Nmap Basic active-tools ASGI container no-live smoke decision is `ACTIVE_NMAP_BASIC_40_ACTIVE_TOOLS_ASGI_CONTAINER_NO_LIVE_SMOKE_PASSED`. The separate `active-tools` Docker image now packages minimal FastAPI/Uvicorn dependencies while preserving the default scaffold no-run command. A one-off hardened local container started `active_runner.app:app` manually and returned `GET /health` as `scaffold_ready` / `disabled_no_scan` with `network_requests_sent: 0` and `nmap_executed: false` through a host-loopback-only publish. This does not add backend live calls, Compose runtime wiring, runner HTTP endpoints, Nmap execution, DNS/probe/external target HTTP checks, real jobs, exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime changes, target approval, release, or tag state.
 
+The Active Nmap Basic active-tools ASGI Nmap-basic no-live container smoke decision is `ACTIVE_NMAP_BASIC_41_ACTIVE_TOOLS_ASGI_NMAP_BASIC_NO_LIVE_CONTAINER_SMOKE_PASSED`. The existing `inspectra-active-tools:asgi-smoke` image starts `active_runner.app:app` manually in a hardened local container, confirms `/health`, and accepts a synthetic backend-boundary `POST /active/nmap-basic` payload for `127.0.0.1:65000` while returning `not_executed`, no observations, `job_created: false`, `network_requests_sent: 0`, and `summary.nmap_executed: false`. This does not add backend live calls, Compose runtime wiring, runner HTTP endpoints, Nmap execution, DNS/probe/external target HTTP checks, real jobs, exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime changes, target approval, release, or tag state.
+
 ## Components
 
 ### Backend
