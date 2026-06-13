@@ -284,6 +284,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.active_network_dry_runs = ActiveNetworkDryRunService(settings, job_store)
     app.state.active_http_header_probes = ActiveHttpHeaderProbeService(settings, job_store)
     app.state.active_nmap_basic_service = ActiveNmapBasicService(settings, job_store)
+    app.state.active_tools_health_checker = backend_main.check_active_tools_health
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -299,6 +300,143 @@ async def test_health(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "inspectra-backend"}
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_runtime_surface_defaults_to_controlled_unconfigured(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/health/active-tools")
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "service": "inspectra-backend",
+        "active_tools": {
+            "available": False,
+            "status": None,
+            "active_nmap_basic_status": None,
+            "execution_enabled": None,
+            "target_input_allowed": None,
+            "network_requests_sent": None,
+            "nmap_executed": None,
+            "error_code": "active_tools_unconfigured",
+        },
+    }
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_runtime_surface_uses_configured_checker_without_target_input(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_URL", "http://active-tools:8080")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS", "1.25")
+    configure_test_state(monkeypatch, tmp_path)
+    calls = []
+
+    async def fake_checker(base_url, *, timeout_seconds):
+        calls.append((base_url, timeout_seconds))
+        return {
+            "available": True,
+            "status": "scaffold_ready",
+            "active_nmap_basic_status": "disabled_no_scan",
+            "execution_enabled": False,
+            "target_input_allowed": False,
+            "network_requests_sent": 0,
+            "nmap_executed": False,
+            "error_code": None,
+        }
+
+    app.state.active_tools_health_checker = fake_checker
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/health/active-tools")
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["service"] == "inspectra-backend"
+    assert payload["active_tools"] == {
+        "available": True,
+        "status": "scaffold_ready",
+        "active_nmap_basic_status": "disabled_no_scan",
+        "execution_enabled": False,
+        "target_input_allowed": False,
+        "network_requests_sent": 0,
+        "nmap_executed": False,
+        "error_code": None,
+    }
+    assert calls == [("http://active-tools:8080", 1.25)]
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_runtime_surface_returns_controlled_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_URL", "http://active-tools:8080")
+    configure_test_state(monkeypatch, tmp_path)
+
+    async def fake_checker(base_url, *, timeout_seconds):
+        return {
+            "available": False,
+            "status": None,
+            "active_nmap_basic_status": None,
+            "execution_enabled": None,
+            "target_input_allowed": None,
+            "network_requests_sent": None,
+            "nmap_executed": None,
+            "error_code": "active_tools_unavailable",
+        }
+
+    app.state.active_tools_health_checker = fake_checker
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/health/active-tools")
+
+    assert response.status_code == 200
+    assert response.json()["active_tools"]["available"] is False
+    assert response.json()["active_tools"]["error_code"] == "active_tools_unavailable"
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_runtime_surface_rejects_query_and_body_inputs_without_leaking_values(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        query_response = await client.get("/health/active-tools", params={"target": "token_should_never_render"})
+        body_response = await client.request(
+            "GET",
+            "/health/active-tools",
+            content=b'{"target":"token_should_never_render"}',
+        )
+
+    assert query_response.status_code == 400
+    assert body_response.status_code == 400
+    assert query_response.json()["detail"] == "active_tools health status does not accept query parameters."
+    assert body_response.json()["detail"] == "active_tools health status does not accept a request body."
+    assert "token_should_never_render" not in query_response.text
+    assert "token_should_never_render" not in body_response.text
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_runtime_surface_auth_required_anonymous_fails_before_input_validation(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/health/active-tools", params={"target": "token_should_never_render"})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == AUTH_REQUIRED_DETAIL
+    assert "token_should_never_render" not in response.text
 
 
 @pytest.mark.anyio
@@ -4868,7 +5006,29 @@ def test_active_tools_health_client_source_has_no_nmap_job_archive_or_runner_int
         "tools/runner/main.py",
     ):
         assert forbidden not in client_source
-    assert "check_active_tools_health" not in main_source
+    assert '@app.get("/health/active-tools")' in main_source
+    surface_start = main_source.index('@app.get("/health/active-tools")')
+    surface_end = main_source.index('@app.get("/auth/status"', surface_start)
+    health_surface_source = main_source[surface_start:surface_end]
+    assert "check_active_tools_health" in health_surface_source
+    for forbidden in (
+        "/active/nmap-basic",
+        "BackgroundTasks",
+        "build_active_nmap_basic_handoff_plan",
+        "create_active_nmap_basic_job",
+        "run_active_nmap_basic_analysis",
+        "target_count",
+        "port_count",
+        "subprocess.",
+        "shell" + "=True",
+        "os." + "system",
+        "po" + "pen",
+        "P" + "open(",
+        "nmap --version",
+        "nmap -sT",
+        "tools/runner/main.py",
+    ):
+        assert forbidden not in health_surface_source
     assert "active_nmap_basic" not in runner_source
     assert "nmap_basic" not in runner_source
 

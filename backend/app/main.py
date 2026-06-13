@@ -5,6 +5,7 @@ from fastapi import BackgroundTasks, Body, FastAPI, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.active_tools_client import check_active_tools_health
 from app.active_nmap_policy import (
     ACTIVE_NMAP_BASIC_MAX_TARGETS,
     ActiveNmapTargetPolicyError,
@@ -123,6 +124,7 @@ async def lifespan(app: FastAPI):
     app.state.active_network_dry_runs = ActiveNetworkDryRunService(settings, job_store)
     app.state.active_http_header_probes = ActiveHttpHeaderProbeService(settings, job_store)
     app.state.active_nmap_basic_service = ActiveNmapBasicService(settings, job_store)
+    app.state.active_tools_health_checker = check_active_tools_health
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -400,6 +402,32 @@ def validate_active_nmap_basic_target_policy(targets: object) -> ActiveNmapTarge
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "inspectra-backend"}
+
+
+@app.get("/health/active-tools")
+async def active_tools_health(request: Request) -> dict[str, Any]:
+    if request.query_params:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_tools health status does not accept query parameters.",
+        )
+    if await request.body():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_tools health status does not accept a request body.",
+        )
+
+    settings = request.app.state.settings
+    checker = getattr(request.app.state, "active_tools_health_checker", check_active_tools_health)
+    active_tools = await checker(
+        settings.active_tools_url,
+        timeout_seconds=settings.active_tools_health_timeout_seconds,
+    )
+    return {
+        "status": "ok",
+        "service": "inspectra-backend",
+        "active_tools": active_tools,
+    }
 
 
 @app.get("/auth/status", response_model=AuthStatusResponse)

@@ -4345,6 +4345,109 @@ does not add backend runtime invocation, jobs, exports, frontend changes,
 archive/run-all, `tools/runner/main.py`, Nmap execution, target approval,
 release, or tag state.
 
+## Microphase 45: Backend Active Tools Health Runtime Surface No-Live
+
+Objective:
+
+Expose the backend `check_active_tools_health` helper through a controlled
+runtime health surface that checks only `active-tools` `/health`. Do not call
+`/active/nmap-basic`, execute Nmap, accept targets, create jobs or exports,
+touch frontend runtime, integrate archive/run-all, or connect
+`tools/runner/main.py`.
+
+Product direction:
+
+- Make internal `active-tools` readiness observable from backend runtime.
+- Preserve default-empty / disabled-safe behavior.
+- Keep the surface targetless and health-only before any execution client is
+  designed.
+
+Probable files:
+
+- `backend/app/main.py`
+- `backend/tests/test_backend.py`
+- `docs/future/active-nmap-basic-backend-active-tools-health-runtime-surface-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No backend call to `/active/nmap-basic`.
+- No backend-to-`active-tools` execution request.
+- No Nmap execution.
+- No `nmap --version`.
+- No target input.
+- No port input.
+- No target-bearing scan command.
+- No probes.
+- No external DNS checks.
+- No external HTTP checks in tests.
+- No Docker or Compose changes.
+- No new published ports.
+- No real jobs created from `active-tools`.
+- No live exports.
+- No frontend runtime changes.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No use of `www.urlbreve.es`, `www.vildek.es`, or `app.vildek.es`.
+- No approval for port `443` or port `80`.
+- No LAN/VPS/public target expansion.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_tools_health or health_runtime_surface or test_health or auth_required_anonymous"
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_tools or active_nmap or nmap_basic or boundary or redaction"
+rg -n "GET /health/active-tools|active_tools_unconfigured|active_tools_unavailable|disabled_no_scan|target_input_allowed|nmap_executed|network_requests_sent" backend docs README.md
+rg -n "/active/nmap-basic|subprocess|shell=True|os.system|popen|nmap --version|nmap -sT|tools/runner/main.py" backend/app/main.py backend/app/active_tools_client.py backend/tests/test_backend.py docs README.md
+rg -n "target|targets|ports|probe|DNS|external HTTP|www.urlbreve.es|www.vildek.es|app.vildek.es|51.38.225.243|vps-40567620" backend/app/main.py backend/app/active_tools_client.py backend/tests/test_backend.py
+```
+
+Risks:
+
+- Mistaking health observability for active execution readiness.
+- Accidentally making the route anonymous in self-hosted auth-required mode.
+- Accepting query or body target inputs on a health route.
+- Leaking supplied input values in validation errors.
+- Returning upstream failures as backend failures instead of controlled health
+  metadata.
+
+Acceptance criteria:
+
+- `GET /health/active-tools` exists as a backend health surface.
+- The route rejects query parameters and request bodies.
+- The route remains auth-protected when backend auth is required.
+- Default-empty `INSPECTRA_ACTIVE_TOOLS_URL` returns controlled
+  `active_tools_unconfigured` metadata without creating jobs.
+- Fake checker tests cover configured success and unavailable states without
+  external network traffic.
+- Source guardrails confirm no `/active/nmap-basic` call, subprocess/Nmap
+  execution, job creation, archive/run-all, frontend, or `tools/runner/main.py`
+  integration.
+
+Suggested commit:
+
+```text
+feat(active): expose active tools health status
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_45_BACKEND_ACTIVE_TOOLS_HEALTH_RUNTIME_SURFACE_NO_LIVE_PASSED`
+records that backend runtime can expose controlled `active-tools` health
+metadata through `GET /health/active-tools` while preserving a targetless
+health-only boundary. It does not add `/active/nmap-basic` calls, Nmap
+execution, target approval, jobs, exports, frontend changes, archive/run-all,
+`tools/runner/main.py`, release, or tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
