@@ -311,6 +311,8 @@ The Active Nmap Basic backend no-live job surfaces hardening decision is `ACTIVE
 
 The Active Nmap Basic frontend no-live job UX decision is `ACTIVE_NMAP_BASIC_52_FRONTEND_ACTIVE_NMAP_NO_LIVE_JOB_UX_PASSED`. The existing Active / Nmap basic panel now submits the bounded backend request to `POST /active/network/nmap-basic`, expects the persistent `202 JobRecord`, selects the returned owner-scoped job, refreshes the jobs list, and renders no-live lifecycle caveats. Frontend report rendering reads `result.lifecycle_state` separately from `JobStatus.completed`, treats `completed_no_live` as no-live lifecycle completion, keeps targets as `[REDACTED_TARGET]`, and shows no Nmap execution, no network/DNS requests, no evidence, no observations, and manual validation required. This does not change backend runtime, call real active-tools, execute Nmap, run Docker/Compose, add exports, integrate archive/run-all, or touch `tools/runner/main.py`.
 
+The Active Nmap Basic no-live E2E product smoke decision is `ACTIVE_NMAP_BASIC_53_ACTIVE_NMAP_NO_LIVE_E2E_PRODUCT_SMOKE_PASSED`. Backend in-process tests and mocked frontend App tests now cover the integrated no-live path from bounded submit contract through `202 JobRecord`, owner-scoped persistence, list refresh, selected job detail/report, Raw JSON redaction, and generic wrong-owner behavior. This validation does not call real active-tools, execute Nmap, run Docker/Compose, perform DNS/probe/external HTTP activity, add exports, integrate archive/run-all, or touch `tools/runner/main.py`.
+
 ## Components
 
 ### Backend

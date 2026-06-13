@@ -5120,6 +5120,89 @@ records that the frontend can submit to and display backend no-live
 active-tools calls, Nmap execution, external traffic, exports, archive/run-all,
 `tools/runner/main.py`, release, or tag state.
 
+## Microphase 53: Active Nmap No-Live E2E Product Smoke
+
+Objective:
+
+Validate the already integrated no-live product flow across mocked frontend and
+in-process backend tests: submit contract, backend `202 JobRecord`, owner-scoped
+persistence, jobs refresh, selected job detail/report rendering, Raw JSON
+redaction, and wrong-owner denial.
+
+Files:
+
+- `backend/tests/test_backend.py`
+- `frontend/src/App.test.tsx`
+- focused frontend Active Nmap report/panel tests
+- `docs/future/active-nmap-basic-no-live-e2e-product-smoke.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No real active-tools call.
+- No real backend-to-active-tools `/active/nmap-basic` call.
+- No Nmap execution or local version probe.
+- No Docker or Compose.
+- No probes, DNS checks, external HTTP, VPS, LAN, real-domain, or real-target
+  activity.
+- No backend runtime expansion beyond minimal testability fixes if needed.
+- No frontend product expansion beyond minimal testability/copy fixes if needed.
+- No new exports.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No migrations, tags, releases, push, or target approval.
+
+Validations:
+
+```text
+git status --short --branch
+backend focused active_nmap no-live product smoke tests
+backend active/nmap related tests
+full backend suite
+frontend focused ActiveNmapBasicPanel, ActiveNmapBasicJobReport, App tests
+full frontend suite
+npm run build
+git diff --check
+git diff --cached --check
+source guardrail searches for execution, Docker/Compose, real active-tools
+calls, DNS/probe/external HTTP behavior, archive/run-all, tools-runner
+integration, raw target/output/evidence leakage, and prohibited live-execution
+wording
+git status --short --branch
+```
+
+Acceptance criteria:
+
+- Disabled backend feature gate creates no job.
+- Enabled valid synthetic request returns `202 JobRecord`.
+- Job is `active_nmap_basic`, `file_id: null`, owner-scoped, and target-redacted.
+- No-live result records no Nmap, no subprocess, no network/DNS requests, no
+  evidence, no observations, and manual validation required.
+- Backend list/detail/report/Raw JSON-style output preserves caveats and
+  redaction.
+- Wrong-owner detail/export/delete remain generic.
+- Frontend submit sends the exact bounded request contract.
+- Frontend selects the returned job, refreshes jobs, renders no-live caveats,
+  and keeps Raw JSON redacted-first.
+- No prohibited live-execution wording appears in product runtime surfaces.
+
+Commit:
+
+```text
+test(active): smoke nmap no-live product flow
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_53_ACTIVE_NMAP_NO_LIVE_E2E_PRODUCT_SMOKE_PASSED`
+records that the no-live Active / Nmap basic product flow is validated end to
+end without adding real active-tools calls, Nmap execution, external traffic,
+Docker/Compose, new exports, archive/run-all, `tools/runner/main.py`, release,
+or tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

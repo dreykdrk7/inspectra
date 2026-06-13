@@ -5865,6 +5865,167 @@ async def test_active_nmap_basic_no_live_job_surfaces_show_caveats_and_redact(mo
 
 
 @pytest.mark.anyio
+async def test_active_nmap_basic_no_live_product_smoke_create_list_detail_raw_json_and_owner_scope(
+    monkeypatch, tmp_path
+):
+    configure_test_state(monkeypatch, tmp_path)
+    lifecycle_runner = FakeActiveNmapBasicLifecycleRunner()
+    monkeypatch.setattr(app.state, "active_nmap_basic_lifecycle_runner", lifecycle_runner, raising=False)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        disabled_response = await client.post(
+            "/active/network/nmap-basic",
+            json=make_active_nmap_basic_payload(ports=[443]),
+        )
+        disabled_jobs_response = await client.get("/jobs")
+
+    assert disabled_response.status_code == 403
+    assert disabled_jobs_response.json() == []
+    assert lifecycle_runner.calls == []
+
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_URL", "http://active-tools:8080")
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    wrong_owner_job = JobRecord(
+        id="c" * 31 + "3",
+        owner_id="other-owner",
+        audit_type="active_nmap_basic",
+        file_id=None,
+        target_url="192.168.56.10",
+        target_domain=None,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "audit_type": "active_nmap_basic",
+            "capability": "active_nmap_basic",
+            "mode": "live_nmap_basic",
+            "profile": "tcp_connect_small",
+            "status": "not_executed",
+            "lifecycle_state": "completed_no_live",
+            "target": "secret-lab.internal",
+            "raw_payload": {"target": "192.168.56.10", "token": "token_should_never_render"},
+            "command": "nmap -sT 192.168.56.10",
+            "stdout": "stdout with <nmaprun><host><address addr='192.168.56.10'/></host></nmaprun>",
+            "stderr": "stderr for secret-lab.internal token_should_never_render",
+            "raw_xml": "<nmaprun args='nmap -sT 192.168.56.10'/>",
+            "service_details": {"banner": "PrivateServer 9.9.9"},
+            "credentials": {"password": "token_should_never_render"},
+            "headers": {"Authorization": "Bearer token_should_never_render"},
+            "cookies": {"session": "token_should_never_render"},
+            "tokens": ["token_should_never_render"],
+            "observations": [{"port": 443, "state": "open"}],
+            "evidence": ["192.168.56.10 responded"],
+        },
+        error="nmap -sT 192.168.56.10 token_should_never_render",
+    )
+    app.state.jobs.save(wrong_owner_job)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post(
+            "/active/network/nmap-basic",
+            json=make_active_nmap_basic_payload(ports=[443]),
+        )
+        job_id = create_response.json()["id"]
+        list_response = await client.get("/jobs")
+        detail_response = await client.get(f"/jobs/{job_id}")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+        wrong_owner_list_response = await client.get("/jobs")
+        wrong_owner_detail_response = await client.get(f"/jobs/{wrong_owner_job.id}")
+        wrong_owner_delete_response = await client.delete(f"/jobs/{wrong_owner_job.id}")
+        wrong_owner_export_responses = [
+            await client.get(f"/jobs/{wrong_owner_job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        ]
+
+    assert create_response.status_code == 202
+    assert list_response.status_code == 200
+    assert detail_response.status_code == 200
+    assert all(response.status_code == 200 for response in export_responses.values())
+    assert len(lifecycle_runner.calls) == 1
+    create_payload = create_response.json()
+    detail_payload = detail_response.json()
+    list_payload = list_response.json()
+    assert create_payload["id"] == job_id
+    assert create_payload["status"] == "completed"
+    assert create_payload["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert create_payload["target_url"] == "[REDACTED_TARGET]"
+    assert_active_nmap_basic_no_live_job_payload(create_payload, expected_lifecycle_state="completed_no_live")
+    assert detail_payload["id"] == job_id
+    assert detail_payload["target_url"] == "[REDACTED_TARGET]"
+    assert detail_payload["result"]["lifecycle_state"] == "completed_no_live"
+    assert detail_payload["result"]["surface_caveats"] == list(ACTIVE_NMAP_BASIC_NO_LIVE_CAVEATS)
+    assert detail_payload["result"]["execution"]["nmap_executed"] is False
+    assert detail_payload["result"]["execution"]["network_requests_sent"] == 0
+    assert detail_payload["result"]["execution"]["dns_queries_sent"] == 0
+    assert detail_payload["result"]["execution"]["evidence_available"] is False
+    assert detail_payload["result"]["summary"]["observation_count"] == 0
+    assert detail_payload["result"]["summary"]["manual_validation_required"] is True
+    assert len(list_payload) == 1
+    assert list_payload[0]["id"] == job_id
+    assert list_payload[0]["audit_type"] == "active_nmap_basic"
+    assert list_payload[0]["file_id"] is None
+    assert list_payload[0]["target_url"] == "[REDACTED_TARGET]"
+    assert list_payload[0]["summary"]["lifecycle_state"] == "completed_no_live"
+    assert list_payload[0]["summary"]["result_status"] == "not_executed"
+    assert list_payload[0]["summary"]["no_live_lifecycle_record"] is True
+    assert list_payload[0]["summary"]["nmap_executed"] is False
+    assert list_payload[0]["summary"]["network_requests_sent"] == 0
+    assert list_payload[0]["summary"]["dns_queries_sent"] == 0
+    assert list_payload[0]["summary"]["evidence_collected"] is False
+    assert list_payload[0]["summary"]["observations_available"] is False
+    assert wrong_owner_list_response.json() == list_payload
+    assert wrong_owner_job.id not in json.dumps(wrong_owner_list_response.json(), sort_keys=True)
+    assert wrong_owner_detail_response.status_code == 404
+    assert wrong_owner_detail_response.json()["detail"] == "Job not found."
+    assert wrong_owner_delete_response.status_code == 404
+    assert wrong_owner_delete_response.json()["detail"] == "Job not found."
+    assert all(response.status_code == 404 for response in wrong_owner_export_responses)
+
+    combined = json.dumps(
+        {"create": create_payload, "detail": detail_payload, "list": list_payload},
+        sort_keys=True,
+    )
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in export_responses.items()
+    )
+    assert_active_nmap_basic_no_live_caveats(combined)
+    assert "No-Live Observation Status" in combined
+    assert "Observed TCP Exposure" not in combined
+    for forbidden_key in (
+        "target",
+        "raw_target",
+        "raw_payload",
+        "command",
+        "argv",
+        "stdout",
+        "stderr",
+        "xml",
+        "raw_xml",
+        "ptr",
+        "resolved_ip",
+        "banner",
+        "version",
+        "service_details",
+        "credentials",
+        "headers",
+        "cookies",
+        "tokens",
+        "observations",
+        "evidence",
+        "port_observations",
+    ):
+        assert forbidden_key not in detail_payload["result"]
+    assert_no_active_nmap_basic_no_live_leaks(combined)
+
+
+@pytest.mark.anyio
 async def test_active_nmap_basic_no_live_surfaces_omit_malicious_legacy_fields(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     now = datetime.now(timezone.utc)

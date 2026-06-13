@@ -111,7 +111,8 @@ Reference docs:
 45. Active Nmap Basic Microphase 50 reintroduces backend no-live persistence for valid enabled route calls after lifecycle validation. It creates at most one owner-scoped `active_nmap_basic` job with `file_id: null`, `[REDACTED_TARGET]`, and an allowlisted no-live result that records no Nmap, no network/DNS requests, no evidence, and no observations; it adds no real active-tools call, frontend runtime, export implementation, archive/run-all integration, or `tools/runner/main.py` integration.
 46. Active Nmap Basic Microphase 51 hardens existing backend job surfaces for no-live jobs. Detail, list, Raw JSON-style job output, and existing report/export routes now carry explicit no-live caveats and omit no-live-incompatible raw target, payload, command, output, service, credential/header/cookie/token, observation, and evidence fields.
 47. Active Nmap Basic Microphase 52 connects the existing frontend panel to the backend no-live `202 JobRecord` behavior. Successful submits select the returned `active_nmap_basic` job, refresh the jobs list, and render no-live caveats: no Nmap executed, no network/DNS requests, no evidence, no observations, and manual validation required. The UI keeps targets redacted and does not add real active-tools calls, backend runtime, exports, archive/run-all, Docker/Compose, or `tools/runner/main.py` integration.
-48. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
+48. Active Nmap Basic Microphase 53 validates the no-live product flow end to end with in-process backend tests and mocked frontend tests: submit contract, `202 JobRecord`, list refresh, selected job report, Raw JSON redaction, and owner-scope checks. It adds no real active-tools calls, Nmap execution, external traffic, Docker/Compose, archive/run-all, or `tools/runner/main.py` integration.
+49. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
 
 ## What This MVP Does
 
@@ -140,6 +141,7 @@ Reference docs:
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
 - Starts opt-in Active network dry-run planning jobs with no network traffic when `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=true`.
 - Starts opt-in authorized Active HTTP header probe jobs when `INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED=true`; each permitted job sends at most one HTTP `HEAD` request after explicit live-traffic confirmation.
+- Creates opt-in Active / Nmap basic no-live lifecycle records when `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=true`; these records are owner-scoped, target-redacted, and explicitly record no Nmap execution, no network/DNS requests, no evidence, and no observations.
 - Runs passive tools inside the `audit-tools` container.
 - Calculates file hashes inside the tool container.
 - Stores job state and results under `data/results/jobs`.
@@ -184,6 +186,7 @@ Reference docs:
 - It does not brute-force subdomains, use wordlists, query Certificate Transparency logs, attempt AXFR, crawl, scan ports, or call reputation APIs.
 - It does not perform live Active probes in the Active dry-run flow; dry-run jobs send no DNS queries, HTTP requests, socket traffic, Nmap commands, or live checks.
 - It does not run Nmap, scan ports, crawl, read response bodies, follow redirects, validate certificates beyond the HTTP client default, or send more than one authorized `HEAD` request in the opt-in Active HTTP header probe flow.
+- It does not run Nmap, call real `active-tools`, collect evidence, or observe live services in the Active / Nmap basic no-live lifecycle flow.
 
 ## Passive Technical Alpha Scope
 

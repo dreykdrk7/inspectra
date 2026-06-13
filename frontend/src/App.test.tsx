@@ -1394,6 +1394,20 @@ describe("App", () => {
         dns_queries_sent: 0,
         evidence_available: false,
         observations_available: false,
+        target: "router.local",
+        raw_payload: { target: "router.local", token: "token_should_never_render" },
+        command: "nmap -sT router.local",
+        stdout:
+          "stdout with router.local and <nmaprun><host><address addr='192.168.56.10'/></host></nmaprun>",
+        stderr: "stderr for secret-lab.internal Authorization: Bearer token_should_never_render",
+        raw_xml: "<nmaprun args='nmap -sT router.local'><host><ports /></host></nmaprun>",
+        service_details: { banner: "PrivateServer 9.9.9" },
+        credentials: { api_key: "raw-api-key-123456" },
+        headers: { Authorization: "Bearer token_should_never_render" },
+        cookies: { session: "token_should_never_render" },
+        tokens: ["token_should_never_render"],
+        observations: [{ port: 443, state: "open" }],
+        evidence: ["router.local responded"],
         surface_caveats: [
           "No Nmap executed.",
           "No network requests.",
@@ -1480,6 +1494,7 @@ describe("App", () => {
 
     expect(await scoped.findByText(/No-live lifecycle record created/i)).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Active / Nmap basic report" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Show redacted Raw JSON"));
     const rendered = view.container.textContent ?? "";
     expect(rendered).toContain("completed_no_live");
     expect(rendered).toContain("not_executed");
@@ -1491,7 +1506,17 @@ describe("App", () => {
     expect(rendered).toContain("No observations available");
     expect(rendered).toContain("Manual validation required");
     expect(rendered).toContain("[REDACTED_TARGET]");
+    expect(rendered).toContain("Raw JSON (redacted)");
+    expect(rendered).toContain("[REDACTED");
     expect(rendered).not.toContain("router.local");
+    expect(rendered).not.toContain("secret-lab.internal");
+    expect(rendered).not.toContain("nmap -sT");
+    expect(rendered).not.toContain("<nmaprun");
+    expect(rendered).not.toContain("stdout with");
+    expect(rendered).not.toContain("stderr for");
+    expect(rendered).not.toContain("PrivateServer");
+    expect(rendered).not.toContain("token_should_never_render");
+    expect(rendered).not.toContain("raw-api-key-123456");
     expect(rendered).not.toContain("scan completed");
     expect(rendered).not.toContain("vulnerability found");
     expect(rendered).not.toContain("completed scan");
