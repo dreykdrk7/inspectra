@@ -3056,7 +3056,7 @@ git diff --cached --check
 .venv/bin/python -m pytest tools/tests/test_active_runner_nmap_basic_parser_redaction.py
 .venv/bin/python -m pytest tools/tests/test_active_runner_nmap_basic_parser.py
 rg -n "PTR|redacted-ptr|203.0.113.10|raw_xml|raw args|resolved_ip|ptr_hostname|Raw JSON|observed_exposure_review_indicator|manual_validation_required|stylesheet|script_output" backend tools docs README.md
-rg -n "vps-40567620|51.38.225.243" backend tools/tests || true
+rg -n "vps-40567620|51.38.225.243" backend tools/tests
 rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
 rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
 ```
@@ -4003,6 +4003,130 @@ execute Nmap, run `nmap --version`, probe targets, perform DNS checks, send
 external target HTTP, call backend, create jobs or exports, wire Compose
 runtime, integrate archive/run-all, integrate `tools/runner/main.py`, change
 frontend runtime, approve targets, or create release/tag state.
+
+## Microphase 42: Active Tools Compose Internal Service No-Live
+
+Objective:
+
+Add optional Docker Compose wiring for `active-tools` as an internal ASGI
+service with explicit `active` profile activation. Validate the service with
+Compose config and no-live internal smoke requests, without adding backend live
+calls, executing Nmap, creating jobs or exports, touching frontend runtime,
+integrating archive/run-all, or exposing a public service.
+
+Product direction:
+
+- Keep the focus on practical Active/Nmap integration.
+- Prefer usable OSS/self-hosted wiring over abstract hardening.
+- Prepare the next backend-to-`active-tools` internal boundary phase while
+  preserving disabled-by-default activation.
+
+Probable files:
+
+- `docker-compose.active-tools.example.yml`
+- `tools/tests/test_active_tools_docker_scaffold_static.py`
+- `docs/future/active-nmap-basic-active-tools-compose-internal-service-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No backend-to-`active-tools` live calls.
+- No backend runtime change.
+- No frontend runtime change.
+- No main Compose runtime change.
+- No Nmap execution.
+- No `nmap --version`.
+- No target-bearing scan command.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No real jobs created from `active-tools`.
+- No live exports.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No use of `www.urlbreve.es`, `www.vildek.es`, or `app.vildek.es`.
+- No approval for port `443` or port `80`.
+- No LAN/VPS/public target expansion.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest tools/tests/test_active_tools_docker_scaffold_static.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_asgi_service_skeleton.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_fake_execution_boundary.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_health_readiness.py
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap or nmap_basic or boundary or redaction"
+docker compose -f docker-compose.active-tools.example.yml --profile active config
+docker compose -f docker-compose.active-tools.example.yml --profile active up -d active-tools
+docker compose -f docker-compose.active-tools.example.yml --profile active exec -T active-tools python -c "..."  # /health
+docker compose -f docker-compose.active-tools.example.yml --profile active exec -T active-tools python -c "..."  # /active/nmap-basic no-live
+docker compose -f docker-compose.active-tools.example.yml --profile active down
+docker ps -a --filter name=inspectra-active-tools --format {{.Names}}
+rg -n "subprocess|docker.sock|nmap --version|nmap -sT|tools/runner/main.py" tools/active_runner tools/tests docker docs README.md
+rg -n "ports:|network_mode: host|privileged: true|/var/run/docker.sock|profile|active-tools|disabled_no_scan|scaffold_ready|network_requests_sent|nmap_executed|not_executed|job_created" docker-compose.active-tools.example.yml docker tools docs README.md
+rg -n "vps-40567620|51.38.225.243" backend tools/tests || true
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Optional Compose wiring is mistaken for default runtime activation.
+- A private internal service is mistaken for public scanner exposure.
+- The Compose healthcheck or smoke expands into target traffic, Nmap execution,
+  DNS checks, backend calls, jobs, or exports.
+- The service starts with a public port, host networking, privileged mode, or a
+  Docker socket mount.
+
+Acceptance criteria:
+
+- `docker-compose.active-tools.example.yml` defines `active-tools` behind
+  profile `active`.
+- Normal main Compose startup remains unchanged.
+- The service uses `python -m uvicorn active_runner.app:app --host 0.0.0.0 --port 8080`.
+- The service has no `ports`, no host network, no privileged mode, no Docker
+  socket, read-only filesystem, tmpfs `/tmp`, dropped capabilities, and
+  `no-new-privileges`.
+- The service uses an internal network and a local `/health` healthcheck that
+  does not execute Nmap.
+- `docker compose config` passes.
+- Optional Compose smoke starts only `active-tools`, confirms `/health`, and
+  confirms `/active/nmap-basic` returns `not_executed`, `job_created: false`,
+  `network_requests_sent: 0`, and `summary.nmap_executed: false`.
+- Cleanup removes the service container and network.
+- No Nmap, DNS, probes, external target HTTP, backend live call, real job,
+  export, frontend runtime, archive/run-all, or `tools/runner/main.py`
+  integration occurs.
+
+Suggested commit:
+
+```text
+test(active): wire active tools compose no live
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_42_ACTIVE_TOOLS_COMPOSE_INTERNAL_SERVICE_NO_LIVE_PASSED`
+turns `docker-compose.active-tools.example.yml` into a usable optional internal
+ASGI service definition behind profile `active`. Compose config passes, the
+service starts with no published ports on an internal network, `/health`
+returns `scaffold_ready` / `disabled_no_scan`, and an internal synthetic
+`POST /active/nmap-basic` returns `not_executed`, no observations,
+`job_created: false`, `network_requests_sent: 0`, and
+`summary.nmap_executed: false`. It does not add backend live calls, execute
+Nmap, perform DNS/probe/external target HTTP checks, create jobs or exports,
+wire the main Compose runtime, integrate archive/run-all, integrate
+`tools/runner/main.py`, change frontend runtime, approve targets, or create
+release/tag state.
 
 ## Cross-Phase Validation Checklist
 

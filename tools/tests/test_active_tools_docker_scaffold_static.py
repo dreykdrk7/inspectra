@@ -49,12 +49,18 @@ def test_active_tools_compose_example_is_disabled_and_private() -> None:
     body = _read(COMPOSE_EXAMPLE)
 
     assert "profiles: [\"active\"]" in body
+    assert "image: inspectra-active-tools:asgi-smoke" in body
     assert "dockerfile: docker/active-tools/Dockerfile" in body
+    assert 'command: ["python", "-m", "uvicorn", "active_runner.app:app", "--host", "0.0.0.0", "--port", "8080"]' in body
+    assert "INSPECTRA_ACTIVE_TOOLS_MODE: asgi_no_live" in body
+    assert "healthcheck:" in body
+    assert "http://127.0.0.1:8080/health" in body
     assert "internal: true" in body
     assert "cap_drop:" in body
     assert "- ALL" in body
     assert "read_only: true" in body
     assert "tmpfs:" in body
+    assert "/tmp:rw,noexec,nosuid,size=16m" in body
     assert "no-new-privileges:true" in body
     assert "ports:" not in body
     assert "network_mode: host" not in body

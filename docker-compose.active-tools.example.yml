@@ -7,23 +7,31 @@ name: inspectra-active-tools-example
 services:
   active-tools:
     profiles: ["active"]
+    image: inspectra-active-tools:asgi-smoke
     build:
       context: .
       dockerfile: docker/active-tools/Dockerfile
+    command: ["python", "-m", "uvicorn", "active_runner.app:app", "--host", "0.0.0.0", "--port", "8080"]
     container_name: inspectra-active-tools
     environment:
-      INSPECTRA_ACTIVE_TOOLS_MODE: scaffold_no_run
+      INSPECTRA_ACTIVE_TOOLS_MODE: asgi_no_live
     networks:
       - inspectra_internal
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:rw,noexec,nosuid,size=16m
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     pids_limit: 128
     mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
 networks:
   inspectra_internal:
