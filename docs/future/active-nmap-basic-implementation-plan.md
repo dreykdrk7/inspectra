@@ -4844,6 +4844,99 @@ create jobs, call real active-tools, execute Nmap, change frontend runtime,
 create exports, integrate archive/run-all, integrate `tools/runner/main.py`,
 approve targets, release, or tag state.
 
+## Microphase 50: Backend No-Live Job Persistence
+
+Objective:
+
+Implement backend no-live persistence for `active_nmap_basic` using the
+Microphase 49 design. The existing route may create at most one owner-scoped,
+target-based job with `file_id: null` after feature-gate, auth/owner
+resolution, request validation, target policy, handoff, lifecycle, and
+persistence-adapter validation.
+
+Product direction:
+
+- Reintroduce persistence only for controlled no-live lifecycle results.
+- Keep the lifecycle storage-free.
+- Persist only allowlisted and redacted result payloads.
+- Preserve generic wrong-owner behavior for detail, Raw JSON-style API reads,
+  delete, and existing report/export routes.
+
+Files:
+
+- `backend/app/main.py`
+- `backend/app/active_nmap_lifecycle.py`
+- `backend/app/storage.py`
+- `backend/tests/test_backend.py`
+- `docs/future/active-nmap-basic-backend-no-live-job-persistence.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No real active-tools call.
+- No real `/active/nmap-basic` backend-to-active-tools call.
+- No Nmap execution.
+- No `nmap --version`.
+- No Docker or Compose.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No VPS, LAN, real domains, or real targets.
+- No frontend runtime changes.
+- No export implementation changes.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No migrations, tags, releases, push, or target approval.
+
+Validations:
+
+```text
+git status --short --branch
+.venv/bin/python -m py_compile backend/app/active_nmap_lifecycle.py backend/app/main.py backend/app/storage.py
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap_basic_route or no_live_job or lifecycle_state or active_nmap_basic_disabled_by_default or active_nmap_basic_enabled or active_nmap_basic_requires_authorization or malformed_targets_and_ports or auth_required_anonymous"
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_tools or active_nmap or nmap_basic or boundary or redaction"
+.venv/bin/python -m pytest backend/tests
+git diff --check
+git diff --cached --check
+source guardrail searches for active-tools real calls, Nmap, subprocess, Docker,
+DNS/probes/external HTTP, frontend runtime, export implementation, archive/run-all,
+and tools/runner integration
+```
+
+Acceptance criteria:
+
+- Disabled, invalid, unauthorized, and target-policy rejected requests do not
+  create jobs.
+- Valid enabled no-live requests create exactly one owner-scoped job.
+- Jobs use `audit_type: active_nmap_basic`, `file_id: null`,
+  `[REDACTED_TARGET]`, and `target_domain: null`.
+- Stored results are allowlisted, count-only where applicable, and redacted
+  before write.
+- `completed_no_live` is not confused with real execution.
+- `unsafe_lifecycle_result` is stored only as a sanitized controlled error.
+- Wrong-owner detail, Raw JSON-style job reads, delete, and existing
+  report/export routes remain generic.
+- Source guardrails confirm no real active-tools, Nmap, subprocess, Docker,
+  DNS/probe/external HTTP, frontend runtime, new export implementation,
+  archive/run-all, or `tools/runner/main.py` integration.
+
+Commit:
+
+```text
+feat(active): persist nmap no-live jobs
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_50_BACKEND_ACTIVE_NMAP_NO_LIVE_JOB_PERSISTENCE_PASSED`
+records that the existing route now persists safe no-live jobs only. It does
+not add real active-tools calls, Nmap execution, external traffic, frontend
+runtime changes, new export behavior, archive/run-all, `tools/runner/main.py`,
+release, or tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

@@ -375,6 +375,32 @@ class JobStore:
     def create_active_nmap_basic_job(self, target_display: str, *, owner_id: str | None = None) -> JobRecord:
         return self._create_job(None, "active_nmap_basic", target_url=target_display, owner_id=owner_id)
 
+    def create_active_nmap_basic_no_live_job(
+        self,
+        result: dict,
+        *,
+        status: JobStatus,
+        error: str | None = None,
+        owner_id: str | None = None,
+    ) -> JobRecord:
+        now = utc_now()
+        record = JobRecord(
+            id=uuid4().hex,
+            owner_id=owner_id,
+            audit_type="active_nmap_basic",
+            file_id=None,
+            target_url="[REDACTED_TARGET]",
+            target_domain=None,
+            status=status,
+            created_at=now,
+            updated_at=now,
+            result=result,
+            error=error,
+        )
+        with storage_lock(self.settings):
+            self._save_unlocked(record)
+        return record
+
     def _create_job(
         self,
         file_id: str | None,

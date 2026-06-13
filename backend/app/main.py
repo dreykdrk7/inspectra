@@ -8,6 +8,9 @@ from fastapi.responses import JSONResponse
 from app.active_tools_client import check_active_tools_health
 from app.active_nmap_lifecycle import (
     ActiveNmapBasicRouteNoLiveClient,
+    active_nmap_basic_no_live_job_error,
+    active_nmap_basic_no_live_job_status,
+    build_active_nmap_basic_no_live_job_result,
     normalize_active_nmap_basic_lifecycle_route_result,
     run_active_nmap_basic_lifecycle_skeleton,
 )
@@ -783,17 +786,18 @@ async def launch_active_http_header_probe(
     return job
 
 
-@app.post("/active/network/nmap-basic", status_code=status.HTTP_200_OK)
+@app.post("/active/network/nmap-basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_active_nmap_basic(
     request: Request,
     payload: Any = Body(...),
-) -> dict[str, Any]:
+) -> JobRecord:
     if not request.app.state.settings.active_nmap_basic_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="active_nmap_basic is disabled in this environment.",
         )
 
+    owner_id = current_owner_id_for_request(request)
     validate_active_nmap_basic_contract(payload)
     handoff_plan = build_active_nmap_basic_handoff_plan(payload)
     lifecycle_runner = getattr(
@@ -813,7 +817,20 @@ async def launch_active_nmap_basic(
         internal_approval_confirmed=True,
         fake_client_approved=True,
     )
-    return normalize_active_nmap_basic_lifecycle_route_result(lifecycle_result)
+    route_result = normalize_active_nmap_basic_lifecycle_route_result(lifecycle_result)
+    try:
+        job_result = build_active_nmap_basic_no_live_job_result(route_result, payload, handoff_plan=handoff_plan)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="active_nmap_basic no-live persistence result was unsafe.",
+        ) from exc
+    return request.app.state.jobs.create_active_nmap_basic_no_live_job(
+        job_result,
+        status=active_nmap_basic_no_live_job_status(job_result),
+        error=active_nmap_basic_no_live_job_error(job_result),
+        owner_id=owner_id,
+    )
 
 
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
