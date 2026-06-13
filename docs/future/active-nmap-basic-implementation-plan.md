@@ -4937,6 +4937,93 @@ not add real active-tools calls, Nmap execution, external traffic, frontend
 runtime changes, new export behavior, archive/run-all, `tools/runner/main.py`,
 release, or tag state.
 
+## Microphase 51: Backend No-Live Job Surfaces Hardening
+
+Objective:
+
+Harden backend surfaces that expose persisted `active_nmap_basic` no-live jobs:
+detail, list, Raw JSON-style API output, and existing Markdown/HTML/XML/PDF
+report routes. Surfaces must not present no-live jobs as real scans and must
+not expose target, payload, command, process output, service, credential/header
+/cookie/token, observation, evidence, or finding data.
+
+Product direction:
+
+- Read `result.status` and `result.lifecycle_state` before assigning meaning.
+- Keep `JobStatus.completed` separate from scan semantics.
+- Add explicit no-live caveats to public backend surfaces.
+- Omit no-live-incompatible fields from public no-live rendering.
+
+Files:
+
+- `backend/app/reporting.py`
+- `backend/app/storage.py`
+- `backend/tests/test_backend.py`
+- `docs/future/active-nmap-basic-backend-no-live-job-surfaces-hardening.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No frontend runtime changes.
+- No new frontend UX.
+- No new export routes.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No runner HTTP endpoint.
+- No real active-tools call.
+- No real `/active/nmap-basic` backend-to-active-tools call.
+- No Nmap execution.
+- No `nmap --version`.
+- No Docker or Compose.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No VPS, LAN, real domains, or real targets.
+- No migrations, tags, releases, push, or target approval.
+
+Validations:
+
+```text
+git status --short --branch
+.venv/bin/python -m py_compile backend/app/reporting.py backend/app/storage.py backend/app/main.py
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap_basic_no_live_job_surfaces or active_nmap_basic_no_live_surfaces or active_nmap_basic_enabled_route_persists or active_nmap_basic_wrong_owner or active_nmap_basic_synthetic_payload_exports or active_nmap_basic_real_shape_backend_surfaces or active_nmap_basic_controlled_states"
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_tools or active_nmap or nmap_basic or boundary or redaction"
+.venv/bin/python -m pytest backend/tests
+git diff --check
+git diff --cached --check
+source guardrail searches for real active-tools calls, Nmap, subprocess, Docker,
+DNS/probes/external HTTP, frontend runtime, archive/run-all, and tools/runner integration
+```
+
+Acceptance criteria:
+
+- Owner detail/list/Raw JSON-style output includes no-live caveats.
+- Existing Markdown/HTML/XML/PDF routes include no-live caveats.
+- No-live public rendering omits raw target, payload, command/argv,
+  stdout/stderr, XML, PTR/resolved IP, banner/version/service detail,
+  credential/header/cookie/token, observations, evidence, and findings.
+- Wrong-owner detail/export/delete remains generic.
+- Existing synthetic active Nmap reporting/redaction tests still pass.
+- Source guardrails confirm no real active-tools, Nmap, subprocess, Docker,
+  DNS/probe/external HTTP, frontend runtime, archive/run-all, or
+  `tools/runner/main.py` integration.
+
+Commit:
+
+```text
+test(active): harden nmap no-live job surfaces
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_51_BACKEND_ACTIVE_NMAP_NO_LIVE_JOB_SURFACES_HARDENED_PASSED`
+records that backend no-live job surfaces are hardened without adding frontend
+runtime, new export routes, real active-tools calls, Nmap execution, external
+traffic, archive/run-all, `tools/runner/main.py`, release, or tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

@@ -118,6 +118,68 @@ ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS = {
     "xml",
 }
 ACTIVE_NMAP_BASIC_TOKEN_SOURCE_KEYS = ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS | {"normalized", "normalized_target"}
+ACTIVE_NMAP_BASIC_NO_LIVE_STATES = {
+    "blocked_missing_approval",
+    "blocked_unconfigured",
+    "client_error_controlled",
+    "completed_no_live",
+    "not_executed",
+    "unsafe_lifecycle_result",
+}
+ACTIVE_NMAP_BASIC_NO_LIVE_OMITTED_KEYS = {
+    "argv",
+    "banner",
+    "banners",
+    "command",
+    "command_line",
+    "cookie",
+    "cookies",
+    "credential",
+    "credentials",
+    "evidence",
+    "findings",
+    "header",
+    "headers",
+    "nmap_xml",
+    "observations",
+    "port_observations",
+    "ptr",
+    "ptr_hostname",
+    "ptr_hostnames",
+    "raw",
+    "raw_command",
+    "raw_output",
+    "raw_payload",
+    "raw_request",
+    "raw_stderr",
+    "raw_stdout",
+    "raw_target",
+    "raw_xml",
+    "resolved_ip",
+    "resolved_ips",
+    "service",
+    "service_banner",
+    "service_details",
+    "service_product",
+    "stderr",
+    "stdout",
+    "target",
+    "target_url",
+    "token",
+    "tokens",
+    "version",
+    "versions",
+    "xml",
+}
+ACTIVE_NMAP_BASIC_NO_LIVE_CAVEATS = [
+    "No Nmap executed",
+    "No network requests",
+    "No DNS queries",
+    "No evidence collected",
+    "No observations available",
+    "Manual validation required",
+    "No-live lifecycle record, not a target finding",
+]
 ACTIVE_NMAP_BASIC_TEXT_REDACT_PATTERNS = (
     re.compile(r"<\?xml\b.*?</nmaprun\s*>", flags=re.IGNORECASE | re.DOTALL),
     re.compile(r"<nmaprun\b.*?</nmaprun\s*>", flags=re.IGNORECASE | re.DOTALL),
@@ -740,37 +802,65 @@ def build_active_http_header_probe_sections(result: dict[str, Any]) -> list[Repo
 
 
 def build_active_nmap_basic_sections(result: dict[str, Any]) -> list[ReportSection]:
-    public_result = as_dict(redact_active_nmap_basic_value(result))
+    public_result = public_active_nmap_basic_result(result)
     summary = as_dict(public_result.get("summary"))
     limits = as_dict(public_result.get("limits"))
-    observations = flatten_active_nmap_basic_observations(public_result.get("port_observations"))
+    no_live = is_active_nmap_basic_no_live_result(public_result)
+    observations = [] if no_live else flatten_active_nmap_basic_observations(public_result.get("port_observations"))
     raw_json = json.dumps(public_result, indent=2, sort_keys=True)
     status_text = stringify(public_result.get("status", "N/A"))
+    lifecycle_state = stringify(public_result.get("lifecycle_state", "N/A"))
     observation_count = summary.get("observation_count", public_result.get("observation_count", len(observations)))
+    scope_rows = (
+        [
+            ("Result wording", "No-live lifecycle record, not a target finding. Manual validation required."),
+            ("Nmap execution", "No Nmap executed."),
+            ("Network activity", "No network requests. No DNS queries."),
+            ("Evidence boundary", "No evidence collected. No observations available."),
+            ("Authorization boundary", "Operator confirmation is required but is not proof of target ownership."),
+        ]
+        if no_live
+        else [
+            ("Result wording", "Observed TCP exposure; Review indicator; Manual validation required."),
+            ("Assertion boundary", "No vulnerability confirmation is asserted."),
+            ("Authorization boundary", "Operator confirmation is required but is not proof of target ownership."),
+            ("Completeness boundary", "This bounded result does not claim complete port coverage."),
+        ]
+    )
+    observation_title = "No-Live Observation Status" if no_live else "Observed TCP Exposure"
+    observation_rows = (
+        [
+            ("Observation status", "No observations available."),
+            ("Evidence status", "No evidence collected."),
+            ("Validation", "Manual validation required."),
+            ("Interpretation", "No-live lifecycle record, not a target finding."),
+        ]
+        if no_live
+        else observations or [("Observation status", "No TCP port observations were provided; manual validation remains required.")]
+    )
+    caveat_sections = []
+    if no_live:
+        caveat_sections.append(
+            ReportSection(
+                "No-Live Caveats",
+                [(f"Caveat {index}", caveat) for index, caveat in enumerate(ACTIVE_NMAP_BASIC_NO_LIVE_CAVEATS, start=1)],
+            )
+        )
     return [
-        ReportSection(
-            "Active Nmap Basic Scope Notice",
-            [
-                ("Result wording", "Observed TCP exposure; Review indicator; Manual validation required."),
-                ("Assertion boundary", "No vulnerability confirmation is asserted."),
-                ("Authorization boundary", "Operator confirmation is required but is not proof of target ownership."),
-                ("Completeness boundary", "This bounded result does not claim complete port coverage."),
-            ],
-        ),
+        ReportSection("Active Nmap Basic Scope Notice", scope_rows),
         ReportSection(
             "Active Nmap Basic Summary",
             [
                 ("Capability", stringify(public_result.get("capability", "active_nmap_basic"))),
                 ("Profile", stringify(public_result.get("profile", "N/A"))),
                 ("Result status", status_text),
+                ("Lifecycle state", lifecycle_state),
                 ("Controlled state", active_nmap_basic_status_label(status_text)),
                 ("Observation count", stringify(observation_count)),
             ],
         ),
-        ReportSection(
-            "Observed TCP Exposure",
-            observations or [("Observation status", "No TCP port observations were provided; manual validation remains required.")],
-        ),
+        *caveat_sections,
+        ReportSection(observation_title, observation_rows),
         ReportSection("Limits", flatten_mapping(limits)),
         ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
     ]
@@ -800,6 +890,7 @@ def active_nmap_basic_status_label(status_text: str) -> str:
     return {
         "completed": "Completed structured result; observations are review indicators only.",
         "failed": "Controlled failed state; no vulnerability assertion is made.",
+        "not_executed": "Not executed; no Nmap ran and manual validation is required.",
         "timed_out": "Controlled timed-out state; output may be incomplete.",
         "nmap_missing": "Controlled missing-tool state; no result assertion is made.",
         "malformed": "Controlled malformed state; parser could not use the payload safely.",
@@ -1382,13 +1473,19 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["policy_version"] = policy.get("policy_version", "N/A")
     elif job.audit_type == "active_nmap_basic":
         limits = as_dict(result.get("limits"))
+        result_summary = as_dict(result.get("summary"))
+        execution = as_dict(result.get("execution"))
         observations = result.get("port_observations")
         if not isinstance(observations, list):
+            observations = []
+        no_live = is_active_nmap_basic_no_live_result(result)
+        if no_live:
             observations = []
         data["capability"] = result.get("capability", "active_nmap_basic")
         data["profile"] = result.get("profile", "N/A")
         data["result_status"] = result.get("status", "N/A")
-        data["observation_count"] = result.get("observation_count", len(observations))
+        data["lifecycle_state"] = result.get("lifecycle_state", "N/A")
+        data["observation_count"] = result_summary.get("observation_count", result.get("observation_count", len(observations)))
         data["open_tcp_observations_count"] = sum(
             1
             for observation in observations
@@ -1399,7 +1496,17 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["output_truncated"] = limits.get("output_truncated", result.get("output_truncated", "N/A"))
         data["stderr_truncated"] = limits.get("stderr_truncated", result.get("stderr_truncated", "N/A"))
         data["timed_out"] = limits.get("timed_out", result.get("timed_out", "N/A"))
-        data["evidence_wording"] = "Observed TCP exposure; Review indicator; Manual validation required."
+        if no_live:
+            data["manual_validation_required"] = True
+            data["no_live_lifecycle_record"] = True
+            data["surface_interpretation"] = "No-live lifecycle record, not a target finding"
+            data["nmap_executed"] = execution.get("nmap_executed", False)
+            data["network_requests_sent"] = execution.get("network_requests_sent", 0)
+            data["dns_queries_sent"] = execution.get("dns_queries_sent", 0)
+            data["evidence_collected"] = False
+            data["observations_available"] = False
+        else:
+            data["evidence_wording"] = "Observed TCP exposure; Review indicator; Manual validation required."
     return data
 
 
@@ -1456,8 +1563,48 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
     if job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         return as_dict(redact_active_config_value(result))
     if job.audit_type == "active_nmap_basic":
-        return as_dict(redact_active_nmap_basic_value(result))
+        return public_active_nmap_basic_result(result)
     return result
+
+
+def public_active_nmap_basic_result(result: dict[str, Any]) -> dict[str, Any]:
+    public_result = as_dict(redact_active_nmap_basic_value(result))
+    if not is_active_nmap_basic_no_live_result(public_result):
+        return public_result
+
+    for key in ACTIVE_NMAP_BASIC_NO_LIVE_OMITTED_KEYS:
+        public_result.pop(key, None)
+
+    summary = as_dict(public_result.get("summary"))
+    summary.update(
+        {
+            "manual_validation_required": True,
+            "no_live_lifecycle_record": True,
+            "nmap_executed": False,
+            "network_requests_sent": 0,
+            "dns_queries_sent": 0,
+            "evidence_collected": False,
+            "observations_available": False,
+            "surface_interpretation": "No-live lifecycle record, not a target finding",
+        }
+    )
+    public_result["summary"] = summary
+    public_result["execution"] = {
+        "nmap_executed": False,
+        "network_requests_sent": 0,
+        "dns_queries_sent": 0,
+        "subprocess_invoked": False,
+        "active_tools_real_call_allowed": False,
+        "target_expansion_performed": False,
+        "evidence_available": False,
+    }
+    public_result["surface_caveats"] = list(ACTIVE_NMAP_BASIC_NO_LIVE_CAVEATS)
+    public_result["surface_interpretation"] = "No-live lifecycle record, not a target finding"
+    return public_result
+
+
+def is_active_nmap_basic_no_live_result(result: dict[str, Any]) -> bool:
+    return result.get("lifecycle_state") in ACTIVE_NMAP_BASIC_NO_LIVE_STATES
 
 
 def public_job_target_url(job: JobRecord) -> str:

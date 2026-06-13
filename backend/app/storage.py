@@ -876,15 +876,30 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["policy_version"] = policy.get("policy_version")
         if record.audit_type == "active_nmap_basic":
             limits = record.result.get("limits")
+            execution = record.result.get("execution")
             observations = record.result.get("port_observations")
             if not isinstance(limits, dict):
                 limits = {}
+            if not isinstance(execution, dict):
+                execution = {}
             if not isinstance(observations, list):
+                observations = []
+            lifecycle_state = record.result.get("lifecycle_state")
+            no_live_lifecycle_states = {
+                "blocked_missing_approval",
+                "blocked_unconfigured",
+                "client_error_controlled",
+                "completed_no_live",
+                "not_executed",
+                "unsafe_lifecycle_result",
+            }
+            if lifecycle_state in no_live_lifecycle_states:
                 observations = []
             summary["capability"] = record.result.get("capability", "active_nmap_basic")
             summary["profile"] = record.result.get("profile")
             summary["result_status"] = record.result.get("status")
-            summary["observation_count"] = record.result.get("observation_count", len(observations))
+            summary["lifecycle_state"] = lifecycle_state
+            summary["observation_count"] = manifest_summary.get("observation_count", record.result.get("observation_count", len(observations)))
             summary["open_tcp_observations_count"] = sum(
                 1
                 for observation in observations
@@ -895,6 +910,15 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["output_truncated"] = limits.get("output_truncated", record.result.get("output_truncated"))
             summary["stderr_truncated"] = limits.get("stderr_truncated", record.result.get("stderr_truncated"))
             summary["timed_out"] = limits.get("timed_out", record.result.get("timed_out"))
+            if lifecycle_state in no_live_lifecycle_states:
+                summary["manual_validation_required"] = True
+                summary["no_live_lifecycle_record"] = True
+                summary["surface_interpretation"] = "No-live lifecycle record, not a target finding"
+                summary["nmap_executed"] = execution.get("nmap_executed", False)
+                summary["network_requests_sent"] = execution.get("network_requests_sent", 0)
+                summary["dns_queries_sent"] = execution.get("dns_queries_sent", 0)
+                summary["evidence_collected"] = False
+                summary["observations_available"] = False
         return summary
     if record.error:
         return {"error": record.error}

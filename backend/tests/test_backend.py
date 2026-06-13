@@ -4579,6 +4579,23 @@ def assert_no_active_nmap_basic_no_live_leaks(value: object) -> None:
         assert forbidden not in serialized
 
 
+ACTIVE_NMAP_BASIC_NO_LIVE_CAVEATS = (
+    "No Nmap executed",
+    "No network requests",
+    "No DNS queries",
+    "No evidence collected",
+    "No observations available",
+    "Manual validation required",
+    "No-live lifecycle record, not a target finding",
+)
+
+
+def assert_active_nmap_basic_no_live_caveats(value: object) -> None:
+    serialized = json.dumps(value, sort_keys=True) if not isinstance(value, str) else value
+    for caveat in ACTIVE_NMAP_BASIC_NO_LIVE_CAVEATS:
+        assert caveat in serialized
+
+
 def install_active_nmap_basic_fake_executor(results: list[dict]) -> FakeActiveNmapBasicExecutorAdapter:
     adapter = FakeActiveNmapBasicExecutorAdapter(results)
     app.state.active_nmap_basic_service = ActiveNmapBasicService(app.state.settings, app.state.jobs, adapter)
@@ -5791,7 +5808,150 @@ async def test_active_nmap_basic_enabled_route_persists_lifecycle_no_live_job(mo
     assert jobs[0]["summary"]["capability"] == "active_nmap_basic"
     assert jobs[0]["summary"]["result_status"] == "not_executed"
     assert jobs[0]["summary"]["observation_count"] == 0
+    assert jobs[0]["summary"]["lifecycle_state"] == "completed_no_live"
+    assert jobs[0]["summary"]["no_live_lifecycle_record"] is True
+    assert jobs[0]["summary"]["surface_interpretation"] == "No-live lifecycle record, not a target finding"
+    assert jobs[0]["summary"]["nmap_executed"] is False
+    assert jobs[0]["summary"]["network_requests_sent"] == 0
+    assert jobs[0]["summary"]["dns_queries_sent"] == 0
+    assert jobs[0]["summary"]["evidence_collected"] is False
+    assert jobs[0]["summary"]["observations_available"] is False
     assert_no_active_nmap_basic_no_live_leaks({"create": payload, "jobs": jobs})
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_no_live_job_surfaces_show_caveats_and_redact(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_URL", "http://active-tools:8080")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post("/active/network/nmap-basic", json=make_active_nmap_basic_payload(ports=[443]))
+        job_id = create_response.json()["id"]
+        detail_response = await client.get(f"/jobs/{job_id}")
+        list_response = await client.get("/jobs")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    assert create_response.status_code == 202
+    assert detail_response.status_code == 200
+    assert list_response.status_code == 200
+    assert all(response.status_code == 200 for response in export_responses.values())
+    detail = detail_response.json()
+    listing = list_response.json()
+    assert detail["result"]["surface_interpretation"] == "No-live lifecycle record, not a target finding"
+    assert detail["result"]["surface_caveats"] == list(ACTIVE_NMAP_BASIC_NO_LIVE_CAVEATS)
+    assert detail["result"]["summary"]["no_live_lifecycle_record"] is True
+    assert detail["result"]["summary"]["manual_validation_required"] is True
+    assert listing[0]["summary"]["surface_interpretation"] == "No-live lifecycle record, not a target finding"
+    assert listing[0]["summary"]["manual_validation_required"] is True
+    assert listing[0]["target_url"] == "[REDACTED_TARGET]"
+    assert "port_observations" not in detail["result"]
+    assert "observations" not in detail["result"]
+    assert "evidence" not in detail["result"]
+
+    combined = json.dumps({"create": create_response.json(), "detail": detail, "list": listing}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in export_responses.items()
+    )
+    assert_active_nmap_basic_no_live_caveats(combined)
+    assert "No-Live Observation Status" in combined
+    assert "Observed TCP Exposure" not in combined
+    assert_no_active_nmap_basic_no_live_leaks(combined)
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_no_live_surfaces_omit_malicious_legacy_fields(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    job = JobRecord(
+        id="b" * 31 + "5",
+        owner_id=DEFAULT_LOCAL_OPERATOR.id,
+        audit_type="active_nmap_basic",
+        file_id=None,
+        target_url="192.168.56.10",
+        target_domain=None,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "audit_type": "active_nmap_basic",
+            "capability": "active_nmap_basic",
+            "mode": "live_nmap_basic",
+            "profile": "tcp_connect_small",
+            "status": "not_executed",
+            "lifecycle_state": "completed_no_live",
+            "reason": "fake_client_not_executed",
+            "summary": {"observation_count": 0, "manual_validation_required": True},
+            "target": {"raw": "192.168.56.10", "hostname": "secret-lab.internal"},
+            "raw_payload": {"target": "192.168.56.10"},
+            "command": "nmap -sT 192.168.56.10",
+            "stdout": "stdout with <nmaprun><host><address addr='192.168.56.10'/></host></nmaprun>",
+            "stderr": "stderr for secret-lab.internal token_should_never_render",
+            "raw_xml": "<nmaprun args='nmap -sT 192.168.56.10'/>",
+            "resolved_ip": "192.168.56.10",
+            "ptr_hostname": "secret-lab.internal",
+            "service_details": {"banner": "PrivateServer 9.9.9"},
+            "headers": {"Authorization": "Bearer token_should_never_render"},
+            "cookies": {"session": "token_should_never_render"},
+            "tokens": ["token_should_never_render"],
+            "credentials": {"password": "token_should_never_render"},
+            "port_observations": [{"port": 443, "protocol": "tcp", "state": "open", "reason": "syn-ack"}],
+            "observations": [{"port": 443, "state": "open"}],
+            "evidence": ["192.168.56.10 responded"],
+        },
+        error="nmap -sT 192.168.56.10 token_should_never_render",
+    )
+    app.state.jobs.save(job)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        detail_response = await client.get(f"/jobs/{job.id}")
+        list_response = await client.get("/jobs")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    assert detail_response.status_code == 200
+    assert list_response.status_code == 200
+    assert all(response.status_code == 200 for response in export_responses.values())
+    public_result = detail_response.json()["result"]
+    for forbidden_key in (
+        "target",
+        "raw_payload",
+        "command",
+        "stdout",
+        "stderr",
+        "raw_xml",
+        "resolved_ip",
+        "ptr_hostname",
+        "service_details",
+        "headers",
+        "cookies",
+        "tokens",
+        "credentials",
+        "port_observations",
+        "observations",
+        "evidence",
+    ):
+        assert forbidden_key not in public_result
+    assert public_result["surface_caveats"] == list(ACTIVE_NMAP_BASIC_NO_LIVE_CAVEATS)
+    assert detail_response.json()["target_url"] == "[REDACTED_TARGET]"
+    assert list_response.json()[0]["target_url"] == "[REDACTED_TARGET]"
+
+    combined = json.dumps({"detail": detail_response.json(), "list": list_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in export_responses.items()
+    )
+    assert_active_nmap_basic_no_live_caveats(combined)
+    assert "Observed TCP Exposure" not in combined
+    assert_no_active_nmap_basic_no_live_leaks(combined)
 
 
 @pytest.mark.anyio
