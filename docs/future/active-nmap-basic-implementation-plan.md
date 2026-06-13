@@ -4448,6 +4448,103 @@ health-only boundary. It does not add `/active/nmap-basic` calls, Nmap
 execution, target approval, jobs, exports, frontend changes, archive/run-all,
 `tools/runner/main.py`, release, or tag state.
 
+## Microphase 46: Backend Active Tools Nmap Basic Client Contract No-Live
+
+Objective:
+
+Add a backend client helper for the future internal `active-tools`
+`/active/nmap-basic` contract, tested only with fake HTTP transport. Validate
+bounded request shape, no-live response shape, timeout/error mapping, redaction,
+and source boundaries without invoking the helper from backend runtime analysis.
+
+Product direction:
+
+- Prepare a backend-owned internal client contract before any job integration.
+- Keep all tests mock/no-live and target-safe.
+- Preserve the distinction between health readiness, no-live contract checks,
+  and real execution.
+
+Probable files:
+
+- `backend/app/active_tools_client.py`
+- `backend/tests/test_backend.py`
+- `docs/future/active-nmap-basic-backend-active-tools-nmap-basic-client-contract-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No backend runtime invocation of the helper.
+- No public endpoint that accepts targets.
+- No job creation.
+- No job lifecycle connection to `active-tools`.
+- No exports.
+- No frontend runtime changes.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No Nmap execution.
+- No `nmap --version`.
+- No Docker or Compose smoke.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No VPS, LAN, real domains, or real targets.
+- No new published ports.
+- No migrations, tags, releases, push, or target approval.
+
+Expected validations:
+
+```text
+git status --short --branch
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_tools_nmap_basic_client or active_tools_health_client_source or active_tools_health_client"
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_tools or active_nmap or nmap_basic or boundary or redaction"
+git diff --check
+git diff --cached --check
+rg -n "run_active_nmap_basic|/active/nmap-basic|active_tools_unconfigured|active_tools_unavailable|active_tools_timeout|active_tools_invalid_response|active_tools_unexpected_fields|not_executed|target_input_allowed|nmap_executed|network_requests_sent" backend/app/active_tools_client.py backend/tests/test_backend.py docs README.md
+rg -n "subprocess|shell=True|os.system|popen|Popen\\(|nmap --version|nmap -sT|DockerClient|from docker|docker.sock|tools/runner/main.py" backend/app/active_tools_client.py backend/app/main.py backend/app/services.py backend/tests/test_backend.py docs README.md
+rg -n "run_active_nmap_basic\\(" backend/app/main.py backend/app/services.py frontend tools/runner/main.py
+rg -n "www.urlbreve.es|www.vildek.es|app.vildek.es|51.38.225.243|vps-40567620" backend/app/active_tools_client.py backend/tests/test_backend.py
+```
+
+Risks:
+
+- Mistaking a client helper for runtime integration.
+- Allowing raw command or target-file fields into the request.
+- Reflecting target or payload values in controlled errors.
+- Accepting a response that implies execution, network requests, job creation,
+  target expansion, evidence availability, or observations.
+- Accidentally wiring the helper into backend jobs before a separate phase.
+
+Acceptance criteria:
+
+- `run_active_nmap_basic` exists only as an internal helper in
+  `backend/app/active_tools_client.py`.
+- Tests use `httpx.MockTransport` or equivalent fakes only.
+- Success posts only to `/active/nmap-basic` and returns normalized no-live
+  `not_executed` metadata.
+- Timeout, connection, non-2xx, invalid JSON, invalid request, unexpected
+  fields, and unsafe flags map to controlled errors without target leakage.
+- Source guardrails confirm no subprocess/Nmap execution, no
+  `nmap --version`, no Docker/Compose dependency, no runtime route/job/export
+  invocation, no frontend, no archive/run-all, and no `tools/runner/main.py`
+  integration.
+
+Suggested commit:
+
+```text
+test(active): add active tools nmap basic client contract
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_46_BACKEND_ACTIVE_TOOLS_NMAP_BASIC_CLIENT_CONTRACT_NO_LIVE_PASSED`
+records that backend has a tested, mock-only client contract for the future
+internal `active-tools` `/active/nmap-basic` call. It does not add runtime
+analysis invocation, target approval, Nmap execution, jobs, exports, frontend
+changes, archive/run-all, `tools/runner/main.py`, release, or tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
