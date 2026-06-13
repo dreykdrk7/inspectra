@@ -3429,6 +3429,122 @@ public endpoints, real active-tools jobs, live exports, archive/run-all,
 `tools/runner/main.py` integration, frontend runtime changes, target approval,
 tags, or releases.
 
+## Microphase 37: Active Tools Health Readiness Hardening, No Scan
+
+Objective:
+
+Harden the pure internal `active-tools` health/readiness handler so it is
+explicitly no-target, no-scan, small, stable, and redaction-safe before any
+fake-execution, ASGI/server runtime, or backend live-call phase. Do not run
+Docker, Compose, Nmap, `nmap --version`, probes, DNS checks, external HTTP
+checks, `curl`, or a browser. Do not start a real server, add a real HTTP
+endpoint, add backend live calls, change backend runtime, create real
+active-tools jobs, create live exports, integrate archive/run-all, integrate
+`tools/runner/main.py`, change frontend runtime, approve targets, create tags,
+or create releases.
+
+Probable files:
+
+- `tools/active_runner/service.py`
+- `tools/tests/test_active_tools_internal_service_skeleton.py`
+- `tools/tests/test_active_tools_health_readiness.py`
+- `docs/future/active-nmap-basic-active-tools-health-readiness-hardening-no-scan.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Compose execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No `curl` or browser checks.
+- No real server process.
+- No real HTTP endpoint.
+- No backend-to-active-tools live calls.
+- No backend runtime change to call the service.
+- No real jobs created from `active-tools`.
+- No live exports.
+- No fake execution.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No frontend runtime changes.
+- No target approval for `www.vildek.es`.
+- No target approval for `app.vildek.es`.
+- No approval for port `80`.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest tools/tests/test_active_tools_internal_service_skeleton.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_health_readiness.py
+.venv/bin/python -m pytest tools/tests/test_active_runner.py -k "nmap"
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap or nmap_basic or boundary or redaction"
+rg -n "subprocess|docker|DockerClient|from docker|docker.sock|nmap --version|nmap -sT|Nmap execution|tools/runner/main.py|os.environ|socket.gethostname" tools/active_runner tools/tests
+rg -n "raw_xml|stdout|stderr|ptr_hostname|resolved_ip|script_output|nse|credentials|cookies|tokens|headers|network_requests_sent|nmap_executed|disabled_no_scan|scaffold_ready" tools backend docs README.md
+rg -n "vps-40567620|51.38.225.243" backend tools/tests || true
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- Health/readiness accepts target, port, credential, header, cookie, token, or
+  command-bearing payloads.
+- Health/readiness performs host introspection, local path disclosure, Nmap
+  path lookup, or Nmap version lookup.
+- Rejection responses echo submitted targets, secrets, commands, raw XML,
+  stdout/stderr, PTR, resolved IP, service/banner/version data, or unsafe
+  claims.
+- Readiness metadata is mistaken for a public endpoint or runtime approval.
+
+Acceptance criteria:
+
+- No-payload health returns only `service: active-tools`, `status:
+  scaffold_ready`, stable capability metadata, `network_requests_sent: 0`, and
+  `nmap_executed: false`.
+- Capability metadata marks `active_nmap_basic` as `disabled_no_scan`,
+  `execution_enabled: false`, and `target_input_allowed: false`.
+- Target, targets, target unit, ports, credentials, headers, cookies, tokens,
+  raw command, args, scripts, NSE, local path, environment, and hostname inputs
+  are rejected or ignored safely without leakage. The accepted behavior for this
+  phase is controlled rejection.
+- Health does not expose hostname, local paths, environment variables, Nmap
+  version, targets, command/argv, stdout/stderr, raw XML, resolved IP, PTR,
+  service/banner/version data, or secrets.
+- Method/path dispatch remains controlled.
+- Source guards show no subprocess, Docker SDK, `nmap --version`, real
+  executor, backend service import, host introspection, or `tools/runner/main.py`
+  integration.
+
+Suggested commit:
+
+```text
+test(active): harden active tools health readiness
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_37_ACTIVE_TOOLS_HEALTH_READINESS_HARDENING_NO_SCAN_ACCEPTED`
+hardens pure `active-tools` health/readiness so it accepts only absent/empty
+payloads, returns stable `disabled_no_scan` capability metadata, blocks
+target/port/credential/header/cookie/token/command/script/NSE payloads without
+leakage, and remains no-scan/no-live. It does not add Docker/Compose/Nmap
+execution, backend live calls, backend runtime wiring, public endpoints, real
+active-tools jobs, live exports, archive/run-all, `tools/runner/main.py`
+integration, frontend runtime changes, target approval, tags, or releases.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

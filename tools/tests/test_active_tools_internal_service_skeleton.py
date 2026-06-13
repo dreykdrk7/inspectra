@@ -9,6 +9,7 @@ from active_runner.service import (
     ACTIVE_TOOLS_HEALTH_PATH,
     ACTIVE_TOOLS_NMAP_BASIC_PATH,
     ACTIVE_TOOLS_NO_SCAN_REASON,
+    active_tools_capability_metadata,
     handle_active_nmap_basic_no_scan,
     handle_active_tools_health,
     handle_active_tools_request,
@@ -77,9 +78,10 @@ def test_health_readiness_has_no_target_and_no_execution():
     assert response["status"] == "scaffold_ready"
     assert response["network_requests_sent"] == 0
     assert response["nmap_executed"] is False
-    assert response["target_required"] is False
+    assert response["capabilities"] == active_tools_capability_metadata()
     assert response["capabilities"]["active_nmap_basic"]["status"] == "disabled_no_scan"
     assert response["capabilities"]["active_nmap_basic"]["execution_enabled"] is False
+    assert response["capabilities"]["active_nmap_basic"]["target_input_allowed"] is False
     assert "192.168.56.10" not in serialized(response)
 
 
@@ -87,9 +89,9 @@ def test_health_rejects_target_payload_without_leaking_target():
     response = handle_active_tools_health({"target": "192.168.56.10"})
 
     assert response["status"] == "blocked_no_live_service"
-    assert response["errors"] == ["health_target_not_accepted"]
+    assert response["errors"] == ["health_payload_not_accepted"]
     assert response["network_requests_sent"] == 0
-    assert response["summary"]["nmap_executed"] is False
+    assert response["nmap_executed"] is False
     assert_no_sensitive_output(response)
 
 

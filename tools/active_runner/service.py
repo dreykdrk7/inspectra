@@ -80,22 +80,28 @@ _SENSITIVE_RESPONSE_TERMS = (
 )
 
 
+def active_tools_capability_metadata() -> dict[str, Any]:
+    return {
+        ACTIVE_NMAP_BASIC_CAPABILITY: {
+            "status": "disabled_no_scan",
+            "execution_enabled": False,
+            "target_input_allowed": False,
+        }
+    }
+
+
 def handle_active_tools_health(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    if payload and any(_normalize_key(key) in {"target", "targets", "target_unit"} for key in payload):
-        return _blocked_response("health_target_not_accepted")
+    if payload is not None:
+        if not isinstance(payload, Mapping):
+            return _blocked_health_response("health_payload_not_mapping")
+        if payload:
+            return _blocked_health_response("health_payload_not_accepted")
     return {
         "service": ACTIVE_TOOLS_SERVICE_NAME,
         "status": "scaffold_ready",
+        "capabilities": active_tools_capability_metadata(),
         "network_requests_sent": 0,
         "nmap_executed": False,
-        "target_required": False,
-        "capabilities": {
-            ACTIVE_NMAP_BASIC_CAPABILITY: {
-                "status": "disabled_no_scan",
-                "execution_enabled": False,
-                "endpoint": ACTIVE_TOOLS_NMAP_BASIC_PATH,
-            }
-        },
     }
 
 
@@ -192,6 +198,19 @@ def _blocked_response(reason: str) -> dict[str, Any]:
             "nmap_executed": False,
             "evidence_available": False,
         },
+        "warnings": [],
+        "errors": [reason],
+    }
+
+
+def _blocked_health_response(reason: str) -> dict[str, Any]:
+    return {
+        "service": ACTIVE_TOOLS_SERVICE_NAME,
+        "status": "blocked_no_live_service",
+        "capabilities": active_tools_capability_metadata(),
+        "execution_enabled": False,
+        "network_requests_sent": 0,
+        "nmap_executed": False,
         "warnings": [],
         "errors": [reason],
     }

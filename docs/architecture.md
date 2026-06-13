@@ -279,6 +279,8 @@ The Active Nmap Basic backend active-tools boundary contract tests decision is `
 
 The Active Nmap Basic active-tools internal service skeleton decision is `ACTIVE_NMAP_BASIC_36_ACTIVE_TOOLS_INTERNAL_SERVICE_SKELETON_NO_SCAN_ACCEPTED`. `tools/active_runner/service.py` now provides pure offline handlers for conceptual `GET /health` and `POST /active/nmap-basic` behavior. They return scaffold-ready or not-executed no-scan states, reject dangerous fields and expanded target shapes, and do not import the real Nmap executor. This phase does not add a running server, public endpoint, backend live call, backend runtime wiring, Docker/Compose/Nmap execution, runner HTTP endpoint, real jobs, live exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime changes, target approval, release, or tag state.
 
+The Active Nmap Basic active-tools health readiness hardening decision is `ACTIVE_NMAP_BASIC_37_ACTIVE_TOOLS_HEALTH_READINESS_HARDENING_NO_SCAN_ACCEPTED`. The pure health handler now accepts only absent or empty payloads, returns small stable `scaffold_ready` metadata, marks `active_nmap_basic` as `disabled_no_scan` with `target_input_allowed: false`, and rejects target, port, credential, header, cookie, token, command, script, and NSE payloads without echoing values. This phase does not add fake execution, a running server, public endpoint, backend live call, backend runtime wiring, Docker/Compose/Nmap execution, runner HTTP endpoint, real jobs, live exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime changes, target approval, release, or tag state.
+
 ## Components
 
 ### Backend
