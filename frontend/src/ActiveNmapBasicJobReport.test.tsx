@@ -65,7 +65,7 @@ describe("ActiveNmapBasicJobReport", () => {
     expect(screen.getByRole("heading", { name: "Active / Nmap basic report" })).toBeInTheDocument();
     expect(screen.getAllByText("Observed TCP exposure / Review indicator").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Manual validation required/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/No confirmed vulnerability is asserted/)).toBeInTheDocument();
+    expect(screen.getByText(/No security finding is asserted/)).toBeInTheDocument();
     expect(screen.getByText(/Authorization is user asserted, not proof of ownership/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Port Observations" })).toBeInTheDocument();
     expect(screen.getByText("443")).toBeInTheDocument();
@@ -130,7 +130,7 @@ describe("ActiveNmapBasicJobReport", () => {
     expect(screen.getByText(/Sparse active_nmap_basic payload|Controlled active_nmap_basic state/)).toBeInTheDocument();
   });
 
-  it("renders not-executed as not connected rather than a completed scan", () => {
+  it("renders completed_no_live as a no-live lifecycle record rather than completed execution", () => {
     const { container } = render(
       <ActiveNmapBasicJobReport
         job={{
@@ -139,8 +139,15 @@ describe("ActiveNmapBasicJobReport", () => {
             audit_type: "active_nmap_basic",
             capability: "active_nmap_basic",
             status: "not_executed",
+            lifecycle_state: "completed_no_live",
+            no_live_lifecycle_record: true,
             execution_state: "not_executed",
-            job_created: false,
+            job_created: true,
+            nmap_executed: false,
+            network_requests_sent: 0,
+            dns_queries_sent: 0,
+            evidence_available: false,
+            observations_available: false,
             limits: { output_truncated: false, stderr_truncated: false, timed_out: false }
           }
         }}
@@ -148,11 +155,51 @@ describe("ActiveNmapBasicJobReport", () => {
     );
 
     const rendered = container.textContent ?? "";
-    expect(screen.getByText(/was not executed/i)).toBeInTheDocument();
+    expect(screen.getByText(/no-live lifecycle completed/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No-Live Caveats" })).toBeInTheDocument();
+    expect(screen.getAllByText(/No Nmap executed/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/No network requests/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/No DNS queries/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/No evidence collected/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/No observations available/i).length).toBeGreaterThan(0);
+    expect(screen.getByText("completed_no_live")).toBeInTheDocument();
     expect(rendered).toContain("not_executed");
     expect(rendered).not.toContain("completed scan");
     expect(rendered).not.toContain("completed with bounded observations");
     expect(rendered).not.toContain("Run Nmap");
+  });
+
+  it("renders controlled no-live lifecycle errors without target details", () => {
+    for (const lifecycleState of ["client_error_controlled", "unsafe_lifecycle_result"] as const) {
+      const { container, unmount } = render(
+        <ActiveNmapBasicJobReport
+          job={{
+            ...baseJob,
+            result: {
+              audit_type: "active_nmap_basic",
+              capability: "active_nmap_basic",
+              status: "not_executed",
+              lifecycle_state: lifecycleState,
+              no_live_lifecycle_record: true,
+              target: "secret-lab.internal",
+              payload: { target: "192.168.56.10" },
+              nmap_executed: false,
+              network_requests_sent: 0,
+              errors: ["secret-lab.internal token_should_never_render"]
+            }
+          }}
+        />
+      );
+      const rendered = container.textContent ?? "";
+      expect(rendered).toContain(lifecycleState);
+      expect(rendered).toContain("controlled");
+      expect(rendered).toContain("No target details are shown");
+      expect(rendered).toContain("No Nmap executed");
+      expect(rendered).not.toContain("secret-lab.internal");
+      expect(rendered).not.toContain("192.168.56.10");
+      expect(rendered).not.toContain("token_should_never_render");
+      unmount();
+    }
   });
 
   it("redacts raw target, command, XML, stdout, stderr, headers, cookies, tokens, credentials, and legacy claims", () => {
@@ -194,7 +241,7 @@ describe("ActiveNmapBasicJobReport", () => {
       expect(rendered).not.toContain(secret);
     }
     expect(rendered).toContain("[REDACTED");
-    expect(screen.getByText(/No confirmed vulnerability is asserted/)).toBeInTheDocument();
+    expect(screen.getByText(/No security finding is asserted/)).toBeInTheDocument();
     expect(rendered).not.toContain("exploitable");
     expect(rendered).not.toContain("target is safe");
     expect(rendered).not.toContain("all ports found");

@@ -26,12 +26,14 @@ export function ActiveNmapBasicJobReport({ job }: { job: JobRecord }) {
           <div>
             <h3>Active / Nmap basic report</h3>
             <p className="muted">
-              Observed TCP exposure. Review indicator. Manual validation required. No confirmed vulnerability is asserted.
+              {report.isNoLiveLifecycle
+                ? "No-live lifecycle record. No Nmap executed. Manual validation required. No security finding is asserted."
+                : "Observed TCP exposure. Review indicator. Manual validation required. No security finding is asserted."}
             </p>
           </div>
           <div className="badge-row">
             <span className="status-pill">Active / Network</span>
-            <span className="status-pill">Bounded TCP observations</span>
+            <span className="status-pill">{report.isNoLiveLifecycle ? "No-live record" : "Bounded TCP observations"}</span>
             <span className="status-pill">Raw evidence redacted</span>
             <StatusBadge status={job.status} />
           </div>
@@ -56,8 +58,10 @@ export function ActiveNmapBasicJobReport({ job }: { job: JobRecord }) {
       </section>
 
       <div className="alert" role="status">
-        {statusMessage(report.status, report.isSparse)}
+        {statusMessage(report.status, report.isSparse, report.lifecycleState)}
       </div>
+
+      {report.isNoLiveLifecycle ? <ListSection title="No-Live Caveats" items={report.noLiveCaveats} empty="No caveats were returned." /> : null}
 
       <ReportSection title="Authorization Notice">
         <p className="muted">
@@ -67,7 +71,7 @@ export function ActiveNmapBasicJobReport({ job }: { job: JobRecord }) {
       </ReportSection>
 
       <ReportSection title="Port Observations">
-        <PortObservationTable observations={report.observations} />
+        <PortObservationTable observations={report.observations} noLive={report.isNoLiveLifecycle} />
       </ReportSection>
 
       <div className="report-grid">
@@ -79,6 +83,15 @@ export function ActiveNmapBasicJobReport({ job }: { job: JobRecord }) {
             <MetadataRow label="Output truncated" value={String(report.outputTruncated)} />
             <MetadataRow label="Stderr truncated" value={String(report.stderrTruncated)} />
             <MetadataRow label="Timed out" value={String(report.timedOut)} />
+            {report.isNoLiveLifecycle ? (
+              <>
+                <MetadataRow label="Nmap executed" value="false" />
+                <MetadataRow label="Network requests" value="0" />
+                <MetadataRow label="DNS queries" value="0" />
+                <MetadataRow label="Evidence collected" value="false" />
+                <MetadataRow label="Observations available" value="false" />
+              </>
+            ) : null}
           </dl>
         </ReportSection>
       </div>
@@ -122,11 +135,13 @@ function MetadataRow({ label, value, mono = false }: { label: string; value: str
   );
 }
 
-function PortObservationTable({ observations }: { observations: ActiveNmapBasicPortObservation[] }) {
+function PortObservationTable({ observations, noLive }: { observations: ActiveNmapBasicPortObservation[]; noLive: boolean }) {
   if (observations.length === 0) {
     return (
       <p className="empty-state">
-        No TCP port observations were returned. Manual validation required.
+        {noLive
+          ? "No observations available. No evidence collected. Manual validation required."
+          : "No TCP port observations were returned. Manual validation required."}
       </p>
     );
   }
@@ -194,7 +209,19 @@ function RawJson({ rawJson }: { rawJson: string }) {
   );
 }
 
-function statusMessage(status: string, isSparse: boolean): string {
+function statusMessage(status: string, isSparse: boolean, lifecycleState: string | null): string {
+  if (lifecycleState === "completed_no_live") {
+    return "active_nmap_basic no-live lifecycle completed. No Nmap executed, no network requests, no DNS queries, no evidence, and no observations.";
+  }
+  if (lifecycleState === "client_error_controlled") {
+    return "active_nmap_basic ended in a controlled client-error lifecycle state. No target details are shown.";
+  }
+  if (lifecycleState === "unsafe_lifecycle_result") {
+    return "active_nmap_basic returned a controlled unsafe lifecycle state. No target details are shown.";
+  }
+  if (lifecycleState === "blocked_unconfigured" || lifecycleState === "blocked_missing_approval") {
+    return "active_nmap_basic was blocked before execution. No Nmap executed and no network requests were sent.";
+  }
   if (isSparse) {
     return "Sparse active_nmap_basic payload. Showing available redacted data without assertions.";
   }

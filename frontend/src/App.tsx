@@ -647,6 +647,11 @@ export function App() {
     }
   }
 
+  async function handleActiveNmapBasicJobCreated(job: JobRecord) {
+    setSelectedJob(job);
+    await refreshJobs();
+  }
+
   async function deleteFile(fileId: string) {
     setActionError(null);
     try {
@@ -1074,7 +1079,7 @@ export function App() {
           {activeHttpHeaderProbeState.error ? <p className="error-text">{activeHttpHeaderProbeState.error}</p> : null}
         </Panel>
 
-        <ActiveNmapBasicPanel health={health} />
+        <ActiveNmapBasicPanel health={health} onJobCreated={handleActiveNmapBasicJobCreated} />
       </section>
 
       <section className="content-grid">
@@ -1575,6 +1580,21 @@ function summarizeJob(job: JobListItem): string {
     const redirectsFollowed = typeof job.summary.redirects_followed === "number" ? job.summary.redirects_followed : 0;
     const bodyBytesRead = typeof job.summary.body_bytes_read === "number" ? job.summary.body_bytes_read : 0;
     return `${allowed === false || networkRequestsSent === 0 ? "blocked" : "HEAD sent"}, ${networkRequestsSent} request, ${redirectsFollowed} redirects, ${bodyBytesRead} body bytes`;
+  }
+  if (job.audit_type === "active_nmap_basic") {
+    const lifecycleState =
+      typeof job.summary.lifecycle_state === "string"
+        ? job.summary.lifecycle_state
+        : typeof job.summary.result_status === "string"
+          ? job.summary.result_status
+          : "not_executed";
+    const networkRequestsSent = typeof job.summary.network_requests_sent === "number" ? job.summary.network_requests_sent : 0;
+    const noLive = job.summary.no_live_lifecycle_record === true || lifecycleState === "completed_no_live" || lifecycleState === "not_executed";
+    if (noLive) {
+      return `${lifecycleState}, no Nmap executed, ${networkRequestsSent} network requests, no evidence`;
+    }
+    const observations = typeof job.summary.observation_count === "number" ? job.summary.observation_count : 0;
+    return `${lifecycleState}, ${observations} review indicators`;
   }
   if (job.audit_type === "django_config_basic") {
     const filesRead = typeof job.summary.files_read === "number" ? job.summary.files_read : 0;

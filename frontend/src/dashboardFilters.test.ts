@@ -468,7 +468,7 @@ describe("dashboard filters", () => {
     });
     expect(getAuditTypeMetadata("active_nmap_basic")).toMatchObject({
       sourceFamily: "target",
-      shortDescription: "Renders bounded authorized TCP observations as review indicators with redacted evidence."
+      shortDescription: "Renders bounded no-live lifecycle records for the future Nmap basic capability."
     });
   });
 

@@ -419,6 +419,8 @@ Active Nmap Basic backend no-live job persistence decision: `ACTIVE_NMAP_BASIC_5
 
 Active Nmap Basic backend no-live job surfaces hardening decision: `ACTIVE_NMAP_BASIC_51_BACKEND_ACTIVE_NMAP_NO_LIVE_JOB_SURFACES_HARDENED_PASSED`.
 
+Active Nmap Basic frontend no-live job UX decision: `ACTIVE_NMAP_BASIC_52_FRONTEND_ACTIVE_NMAP_NO_LIVE_JOB_UX_PASSED`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.

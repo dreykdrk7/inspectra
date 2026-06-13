@@ -30,12 +30,16 @@ describe("ActiveNmapBasicPanel", () => {
     expect(screen.getByLabelText("TCP ports")).toBeInTheDocument();
     expect(panel.textContent).toContain("Local/private/self-hosted systems only");
     expect(panel.textContent).toContain("targets must be explicitly authorized");
-    expect(panel.textContent).toContain("This prepares a bounded authorized Nmap basic request");
-    expect(panel.textContent).toContain("Execution may still be disabled or not connected");
-    expect(panel.textContent).toContain("live traffic");
-    expect(panel.textContent).toContain("Observed TCP exposure / Review indicator");
+    expect(panel.textContent).toContain("bounded authorized no-live lifecycle record");
+    expect(panel.textContent).toContain("records no network requests");
+    expect(panel.textContent).toContain("live-scope confirmation");
+    expect(panel.textContent).toContain("No Nmap executed");
+    expect(panel.textContent).toContain("no network requests");
+    expect(panel.textContent).toContain("no DNS queries");
+    expect(panel.textContent).toContain("no evidence collected");
+    expect(panel.textContent).toContain("no observations available");
     expect(panel.textContent).toContain("Manual validation required");
-    expect(panel.textContent).toContain("No confirmed vulnerability is asserted");
+    expect(panel.textContent).toContain("No security finding is asserted");
     expect(panel.textContent).toContain("One explicit target");
     expect(panel.textContent).toContain("up to 32 TCP ports");
     expect(panel.textContent).toContain("timeout bounded");
@@ -52,7 +56,7 @@ describe("ActiveNmapBasicPanel", () => {
     expect(panel.textContent).not.toContain("target is safe");
     expect(panel.textContent).not.toContain("exploitable");
     expect(panel.textContent).not.toContain("all ports found");
-    expect(screen.getByRole("button", { name: /Prepare bounded request/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Create bounded no-live record/i })).toBeDisabled();
     expect(panel.querySelector('input[type="file"]')).toBeNull();
     expect(panel.querySelector("textarea")).toBeNull();
     expect(screen.queryByLabelText(/raw flags/i)).not.toBeInTheDocument();
@@ -77,15 +81,15 @@ describe("ActiveNmapBasicPanel", () => {
 
     const panel = screen.getByLabelText("Active / Nmap basic");
     expect(screen.getByText("Prepared / available")).toBeInTheDocument();
-    expect(panel.textContent).toContain("backend remains the source of truth");
-    expect(screen.getByRole("button", { name: /Prepare bounded request/i })).toBeDisabled();
+    expect(panel.textContent).toContain("backend-controlled no-live lifecycle state");
+    expect(screen.getByRole("button", { name: /Create bounded no-live record/i })).toBeDisabled();
   });
 
   it("keeps submit disabled until target, ports, and all confirmations are present", () => {
     vi.stubGlobal("fetch", vi.fn());
     render(<ActiveNmapBasicPanel health={null} />);
 
-    const submit = screen.getByRole("button", { name: /Prepare bounded request/i });
+    const submit = screen.getByRole("button", { name: /Create bounded no-live record/i });
     expect(submit).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText("Target"), { target: { value: "router.local" } });
@@ -100,7 +104,7 @@ describe("ActiveNmapBasicPanel", () => {
     fireEvent.click(screen.getByLabelText("I confirm this is local, private, or self-hosted scope."));
     expect(submit).toBeDisabled();
 
-    fireEvent.click(screen.getByLabelText("I understand this prepares live traffic and may be logged by the target."));
+    fireEvent.click(screen.getByLabelText("I understand this capability is live-traffic scoped, while this phase creates only a no-live record."));
     expect(submit).not.toBeDisabled();
   });
 
@@ -112,10 +116,10 @@ describe("ActiveNmapBasicPanel", () => {
     fireEvent.change(screen.getByLabelText("TCP ports"), { target: { value: "22, ssh" } });
     fireEvent.click(screen.getByLabelText("I confirm I own or am authorized to test this target."));
     fireEvent.click(screen.getByLabelText("I confirm this is local, private, or self-hosted scope."));
-    fireEvent.click(screen.getByLabelText("I understand this prepares live traffic and may be logged by the target."));
+    fireEvent.click(screen.getByLabelText("I understand this capability is live-traffic scoped, while this phase creates only a no-live record."));
 
     expect(screen.getByText("Ports must be TCP port numbers separated by commas or spaces.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Prepare bounded request/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Create bounded no-live record/i })).toBeDisabled();
     expect(globalThis.fetch).not.toHaveBeenCalled();
 
     cleanup();
@@ -125,11 +129,12 @@ describe("ActiveNmapBasicPanel", () => {
       target: { value: Array.from({ length: 33 }, (_, index) => String(index + 1)).join(",") }
     });
     expect(screen.getByText("Use 32 or fewer TCP ports.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Prepare bounded request/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Create bounded no-live record/i })).toBeDisabled();
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it("sends the exact backend contract body and renders not-executed as expected", async () => {
+  it("sends the exact backend contract body and renders a no-live JobRecord as expected", async () => {
+    const onJobCreated = vi.fn();
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -137,26 +142,46 @@ describe("ActiveNmapBasicPanel", () => {
           return Promise.resolve(
             jsonResponse(
               {
+                id: "job-active-nmap-basic-52",
                 audit_type: "active_nmap_basic",
-                status: "not_implemented",
-                execution_state: "not_executed",
-                job_created: false
+                file_id: null,
+                target_url: "[REDACTED_TARGET]",
+                target_domain: null,
+                status: "completed",
+                created_at: "2026-06-12T00:00:00Z",
+                updated_at: "2026-06-12T00:00:00Z",
+                source_file_deleted_at: null,
+                result: {
+                  audit_type: "active_nmap_basic",
+                  capability: "active_nmap_basic",
+                  status: "not_executed",
+                  lifecycle_state: "completed_no_live",
+                  no_live_lifecycle_record: true,
+                  nmap_executed: false,
+                  network_requests_sent: 0
+                },
+                error: null
               },
-              501
+              202
             )
           );
         }
         return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
       })
     );
-    render(<ActiveNmapBasicPanel health={{ status: "ok", service: "inspectra-backend", active_nmap_basic: { enabled: true } }} />);
+    render(
+      <ActiveNmapBasicPanel
+        health={{ status: "ok", service: "inspectra-backend", active_nmap_basic: { enabled: true } }}
+        onJobCreated={onJobCreated}
+      />
+    );
 
     fireEvent.change(screen.getByLabelText("Target"), { target: { value: " router.local " } });
     fireEvent.change(screen.getByLabelText("TCP ports"), { target: { value: "22, 80, 443" } });
     fireEvent.click(screen.getByLabelText("I confirm I own or am authorized to test this target."));
     fireEvent.click(screen.getByLabelText("I confirm this is local, private, or self-hosted scope."));
-    fireEvent.click(screen.getByLabelText("I understand this prepares live traffic and may be logged by the target."));
-    fireEvent.click(screen.getByRole("button", { name: /Prepare bounded request/i }));
+    fireEvent.click(screen.getByLabelText("I understand this capability is live-traffic scoped, while this phase creates only a no-live record."));
+    fireEvent.click(screen.getByRole("button", { name: /Create bounded no-live record/i }));
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
@@ -174,7 +199,17 @@ describe("ActiveNmapBasicPanel", () => {
       local_private_scope_confirmed: true,
       live_traffic_confirmed: true
     });
-    expect(await screen.findByText(/Execution is not implemented and was not executed/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No-live lifecycle record created/i)).toBeInTheDocument();
+    expect(screen.getByText("job-active-nmap-basic-52")).toBeInTheDocument();
+    expect(screen.getByText("completed_no_live")).toBeInTheDocument();
+    expect(screen.getByText("[REDACTED_TARGET]")).toBeInTheDocument();
+    expect(screen.getAllByText(/No Nmap executed/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/No network requests/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/No DNS queries/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/No evidence collected/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/No observations available/i).length).toBeGreaterThan(0);
+    expect(onJobCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "job-active-nmap-basic-52" }));
+    expect(document.body.textContent ?? "").not.toContain("router.local");
     expect(screen.queryByText(/completed scan/i)).not.toBeInTheDocument();
   });
 
@@ -198,6 +233,8 @@ describe("ActiveNmapBasicPanel", () => {
                   audit_type: "active_nmap_basic",
                   capability: "active_nmap_basic",
                   status: "not_executed",
+                  lifecycle_state: "completed_no_live",
+                  no_live_lifecycle_record: true,
                   execution_state: "not_executed",
                   adapter: "test_double_no_live",
                   execution_attempted: false
@@ -217,14 +254,14 @@ describe("ActiveNmapBasicPanel", () => {
     fireEvent.change(screen.getByLabelText("TCP ports"), { target: { value: "22" } });
     fireEvent.click(screen.getByLabelText("I confirm I own or am authorized to test this target."));
     fireEvent.click(screen.getByLabelText("I confirm this is local, private, or self-hosted scope."));
-    fireEvent.click(screen.getByLabelText("I understand this prepares live traffic and may be logged by the target."));
-    fireEvent.click(screen.getByRole("button", { name: /Prepare bounded request/i }));
+    fireEvent.click(screen.getByLabelText("I understand this capability is live-traffic scoped, while this phase creates only a no-live record."));
+    fireEvent.click(screen.getByRole("button", { name: /Create bounded no-live record/i }));
 
-    expect(await screen.findByText(/controlled no-live test-double job/i)).toBeInTheDocument();
-    expect(screen.getByText(/Nmap was not executed/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No-live lifecycle record created/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/No Nmap executed/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/completed live scan/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/completed scan/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Nmap executed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Nmap executed: true/i)).not.toBeInTheDocument();
   });
 
   it("renders disabled backend errors generically without reflecting target details", async () => {
@@ -242,8 +279,8 @@ describe("ActiveNmapBasicPanel", () => {
     fireEvent.change(screen.getByLabelText("TCP ports"), { target: { value: "22" } });
     fireEvent.click(screen.getByLabelText("I confirm I own or am authorized to test this target."));
     fireEvent.click(screen.getByLabelText("I confirm this is local, private, or self-hosted scope."));
-    fireEvent.click(screen.getByLabelText("I understand this prepares live traffic and may be logged by the target."));
-    fireEvent.click(screen.getByRole("button", { name: /Prepare bounded request/i }));
+    fireEvent.click(screen.getByLabelText("I understand this capability is live-traffic scoped, while this phase creates only a no-live record."));
+    fireEvent.click(screen.getByRole("button", { name: /Create bounded no-live record/i }));
 
     expect(await screen.findByText("Active / Nmap basic is disabled or unavailable in this environment.")).toBeInTheDocument();
     expect(screen.queryByText(/token_should_never_render/)).not.toBeInTheDocument();

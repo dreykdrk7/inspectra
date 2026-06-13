@@ -12,10 +12,12 @@ export type ActiveNmapBasicPortObservation = {
 export type ActiveNmapBasicReport = {
   isActiveNmapBasic: boolean;
   status: string;
+  lifecycleState: string | null;
   mode: string | null;
   profile: string | null;
   overview: MetadataEntry[];
   observations: ActiveNmapBasicPortObservation[];
+  noLiveCaveats: string[];
   limits: MetadataEntry[];
   warnings: string[];
   errors: string[];
@@ -24,6 +26,7 @@ export type ActiveNmapBasicReport = {
   stderrTruncated: boolean;
   timedOut: boolean;
   isSparse: boolean;
+  isNoLiveLifecycle: boolean;
 };
 
 const SAFE_PORT_STATES = new Set([
@@ -60,7 +63,11 @@ const SAFE_REASONS = new Set([
 
 const CONTROLLED_STATUS_LABELS: Record<string, string> = {
   blocked: "blocked",
+  blocked_missing_approval: "blocked_missing_approval",
+  blocked_unconfigured: "blocked_unconfigured",
+  client_error_controlled: "client_error_controlled",
   completed: "completed",
+  completed_no_live: "completed_no_live",
   empty: "no_ports",
   failed: "failed",
   malformed: "malformed",
@@ -70,14 +77,35 @@ const CONTROLLED_STATUS_LABELS: Record<string, string> = {
   not_implemented: "not_implemented",
   timed_out: "timed_out",
   truncated: "truncated",
+  unsafe_client_result: "unsafe_lifecycle_result",
+  unsafe_lifecycle_result: "unsafe_lifecycle_result",
   unsupported_shape: "unsupported_shape"
 };
+
+const NO_LIVE_LIFECYCLE_STATES = new Set([
+  "blocked_unconfigured",
+  "blocked_missing_approval",
+  "not_executed",
+  "client_error_controlled",
+  "completed_no_live",
+  "unsafe_lifecycle_result"
+]);
+
+const DEFAULT_NO_LIVE_CAVEATS = [
+  "No Nmap executed.",
+  "No network requests.",
+  "No DNS queries.",
+  "No evidence collected.",
+  "No observations available.",
+  "Manual validation required."
+];
 
 export function buildActiveNmapBasicReport(job: JobRecord): ActiveNmapBasicReport {
   const redactedJob = redactActiveNmapBasicValue(job) as JobRecord;
   const result = asRecord(redactedJob.result);
   const rawResult = asRecord(job.result);
   const limitsRecord = asRecord(result?.limits);
+  const lifecycleState = normalizeOptionalStatus(asString(result?.lifecycle_state) ?? asString(rawResult?.lifecycle_state));
   const status = normalizeStatus(
     asString(result?.status) ??
       asString(result?.execution_state) ??
@@ -86,7 +114,13 @@ export function buildActiveNmapBasicReport(job: JobRecord): ActiveNmapBasicRepor
       asString(rawResult?.execution_state) ??
       job.status
   );
-  const observations = observationsFromValue(result?.port_observations);
+  const isNoLiveLifecycle =
+    (lifecycleState !== null && NO_LIVE_LIFECYCLE_STATES.has(lifecycleState)) ||
+    status === "not_executed" ||
+    asBoolean(result?.no_live_lifecycle_record) === true ||
+    asBoolean(result?.nmap_executed) === false ||
+    asBoolean(asRecord(result?.execution)?.nmap_executed) === false;
+  const observations = isNoLiveLifecycle ? [] : observationsFromValue(result?.port_observations);
   const outputTruncated =
     asBoolean(result?.output_truncated) ?? asBoolean(limitsRecord?.output_truncated) ?? asBoolean(rawResult?.output_truncated) ?? false;
   const stderrTruncated =
@@ -102,10 +136,12 @@ export function buildActiveNmapBasicReport(job: JobRecord): ActiveNmapBasicRepor
   const errors = errorsFromValue(result?.errors, redactedJob.error);
   const mode = asString(result?.mode) ?? asString(rawResult?.mode);
   const profile = asString(result?.profile) ?? asString(rawResult?.profile);
-  const observationCount =
-    asNumber(result?.observation_count) ?? asNumber(asRecord(result?.summary)?.observation_count) ?? observations.length;
+  const observationCount = isNoLiveLifecycle
+    ? 0
+    : asNumber(result?.observation_count) ?? asNumber(asRecord(result?.summary)?.observation_count) ?? observations.length;
   const openObservationCount = observations.filter((item) => item.state === "open").length;
   const isSparse = !result || (observations.length === 0 && entriesFromRecord(limitsRecord).length === 0 && warnings.length === 0 && errors.length === 0);
+  const noLiveCaveats = isNoLiveLifecycle ? caveatsFromValue(result?.surface_caveats) : [];
 
   return {
     isActiveNmapBasic:
@@ -113,18 +149,21 @@ export function buildActiveNmapBasicReport(job: JobRecord): ActiveNmapBasicRepor
       asString(rawResult?.capability) === "active_nmap_basic" ||
       asString(rawResult?.audit_type) === "active_nmap_basic",
     status,
+    lifecycleState,
     mode,
     profile,
     overview: [
       { label: "Mode", value: mode ?? "live_nmap_basic" },
       { label: "Profile", value: profile ?? "tcp_connect_small" },
       { label: "Result status", value: status },
+      ...(lifecycleState ? [{ label: "Lifecycle state", value: lifecycleState }] : []),
       { label: "Port observations", value: String(observationCount) },
       { label: "Open TCP observations", value: String(openObservationCount) },
       { label: "Output truncated", value: String(outputTruncated) },
       { label: "Timed out", value: String(timedOut) }
     ],
     observations,
+    noLiveCaveats,
     limits: entriesFromRecord(limitsRecord),
     warnings: dedupeStrings(warnings),
     errors,
@@ -132,7 +171,8 @@ export function buildActiveNmapBasicReport(job: JobRecord): ActiveNmapBasicRepor
     outputTruncated,
     stderrTruncated,
     timedOut,
-    isSparse
+    isSparse,
+    isNoLiveLifecycle
   };
 }
 
@@ -291,7 +331,12 @@ function isSensitiveNmapValueKey(key: string): boolean {
     "errors",
     "header",
     "headers",
+    "input_payload",
+    "observation",
+    "payload",
+    "raw_evidence",
     "raw_command",
+    "request_payload",
     "raw_output",
     "raw_xml",
     "service",
@@ -316,6 +361,12 @@ function redactedValueForKey(key: string): string {
   if (normalized === "error" || normalized === "errors" || normalized === "stderr" || normalized === "stdout") {
     return "[REDACTED_ERROR]";
   }
+  if (normalized === "payload" || normalized === "input_payload" || normalized === "request_payload") {
+    return "[REDACTED_PAYLOAD]";
+  }
+  if (normalized === "observation" || normalized === "raw_evidence") {
+    return "[REDACTED_EVIDENCE]";
+  }
   return "[REDACTED]";
 }
 
@@ -325,6 +376,10 @@ function normalizeStatus(value: string | null): string {
   }
   const normalized = value.trim().toLowerCase();
   return CONTROLLED_STATUS_LABELS[normalized] ?? normalized;
+}
+
+function normalizeOptionalStatus(value: string | null): string | null {
+  return value ? normalizeStatus(value) : null;
 }
 
 function normalizeProtocol(value: string | null): string {
@@ -374,6 +429,11 @@ function asStringArray(value: unknown): string[] {
   return value
     .map((item) => stringifyValue(item))
     .filter((item) => item.trim().length > 0);
+}
+
+function caveatsFromValue(value: unknown): string[] {
+  const backendCaveats = asStringArray(value);
+  return dedupeStrings([...DEFAULT_NO_LIVE_CAVEATS, ...backendCaveats.map(redactActiveNmapBasicText)]);
 }
 
 function stringifyValue(value: unknown): string {

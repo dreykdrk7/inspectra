@@ -121,7 +121,7 @@ export const AUDIT_TYPE_CATALOG: Record<AuditType, AuditTypeMetadata> = {
     "Active Nmap basic",
     "active_network",
     "target",
-    "Renders bounded authorized TCP observations as review indicators with redacted evidence."
+    "Renders bounded no-live lifecycle records for the future Nmap basic capability."
   ),
   django_config_basic: metadata("django_config_basic", "Django config", "app_config", "archive", "Passive Django config review."),
   docker_config_basic: metadata("docker_config_basic", "Docker config", "containers_wiring", "archive", "Passive Docker config review."),

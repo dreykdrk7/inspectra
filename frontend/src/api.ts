@@ -1,7 +1,6 @@
 import type {
   ActiveDryRunRequest,
   ActiveHttpHeaderProbeRequest,
-  ActiveNmapBasicContractResponse,
   ActiveNmapBasicRequest,
   AuthSessionResponse,
   AuthStatusResponse,
@@ -322,17 +321,13 @@ export async function createActiveHttpHeaderProbe(request: ActiveHttpHeaderProbe
   return parseJsonResponse<JobRecord>(response);
 }
 
-export async function createActiveNmapBasic(request: ActiveNmapBasicRequest): Promise<ActiveNmapBasicContractResponse> {
+export async function createActiveNmapBasic(request: ActiveNmapBasicRequest): Promise<JobRecord> {
   const response = await apiFetch('/active/network/nmap-basic', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(request),
   });
-  if (response.status === 501) {
-    const payload = await response.json();
-    return payload as ActiveNmapBasicContractResponse;
-  }
-  return parseJsonResponse<ActiveNmapBasicContractResponse>(response);
+  return parseJsonResponse<JobRecord>(response);
 }
 
 export async function listJobs(): Promise<JobListItem[]> {

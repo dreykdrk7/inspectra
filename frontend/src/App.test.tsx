@@ -1336,9 +1336,9 @@ describe("App", () => {
 
     expect(panelText).toContain("Local/private/self-hosted");
     expect(panelText).toContain("Authorized targets only");
-    expect(panelText).toContain("Observed TCP exposure / Review indicator");
+    expect(panelText).toContain("No-live lifecycle record");
     expect(panelText).toContain("Manual validation required");
-    expect(panelText).toContain("No confirmed vulnerability is asserted");
+    expect(panelText).toContain("No security finding is asserted");
     expect(panelText).toContain("No raw flags");
     expect(panelText).toContain("no credential validation");
     expect(panelText).not.toContain("full network scan");
@@ -1349,7 +1349,7 @@ describe("App", () => {
     expect(panelText).not.toContain("all ports found");
     expect(scoped.getByLabelText("Target")).toBeInTheDocument();
     expect(scoped.getByLabelText("TCP ports")).toBeInTheDocument();
-    expect(scoped.getByRole("button", { name: /Prepare bounded request/i })).toBeDisabled();
+    expect(scoped.getByRole("button", { name: /Create bounded no-live record/i })).toBeDisabled();
     expect(panel?.querySelector("form")).not.toBeNull();
     expect(panel?.querySelector('input[type="file"]')).toBeNull();
     expect(panel?.querySelector("textarea")).toBeNull();
@@ -1361,13 +1361,140 @@ describe("App", () => {
 
     fireEvent.change(scoped.getByLabelText("Target"), { target: { value: "router.local" } });
     fireEvent.change(scoped.getByLabelText("TCP ports"), { target: { value: "22, 443" } });
-    fireEvent.click(scoped.getByRole("button", { name: /Prepare bounded request/i }));
+    fireEvent.click(scoped.getByRole("button", { name: /Create bounded no-live record/i }));
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(
       vi
         .mocked(globalThis.fetch)
         .mock.calls.some(([input]) => String(input).endsWith("/active/network/nmap-basic"))
     ).toBe(false);
+  });
+
+  it("creates and opens an Active Nmap basic no-live job record", async () => {
+    const activeJob = {
+      id: "job-active-nmap-no-live-52",
+      audit_type: "active_nmap_basic",
+      file_id: null,
+      target_url: "[REDACTED_TARGET]",
+      target_domain: null,
+      status: "completed",
+      created_at: "2026-06-12T10:00:00Z",
+      updated_at: "2026-06-12T10:00:00Z",
+      source_file_deleted_at: null,
+      result: {
+        audit_type: "active_nmap_basic",
+        capability: "active_nmap_basic",
+        mode: "live_nmap_basic",
+        profile: "tcp_connect_small",
+        status: "not_executed",
+        lifecycle_state: "completed_no_live",
+        no_live_lifecycle_record: true,
+        nmap_executed: false,
+        network_requests_sent: 0,
+        dns_queries_sent: 0,
+        evidence_available: false,
+        observations_available: false,
+        surface_caveats: [
+          "No Nmap executed.",
+          "No network requests.",
+          "No DNS queries.",
+          "No evidence collected.",
+          "No observations available.",
+          "Manual validation required."
+        ]
+      },
+      error: null
+    };
+    let jobs = [] as unknown[];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend", active_nmap_basic: { enabled: true } }));
+        }
+        if (url.endsWith("/files")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/active/network/nmap-basic")) {
+          jobs = [
+            {
+              ...activeJob,
+              result: undefined,
+              error: undefined,
+              summary: {
+                capability: "active_nmap_basic",
+                lifecycle_state: "completed_no_live",
+                result_status: "not_executed",
+                no_live_lifecycle_record: true,
+                network_requests_sent: 0,
+                nmap_executed: false,
+                observation_count: 0,
+                target_display: "[REDACTED_TARGET]"
+              }
+            }
+          ];
+          return Promise.resolve(jsonResponse(activeJob, 202));
+        }
+        if (url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse(jobs));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+    const heading = await screen.findByRole("heading", { name: "Active / Nmap basic" });
+    const panel = heading.closest("section");
+    expect(panel).not.toBeNull();
+    const scoped = within(panel as HTMLElement);
+
+    fireEvent.change(scoped.getByLabelText("Target"), { target: { value: "router.local" } });
+    fireEvent.change(scoped.getByLabelText("TCP ports"), { target: { value: "22, 443" } });
+    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
+    fireEvent.click(scoped.getByLabelText("I confirm this is local, private, or self-hosted scope."));
+    fireEvent.click(scoped.getByLabelText("I understand this capability is live-traffic scoped, while this phase creates only a no-live record."));
+    fireEvent.click(scoped.getByRole("button", { name: /Create bounded no-live record/i }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/active/network/nmap-basic",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    const request = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find(([input]) => String(input).endsWith("/active/network/nmap-basic"))?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(request?.body))).toEqual({
+      mode: "live_nmap_basic",
+      profile: "tcp_connect_small",
+      targets: ["router.local"],
+      ports: [22, 443],
+      authorization_confirmed: true,
+      local_private_scope_confirmed: true,
+      live_traffic_confirmed: true
+    });
+
+    expect(await scoped.findByText(/No-live lifecycle record created/i)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Active / Nmap basic report" })).toBeInTheDocument();
+    const rendered = view.container.textContent ?? "";
+    expect(rendered).toContain("completed_no_live");
+    expect(rendered).toContain("not_executed");
+    expect(rendered).toContain("No-live lifecycle record");
+    expect(rendered).toContain("No Nmap executed");
+    expect(rendered).toContain("No network requests");
+    expect(rendered).toContain("No DNS queries");
+    expect(rendered).toContain("No evidence collected");
+    expect(rendered).toContain("No observations available");
+    expect(rendered).toContain("Manual validation required");
+    expect(rendered).toContain("[REDACTED_TARGET]");
+    expect(rendered).not.toContain("router.local");
+    expect(rendered).not.toContain("scan completed");
+    expect(rendered).not.toContain("vulnerability found");
+    expect(rendered).not.toContain("completed scan");
   });
 
   it("renders Active dry-run jobs with redacted target table and report payload", async () => {
@@ -1722,7 +1849,7 @@ describe("App", () => {
     expect(rendered).toContain("Observed TCP exposure");
     expect(rendered).toContain("Review indicator");
     expect(rendered).toContain("Manual validation required");
-    expect(rendered).toContain("No confirmed vulnerability is asserted");
+    expect(rendered).toContain("No security finding is asserted");
     expect(rendered).toContain("Authorization is user asserted, not proof of ownership");
     expect(rendered).toContain("Raw JSON (redacted)");
     expect(rendered).toContain("443");
@@ -1781,7 +1908,7 @@ describe("App", () => {
     expect(archiveRow?.textContent).not.toContain("Authorized HTTP Header Probe");
     expect(archiveRow?.textContent).not.toContain("Create authorized header probe job");
     expect(archiveRow?.textContent).not.toContain("Active / Nmap basic");
-    expect(archiveRow?.textContent).not.toContain("Prepare bounded request");
+    expect(archiveRow?.textContent).not.toContain("Create bounded no-live record");
     expect(pdfRow?.textContent).not.toContain("Start here");
     expect(pdfRow?.textContent).not.toContain("Data layer");
 

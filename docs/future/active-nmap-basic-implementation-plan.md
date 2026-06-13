@@ -5024,6 +5024,102 @@ records that backend no-live job surfaces are hardened without adding frontend
 runtime, new export routes, real active-tools calls, Nmap execution, external
 traffic, archive/run-all, `tools/runner/main.py`, release, or tag state.
 
+## Microphase 52: Frontend Active Nmap No-Live Job UX
+
+Objective:
+
+Connect the existing Active / Nmap basic frontend panel to the backend
+persistent no-live `202 JobRecord` behavior. The UI should submit the bounded
+request contract, select the returned `active_nmap_basic` job, refresh the jobs
+list, and render the record only as no-live lifecycle state.
+
+Product direction:
+
+- Treat `createActiveNmapBasic(...)` as returning `JobRecord`.
+- Show target values only as `[REDACTED_TARGET]`.
+- Read `result.lifecycle_state` separately from `JobStatus.completed`.
+- Render `completed_no_live` as lifecycle completion with no execution.
+- Render `not_executed`, `client_error_controlled`, and
+  `unsafe_lifecycle_result` as controlled states.
+- Keep Raw JSON/report rendering redacted-first.
+
+Files:
+
+- `frontend/src/api.ts`
+- `frontend/src/types.ts`
+- `frontend/src/ActiveNmapBasicPanel.tsx`
+- `frontend/src/ActiveNmapBasicJobReport.tsx`
+- `frontend/src/activeNmapBasicReport.ts`
+- `frontend/src/App.tsx`
+- `frontend/src/auditCatalog.ts`
+- focused frontend tests
+- `docs/future/active-nmap-basic-frontend-no-live-job-ux.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No backend runtime changes.
+- No backend exports.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No runner HTTP endpoint.
+- No real active-tools call.
+- No real `/active/nmap-basic` backend-to-active-tools call.
+- No Nmap execution.
+- No `nmap --version`.
+- No Docker or Compose.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No VPS, LAN, real domains, or real targets.
+- No raw flags, NSE/scripts, service/version detection, credentials, headers,
+  cookies, or tokens.
+- No migrations, tags, releases, push, or target approval.
+
+Validations:
+
+```text
+git status --short --branch
+npm run test -- --run ActiveNmapBasicPanel ActiveNmapBasicJobReport App
+npm run test:run
+npm run build
+git diff --check
+git diff --cached --check
+source guardrail searches for prohibited UI wording, raw target/payload/output
+or evidence display, backend active-tools real calls, Nmap, Docker,
+archive/run-all, and tools/runner integration
+```
+
+Acceptance criteria:
+
+- Submit sends only the bounded backend request body.
+- Success handles `202 JobRecord`.
+- The returned job is selected and jobs list refreshes.
+- UI shows no-live lifecycle caveats after submit and in detail/report.
+- `completed_no_live` is not treated as live execution.
+- `not_executed` is rendered as not executed.
+- Controlled error states are sanitized.
+- Target values render as `[REDACTED_TARGET]`.
+- Raw JSON/report frontend stays redacted-first.
+- Existing frontend tests and build pass.
+
+Commit:
+
+```text
+feat(active): show nmap no-live jobs in frontend
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_52_FRONTEND_ACTIVE_NMAP_NO_LIVE_JOB_UX_PASSED`
+records that the frontend can submit to and display backend no-live
+`active_nmap_basic` jobs without adding backend runtime changes, real
+active-tools calls, Nmap execution, external traffic, exports, archive/run-all,
+`tools/runner/main.py`, release, or tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

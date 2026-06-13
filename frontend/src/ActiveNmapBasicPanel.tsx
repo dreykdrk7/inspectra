@@ -2,10 +2,11 @@ import { FormEvent, useMemo, useState } from "react";
 import { Network, Play } from "lucide-react";
 
 import { ApiError, api } from "./api";
-import type { ActiveNmapBasicRequest, HealthResponse } from "./types";
+import type { ActiveNmapBasicRequest, HealthResponse, JobRecord } from "./types";
 
 type ActiveNmapBasicPanelProps = {
   health: HealthResponse | null;
+  onJobCreated?: (job: JobRecord) => void | Promise<void>;
 };
 
 const ACTIVE_NMAP_BASIC_MAX_PORTS = 32;
@@ -13,16 +14,16 @@ const ACTIVE_NMAP_BASIC_MAX_PORTS = 32;
 type RequestState = {
   loading: boolean;
   error: string | null;
-  result: string | null;
+  job: JobRecord | null;
 };
 
 const initialRequestState: RequestState = {
   loading: false,
   error: null,
-  result: null
+  job: null
 };
 
-export function ActiveNmapBasicPanel({ health }: ActiveNmapBasicPanelProps) {
+export function ActiveNmapBasicPanel({ health, onJobCreated }: ActiveNmapBasicPanelProps) {
   const availability = getActiveNmapBasicAvailability(health);
   const isAvailable = availability === "available";
   const [target, setTarget] = useState("");
@@ -56,29 +57,16 @@ export function ActiveNmapBasicPanel({ health }: ActiveNmapBasicPanelProps) {
       live_traffic_confirmed: true
     };
 
-    setRequestState({ loading: true, error: null, result: null });
+    setRequestState({ loading: true, error: null, job: null });
     try {
-      const response = await api.createActiveNmapBasic(request);
-      if (isActiveNmapBasicNoLiveResponse(response)) {
-        setRequestState({
-          loading: false,
-          error: null,
-          result: response.id
-            ? "Backend created a controlled no-live test-double job. Nmap was not executed."
-            : "Request accepted by the backend contract. Execution is not implemented and was not executed."
-        });
-        return;
-      }
-      setRequestState({
-        loading: false,
-        error: null,
-        result: "Request returned a controlled backend response. Manual validation required."
-      });
+      const job = await api.createActiveNmapBasic(request);
+      await onJobCreated?.(job);
+      setRequestState({ loading: false, error: null, job });
     } catch (error) {
       const disabled = error instanceof ApiError && error.status === 403;
       setRequestState({
         loading: false,
-        result: null,
+        job: null,
         error: disabled
           ? "Active / Nmap basic is disabled or unavailable in this environment."
           : "Active / Nmap basic request was not accepted. Review bounds and confirmations."
@@ -105,12 +93,12 @@ export function ActiveNmapBasicPanel({ health }: ActiveNmapBasicPanelProps) {
       </div>
 
       <p className="muted">
-        This prepares a bounded authorized Nmap basic request. Execution may still be disabled or not connected.
+        This creates a bounded authorized no-live lifecycle record for the future Nmap basic capability.
       </p>
 
       <div className="query-warning" role="status">
         {isAvailable
-          ? "Backend availability is advertised as prepared, but the backend remains the source of truth for validation and execution state."
+          ? "Backend availability is advertised as prepared, but this panel still records only backend-controlled no-live lifecycle state."
           : "Backend availability is unavailable or not advertised. Submissions may be rejected as disabled or unavailable."}
       </div>
 
@@ -122,9 +110,11 @@ export function ActiveNmapBasicPanel({ health }: ActiveNmapBasicPanelProps) {
         <dt>Scope</dt>
         <dd>Local/private/self-hosted systems only; targets must be explicitly authorized by the operator.</dd>
         <dt>Live traffic</dt>
-        <dd>Execution may send bounded live TCP traffic and may be logged by the target.</dd>
+        <dd>The request includes the live-scope confirmation required by the backend contract; this phase records no network requests.</dd>
         <dt>Evidence</dt>
-        <dd>Observed TCP exposure / Review indicator. Manual validation required. No confirmed vulnerability is asserted.</dd>
+        <dd>No Nmap executed, no network requests, no DNS queries, no evidence collected, and no observations available.</dd>
+        <dt>Report wording</dt>
+        <dd>No-live lifecycle record. Manual validation required. No security finding is asserted.</dd>
         <dt>Bounds</dt>
         <dd>One explicit target, up to {ACTIVE_NMAP_BASIC_MAX_PORTS} TCP ports, timeout bounded, output bounded, and storage bounded.</dd>
         <dt>Excluded</dt>
@@ -191,27 +181,44 @@ export function ActiveNmapBasicPanel({ health }: ActiveNmapBasicPanelProps) {
               setRequestState(initialRequestState);
             }}
           />
-          I understand this prepares live traffic and may be logged by the target.
+          I understand this capability is live-traffic scoped, while this phase creates only a no-live record.
         </label>
         <button type="submit" disabled={!canSubmit}>
           <Play size={16} aria-hidden="true" />
-          {requestState.loading ? "Preparing request" : "Prepare bounded request"}
+          {requestState.loading ? "Creating no-live record" : "Create bounded no-live record"}
         </button>
       </form>
       {requestState.error ? <p className="error-text">{requestState.error}</p> : null}
-      {requestState.result ? <div className="query-warning" role="status">{requestState.result}</div> : null}
+      {requestState.job ? <ActiveNmapBasicJobCreatedNotice job={requestState.job} /> : null}
     </section>
   );
 }
 
-function isActiveNmapBasicNoLiveResponse(response: { status?: string; execution_state?: string; result?: Record<string, unknown> | null }): boolean {
-  const result = response.result && typeof response.result === "object" ? response.result : {};
+function ActiveNmapBasicJobCreatedNotice({ job }: { job: JobRecord }) {
+  const result = asRecord(job.result);
+  const lifecycleState = asString(result?.lifecycle_state) ?? asString(result?.status) ?? "not_executed";
+  const controlledError =
+    lifecycleState === "client_error_controlled" || lifecycleState === "unsafe_lifecycle_result";
+
   return (
-    response.status === "not_implemented" ||
-    response.execution_state === "not_executed" ||
-    result.status === "not_executed" ||
-    result.execution_state === "not_executed" ||
-    result.adapter === "test_double_no_live"
+    <div className={`query-warning ${controlledError ? "error-text" : ""}`} role="status">
+      <strong>No-live lifecycle record created.</strong>
+      <dl className="summary-list">
+        <dt>Job</dt>
+        <dd className="mono">{job.id}</dd>
+        <dt>Lifecycle state</dt>
+        <dd className="mono">{lifecycleState}</dd>
+        <dt>Target</dt>
+        <dd className="mono">[REDACTED_TARGET]</dd>
+        <dt>Nmap</dt>
+        <dd>No Nmap executed.</dd>
+        <dt>Network</dt>
+        <dd>No network requests. No DNS queries.</dd>
+        <dt>Evidence</dt>
+        <dd>No evidence collected. No observations available. Manual validation required.</dd>
+      </dl>
+      <p className="muted">The job record was opened below when the dashboard integration is available.</p>
+    </div>
   );
 }
 
@@ -263,4 +270,12 @@ export function parseActiveNmapBasicPorts(value: string): PortValidationResult {
   }
 
   return { ok: true, ports, error: null };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
