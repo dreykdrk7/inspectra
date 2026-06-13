@@ -180,6 +180,13 @@ ACTIVE_NMAP_BASIC_NO_LIVE_CAVEATS = [
     "Manual validation required",
     "No-live lifecycle record, not a target finding",
 ]
+ACTIVE_NMAP_BASIC_REAL_MINIMAL_CAVEATS = [
+    "Observed TCP exposure / review indicator",
+    "Manual validation required",
+    "No DNS expansion",
+    "No raw Nmap output stored",
+    "No service, banner, or version evidence stored",
+]
 ACTIVE_NMAP_BASIC_TEXT_REDACT_PATTERNS = (
     re.compile(r"<\?xml\b.*?</nmaprun\s*>", flags=re.IGNORECASE | re.DOTALL),
     re.compile(r"<nmaprun\b.*?</nmaprun\s*>", flags=re.IGNORECASE | re.DOTALL),
@@ -1506,6 +1513,14 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
             data["evidence_collected"] = False
             data["observations_available"] = False
         else:
+            data["manual_validation_required"] = True
+            data["no_live_lifecycle_record"] = False
+            data["surface_interpretation"] = "Observed TCP exposure / review indicator"
+            data["nmap_executed"] = execution.get("nmap_executed", False)
+            data["network_requests_sent"] = execution.get("network_requests_sent", 0)
+            data["dns_queries_sent"] = execution.get("dns_queries_sent", 0)
+            data["evidence_collected"] = execution.get("evidence_available", False)
+            data["observations_available"] = bool(observations)
             data["evidence_wording"] = "Observed TCP exposure; Review indicator; Manual validation required."
     return data
 
@@ -1570,6 +1585,26 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
 def public_active_nmap_basic_result(result: dict[str, Any]) -> dict[str, Any]:
     public_result = as_dict(redact_active_nmap_basic_value(result))
     if not is_active_nmap_basic_no_live_result(public_result):
+        summary = as_dict(public_result.get("summary"))
+        execution = as_dict(public_result.get("execution"))
+        observations = public_result.get("port_observations")
+        if not isinstance(observations, list):
+            observations = []
+        summary.update(
+            {
+                "manual_validation_required": True,
+                "no_live_lifecycle_record": False,
+                "nmap_executed": execution.get("nmap_executed", False),
+                "network_requests_sent": execution.get("network_requests_sent", 0),
+                "dns_queries_sent": execution.get("dns_queries_sent", 0),
+                "evidence_collected": execution.get("evidence_available", False),
+                "observations_available": bool(observations),
+                "surface_interpretation": "Observed TCP exposure / review indicator",
+            }
+        )
+        public_result["summary"] = summary
+        public_result["surface_caveats"] = list(ACTIVE_NMAP_BASIC_REAL_MINIMAL_CAVEATS)
+        public_result["surface_interpretation"] = "Observed TCP exposure / review indicator"
         return public_result
 
     for key in ACTIVE_NMAP_BASIC_NO_LIVE_OMITTED_KEYS:

@@ -93,12 +93,12 @@ export function ActiveNmapBasicPanel({ health, onJobCreated }: ActiveNmapBasicPa
       </div>
 
       <p className="muted">
-        This creates a bounded authorized no-live lifecycle record for the future Nmap basic capability.
+        This creates a bounded authorized lifecycle record for Active / Nmap basic.
       </p>
 
       <div className="query-warning" role="status">
         {isAvailable
-          ? "Backend availability is advertised as prepared, but this panel still records only backend-controlled no-live lifecycle state."
+          ? "Backend availability is advertised as prepared. Any TCP observations are review indicators and require manual validation."
           : "Backend availability is unavailable or not advertised. Submissions may be rejected as disabled or unavailable."}
       </div>
 
@@ -110,11 +110,11 @@ export function ActiveNmapBasicPanel({ health, onJobCreated }: ActiveNmapBasicPa
         <dt>Scope</dt>
         <dd>Local/private/self-hosted systems only; targets must be explicitly authorized by the operator.</dd>
         <dt>Live traffic</dt>
-        <dd>The request includes the live-scope confirmation required by the backend contract; this phase records no network requests.</dd>
+        <dd>The request includes the live-scope confirmation required by the backend contract; execution remains backend-gated and bounded.</dd>
         <dt>Evidence</dt>
-        <dd>No Nmap executed, no network requests, no DNS queries, no evidence collected, and no observations available.</dd>
+        <dd>Raw Nmap output, targets, commands, DNS data, banners, versions, and service details are not displayed.</dd>
         <dt>Report wording</dt>
-        <dd>No-live lifecycle record. Manual validation required. No security finding is asserted.</dd>
+        <dd>Observed TCP exposure / review indicator. Manual validation required. No security finding is asserted.</dd>
         <dt>Bounds</dt>
         <dd>One explicit target, up to {ACTIVE_NMAP_BASIC_MAX_PORTS} TCP ports, timeout bounded, output bounded, and storage bounded.</dd>
         <dt>Excluded</dt>
@@ -181,11 +181,11 @@ export function ActiveNmapBasicPanel({ health, onJobCreated }: ActiveNmapBasicPa
               setRequestState(initialRequestState);
             }}
           />
-          I understand this capability is live-traffic scoped, while this phase creates only a no-live record.
+          I understand this capability is live-traffic scoped and remains bounded by backend policy.
         </label>
         <button type="submit" disabled={!canSubmit}>
           <Play size={16} aria-hidden="true" />
-          {requestState.loading ? "Creating no-live record" : "Create bounded no-live record"}
+          {requestState.loading ? "Creating bounded record" : "Create bounded record"}
         </button>
       </form>
       {requestState.error ? <p className="error-text">{requestState.error}</p> : null}
@@ -199,10 +199,18 @@ function ActiveNmapBasicJobCreatedNotice({ job }: { job: JobRecord }) {
   const lifecycleState = asString(result?.lifecycle_state) ?? asString(result?.status) ?? "not_executed";
   const controlledError =
     lifecycleState === "client_error_controlled" || lifecycleState === "unsafe_lifecycle_result";
+  const execution = asRecord(result?.execution);
+  const isRealMinimal = lifecycleState === "completed_real_minimal";
+  const nmapExecuted = execution?.nmap_executed === true;
+  const networkRequestsSent = asNumber(execution?.network_requests_sent) ?? 0;
+  const dnsQueriesSent = asNumber(execution?.dns_queries_sent) ?? 0;
+  const evidenceAvailable = execution?.evidence_available === true;
+  const portObservationsValue = result?.port_observations;
+  const observations = Array.isArray(portObservationsValue) ? portObservationsValue : [];
 
   return (
     <div className={`query-warning ${controlledError ? "error-text" : ""}`} role="status">
-      <strong>No-live lifecycle record created.</strong>
+      <strong>{isRealMinimal ? "Bounded TCP observation record created." : "No-live lifecycle record created."}</strong>
       <dl className="summary-list">
         <dt>Job</dt>
         <dd className="mono">{job.id}</dd>
@@ -211,11 +219,17 @@ function ActiveNmapBasicJobCreatedNotice({ job }: { job: JobRecord }) {
         <dt>Target</dt>
         <dd className="mono">[REDACTED_TARGET]</dd>
         <dt>Nmap</dt>
-        <dd>No Nmap executed.</dd>
+        <dd>{nmapExecuted ? "Nmap executed inside active-tools only." : "No Nmap executed."}</dd>
         <dt>Network</dt>
-        <dd>No network requests. No DNS queries.</dd>
+        <dd>{`${networkRequestsSent} network request${networkRequestsSent === 1 ? "" : "s"}. ${dnsQueriesSent} DNS ${
+          dnsQueriesSent === 1 ? "query" : "queries"
+        }.`}</dd>
         <dt>Evidence</dt>
-        <dd>No evidence collected. No observations available. Manual validation required.</dd>
+        <dd>
+          {evidenceAvailable && observations.length > 0
+            ? "Observed TCP exposure / review indicator. Manual validation required."
+            : "No evidence collected. No observations available. Manual validation required."}
+        </dd>
       </dl>
       <p className="muted">The job record was opened below when the dashboard integration is available.</p>
     </div>
@@ -274,6 +288,10 @@ export function parseActiveNmapBasicPorts(value: string): PortValidationResult {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function asString(value: unknown): string | null {

@@ -9,6 +9,9 @@ from active_runner.contracts import (
     ACTIVE_NMAP_BASIC_MODE,
     ACTIVE_NMAP_BASIC_PROFILE,
 )
+from active_runner.nmap_basic.executor import execute_active_nmap_basic
+from active_runner.nmap_basic.parser import parse_active_nmap_basic_xml
+from active_runner.nmap_basic.result import build_active_nmap_basic_result_payload
 
 
 ACTIVE_TOOLS_SERVICE_NAME = "active-tools"
@@ -127,37 +130,54 @@ _CONTROLLED_FAKE_ERROR_CODES = frozenset(
     {
         "fake_executor_exception",
         "malformed",
+        "malformed_xml",
         "nmap_missing",
+        "nmap_nonzero_exit",
         "policy_drift",
+        "process_timeout",
         "timed_out",
+        "unexpected_execution_error",
         "unexpected_fields",
+        "unexpected_port",
         "unsupported_shape",
+        "unsupported_xml_shape",
     }
 )
 _CONTROLLED_FAKE_ERROR_STATUS = {
     "fake_executor_exception": "failed",
     "malformed": "malformed",
+    "malformed_xml": "malformed",
     "nmap_missing": "nmap_missing",
+    "nmap_nonzero_exit": "failed",
     "policy_drift": "blocked",
+    "process_timeout": "timed_out",
     "timed_out": "timed_out",
+    "unexpected_execution_error": "failed",
     "unexpected_fields": "blocked",
+    "unexpected_port": "blocked",
     "unsupported_shape": "unsupported_shape",
+    "unsupported_xml_shape": "unsupported_shape",
 }
 
 ActiveToolsFakeExecutor = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+ActiveToolsNmapRunner = Callable[..., Any]
 
 
-def active_tools_capability_metadata() -> dict[str, Any]:
+def active_tools_capability_metadata(*, active_nmap_basic_execution_enabled: bool = False) -> dict[str, Any]:
     return {
         ACTIVE_NMAP_BASIC_CAPABILITY: {
-            "status": "disabled_no_scan",
-            "execution_enabled": False,
+            "status": "ready_bounded_execution" if active_nmap_basic_execution_enabled else "disabled_no_scan",
+            "execution_enabled": active_nmap_basic_execution_enabled,
             "target_input_allowed": False,
         }
     }
 
 
-def handle_active_tools_health(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def handle_active_tools_health(
+    payload: Mapping[str, Any] | None = None,
+    *,
+    active_nmap_basic_execution_enabled: bool = False,
+) -> dict[str, Any]:
     if payload is not None:
         if not isinstance(payload, Mapping):
             return _blocked_health_response("health_payload_not_mapping")
@@ -166,7 +186,9 @@ def handle_active_tools_health(payload: Mapping[str, Any] | None = None) -> dict
     return {
         "service": ACTIVE_TOOLS_SERVICE_NAME,
         "status": "scaffold_ready",
-        "capabilities": active_tools_capability_metadata(),
+        "capabilities": active_tools_capability_metadata(
+            active_nmap_basic_execution_enabled=active_nmap_basic_execution_enabled
+        ),
         "network_requests_sent": 0,
         "nmap_executed": False,
     }
@@ -181,6 +203,52 @@ def handle_active_tools_request(method: str, path: str, payload: Mapping[str, An
     if path in {ACTIVE_TOOLS_HEALTH_PATH, ACTIVE_TOOLS_NMAP_BASIC_PATH}:
         return _blocked_response("method_not_allowed")
     return _blocked_response("not_found")
+
+
+def handle_active_nmap_basic_real(
+    payload: Mapping[str, Any] | None,
+    *,
+    runner: ActiveToolsNmapRunner | None = None,
+) -> dict[str, Any]:
+    validation = _validate_active_nmap_basic_boundary_payload(payload)
+    if validation.get("error"):
+        return _blocked_response(validation["error"])
+
+    accepted_ports = validation["accepted_ports"]
+    target_kind = validation["target_kind"]
+    assert isinstance(payload, Mapping)
+    target_unit = payload["target_unit"]
+    assert isinstance(target_unit, Mapping)
+    limits = _safe_limits(payload.get("limits"))
+    execution_result = execute_active_nmap_basic(
+        {
+            "mode": ACTIVE_NMAP_BASIC_MODE,
+            "profile": ACTIVE_NMAP_BASIC_PROFILE,
+            "target": target_unit["target"],
+            "ports": list(accepted_ports),
+            "authorization_confirmed": True,
+            "local_private_scope_confirmed": True,
+            "live_traffic_confirmed": True,
+        },
+        runner=runner,
+        timeout_seconds=limits.get("process_timeout_seconds", 35),
+        max_stdout_bytes=limits.get("stdout_max_bytes", 131072),
+        max_stderr_bytes=limits.get("stderr_max_bytes", 16384),
+    )
+    parse_result = None
+    if execution_result.get("status") == "completed":
+        parse_result = parse_active_nmap_basic_xml(
+            execution_result.get("stdout"),
+            accepted_ports=accepted_ports,
+            target_kind=target_kind,
+        )
+    result_payload = build_active_nmap_basic_result_payload(execution_result, parse_result)
+    return _real_execution_response(
+        result_payload,
+        execution_result,
+        accepted_ports=accepted_ports,
+        target_kind=target_kind,
+    )
 
 
 def handle_active_nmap_basic_no_scan(
@@ -234,6 +302,55 @@ def _not_executed_response(port_count: int) -> dict[str, Any]:
         },
         "warnings": ["no_scan_service_skeleton"],
         "errors": [],
+    }
+
+
+def _real_execution_response(
+    result_payload: Mapping[str, Any],
+    execution_result: Mapping[str, Any],
+    *,
+    accepted_ports: tuple[int, ...],
+    target_kind: str,
+) -> dict[str, Any]:
+    status = _safe_real_status(result_payload.get("status"))
+    observations = _safe_real_observations(result_payload.get("port_observations"), accepted_ports=accepted_ports)
+    limits = result_payload.get("limits")
+    if not isinstance(limits, Mapping):
+        limits = {}
+    execution_attempted = execution_result.get("execution_attempted") is True
+    nmap_executed = execution_attempted and status != "nmap_missing"
+    network_requests_sent = len(accepted_ports) if nmap_executed else 0
+    errors = _controlled_strings(result_payload.get("errors"))
+    warnings = _controlled_strings(result_payload.get("parser_warnings"))
+    return {
+        "service": ACTIVE_TOOLS_SERVICE_NAME,
+        "status": status,
+        "capability": ACTIVE_NMAP_BASIC_CAPABILITY,
+        "mode": ACTIVE_NMAP_BASIC_MODE,
+        "profile": ACTIVE_NMAP_BASIC_PROFILE,
+        "target_kind": target_kind,
+        "execution_enabled": True,
+        "target_input_allowed": False,
+        "manual_validation_required": True,
+        "result_interpretation": _SAFE_RESULT_INTERPRETATION,
+        "observations": observations,
+        "output_truncated": bool(limits.get("output_truncated")),
+        "job_created": False,
+        "target_expansion_performed": False,
+        "network_requests_sent": network_requests_sent,
+        "execution_metadata": {
+            "executor": "active_nmap_basic",
+            "nmap_invoked": nmap_executed,
+            "subprocess_invoked_inside_active_tools": execution_attempted,
+        },
+        "summary": {
+            "target_count": 1,
+            "port_count": len(accepted_ports),
+            "nmap_executed": nmap_executed,
+            "evidence_available": bool(observations),
+        },
+        "warnings": warnings,
+        "errors": errors,
     }
 
 
@@ -410,6 +527,28 @@ def _validated_fake_observations(
             observation["reason"] = reason
         observations.append(observation)
     return observations, None
+
+
+def _safe_real_observations(value: Any, *, accepted_ports: tuple[int, ...]) -> list[dict[str, Any]]:
+    observations, error = _validated_fake_observations(value, accepted_ports=accepted_ports)
+    return [] if error else observations
+
+
+def _safe_real_status(value: Any) -> str:
+    if value in {
+        "completed",
+        "failed",
+        "timed_out",
+        "nmap_missing",
+        "malformed",
+        "unsupported_shape",
+        "blocked",
+        "truncated",
+        "no_ports",
+        "empty",
+    }:
+        return value
+    return "malformed"
 
 
 def _controlled_fake_response(reason: str) -> dict[str, Any]:

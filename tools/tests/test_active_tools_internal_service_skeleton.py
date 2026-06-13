@@ -220,11 +220,11 @@ def test_internal_service_skeleton_source_has_no_executor_or_runner_integration(
         "docker.sock",
         "nmap --version",
         "nmap -sT",
-        "execute_active_nmap_basic",
-        "active_runner.nmap_basic.executor",
         "tools/runner/main.py",
     ):
         assert forbidden not in service_source
+    assert "execute_active_nmap_basic" in service_source
+    assert "active_runner.nmap_basic.executor" in service_source
     assert "active_nmap_basic" not in runner_source
     assert "nmap_basic" not in runner_source
     assert "active_runner.service" not in backend_services_source

@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -130,6 +131,7 @@ def assert_no_sensitive_output(response):
     body = serialized(response)
     for forbidden in (
         "192.168.56.10",
+        "127.0.0.1",
         "secret-lab.internal",
         "token_should_never_render",
         "raw_xml",
@@ -167,6 +169,24 @@ def test_asgi_health_returns_stable_readiness_without_live_behavior():
     assert payload["capabilities"]["active_nmap_basic"] == {
         "status": "disabled_no_scan",
         "execution_enabled": False,
+        "target_input_allowed": False,
+    }
+    assert_no_sensitive_output(payload)
+
+
+def test_asgi_health_reports_ready_bounded_execution_when_explicitly_enabled_without_targets():
+    asgi_app = create_active_tools_app(nmap_basic_execution_enabled=True, nmap_basic_runner=lambda *args, **kwargs: None)
+
+    status, payload = asgi_json(asgi_app, "GET", "/health")
+
+    assert status == 200
+    assert payload["service"] == "active-tools"
+    assert payload["status"] == "scaffold_ready"
+    assert payload["network_requests_sent"] == 0
+    assert payload["nmap_executed"] is False
+    assert payload["capabilities"]["active_nmap_basic"] == {
+        "status": "ready_bounded_execution",
+        "execution_enabled": True,
         "target_input_allowed": False,
     }
     assert_no_sensitive_output(payload)
@@ -309,6 +329,113 @@ def test_asgi_fake_executor_is_explicitly_injected_and_allowlisted():
     assert_no_sensitive_output(payload)
 
 
+def test_asgi_real_nmap_basic_requires_explicit_execution_flag_and_uses_bounded_runner():
+    calls = []
+
+    def fake_runner(argv, **kwargs):
+        calls.append({"argv": argv, "kwargs": kwargs})
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=(
+                b"<nmaprun><host><ports>"
+                b"<port protocol='tcp' portid='65000'>"
+                b"<state state='closed' reason='conn-refused'/>"
+                b"</port></ports></host></nmaprun>"
+            ),
+            stderr=b"",
+        )
+
+    asgi_app = create_active_tools_app(nmap_basic_execution_enabled=True, nmap_basic_runner=fake_runner)
+
+    status, payload = asgi_json(
+        asgi_app,
+        "POST",
+        "/active/nmap-basic",
+        json_payload=make_boundary_request(
+            target_unit={"target": "127.0.0.1", "target_kind": "container_loopback", "accepted_ports": [65000]},
+            limits={
+                "process_timeout_seconds": 5,
+                "stdout_max_bytes": 8192,
+                "stderr_max_bytes": 2048,
+                "response_max_bytes": 32768,
+            },
+        ),
+    )
+
+    assert status == 200
+    assert len(calls) == 1
+    assert calls[0]["argv"] == [
+        "nmap",
+        "-sT",
+        "-Pn",
+        "-n",
+        "--max-retries",
+        "1",
+        "--host-timeout",
+        "30s",
+        "-oX",
+        "-",
+        "-p",
+        "65000",
+        "--",
+        "127.0.0.1",
+    ]
+    assert calls[0]["kwargs"]["shell"] is False
+    assert calls[0]["kwargs"]["timeout"] == 5
+    assert payload["service"] == "active-tools"
+    assert payload["status"] == "completed"
+    assert payload["capability"] == "active_nmap_basic"
+    assert payload["execution_enabled"] is True
+    assert payload["target_input_allowed"] is False
+    assert payload["job_created"] is False
+    assert payload["target_expansion_performed"] is False
+    assert payload["network_requests_sent"] == 1
+    assert payload["summary"]["nmap_executed"] is True
+    assert payload["summary"]["evidence_available"] is True
+    assert payload["observations"] == [
+        {
+            "port": 65000,
+            "protocol": "tcp",
+            "state": "closed",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "reason": "conn-refused",
+        }
+    ]
+    assert payload["execution_metadata"] == {
+        "executor": "active_nmap_basic",
+        "nmap_invoked": True,
+        "subprocess_invoked_inside_active_tools": True,
+    }
+    assert_no_sensitive_output(payload)
+
+
+def test_asgi_real_nmap_basic_maps_missing_nmap_to_controlled_error_without_target_leak():
+    def missing_runner(argv, **kwargs):
+        raise FileNotFoundError("nmap missing for 127.0.0.1")
+
+    asgi_app = create_active_tools_app(nmap_basic_execution_enabled=True, nmap_basic_runner=missing_runner)
+
+    status, payload = asgi_json(
+        asgi_app,
+        "POST",
+        "/active/nmap-basic",
+        json_payload=make_boundary_request(
+            target_unit={"target": "127.0.0.1", "target_kind": "container_loopback", "accepted_ports": [65000]},
+        ),
+    )
+
+    assert status == 200
+    assert payload["status"] == "nmap_missing"
+    assert payload["execution_enabled"] is True
+    assert payload["network_requests_sent"] == 0
+    assert payload["summary"]["nmap_executed"] is False
+    assert payload["summary"]["evidence_available"] is False
+    assert payload["errors"] == ["nmap_missing"]
+    assert_no_sensitive_output(payload)
+
+
 def test_asgi_known_wrong_method_and_unknown_path_return_controlled_errors():
     wrong_method_status, wrong_method = asgi_json(
         app,
@@ -353,11 +480,12 @@ def test_asgi_app_source_has_no_live_runtime_or_forbidden_imports():
             "nmap " + "-sT",
             "uvicorn",
             "gunicorn",
-            "active_runner.nmap_basic.executor",
             "backend.app",
             "tools/runner/" + "main.py",
         ):
             assert forbidden not in source
+    assert "active_runner.nmap_basic.executor" in service_source
+    assert "execute_active_nmap_basic" in service_source
     assert "active_nmap_basic" not in runner_source
     assert "nmap_basic" not in runner_source
     assert "active_runner.app" not in backend_services_source

@@ -7,10 +7,15 @@ from fastapi.responses import JSONResponse
 
 from app.active_tools_client import check_active_tools_health
 from app.active_nmap_lifecycle import (
+    ActiveNmapBasicRouteActiveToolsClient,
     ActiveNmapBasicRouteNoLiveClient,
     active_nmap_basic_no_live_job_error,
     active_nmap_basic_no_live_job_status,
+    active_nmap_basic_real_job_error,
+    active_nmap_basic_real_job_status,
     build_active_nmap_basic_no_live_job_result,
+    build_active_nmap_basic_real_job_result,
+    is_active_nmap_basic_real_lifecycle_result,
     normalize_active_nmap_basic_lifecycle_route_result,
     run_active_nmap_basic_lifecycle_skeleton,
 )
@@ -133,6 +138,7 @@ async def lifespan(app: FastAPI):
     app.state.active_http_header_probes = ActiveHttpHeaderProbeService(settings, job_store)
     app.state.active_nmap_basic_service = ActiveNmapBasicService(settings, job_store)
     app.state.active_tools_health_checker = check_active_tools_health
+    app.state.active_nmap_basic_lifecycle_client = ActiveNmapBasicRouteActiveToolsClient()
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -808,16 +814,33 @@ async def launch_active_nmap_basic(
     lifecycle_client = getattr(
         request.app.state,
         "active_nmap_basic_lifecycle_client",
-        ActiveNmapBasicRouteNoLiveClient(),
+        ActiveNmapBasicRouteActiveToolsClient(),
     )
+    client_mode = getattr(lifecycle_client, "client_mode", None)
     lifecycle_result = await lifecycle_runner(
         request.app.state.settings,
         handoff_plan,
         client=lifecycle_client,
         internal_approval_confirmed=True,
-        fake_client_approved=True,
+        fake_client_approved=client_mode == ActiveNmapBasicRouteNoLiveClient.client_mode,
+        active_tools_real_client_approved=client_mode == ActiveNmapBasicRouteActiveToolsClient.client_mode,
     )
     route_result = normalize_active_nmap_basic_lifecycle_route_result(lifecycle_result)
+    if is_active_nmap_basic_real_lifecycle_result(route_result):
+        try:
+            job_result = build_active_nmap_basic_real_job_result(route_result, payload, handoff_plan=handoff_plan)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="active_nmap_basic real persistence result was unsafe.",
+            ) from exc
+        return request.app.state.jobs.create_active_nmap_basic_no_live_job(
+            job_result,
+            status=active_nmap_basic_real_job_status(job_result),
+            error=active_nmap_basic_real_job_error(job_result),
+            owner_id=owner_id,
+        )
+
     try:
         job_result = build_active_nmap_basic_no_live_job_result(route_result, payload, handoff_plan=handoff_plan)
     except ValueError as exc:

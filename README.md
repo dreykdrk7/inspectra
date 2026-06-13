@@ -112,7 +112,8 @@ Reference docs:
 46. Active Nmap Basic Microphase 51 hardens existing backend job surfaces for no-live jobs. Detail, list, Raw JSON-style job output, and existing report/export routes now carry explicit no-live caveats and omit no-live-incompatible raw target, payload, command, output, service, credential/header/cookie/token, observation, and evidence fields.
 47. Active Nmap Basic Microphase 52 connects the existing frontend panel to the backend no-live `202 JobRecord` behavior. Successful submits select the returned `active_nmap_basic` job, refresh the jobs list, and render no-live caveats: no Nmap executed, no network/DNS requests, no evidence, no observations, and manual validation required. The UI keeps targets redacted and does not add real active-tools calls, backend runtime, exports, archive/run-all, Docker/Compose, or `tools/runner/main.py` integration.
 48. Active Nmap Basic Microphase 53 validates the no-live product flow end to end with in-process backend tests and mocked frontend tests: submit contract, `202 JobRecord`, list refresh, selected job report, Raw JSON redaction, and owner-scope checks. It adds no real active-tools calls, Nmap execution, external traffic, Docker/Compose, archive/run-all, or `tools/runner/main.py` integration.
-49. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
+49. Active Nmap Basic Microphase 54 wires the minimal real path through backend -> internal `active-tools` -> bounded Nmap executor only when the backend feature flag, internal active-tools URL, request contract, target policy, confirmations, and active-tools execution flag are all explicitly enabled. Jobs remain owner-scoped, target-redacted, `file_id: null`, and report minimal TCP observations only as observed exposure / review indicators requiring manual validation; the backend still runs no subprocesses and the flow adds no public scanner behavior, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
+50. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
 
 ## What This MVP Does
 
@@ -141,7 +142,7 @@ Reference docs:
 - Starts authorized controlled subdomain inventory jobs for explicitly supplied candidates.
 - Starts opt-in Active network dry-run planning jobs with no network traffic when `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=true`.
 - Starts opt-in authorized Active HTTP header probe jobs when `INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED=true`; each permitted job sends at most one HTTP `HEAD` request after explicit live-traffic confirmation.
-- Creates opt-in Active / Nmap basic no-live lifecycle records when `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=true`; these records are owner-scoped, target-redacted, and explicitly record no Nmap execution, no network/DNS requests, no evidence, and no observations.
+- Creates opt-in Active / Nmap basic jobs when `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=true`; real minimal execution requires an internal `active-tools` URL plus explicit active-tools execution enablement. Jobs are owner-scoped, target-redacted, bounded, and render TCP observations only as observed exposure / review indicators requiring manual validation. Without configured active-tools execution, controlled no-live or unconfigured states remain redacted.
 - Runs passive tools inside the `audit-tools` container.
 - Calculates file hashes inside the tool container.
 - Stores job state and results under `data/results/jobs`.
@@ -186,7 +187,7 @@ Reference docs:
 - It does not brute-force subdomains, use wordlists, query Certificate Transparency logs, attempt AXFR, crawl, scan ports, or call reputation APIs.
 - It does not perform live Active probes in the Active dry-run flow; dry-run jobs send no DNS queries, HTTP requests, socket traffic, Nmap commands, or live checks.
 - It does not run Nmap, scan ports, crawl, read response bodies, follow redirects, validate certificates beyond the HTTP client default, or send more than one authorized `HEAD` request in the opt-in Active HTTP header probe flow.
-- It does not run Nmap, call real `active-tools`, collect evidence, or observe live services in the Active / Nmap basic no-live lifecycle flow.
+- It does not run Nmap in the backend, expose `active-tools` publicly by default, accept raw flags/NSE/scripts, perform broad scans, expand targets, collect raw output, or present Active / Nmap basic observations as vulnerability findings.
 
 ## Passive Technical Alpha Scope
 
@@ -432,9 +433,10 @@ The application defaults are intentionally conservative. Docker Compose sets man
 | `INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS` | backend, audit-tools | `30` | Global runner deadline for one subdomain inventory job. The backend runner-call timeout is this deadline plus one in-flight DNS query budget and a small safety margin. |
 | `INSPECTRA_ACTIVE_DRY_RUN_ENABLED` | backend | `false` | Enables `POST /active/network/dry-run`, which creates no-network `active_network_dry_run` planning jobs. Disabled deployments reject the endpoint without creating jobs. |
 | `INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED` | backend | `false` | Enables `POST /active/network/http-header-probe`, which creates `active_http_header_probe` jobs after explicit live authorization. Disabled deployments reject the endpoint without creating jobs. |
-| `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED` | backend | `false` | Enables the bounded `POST /active/network/nmap-basic` backend contract gate. Current backend behavior remains no-live/test-double unless a later approved phase changes it. |
-| `INSPECTRA_ACTIVE_TOOLS_URL` | backend | empty | Optional internal `active-tools` base URL for future backend health checks. Empty means unconfigured; no backend runtime path calls it in the current phase. |
-| `INSPECTRA_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS` | backend | `2` | Timeout for the future backend `active-tools` `/health` check helper. Tests use fake transports; no live backend health check is invoked by default. |
+| `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED` | backend | `false` | Enables the bounded `POST /active/network/nmap-basic` backend contract gate. Real minimal execution still requires configured internal `active-tools`, explicit confirmations, target policy acceptance, and active-tools execution enablement. |
+| `INSPECTRA_ACTIVE_TOOLS_URL` | backend | empty | Optional internal `active-tools` base URL for backend health checks and the Active / Nmap basic internal client. Empty means unconfigured and maps to controlled unavailable/no-live behavior. |
+| `INSPECTRA_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS` | backend | `2` | Timeout for the backend `active-tools` `/health` helper. |
+| `INSPECTRA_ACTIVE_TOOLS_NMAP_BASIC_EXECUTION_ENABLED` | active-tools | `false` | Enables bounded Nmap execution inside the internal `active-tools` service only. Disabled mode returns controlled no-live behavior; the backend never executes Nmap directly. |
 | `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Browser-facing backend URL used by the React app. |
 
 The `audit-tools` container is attached to the internal Inspectra network and to a separate egress-capable network so `web_basic` can make authorized HTTP/HTTPS requests and `domain_basic`/`subdomain_inventory_basic` can make bounded DNS queries. The runner still does not publish a public port.

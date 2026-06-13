@@ -277,6 +277,22 @@ The Active Nmap Basic backend active-tools health runtime surface no-live phase 
 
 The Active Nmap Basic backend active-tools Nmap-basic client contract no-live phase is recorded in `docs/future/active-nmap-basic-backend-active-tools-nmap-basic-client-contract-no-live.md`.
 
+The Active Nmap Basic backend active Nmap job lifecycle skeleton no-live phase is recorded in `docs/future/active-nmap-basic-backend-active-nmap-job-lifecycle-skeleton-no-live.md`.
+
+The Active Nmap Basic backend active Nmap route-to-lifecycle no-live phase is recorded in `docs/future/active-nmap-basic-backend-active-nmap-route-to-lifecycle-no-live.md`.
+
+The Active Nmap Basic backend no-live job persistence design is recorded in `docs/future/active-nmap-basic-backend-no-live-job-persistence-design.md`.
+
+The Active Nmap Basic backend no-live job persistence phase is recorded in `docs/future/active-nmap-basic-backend-no-live-job-persistence.md`.
+
+The Active Nmap Basic backend no-live job surfaces hardening phase is recorded in `docs/future/active-nmap-basic-backend-no-live-job-surfaces-hardening.md`.
+
+The Active Nmap Basic frontend no-live job UX phase is recorded in `docs/future/active-nmap-basic-frontend-no-live-job-ux.md`.
+
+The Active Nmap Basic no-live product E2E smoke phase is recorded in `docs/future/active-nmap-basic-no-live-e2e-product-smoke.md`.
+
+The Active Nmap Basic real minimal integration phase is recorded in `docs/future/active-nmap-basic-real-minimal-integration.md`.
+
 Current decision: `ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME`.
 
 Runbook decision: `ACTIVE_RUNBOOK_THREAT_MODEL_FROZEN_NO_RUNTIME`.
@@ -421,6 +437,10 @@ Active Nmap Basic backend no-live job surfaces hardening decision: `ACTIVE_NMAP_
 
 Active Nmap Basic frontend no-live job UX decision: `ACTIVE_NMAP_BASIC_52_FRONTEND_ACTIVE_NMAP_NO_LIVE_JOB_UX_PASSED`.
 
+Active Nmap Basic no-live product E2E smoke decision: `ACTIVE_NMAP_BASIC_53_ACTIVE_NMAP_NO_LIVE_E2E_PRODUCT_SMOKE_PASSED`.
+
+Active Nmap Basic real minimal integration decision: `ACTIVE_NMAP_BASIC_54_ACTIVE_TOOLS_REAL_NMAP_MINIMAL_INTEGRATION_PASSED`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
@@ -505,7 +525,8 @@ This means:
 - The Active Nmap Basic frontend panel displays a bounded confirmations form for one explicit target, bounded numeric TCP ports, fixed `live_nmap_basic` / `tcp_connect_small`, and the three required confirmations. Backend validation remains authoritative. Disabled or unavailable backend responses, legacy `not_implemented` / `not_executed` responses, and created no-live test-double jobs render as controlled states, not completed live scans. The UI still exposes no raw flags, target-file, CIDR/range/wildcard, custom-profile, advanced-scan, credential/header/cookie/token, or crawling controls, and it does not integrate with archive/run-all actions.
 - The Active Nmap Basic frontend report renderer displays only already-structured `active_nmap_basic` results with minimal TCP port observations, controlled-state wording, manual validation required, and additional defensive Raw JSON redaction. It does not display raw XML, raw commands, raw targets, stdout/stderr without redaction, service/banner fields, headers/cookies/tokens/credentials, CVE matches, exploitability, target-safety, complete-coverage, or high-severity claims, and it does not add archive/run-all integration or real Nmap execution.
 - Active Nmap Basic no-live E2E product smoke validates only the already bounded no-live product path: mocked frontend submit contract, backend `202 JobRecord`, owner-scoped list/detail/report rendering, Raw JSON redaction, and generic wrong-owner denial. It confirms no Nmap execution, no real `active-tools` call, no network/DNS requests, no evidence, no observations, and no target/raw payload/output leakage. This phase does not add live execution, Docker/Compose, probes, external HTTP, new exports, archive/run-all, `tools/runner/main.py`, target approval, release, or tag state.
-- No released or fully functional UI-exposed Nmap execution workflow exists.
+- Active Nmap Basic real minimal integration wires the existing frontend and backend route to the internal `active-tools` service for bounded `tcp_connect_small` execution only when the backend feature flag, internal active-tools URL, request contract, target policy, confirmations, and active-tools execution flag are all explicitly enabled. The backend remains the authority for auth, owner scope, validation, lifecycle, storage, reporting, and redaction, while Nmap execution occurs only inside `active-tools` with allowlisted argv, `shell=False`, bounded timeouts/output, and no raw target, command, stdout/stderr, XML, PTR/resolved IP, banner, version, service detail, credential, header, cookie, or token storage. Persisted jobs stay owner-scoped, `file_id: null`, target-redacted, and render minimal TCP observations only as observed exposure / review indicators requiring manual validation. This phase does not add backend subprocess execution, public `active-tools` exposure by default, Docker socket control, raw flags, NSE/scripts, service/version or OS detection, UDP/SYN scanning, brute force, credential validation, crawling, DNS expansion, archive/run-all integration, `tools/runner/main.py`, arbitrary public targets, release, or tag state.
+- No broad/public scanner or release-ready Nmap workflow exists. The only approved Nmap path is the bounded, opt-in, local/private/self-hosted Active Nmap Basic path through internal `active-tools`.
 
 The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.
 
@@ -529,7 +550,7 @@ The MVP does not include:
 - Malware detonation.
 - Fuzzing.
 - Aggressive automation against external services.
-- Running Nmap or network scanners.
+- Running Nmap or network scanners outside the explicitly enabled, bounded Active Nmap Basic path through internal `active-tools`.
 - Image rendering, conversion, detonation, or embedded-content execution.
 - Installing dependencies from uploaded manifests.
 - Running npm, pip, Poetry, pnpm, yarn, or package lifecycle scripts against uploaded manifests.

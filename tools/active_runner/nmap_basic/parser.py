@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Collection, TypeAlias
 from xml.etree import ElementTree
 
@@ -40,6 +41,7 @@ _ALLOWED_STATE_REASONS = {
     "udp-response",
     "user-set",
 }
+_SAFE_NMAP_DOCTYPE_RE = re.compile(br"(?is)<!DOCTYPE\s+nmaprun\s*>")
 
 
 def parse_active_nmap_basic_xml(
@@ -69,6 +71,7 @@ def parse_active_nmap_basic_xml(
             "parse_error": "unsupported_xml_shape",
             "parser_warnings": ["doctype_or_entity_rejected"],
         }
+    raw = _strip_safe_nmap_doctype(raw).strip()
 
     try:
         root = ElementTree.fromstring(raw)
@@ -153,7 +156,16 @@ def _coerce_output(output: bytes | str | None) -> bytes | None:
 
 def _contains_unsupported_xml_shape(raw: bytes) -> bool:
     lowered = raw.lower()
-    return b"<!doctype" in lowered or b"<!entity" in lowered
+    if b"<!entity" in lowered:
+        return True
+    if b"<!doctype" not in lowered:
+        return False
+    without_safe_doctype = _SAFE_NMAP_DOCTYPE_RE.sub(b"", raw, count=1)
+    return b"<!doctype" in without_safe_doctype.lower()
+
+
+def _strip_safe_nmap_doctype(raw: bytes) -> bytes:
+    return _SAFE_NMAP_DOCTYPE_RE.sub(b"", raw, count=1)
 
 
 def _contains_unsupported_live_sections(root: ElementTree.Element) -> bool:

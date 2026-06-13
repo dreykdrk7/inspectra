@@ -56,7 +56,7 @@ from app.active_nmap_boundary import (
     validate_active_nmap_basic_boundary_response,
 )
 from app.active_nmap_handoff import build_active_nmap_basic_handoff_plan
-from app.active_nmap_lifecycle import run_active_nmap_basic_lifecycle_skeleton
+from app.active_nmap_lifecycle import ActiveNmapBasicRouteNoLiveClient, run_active_nmap_basic_lifecycle_skeleton
 from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
 from app.models import JobRecord
 from app.reporting import markdown_block_value, markdown_inline_value
@@ -260,6 +260,18 @@ class FakeActiveToolsNmapBasicClient:
         return dict(self.result or make_active_tools_nmap_basic_client_result())
 
 
+class FakeActiveToolsRealNmapBasicClient:
+    client_mode = "active_tools_real"
+
+    def __init__(self, result: dict | None = None) -> None:
+        self.result = result
+        self.calls: list[dict] = []
+
+    async def __call__(self, base_url, request_payload, *, timeout_seconds):
+        self.calls.append({"base_url": base_url, "request_payload": request_payload, "timeout_seconds": timeout_seconds})
+        return dict(self.result or make_active_tools_nmap_basic_real_client_result())
+
+
 class FakeActiveNmapBasicLifecycleRunner:
     def __init__(self, result: dict | None = None) -> None:
         self.result = result
@@ -273,6 +285,7 @@ class FakeActiveNmapBasicLifecycleRunner:
         client,
         internal_approval_confirmed,
         fake_client_approved,
+        active_tools_real_client_approved=False,
     ):
         self.calls.append(
             {
@@ -281,6 +294,7 @@ class FakeActiveNmapBasicLifecycleRunner:
                 "client_mode": getattr(client, "client_mode", None),
                 "internal_approval_confirmed": internal_approval_confirmed,
                 "fake_client_approved": fake_client_approved,
+                "active_tools_real_client_approved": active_tools_real_client_approved,
             }
         )
         if self.result is not None:
@@ -291,6 +305,7 @@ class FakeActiveNmapBasicLifecycleRunner:
             client=client,
             internal_approval_confirmed=internal_approval_confirmed,
             fake_client_approved=fake_client_approved,
+            active_tools_real_client_approved=active_tools_real_client_approved,
         )
 
 
@@ -332,6 +347,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.active_http_header_probes = ActiveHttpHeaderProbeService(settings, job_store)
     app.state.active_nmap_basic_service = ActiveNmapBasicService(settings, job_store)
     app.state.active_tools_health_checker = backend_main.check_active_tools_health
+    app.state.active_nmap_basic_lifecycle_client = ActiveNmapBasicRouteNoLiveClient()
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -4573,6 +4589,68 @@ def assert_active_nmap_basic_no_live_job_payload(job_payload: dict, *, expected_
         assert forbidden_key not in result
 
 
+def assert_active_nmap_basic_real_minimal_job_payload(job_payload: dict) -> None:
+    assert job_payload["audit_type"] == "active_nmap_basic"
+    assert job_payload["file_id"] is None
+    assert job_payload["target_url"] == "[REDACTED_TARGET]"
+    assert job_payload["target_domain"] is None
+    result = job_payload["result"]
+    assert result["audit_type"] == "active_nmap_basic"
+    assert result["capability"] == "active_nmap_basic"
+    assert result["mode"] == "live_nmap_basic"
+    assert result["profile"] == "tcp_connect_small"
+    assert result["status"] == "completed"
+    assert result["lifecycle_state"] == "completed_real_minimal"
+    assert result["reason"] == "active_tools_real_result"
+    assert result["manual_validation_required"] is True
+    assert result["result_interpretation"] == "observed_exposure_review_indicator"
+    assert result["summary"]["observation_count"] == 1
+    assert result["summary"]["manual_validation_required"] is True
+    assert result["summary"]["open_tcp_observations_count"] == 1
+    assert result["execution"]["nmap_executed"] is True
+    assert result["execution"]["network_requests_sent"] == 1
+    assert result["execution"]["dns_queries_sent"] == 0
+    assert result["execution"]["subprocess_invoked"] is False
+    assert result["execution"]["subprocess_invoked_inside_active_tools"] is True
+    assert result["execution"]["active_tools_real_call_allowed"] is True
+    assert result["execution"]["target_expansion_performed"] is False
+    assert result["execution"]["evidence_available"] is True
+    assert result["port_observations"] == [
+        {
+            "port": 443,
+            "protocol": "tcp",
+            "state": "open",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "reason": "syn-ack",
+        }
+    ]
+    assert result["policy"]["target_values_stored"] is False
+    for forbidden_key in (
+        "target",
+        "raw_target",
+        "raw_payload",
+        "command",
+        "argv",
+        "stdout",
+        "stderr",
+        "xml",
+        "raw_xml",
+        "ptr",
+        "resolved_ip",
+        "banner",
+        "version",
+        "service_details",
+        "credentials",
+        "headers",
+        "cookies",
+        "tokens",
+        "observations",
+        "evidence",
+    ):
+        assert forbidden_key not in result
+
+
 def assert_no_active_nmap_basic_no_live_leaks(value: object) -> None:
     serialized = json.dumps(value, sort_keys=True)
     for forbidden in ACTIVE_NMAP_BASIC_NO_LIVE_FORBIDDEN_STRINGS:
@@ -4695,6 +4773,53 @@ def make_active_tools_nmap_basic_response(**overrides) -> dict:
     return payload
 
 
+def make_active_tools_nmap_basic_real_response(**overrides) -> dict:
+    payload = {
+        "service": "active-tools",
+        "status": "completed",
+        "capability": "active_nmap_basic",
+        "mode": "live_nmap_basic",
+        "profile": "tcp_connect_small",
+        "target_kind": "private_hostname",
+        "execution_enabled": True,
+        "target_input_allowed": False,
+        "manual_validation_required": True,
+        "result_interpretation": "observed_exposure_review_indicator",
+        "observations": [
+            {
+                "port": 443,
+                "protocol": "tcp",
+                "state": "open",
+                "reason": "syn-ack",
+                "manual_validation_required": True,
+                "result_interpretation": "observed_exposure_review_indicator",
+            }
+        ],
+        "output_truncated": False,
+        "job_created": False,
+        "target_expansion_performed": False,
+        "network_requests_sent": 1,
+        "execution_metadata": {
+            "executor": "active_nmap_basic",
+            "nmap_invoked": True,
+            "subprocess_invoked_inside_active_tools": True,
+        },
+        "summary": {
+            "target_count": 1,
+            "port_count": 1,
+            "nmap_executed": True,
+            "evidence_available": True,
+        },
+        "warnings": [],
+        "errors": [],
+    }
+    summary = overrides.pop("summary", None)
+    payload.update(overrides)
+    if summary is not None:
+        payload["summary"].update(summary)
+    return payload
+
+
 def make_active_nmap_lifecycle_plan(**overrides):
     payload = make_active_nmap_basic_payload(targets=["example.invalid"], ports=[443])
     payload.update(overrides)
@@ -4719,6 +4844,49 @@ def make_active_tools_nmap_basic_client_result(**overrides):
         "evidence_available": False,
         "observations": [],
         "warnings": ["no_scan_service_skeleton"],
+        "errors": [],
+        "error_code": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_active_tools_nmap_basic_real_client_result(**overrides):
+    payload = {
+        "available": True,
+        "status": "completed",
+        "service": "active-tools",
+        "capability": "active_nmap_basic",
+        "mode": "live_nmap_basic",
+        "profile": "tcp_connect_small",
+        "target_kind": "private_ip",
+        "execution_enabled": True,
+        "target_input_allowed": False,
+        "manual_validation_required": True,
+        "job_created": False,
+        "target_expansion_performed": False,
+        "network_requests_sent": 1,
+        "nmap_executed": True,
+        "evidence_available": True,
+        "observations": [
+            {
+                "port": 443,
+                "protocol": "tcp",
+                "state": "open",
+                "reason": "syn-ack",
+                "manual_validation_required": True,
+                "result_interpretation": "observed_exposure_review_indicator",
+            }
+        ],
+        "output_truncated": False,
+        "execution_metadata": {
+            "executor": "active_nmap_basic",
+            "nmap_invoked": True,
+            "subprocess_invoked_inside_active_tools": True,
+            "duration_ms": 12,
+        },
+        "result_interpretation": "observed_exposure_review_indicator",
+        "warnings": [],
         "errors": [],
         "error_code": None,
     }
@@ -5257,6 +5425,80 @@ async def test_active_tools_nmap_basic_client_success_contract_uses_post_only_an
 
 
 @pytest.mark.anyio
+async def test_active_tools_nmap_basic_client_accepts_real_minimal_contract_and_redacts_target():
+    request_payload = make_active_tools_nmap_basic_request()
+
+    def handler(request):
+        sent_payload = json.loads(request.content.decode("utf-8"))
+        assert request.method == "POST"
+        assert request.url.path == "/active/nmap-basic"
+        assert sent_payload == request_payload
+        return Response(200, json=make_active_tools_nmap_basic_real_response())
+
+    result = await run_active_nmap_basic(
+        "http://active-tools:8080",
+        request_payload,
+        timeout_seconds=0.25,
+        transport=MockTransport(handler),
+    )
+
+    assert result["available"] is True
+    assert result["status"] == "completed"
+    assert result["execution_enabled"] is True
+    assert result["target_input_allowed"] is False
+    assert result["job_created"] is False
+    assert result["target_expansion_performed"] is False
+    assert result["network_requests_sent"] == 1
+    assert result["nmap_executed"] is True
+    assert result["evidence_available"] is True
+    assert result["observations"] == [
+        {
+            "port": 443,
+            "protocol": "tcp",
+            "state": "open",
+            "reason": "syn-ack",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+        }
+    ]
+    assert result["execution_metadata"]["executor"] == "active_nmap_basic"
+    assert result["execution_metadata"]["subprocess_invoked_inside_active_tools"] is True
+    assert result["result_interpretation"] == "observed_exposure_review_indicator"
+    serialized = json.dumps(result, sort_keys=True)
+    for forbidden in ("example.invalid", "nmap -sT", "<nmaprun", "stdout", "stderr", "PrivateServer", "9.9.9"):
+        assert forbidden not in serialized
+
+
+@pytest.mark.anyio
+async def test_active_tools_nmap_basic_client_rejects_real_response_policy_drift_or_raw_output():
+    dangerous_responses = [
+        make_active_tools_nmap_basic_real_response(observations=[{"port": 22, "protocol": "tcp", "state": "open"}]),
+        make_active_tools_nmap_basic_real_response(raw_xml="<nmaprun args='nmap -sT example.invalid'/>"),
+        make_active_tools_nmap_basic_real_response(execution_metadata={"executor": "active_nmap_basic", "raw_command": "nmap -sT example.invalid"}),
+        make_active_tools_nmap_basic_real_response(target_input_allowed=True),
+        make_active_tools_nmap_basic_real_response(target_expansion_performed=True),
+        make_active_tools_nmap_basic_real_response(job_created=True),
+    ]
+
+    for response_payload in dangerous_responses:
+        def handler(request, response_payload=response_payload):
+            return Response(200, json=response_payload)
+
+        result = await run_active_nmap_basic(
+            "http://active-tools:8080",
+            make_active_tools_nmap_basic_request(),
+            transport=MockTransport(handler),
+        )
+
+        assert result["available"] is False
+        assert result["error_code"] in {"active_tools_invalid_response", "active_tools_unexpected_fields"}
+        serialized = json.dumps(result, sort_keys=True)
+        assert "example.invalid" not in serialized
+        assert "<nmaprun" not in serialized
+        assert "nmap -sT" not in serialized
+
+
+@pytest.mark.anyio
 async def test_active_tools_nmap_basic_client_rejects_invalid_request_without_calling_transport():
     calls = []
     request_payload = make_active_tools_nmap_basic_request(raw_command="nmap -sT example.invalid")
@@ -5465,7 +5707,7 @@ async def test_active_nmap_basic_lifecycle_skeleton_blocks_missing_internal_appr
 
 
 @pytest.mark.anyio
-async def test_active_nmap_basic_lifecycle_skeleton_requires_fake_no_live_client(monkeypatch, tmp_path):
+async def test_active_nmap_basic_lifecycle_skeleton_requires_explicit_supported_client(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
     monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_URL", "http://active-tools:8080")
@@ -5481,7 +5723,7 @@ async def test_active_nmap_basic_lifecycle_skeleton_requires_fake_no_live_client
     )
 
     assert result["lifecycle_state"] == "blocked_missing_approval"
-    assert result["reason"] == "fake_no_live_client_required"
+    assert result["reason"] == "real_active_tools_client_required"
     assert result["client_invoked"] is False
     assert result["job_created"] is False
     assert "example.invalid" not in json.dumps(result, sort_keys=True)
@@ -5557,6 +5799,83 @@ async def test_active_nmap_basic_lifecycle_skeleton_success_no_live_uses_fake_cl
     assert fake_client.calls[0]["request_payload"]["target_unit"]["target"] == "example.invalid"
     assert fake_client.calls[0]["timeout_seconds"] == settings.active_tools_health_timeout_seconds
     assert "example.invalid" not in json.dumps(result, sort_keys=True)
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_lifecycle_skeleton_requires_real_client_approval(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_URL", "http://active-tools:8080")
+    settings = load_settings()
+    plan = make_active_nmap_lifecycle_plan()
+    real_client = FakeActiveToolsRealNmapBasicClient()
+
+    result = await run_active_nmap_basic_lifecycle_skeleton(
+        settings,
+        plan,
+        client=real_client,
+        internal_approval_confirmed=True,
+        fake_client_approved=False,
+        active_tools_real_client_approved=False,
+    )
+
+    assert result["lifecycle_state"] == "blocked_missing_approval"
+    assert result["reason"] == "real_active_tools_client_required"
+    assert result["client_invoked"] is False
+    assert real_client.calls == []
+    assert "example.invalid" not in json.dumps(result, sort_keys=True)
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_lifecycle_skeleton_success_real_minimal_uses_active_tools_client_and_redacts_target(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_URL", "http://active-tools:8080")
+    settings = load_settings()
+    plan = make_active_nmap_lifecycle_plan(targets=["192.168.56.10"], ports=[443])
+    real_client = FakeActiveToolsRealNmapBasicClient()
+
+    result = await run_active_nmap_basic_lifecycle_skeleton(
+        settings,
+        plan,
+        client=real_client,
+        internal_approval_confirmed=True,
+        fake_client_approved=False,
+        active_tools_real_client_approved=True,
+    )
+
+    assert result["lifecycle_state"] == "completed_real_minimal"
+    assert result["execution_state"] == "completed"
+    assert result["reason"] == "active_tools_real_result"
+    assert result["client_invoked"] is True
+    assert result["active_tools_real_call_allowed"] is True
+    assert result["active_tools_client_available"] is True
+    assert result["job_created"] is False
+    assert result["storage_persisted"] is False
+    assert result["subprocess_invoked"] is False
+    assert result["nmap_executed"] is True
+    assert result["network_requests_sent"] == 1
+    assert result["dns_queries_sent"] == 0
+    assert result["target_expansion_performed"] is False
+    assert result["evidence_available"] is True
+    assert result["observations"] == [
+        {
+            "port": 443,
+            "protocol": "tcp",
+            "state": "open",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+            "reason": "syn-ack",
+        }
+    ]
+    assert result["execution_metadata"]["subprocess_invoked_inside_active_tools"] is True
+    assert len(real_client.calls) == 1
+    assert real_client.calls[0]["base_url"] == "http://active-tools:8080"
+    serialized = json.dumps(result, sort_keys=True)
+    for forbidden in ("192.168.56.10", "example.invalid", "<nmaprun", "nmap -sT", "PrivateServer", "9.9.9"):
+        assert forbidden not in serialized
 
 
 @pytest.mark.anyio
@@ -5650,7 +5969,6 @@ def test_active_nmap_basic_lifecycle_skeleton_source_has_only_bounded_route_inte
     for forbidden in (
         "import httpx",
         "MockTransport",
-        "run_active_nmap_basic(",
         "JobStore",
         "create_active_nmap_basic_job",
         "run_active_nmap_basic_analysis",
@@ -5667,6 +5985,8 @@ def test_active_nmap_basic_lifecycle_skeleton_source_has_only_bounded_route_inte
         "tools/runner/main.py",
     ):
         assert forbidden not in lifecycle_source
+    assert "ActiveNmapBasicRouteActiveToolsClient" in lifecycle_source
+    assert "run_active_nmap_basic(" in lifecycle_source
     assert "ACTIVE_NMAP_BASIC_LIFECYCLE_FORBIDDEN_RESULT_KEYS" in lifecycle_source
     for forbidden_result_key in ("stdout", "stderr", "raw_xml", "raw_command"):
         assert f'"{forbidden_result_key}"' in lifecycle_source
@@ -5676,9 +5996,11 @@ def test_active_nmap_basic_lifecycle_skeleton_source_has_only_bounded_route_inte
     route_end = main_source.index('@app.post("/audits/web/basic"', route_start)
     route_source = main_source[route_start:route_end]
     assert "run_active_nmap_basic_lifecycle_skeleton" in route_source
+    assert "ActiveNmapBasicRouteActiveToolsClient" in route_source
     assert "ActiveNmapBasicRouteNoLiveClient" in route_source
     assert "normalize_active_nmap_basic_lifecycle_route_result" in route_source
     assert "build_active_nmap_basic_no_live_job_result" in route_source
+    assert "build_active_nmap_basic_real_job_result" in route_source
     assert "create_active_nmap_basic_no_live_job" in route_source
     assert "current_owner_id_for_request" in route_source
     for forbidden in (
@@ -5689,7 +6011,6 @@ def test_active_nmap_basic_lifecycle_skeleton_source_has_only_bounded_route_inte
         "app.state.jobs",
         "render_",
         "export",
-        "run_active_nmap_basic(",
         "subprocess.",
         "shell" + "=True",
         "os." + "system",
@@ -5700,7 +6021,7 @@ def test_active_nmap_basic_lifecycle_skeleton_source_has_only_bounded_route_inte
         "tools/runner/main.py",
     ):
         if forbidden == "app.state.jobs":
-            assert route_source.count(forbidden) == 1
+            assert route_source.count(forbidden) == 2
         else:
             assert forbidden not in route_source
     assert "create_active_nmap_basic_no_live_job" in storage_source
@@ -5817,6 +6138,65 @@ async def test_active_nmap_basic_enabled_route_persists_lifecycle_no_live_job(mo
     assert jobs[0]["summary"]["evidence_collected"] is False
     assert jobs[0]["summary"]["observations_available"] is False
     assert_no_active_nmap_basic_no_live_leaks({"create": payload, "jobs": jobs})
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_enabled_route_persists_real_minimal_job_from_active_tools_client(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_URL", "http://active-tools:8080")
+    configure_test_state(monkeypatch, tmp_path)
+    real_client = FakeActiveToolsRealNmapBasicClient()
+    monkeypatch.setattr(app.state, "active_nmap_basic_lifecycle_client", real_client, raising=False)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/nmap-basic", json=make_active_nmap_basic_payload(ports=[443]))
+        detail_response = await client.get(f"/jobs/{response.json()['id']}")
+        jobs_response = await client.get("/jobs")
+
+    payload = response.json()
+    detail = detail_response.json()
+    jobs = jobs_response.json()
+    assert response.status_code == 202
+    assert detail_response.status_code == 200
+    assert jobs_response.status_code == 200
+    assert len(real_client.calls) == 1
+    assert real_client.calls[0]["request_payload"]["target_unit"]["target"] == "192.168.56.10"
+    assert real_client.calls[0]["request_payload"]["target_unit"]["accepted_ports"] == [443]
+    assert payload["status"] == "completed"
+    assert payload["error"] is None
+    assert_active_nmap_basic_real_minimal_job_payload(payload)
+    assert detail["target_url"] == "[REDACTED_TARGET]"
+    assert detail["result"]["lifecycle_state"] == "completed_real_minimal"
+    assert detail["result"]["surface_interpretation"] == "Observed TCP exposure / review indicator"
+    assert detail["result"]["surface_caveats"]
+    assert jobs[0]["summary"]["capability"] == "active_nmap_basic"
+    assert jobs[0]["summary"]["lifecycle_state"] == "completed_real_minimal"
+    assert jobs[0]["summary"]["result_status"] == "completed"
+    assert jobs[0]["summary"]["nmap_executed"] is True
+    assert jobs[0]["summary"]["network_requests_sent"] == 1
+    assert jobs[0]["summary"]["dns_queries_sent"] == 0
+    assert jobs[0]["summary"]["evidence_collected"] is True
+    assert jobs[0]["summary"]["observation_count"] == 1
+    assert jobs[0]["summary"]["surface_interpretation"] == "Observed TCP exposure / review indicator"
+    serialized = json.dumps({"create": payload, "detail": detail, "jobs": jobs}, sort_keys=True)
+    for forbidden in (
+        "192.168.56.10",
+        "example.invalid",
+        "nmap -sT",
+        "<nmaprun",
+        "\"stdout\"",
+        "\"stderr\"",
+        "raw_stdout",
+        "raw_stderr",
+        "raw_xml",
+        "PrivateServer",
+        "9.9.9",
+        "confirmed " + "vulnerability",
+        "exploit" + "able",
+        "target is " + "safe",
+    ):
+        assert forbidden not in serialized
 
 
 @pytest.mark.anyio

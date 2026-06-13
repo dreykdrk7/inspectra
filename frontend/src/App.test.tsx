@@ -1336,7 +1336,7 @@ describe("App", () => {
 
     expect(panelText).toContain("Local/private/self-hosted");
     expect(panelText).toContain("Authorized targets only");
-    expect(panelText).toContain("No-live lifecycle record");
+    expect(panelText).toContain("bounded authorized lifecycle record");
     expect(panelText).toContain("Manual validation required");
     expect(panelText).toContain("No security finding is asserted");
     expect(panelText).toContain("No raw flags");
@@ -1349,7 +1349,7 @@ describe("App", () => {
     expect(panelText).not.toContain("all ports found");
     expect(scoped.getByLabelText("Target")).toBeInTheDocument();
     expect(scoped.getByLabelText("TCP ports")).toBeInTheDocument();
-    expect(scoped.getByRole("button", { name: /Create bounded no-live record/i })).toBeDisabled();
+    expect(scoped.getByRole("button", { name: /Create bounded record/i })).toBeDisabled();
     expect(panel?.querySelector("form")).not.toBeNull();
     expect(panel?.querySelector('input[type="file"]')).toBeNull();
     expect(panel?.querySelector("textarea")).toBeNull();
@@ -1361,7 +1361,7 @@ describe("App", () => {
 
     fireEvent.change(scoped.getByLabelText("Target"), { target: { value: "router.local" } });
     fireEvent.change(scoped.getByLabelText("TCP ports"), { target: { value: "22, 443" } });
-    fireEvent.click(scoped.getByRole("button", { name: /Create bounded no-live record/i }));
+    fireEvent.click(scoped.getByRole("button", { name: /Create bounded record/i }));
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(
       vi
@@ -1370,7 +1370,7 @@ describe("App", () => {
     ).toBe(false);
   });
 
-  it("creates and opens an Active Nmap basic no-live job record", async () => {
+  it("creates and opens an Active Nmap basic bounded job record", async () => {
     const activeJob = {
       id: "job-active-nmap-no-live-52",
       audit_type: "active_nmap_basic",
@@ -1470,8 +1470,8 @@ describe("App", () => {
     fireEvent.change(scoped.getByLabelText("TCP ports"), { target: { value: "22, 443" } });
     fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
     fireEvent.click(scoped.getByLabelText("I confirm this is local, private, or self-hosted scope."));
-    fireEvent.click(scoped.getByLabelText("I understand this capability is live-traffic scoped, while this phase creates only a no-live record."));
-    fireEvent.click(scoped.getByRole("button", { name: /Create bounded no-live record/i }));
+    fireEvent.click(scoped.getByLabelText("I understand this capability is live-traffic scoped and remains bounded by backend policy."));
+    fireEvent.click(scoped.getByRole("button", { name: /Create bounded record/i }));
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(

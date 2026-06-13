@@ -229,7 +229,34 @@ def test_parser_returns_no_raw_xml_target_command_or_claim_wording():
     assert "target is safe" not in body
 
 
-def test_parser_rejects_doctype_and_entity_shapes():
+def test_parser_accepts_plain_nmaprun_doctype_without_returning_raw_xml():
+    result = parse_active_nmap_basic_xml(
+        b"""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE nmaprun>
+        <nmaprun>
+          <host>
+            <ports>
+              <port protocol="tcp" portid="65000">
+                <state state="closed" reason="conn-refused"/>
+              </port>
+            </ports>
+          </host>
+        </nmaprun>
+        """,
+        accepted_ports=[65000],
+        target_kind="container_loopback",
+    )
+
+    assert result["status"] == "completed"
+    assert result["port_observations"] == [
+        {"port": 65000, "protocol": "tcp", "state": "closed", "reason": "conn-refused"}
+    ]
+    assert result["raw_xml_returned"] is False
+    assert result["target_returned"] is False
+
+
+def test_parser_rejects_entity_doctype_shapes():
     result = parse_active_nmap_basic_xml(
         b"""
         <!DOCTYPE nmaprun [

@@ -919,6 +919,15 @@ def _job_summary(record: JobRecord) -> dict | None:
                 summary["dns_queries_sent"] = execution.get("dns_queries_sent", 0)
                 summary["evidence_collected"] = False
                 summary["observations_available"] = False
+            else:
+                summary["manual_validation_required"] = True
+                summary["no_live_lifecycle_record"] = False
+                summary["surface_interpretation"] = "Observed TCP exposure / review indicator"
+                summary["nmap_executed"] = execution.get("nmap_executed", False)
+                summary["network_requests_sent"] = execution.get("network_requests_sent", 0)
+                summary["dns_queries_sent"] = execution.get("dns_queries_sent", 0)
+                summary["evidence_collected"] = execution.get("evidence_available", False)
+                summary["observations_available"] = bool(observations)
         return summary
     if record.error:
         return {"error": record.error}

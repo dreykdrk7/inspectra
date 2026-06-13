@@ -4,6 +4,7 @@ from typing import Any, Mapping
 
 import httpx
 
+from app.active_nmap_boundary import validate_active_nmap_basic_boundary_response
 from app.config import DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS
 
 
@@ -41,23 +42,28 @@ ACTIVE_TOOLS_NMAP_BASIC_ALLOWED_LIMIT_FIELDS = {
 ACTIVE_TOOLS_NMAP_BASIC_ALLOWED_RESPONSE_FIELDS = {
     "capability",
     "errors",
+    "execution_metadata",
     "execution_enabled",
     "job_created",
     "manual_validation_required",
     "mode",
     "network_requests_sent",
     "observations",
+    "output_truncated",
     "profile",
     "reason",
+    "result_interpretation",
     "service",
     "status",
     "summary",
+    "target_kind",
     "target_expansion_performed",
     "target_input_allowed",
     "warnings",
 }
 ACTIVE_TOOLS_NMAP_BASIC_ALLOWED_SUMMARY_FIELDS = {
     "evidence_available",
+    "fake_executor",
     "nmap_executed",
     "port_count",
     "target_count",
@@ -120,6 +126,18 @@ ACTIVE_TOOLS_NMAP_BASIC_ERROR_STATUS = {
     "active_tools_unavailable": "failed",
     "active_tools_unconfigured": "failed",
     "active_tools_unexpected_fields": "blocked",
+}
+ACTIVE_TOOLS_NMAP_BASIC_REAL_STATUSES = {
+    "blocked",
+    "completed",
+    "empty",
+    "failed",
+    "malformed",
+    "nmap_missing",
+    "no_ports",
+    "timed_out",
+    "truncated",
+    "unsupported_shape",
 }
 ACTIVE_TOOLS_HEALTH_ALLOWED_FIELDS = {
     "capabilities",
@@ -241,7 +259,7 @@ def validate_active_tools_nmap_basic_response(payload: Mapping[str, Any] | Any, 
     if not isinstance(summary, Mapping):
         return _active_tools_nmap_basic_error("active_tools_invalid_response")
     summary_keys = {_normalize_key(key) for key in summary}
-    if summary_keys != ACTIVE_TOOLS_NMAP_BASIC_ALLOWED_SUMMARY_FIELDS:
+    if summary_keys - ACTIVE_TOOLS_NMAP_BASIC_ALLOWED_SUMMARY_FIELDS:
         return _active_tools_nmap_basic_error("active_tools_unexpected_fields")
     if summary_keys & ACTIVE_TOOLS_NMAP_BASIC_SENSITIVE_FIELDS:
         return _active_tools_nmap_basic_error("active_tools_unexpected_fields")
@@ -259,44 +277,110 @@ def validate_active_tools_nmap_basic_response(payload: Mapping[str, Any] | Any, 
     evidence_available = summary.get("evidence_available")
     observations = payload.get("observations")
 
+    if payload.get("status") == "not_executed":
+        if (
+            payload.get("service") != "active-tools"
+            or payload.get("capability") != "active_nmap_basic"
+            or payload.get("mode") != ACTIVE_TOOLS_NMAP_BASIC_MODE
+            or payload.get("profile") != ACTIVE_TOOLS_NMAP_BASIC_PROFILE
+            or payload.get("manual_validation_required") is not True
+            or execution_enabled is not False
+            or target_input_allowed is not False
+            or job_created is not False
+            or target_expansion_performed is not False
+            or network_requests_sent != 0
+            or nmap_executed is not False
+            or evidence_available is not False
+            or observations != []
+            or summary.get("target_count") != 1
+            or summary.get("port_count") != expected_port_count
+        ):
+            return _active_tools_nmap_basic_error("active_tools_invalid_response")
+
+        return {
+            "available": True,
+            "status": "not_executed",
+            "service": "active-tools",
+            "capability": "active_nmap_basic",
+            "mode": ACTIVE_TOOLS_NMAP_BASIC_MODE,
+            "profile": ACTIVE_TOOLS_NMAP_BASIC_PROFILE,
+            "execution_enabled": False,
+            "target_input_allowed": False,
+            "manual_validation_required": True,
+            "job_created": False,
+            "target_expansion_performed": False,
+            "network_requests_sent": 0,
+            "nmap_executed": False,
+            "evidence_available": False,
+            "observations": [],
+            "warnings": _controlled_nmap_basic_strings(payload.get("warnings")),
+            "errors": _controlled_nmap_basic_strings(payload.get("errors")),
+            "error_code": None,
+        }
+
+    boundary_payload = {
+        "status": payload.get("status"),
+        "profile": payload.get("profile"),
+        "target_kind": payload.get("target_kind"),
+        "manual_validation_required": payload.get("manual_validation_required"),
+        "result_interpretation": payload.get("result_interpretation"),
+        "observations": payload.get("observations"),
+        "output_truncated": payload.get("output_truncated"),
+        "execution_metadata": payload.get("execution_metadata"),
+        "warnings": payload.get("warnings"),
+        "errors": payload.get("errors"),
+    }
+    boundary_result = validate_active_nmap_basic_boundary_response(
+        boundary_payload,
+        accepted_ports=accepted_ports if _is_port_list(accepted_ports) else [],
+        target_kind=payload.get("target_kind"),
+    )
+    if boundary_result.get("errors"):
+        error_code = "active_tools_unexpected_fields" if "unexpected_fields" in boundary_result["errors"] else "active_tools_invalid_response"
+        return _active_tools_nmap_basic_error(error_code, status=boundary_result.get("status"))
+
     if (
         payload.get("service") != "active-tools"
-        or payload.get("status") != "not_executed"
+        or payload.get("status") not in ACTIVE_TOOLS_NMAP_BASIC_REAL_STATUSES
         or payload.get("capability") != "active_nmap_basic"
         or payload.get("mode") != ACTIVE_TOOLS_NMAP_BASIC_MODE
         or payload.get("profile") != ACTIVE_TOOLS_NMAP_BASIC_PROFILE
         or payload.get("manual_validation_required") is not True
-        or execution_enabled is not False
+        or execution_enabled is not True
         or target_input_allowed is not False
         or job_created is not False
         or target_expansion_performed is not False
-        or network_requests_sent != 0
-        or nmap_executed is not False
-        or evidence_available is not False
-        or observations != []
+        or not _is_non_negative_int(network_requests_sent)
+        or not isinstance(nmap_executed, bool)
+        or not isinstance(evidence_available, bool)
         or summary.get("target_count") != 1
         or summary.get("port_count") != expected_port_count
     ):
         return _active_tools_nmap_basic_error("active_tools_invalid_response")
 
+    safe_observations = boundary_result["observations"]
     return {
         "available": True,
-        "status": "not_executed",
+        "status": boundary_result["status"],
         "service": "active-tools",
         "capability": "active_nmap_basic",
         "mode": ACTIVE_TOOLS_NMAP_BASIC_MODE,
         "profile": ACTIVE_TOOLS_NMAP_BASIC_PROFILE,
-        "execution_enabled": False,
+        "target_kind": boundary_result.get("target_kind"),
+        "execution_enabled": True,
         "target_input_allowed": False,
         "manual_validation_required": True,
         "job_created": False,
         "target_expansion_performed": False,
-        "network_requests_sent": 0,
-        "nmap_executed": False,
-        "evidence_available": False,
-        "observations": [],
-        "warnings": _controlled_nmap_basic_strings(payload.get("warnings")),
-        "errors": _controlled_nmap_basic_strings(payload.get("errors")),
+        "network_requests_sent": network_requests_sent,
+        "nmap_executed": nmap_executed,
+        "evidence_available": evidence_available,
+        "observations": safe_observations,
+        "output_truncated": boundary_result["output_truncated"],
+        "execution_metadata": boundary_result["execution_metadata"],
+        "result_interpretation": boundary_result["result_interpretation"],
+        "warnings": boundary_result["warnings"],
+        "errors": boundary_result["errors"],
         "error_code": None,
     }
 
@@ -370,13 +454,13 @@ def validate_active_tools_health_payload(payload: Any) -> dict[str, Any]:
 
     if (
         status != "scaffold_ready"
-        or active_nmap_basic_status != "disabled_no_scan"
+        or active_nmap_basic_status not in {"disabled_no_scan", "ready_bounded_execution"}
         or not isinstance(execution_enabled, bool)
         or not isinstance(target_input_allowed, bool)
     ):
         result["error_code"] = "active_tools_not_ready"
         return result
-    if execution_enabled or target_input_allowed:
+    if target_input_allowed:
         result["error_code"] = "active_tools_invalid_response"
         return result
     if not _is_non_negative_int(network_requests_sent) or not isinstance(nmap_executed, bool):

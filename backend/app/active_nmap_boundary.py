@@ -23,6 +23,9 @@ ACTIVE_NMAP_BASIC_BOUNDARY_ALLOWED_STATUSES = {
     "malformed",
     "unsupported_shape",
     "blocked",
+    "empty",
+    "no_ports",
+    "truncated",
 }
 ACTIVE_NMAP_BASIC_BOUNDARY_ALLOWED_RESPONSE_FIELDS = {
     "status",
@@ -93,6 +96,12 @@ ACTIVE_NMAP_BASIC_BOUNDARY_CONTROLLED_ERROR_CODES = {
     "unexpected_fields",
     "network_failure",
     "fqdn_resolution_failed",
+    "malformed_xml",
+    "nmap_nonzero_exit",
+    "process_timeout",
+    "unexpected_execution_error",
+    "unexpected_port",
+    "unsupported_xml_shape",
 }
 ACTIVE_NMAP_BASIC_BOUNDARY_ERROR_STATUS = {
     "active_tools_unavailable": "failed",
@@ -105,6 +114,12 @@ ACTIVE_NMAP_BASIC_BOUNDARY_ERROR_STATUS = {
     "unexpected_fields": "blocked",
     "network_failure": "failed",
     "fqdn_resolution_failed": "failed",
+    "malformed_xml": "malformed",
+    "nmap_nonzero_exit": "failed",
+    "process_timeout": "timed_out",
+    "unexpected_execution_error": "failed",
+    "unexpected_port": "blocked",
+    "unsupported_xml_shape": "unsupported_shape",
 }
 _SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_.:-]+")
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -156,7 +171,7 @@ def validate_active_nmap_basic_boundary_response(
     normalized_keys = {_normalize_key(key) for key in response}
     unexpected_fields = normalized_keys - ACTIVE_NMAP_BASIC_BOUNDARY_ALLOWED_RESPONSE_FIELDS
     sensitive_fields = normalized_keys & ACTIVE_NMAP_BASIC_BOUNDARY_SENSITIVE_FIELDS
-    if unexpected_fields or sensitive_fields:
+    if unexpected_fields or sensitive_fields or _contains_sensitive_field(response):
         return map_active_nmap_basic_boundary_error("unexpected_fields")
 
     status = response.get("status")
@@ -258,6 +273,19 @@ def _safe_execution_metadata(value: Any) -> dict[str, Any]:
 def _response_over_limit(response: Mapping[str, Any]) -> bool:
     encoded = json.dumps(response, default=str, separators=(",", ":"))
     return len(encoded.encode("utf-8")) > ACTIVE_NMAP_BASIC_BOUNDARY_RESPONSE_MAX_BYTES
+
+
+def _contains_sensitive_field(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if _normalize_key(key) in ACTIVE_NMAP_BASIC_BOUNDARY_SENSITIVE_FIELDS:
+                return True
+            if _contains_sensitive_field(nested):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_contains_sensitive_field(item) for item in value)
+    return False
 
 
 def _controlled_strings(value: Any) -> list[str]:

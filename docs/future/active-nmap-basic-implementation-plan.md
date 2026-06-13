@@ -5203,6 +5203,30 @@ end without adding real active-tools calls, Nmap execution, external traffic,
 Docker/Compose, new exports, archive/run-all, `tools/runner/main.py`, release,
 or tag state.
 
+## Microphase 54: Real Minimal Active-Tools Integration
+
+Document:
+
+```text
+docs/future/active-nmap-basic-real-minimal-integration.md
+```
+
+Commit:
+
+```text
+feat(active): wire real nmap through active tools
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_54_ACTIVE_TOOLS_REAL_NMAP_MINIMAL_INTEGRATION_PASSED`
+records the minimal real path from frontend submit through backend validation,
+internal `active-tools`, bounded Nmap execution inside active-tools only,
+redacted owner-scoped job persistence, and review-indicator frontend/report
+rendering. Backend subprocess execution, public active-tools exposure by
+default, raw flags, NSE/scripts, broad scans, DNS expansion, archive/run-all,
+`tools/runner/main.py`, release, tag, and push state remain out of scope.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
