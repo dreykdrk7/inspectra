@@ -22,6 +22,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 appuser
 
+# Install only the minimal ASGI runtime needed for an explicitly invoked
+# no-live service smoke. The default scaffold command below remains no-run.
+COPY docker/active-tools/requirements.txt /tmp/active-tools-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/active-tools-requirements.txt \
+    && rm -f /tmp/active-tools-requirements.txt
+
 # Keep Active code separate from the passive runner monolith.
 # Copy only the isolated Active runner package into this image.
 COPY tools/active_runner /app/active_runner

@@ -3773,6 +3773,119 @@ calls, backend runtime wiring, public endpoints, real active-tools jobs, live
 exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime
 changes, target approval, tags, or releases.
 
+## Microphase 40: Active Tools ASGI Container No-Live Smoke
+
+Objective:
+
+Validate that the internal `active-tools` ASGI app can start inside the
+separate `active-tools` container and answer `GET /health` in no-live mode,
+without executing Nmap, calling backend, creating jobs, wiring Compose runtime,
+or approving targets.
+
+Product direction:
+
+- Keep the focus on practical Active/Nmap integration.
+- Prefer a small OSS-friendly container smoke over abstract hardening.
+- Treat this as service-start readiness only, not live scan approval.
+
+Probable files:
+
+- `docker/active-tools/Dockerfile`
+- `docker/active-tools/requirements.txt`
+- `tools/tests/test_active_tools_docker_scaffold_static.py`
+- `docs/future/active-nmap-basic-active-tools-asgi-container-no-live-smoke.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Nmap execution.
+- No `nmap --version`.
+- No target-bearing scan command.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No browser or curl against targets.
+- No backend-to-`active-tools` live calls.
+- No backend runtime change.
+- No real jobs created from `active-tools`.
+- No live exports.
+- No Compose runtime wiring requirement.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No frontend runtime changes.
+- No target approval for `www.vildek.es`.
+- No target approval for `app.vildek.es`.
+- No approval for port `80`.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest tools/tests/test_active_tools_asgi_service_skeleton.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_fake_execution_boundary.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_health_readiness.py
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap or nmap_basic or boundary or redaction"
+docker build -f docker/active-tools/Dockerfile -t inspectra-active-tools:asgi-smoke .
+docker run --rm -d --name inspectra-active-tools-asgi-smoke --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL --security-opt no-new-privileges:true -p 127.0.0.1:18080:8080 inspectra-active-tools:asgi-smoke python -m uvicorn active_runner.app:app --host 0.0.0.0 --port 8080
+docker rm -f inspectra-active-tools-asgi-smoke
+rg -n "subprocess|docker.sock|nmap --version|nmap -sT|tools/runner/main.py" tools/active_runner tools/tests docker docs README.md
+rg -n "raw_xml|stdout|stderr|ptr_hostname|resolved_ip|script_output|nse|credentials|cookies|tokens|headers|disabled_no_scan|scaffold_ready|network_requests_sent|nmap_executed" tools backend docs README.md
+rg -n "vps-40567620|51.38.225.243" backend tools/tests || true
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- A manually started ASGI smoke is mistaken for product runtime exposure.
+- A loopback host publish is mistaken for public service approval.
+- Minimal ASGI packaging is confused with live execution readiness.
+- The service-start smoke accidentally expands into `/active/nmap-basic`,
+  backend calls, Compose wiring, or Nmap execution.
+
+Acceptance criteria:
+
+- The image builds with minimal ASGI runtime packaging.
+- The default Dockerfile `CMD` remains scaffold no-run readiness.
+- The container starts with read-only filesystem, tmpfs `/tmp`, dropped
+  capabilities, no-new-privileges, no host network, no privileged mode, no
+  Docker socket, and host publish bound only to `127.0.0.1`.
+- `GET /health` returns `service: active-tools`, `status: scaffold_ready`,
+  `active_nmap_basic.status: disabled_no_scan`, `execution_enabled: false`,
+  `target_input_allowed: false`, `network_requests_sent: 0`, and
+  `nmap_executed: false`.
+- The container is cleaned up after the smoke.
+- No Nmap, DNS, probes, external target HTTP, backend live call, real job,
+  export, frontend runtime, archive/run-all, or `tools/runner/main.py`
+  integration occurs.
+
+Suggested commit:
+
+```text
+test(active): smoke active tools asgi no live
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_40_ACTIVE_TOOLS_ASGI_CONTAINER_NO_LIVE_SMOKE_PASSED`
+packages minimal ASGI runtime dependencies in the separate `active-tools` image,
+keeps the default scaffold no-run command, starts the ASGI app manually in a
+hardened local container, and confirms `GET /health` returns
+`scaffold_ready` / `disabled_no_scan` with `network_requests_sent: 0` and
+`nmap_executed: false`. It does not execute Nmap, run `nmap --version`, probe
+targets, perform DNS checks, send external target HTTP, call backend, create
+jobs or exports, wire Compose runtime, integrate archive/run-all, integrate
+`tools/runner/main.py`, change frontend runtime, approve targets, or create
+release/tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
