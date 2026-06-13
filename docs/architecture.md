@@ -283,6 +283,8 @@ The Active Nmap Basic active-tools health readiness hardening decision is `ACTIV
 
 The Active Nmap Basic active-tools fake execution boundary decision is `ACTIVE_NMAP_BASIC_38_ACTIVE_TOOLS_FAKE_EXECUTION_BOUNDARY_NO_LIVE_ACCEPTED`. The pure `active-tools` Nmap-basic handler now has an optional keyword-only fake executor for offline tests; without that injected executor it still returns `not_executed`. Injected synthetic responses are allowlisted, metadata-bounded, accepted-port checked, redaction-safe, and worded only as observed exposure / review indicators. This phase does not add a running server, public endpoint, backend live call, backend runtime wiring, Docker/Compose/Nmap execution, runner HTTP endpoint, real jobs, live exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime changes, target approval, release, or tag state.
 
+The Active Nmap Basic active-tools ASGI service skeleton decision is `ACTIVE_NMAP_BASIC_39_ACTIVE_TOOLS_ASGI_SERVICE_SKELETON_NO_LIVE_ACCEPTED`. `tools/active_runner/app.py` now provides a minimal internal FastAPI app factory for conceptual `GET /health` and `POST /active/nmap-basic`, reusing the pure handlers. The module-level app is importable for future internal service wiring, but this phase does not start a server, add backend live calls, change backend runtime, run Docker/Compose/Nmap, add runner HTTP endpoints, create real jobs, create live exports, integrate archive/run-all, integrate `tools/runner/main.py`, change frontend runtime, approve targets, or create release/tag state.
+
 ## Components
 
 ### Backend

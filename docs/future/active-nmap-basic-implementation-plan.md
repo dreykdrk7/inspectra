@@ -3658,6 +3658,121 @@ execution, backend live calls, backend runtime wiring, public endpoints, real
 active-tools jobs, live exports, archive/run-all, `tools/runner/main.py`
 integration, frontend runtime changes, target approval, tags, or releases.
 
+## Microphase 39: Active Tools ASGI Service Skeleton, No Live
+
+Objective:
+
+Create a minimal internal ASGI app skeleton for `active-tools`, reusing the pure
+handlers for health/readiness and `active_nmap_basic`, without starting a real
+server, adding backend live calls, changing backend runtime, running
+Docker/Compose/Nmap, creating real jobs, creating live exports, or approving
+new targets.
+
+Product direction:
+
+- Keep the focus on Active/Nmap integration.
+- Do not return to Passive work in this phase.
+- Prefer a pragmatic OSS integration path over enterprise-style platform
+  machinery.
+- Avoid future hardening phases unless they directly unblock integration or
+  materially reduce risk.
+
+Probable files:
+
+- `tools/active_runner/app.py`
+- `tools/tests/test_active_tools_asgi_service_skeleton.py`
+- `docs/future/active-nmap-basic-active-tools-asgi-service-skeleton-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Compose execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No `curl` or browser checks.
+- No real server process.
+- No uvicorn/gunicorn startup.
+- No backend-to-`active-tools` live calls.
+- No backend runtime change to call the service.
+- No real jobs created from `active-tools`.
+- No live exports.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No frontend runtime changes.
+- No target approval for `www.vildek.es`.
+- No target approval for `app.vildek.es`.
+- No approval for port `80`.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest tools/tests/test_active_tools_asgi_service_skeleton.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_fake_execution_boundary.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_health_readiness.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_internal_service_skeleton.py
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap or nmap_basic or boundary or redaction"
+rg -n "subprocess|docker|DockerClient|from docker|docker.sock|nmap --version|nmap -sT|tools/runner/main.py" tools/active_runner tools/tests
+rg -n "raw_xml|stdout|stderr|ptr_hostname|resolved_ip|script_output|nse|credentials|cookies|tokens|headers|manual_validation_required|observed_exposure_review_indicator|not_executed|disabled_no_scan" tools backend docs README.md
+rg -n "vps-40567620|51.38.225.243" backend tools/tests || true
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- The ASGI app is mistaken for public runtime approval.
+- A test-only fake executor path becomes default live execution.
+- The app imports backend runtime, the real Nmap executor, Docker SDK,
+  subprocess, uvicorn/gunicorn startup, or `tools/runner/main.py`.
+- Unknown methods/paths fall back to framework defaults that echo submitted
+  targets or secrets.
+- Health/readiness begins accepting target-bearing payloads.
+
+Acceptance criteria:
+
+- `GET /health` returns stable `scaffold_ready` readiness with
+  `active_nmap_basic.status: disabled_no_scan`, `network_requests_sent: 0`, and
+  `nmap_executed: false`.
+- `POST /active/nmap-basic` accepts the existing boundary request and returns
+  `not_executed` by default.
+- Body/query target payloads for health are controlled and do not leak values.
+- Dangerous Nmap-basic request fields, multi-target shapes, ranges, and invalid
+  ports are rejected without leakage.
+- An injected fake executor can be used only through app construction in tests.
+- Wrong methods and unknown paths return controlled bodies.
+- Source guards show no subprocess, Docker SDK, Docker socket, Nmap version
+  call, Nmap command literal, real executor import, backend import,
+  uvicorn/gunicorn startup, or `tools/runner/main.py` integration.
+
+Suggested commit:
+
+```text
+feat(active): add active tools asgi skeleton
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_39_ACTIVE_TOOLS_ASGI_SERVICE_SKELETON_NO_LIVE_ACCEPTED`
+adds a minimal internal ASGI app skeleton for `active-tools`, with
+`GET /health` and `POST /active/nmap-basic` reusing pure handlers and remaining
+no-live by default. It does not add Docker/Compose/Nmap execution, backend live
+calls, backend runtime wiring, public endpoints, real active-tools jobs, live
+exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime
+changes, target approval, tags, or releases.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
