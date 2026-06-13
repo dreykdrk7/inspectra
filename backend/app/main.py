@@ -6,6 +6,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.active_tools_client import check_active_tools_health
+from app.active_nmap_lifecycle import (
+    ActiveNmapBasicRouteNoLiveClient,
+    normalize_active_nmap_basic_lifecycle_route_result,
+    run_active_nmap_basic_lifecycle_skeleton,
+)
 from app.active_nmap_policy import (
     ACTIVE_NMAP_BASIC_MAX_TARGETS,
     ActiveNmapTargetPolicyError,
@@ -778,12 +783,11 @@ async def launch_active_http_header_probe(
     return job
 
 
-@app.post("/active/network/nmap-basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+@app.post("/active/network/nmap-basic", status_code=status.HTTP_200_OK)
 async def launch_active_nmap_basic(
     request: Request,
-    background_tasks: BackgroundTasks,
     payload: Any = Body(...),
-) -> JobRecord:
+) -> dict[str, Any]:
     if not request.app.state.settings.active_nmap_basic_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -792,13 +796,24 @@ async def launch_active_nmap_basic(
 
     validate_active_nmap_basic_contract(payload)
     handoff_plan = build_active_nmap_basic_handoff_plan(payload)
-    target_display = "[REDACTED_TARGETS]" if handoff_plan.target_count > 1 else "[REDACTED_TARGET]"
-    job = request.app.state.jobs.create_active_nmap_basic_job(
-        target_display,
-        owner_id=current_owner_id_for_request(request),
+    lifecycle_runner = getattr(
+        request.app.state,
+        "active_nmap_basic_lifecycle_runner",
+        run_active_nmap_basic_lifecycle_skeleton,
     )
-    background_tasks.add_task(request.app.state.active_nmap_basic_service.run_active_nmap_basic_analysis, job.id, handoff_plan)
-    return job
+    lifecycle_client = getattr(
+        request.app.state,
+        "active_nmap_basic_lifecycle_client",
+        ActiveNmapBasicRouteNoLiveClient(),
+    )
+    lifecycle_result = await lifecycle_runner(
+        request.app.state.settings,
+        handoff_plan,
+        client=lifecycle_client,
+        internal_approval_confirmed=True,
+        fake_client_approved=True,
+    )
+    return normalize_active_nmap_basic_lifecycle_route_result(lifecycle_result)
 
 
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)

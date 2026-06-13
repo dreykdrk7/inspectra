@@ -4646,6 +4646,108 @@ jobs, storage, target approval, real `active-tools` calls, Nmap execution,
 exports, frontend changes, archive/run-all, `tools/runner/main.py`, release, or
 tag state.
 
+## Microphase 48: Backend Active Nmap Route To Lifecycle No-Live
+
+Objective:
+
+Connect the existing backend `POST /active/network/nmap-basic` endpoint to the
+internal lifecycle skeleton, but only in no-live/fake-client mode. Reuse the
+existing request contract, target policy, and handoff builder before lifecycle
+invocation. Return controlled lifecycle metadata directly without creating a
+persistent job or touching storage.
+
+Product direction:
+
+- Make the route exercise the internal lifecycle shape without approving live
+  scanning.
+- Keep route behavior disabled by default and explicitly no-live.
+- Ensure any unsafe lifecycle result is normalized into a controlled error.
+
+Probable files:
+
+- `backend/app/main.py`
+- `backend/app/active_nmap_lifecycle.py`
+- `backend/tests/test_backend.py`
+- `docs/future/active-nmap-basic-backend-active-nmap-route-to-lifecycle-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No new route.
+- No public route beyond the existing endpoint.
+- No persistent job creation.
+- No storage persistence.
+- No exports.
+- No frontend runtime changes.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No real `active-tools` call.
+- No real `/active/nmap-basic` call.
+- No Nmap execution.
+- No `nmap --version`.
+- No Docker or Compose.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No VPS, LAN, real domains, or real targets.
+- No migrations, tags, releases, push, or target approval.
+
+Expected validations:
+
+```text
+git status --short --branch
+.venv/bin/python -m py_compile backend/app/active_nmap_lifecycle.py backend/app/main.py
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap_basic_route or lifecycle_skeleton or active_tools_nmap_basic_client or active_nmap_basic_disabled_by_default or active_nmap_basic_enabled or active_nmap_basic_requires_authorization or malformed_targets_and_ports or auth_required_anonymous"
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_tools or active_nmap or nmap_basic or boundary or redaction"
+.venv/bin/python -m pytest backend/tests
+git diff --check
+git diff --cached --check
+rg -n "active_nmap_basic_lifecycle|run_active_nmap_basic_lifecycle_skeleton|ActiveNmapBasicRouteNoLiveClient|normalize_active_nmap_basic_lifecycle_route_result|fake_no_live|storage_persisted|active_tools_real_call_allowed" backend/app/main.py backend/app/active_nmap_lifecycle.py backend/tests/test_backend.py docs README.md
+rg -n "create_active_nmap_basic_job|run_active_nmap_basic_analysis|active_nmap_basic_service|BackgroundTasks|current_owner_id_for_request|app.state.jobs|render_|export" backend/app/main.py
+rg -n "subprocess|shell=True|os.system|popen|Popen\\(|nmap --version|nmap -sT|DockerClient|from docker|docker.sock|httpx|requests|dns|resolve|stdout|stderr|raw_xml|raw_command" backend/app/main.py backend/app/active_nmap_lifecycle.py
+```
+
+Risks:
+
+- Treating a no-live lifecycle response as a real scan result.
+- Accidentally preserving earlier placeholder job creation in the route.
+- Letting invalid requests or target-policy failures reach lifecycle.
+- Reflecting target or payload values in lifecycle errors.
+- Accepting unsafe lifecycle output that implies job creation, storage,
+  execution, traffic, evidence, observations, raw output, banners, or service
+  details.
+
+Acceptance criteria:
+
+- Disabled flag rejects without lifecycle calls and without jobs.
+- Auth-required anonymous requests fail before validation or lifecycle.
+- Invalid requests and target-policy rejections do not invoke lifecycle.
+- Enabled valid requests invoke lifecycle with a `fake_no_live` client.
+- Route response is `not_executed` / no-live and reports no job, no storage, no
+  real active-tools, no Nmap, no network/DNS requests, no evidence, and no
+  observations.
+- Unsafe lifecycle output is converted into a controlled redacted error.
+- Source guardrails confirm no persistent job/storage, frontend/export,
+  archive/run-all, real active-tools, Nmap, Docker/Compose, DNS/probe, external
+  HTTP, or `tools/runner/main.py` integration.
+
+Suggested commit:
+
+```text
+test(active): wire nmap route to lifecycle no live
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_48_BACKEND_ACTIVE_NMAP_ROUTE_TO_LIFECYCLE_NO_LIVE_PASSED`
+records that the existing backend route is connected only to the no-live
+lifecycle skeleton with a fake client. It does not add persistent jobs, storage,
+real active-tools calls, Nmap execution, exports, frontend changes,
+archive/run-all, `tools/runner/main.py`, release, or tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

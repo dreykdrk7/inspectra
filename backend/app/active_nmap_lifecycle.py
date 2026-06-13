@@ -21,6 +21,30 @@ ACTIVE_NMAP_BASIC_LIFECYCLE_CLIENT_CONTROLLED_ERRORS = {
     "active_tools_unconfigured",
     "active_tools_unexpected_fields",
 }
+ACTIVE_NMAP_BASIC_LIFECYCLE_ROUTE_REASONS = ACTIVE_NMAP_BASIC_LIFECYCLE_CLIENT_CONTROLLED_ERRORS | {
+    "active_nmap_basic_not_configured",
+    "bounded_single_unit_required",
+    "fake_client_not_executed",
+    "fake_no_live_client_required",
+    "internal_approval_missing",
+    "unsafe_client_result",
+    "unsafe_lifecycle_result",
+}
+ACTIVE_NMAP_BASIC_LIFECYCLE_FORBIDDEN_RESULT_KEYS = {
+    "banner",
+    "banners",
+    "command",
+    "raw_args",
+    "raw_command",
+    "raw_xml",
+    "service",
+    "service_details",
+    "stderr",
+    "stdout",
+    "version",
+    "versions",
+    "xml",
+}
 
 
 class ActiveNmapBasicNoLiveClient(Protocol):
@@ -34,6 +58,19 @@ class ActiveNmapBasicNoLiveClient(Protocol):
         timeout_seconds: float,
     ) -> Mapping[str, Any]:
         """Return a controlled no-live active-tools client result."""
+
+
+class ActiveNmapBasicRouteNoLiveClient:
+    client_mode = "fake_no_live"
+
+    async def __call__(
+        self,
+        base_url: str | None,
+        request_payload: Mapping[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> Mapping[str, Any]:
+        return _no_live_client_result()
 
 
 class ActiveNmapBasicJobLifecycleSkeleton:
@@ -150,6 +187,30 @@ def _normalize_lifecycle_client_result(client_result: Mapping[str, Any], *, hand
     return result
 
 
+def normalize_active_nmap_basic_lifecycle_route_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, Mapping) or _route_result_has_unsafe_markers(result):
+        return _route_state("client_error_controlled", "unsafe_lifecycle_result")
+
+    lifecycle_state = result.get("lifecycle_state")
+    if lifecycle_state not in ACTIVE_NMAP_BASIC_LIFECYCLE_CONTROLLED_STATES:
+        return _route_state("client_error_controlled", "unsafe_lifecycle_result")
+
+    reason = _safe_lifecycle_route_reason(result.get("reason"))
+    execution_state = _safe_status(result.get("execution_state")) or "not_executed"
+    response = _route_state(lifecycle_state, reason, execution_state=execution_state)
+    response.update(
+        {
+            "client_invoked": result.get("client_invoked") is True,
+            "active_tools_client_available": result.get("active_tools_client_available") is True,
+        }
+    )
+    for count_field in ("target_count", "port_count", "target_port_checks"):
+        value = result.get(count_field)
+        if isinstance(value, int) and value >= 0:
+            response[count_field] = value
+    return response
+
+
 def _client_result_is_no_live_safe(client_result: Mapping[str, Any]) -> bool:
     return (
         client_result.get("status") == "not_executed"
@@ -195,6 +256,97 @@ def _lifecycle_state(
         "warnings": [],
         "errors": [reason] if controlled_state != "completed_no_live" else [],
     }
+
+
+def _route_state(
+    lifecycle_state: str,
+    reason: str,
+    *,
+    execution_state: str = "not_executed",
+) -> dict[str, Any]:
+    state = lifecycle_state if lifecycle_state in ACTIVE_NMAP_BASIC_LIFECYCLE_CONTROLLED_STATES else "client_error_controlled"
+    safe_reason = _safe_lifecycle_route_reason(reason)
+    return {
+        "audit_type": "active_nmap_basic",
+        "status": execution_state,
+        "lifecycle_state": state,
+        "execution_state": execution_state,
+        "reason": safe_reason,
+        "job_created": False,
+        "storage_persisted": False,
+        "client_invoked": False,
+        "active_tools_client_available": False,
+        "active_tools_real_call_allowed": False,
+        "nmap_executed": False,
+        "network_requests_sent": 0,
+        "dns_queries_sent": 0,
+        "subprocess_invoked": False,
+        "target_expansion_performed": False,
+        "evidence_available": False,
+        "observations": [],
+        "warnings": [],
+        "errors": [] if state == "completed_no_live" else [safe_reason],
+    }
+
+
+def _no_live_client_result() -> dict[str, Any]:
+    return {
+        "available": True,
+        "status": "not_executed",
+        "service": "active-tools",
+        "capability": "active_nmap_basic",
+        "mode": "live_nmap_basic",
+        "profile": "tcp_connect_small",
+        "execution_enabled": False,
+        "target_input_allowed": False,
+        "manual_validation_required": True,
+        "job_created": False,
+        "target_expansion_performed": False,
+        "network_requests_sent": 0,
+        "nmap_executed": False,
+        "evidence_available": False,
+        "observations": [],
+        "warnings": ["no_scan_route_lifecycle"],
+        "errors": [],
+        "error_code": None,
+    }
+
+
+def _route_result_has_unsafe_markers(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if isinstance(key, str) and key.lower() in ACTIVE_NMAP_BASIC_LIFECYCLE_FORBIDDEN_RESULT_KEYS:
+                return True
+            if key == "job_created" and nested is not False:
+                return True
+            if key == "storage_persisted" and nested is not False:
+                return True
+            if key == "active_tools_real_call_allowed" and nested is not False:
+                return True
+            if key == "nmap_executed" and nested is not False:
+                return True
+            if key == "network_requests_sent" and nested != 0:
+                return True
+            if key == "dns_queries_sent" and nested != 0:
+                return True
+            if key == "subprocess_invoked" and nested is not False:
+                return True
+            if key == "target_expansion_performed" and nested is not False:
+                return True
+            if key == "evidence_available" and nested is not False:
+                return True
+            if key == "observations" and nested != []:
+                return True
+            if _route_result_has_unsafe_markers(nested):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_route_result_has_unsafe_markers(item) for item in value)
+    return False
+
+
+def _safe_lifecycle_route_reason(value: Any) -> str:
+    return value if isinstance(value, str) and value in ACTIVE_NMAP_BASIC_LIFECYCLE_ROUTE_REASONS else "active_tools_invalid_response"
 
 
 def _handoff_plan_is_single_bounded_unit(handoff_plan: ActiveNmapBasicHandoffPlan) -> bool:
