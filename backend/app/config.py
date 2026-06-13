@@ -55,6 +55,8 @@ DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_ACTIVE_DRY_RUN_ENABLED = False
 DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED = False
 DEFAULT_ACTIVE_NMAP_BASIC_ENABLED = False
+DEFAULT_ACTIVE_TOOLS_URL = ""
+DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS = 2.0
 DEFAULT_SESSION_TTL_SECONDS = 3600
 DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS = 600
 DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES = 5
@@ -148,6 +150,8 @@ class Settings:
     active_dry_run_enabled: bool = DEFAULT_ACTIVE_DRY_RUN_ENABLED
     active_http_header_probe_enabled: bool = DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED
     active_nmap_basic_enabled: bool = DEFAULT_ACTIVE_NMAP_BASIC_ENABLED
+    active_tools_url: str = DEFAULT_ACTIVE_TOOLS_URL
+    active_tools_health_timeout_seconds: float = DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
     login_attempt_window_seconds: int = DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS
     login_attempt_max_failures: int = DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES
@@ -363,6 +367,11 @@ def load_settings() -> Settings:
         "INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED",
         DEFAULT_ACTIVE_NMAP_BASIC_ENABLED,
     )
+    active_tools_url = os.getenv("INSPECTRA_ACTIVE_TOOLS_URL", DEFAULT_ACTIVE_TOOLS_URL).strip().rstrip("/")
+    active_tools_health_timeout_seconds = _positive_float_from_env(
+        "INSPECTRA_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS",
+        DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS,
+    )
     session_ttl_seconds = _positive_int_from_env("INSPECTRA_SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS)
     login_attempt_window_seconds = _positive_int_from_env(
         "INSPECTRA_LOGIN_ATTEMPT_WINDOW_SECONDS",
@@ -438,6 +447,8 @@ def load_settings() -> Settings:
         active_dry_run_enabled=active_dry_run_enabled,
         active_http_header_probe_enabled=active_http_header_probe_enabled,
         active_nmap_basic_enabled=active_nmap_basic_enabled,
+        active_tools_url=active_tools_url,
+        active_tools_health_timeout_seconds=active_tools_health_timeout_seconds,
         session_ttl_seconds=session_ttl_seconds,
         login_attempt_window_seconds=login_attempt_window_seconds,
         login_attempt_max_failures=login_attempt_max_failures,

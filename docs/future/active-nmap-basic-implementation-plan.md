@@ -3261,7 +3261,7 @@ git diff --cached --check
 .venv/bin/python -m pytest tools/tests/test_active_runner_nmap_basic_parser_redaction.py
 .venv/bin/python -m pytest tools/tests/test_active_runner_nmap_basic_parser.py
 rg -n "active_tools_unavailable|active_tools_timeout|policy_drift|result_too_large|unexpected_fields|fqdn_resolution_failed|manual_validation_required|observed_exposure_review_indicator|raw_xml|ptr_hostname|resolved_ip|boundary" backend docs README.md
-rg -n "vps-40567620|51.38.225.243" backend tools/tests || true
+rg -n "vps-40567620|51.38.225.243" backend tools/tests
 rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
 rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
 ```
@@ -4127,6 +4127,114 @@ Nmap, perform DNS/probe/external target HTTP checks, create jobs or exports,
 wire the main Compose runtime, integrate archive/run-all, integrate
 `tools/runner/main.py`, change frontend runtime, approve targets, or create
 release/tag state.
+
+## Microphase 43: Backend Active Tools Health Client No-Live
+
+Objective:
+
+Add a backend client/helper that can check `active-tools` `/health` through an
+explicitly configured internal base URL, without calling `/active/nmap-basic`,
+creating jobs, creating exports, executing Nmap, touching frontend runtime,
+integrating archive/run-all, or wiring the helper into backend runtime flows.
+
+Product direction:
+
+- Keep progressing toward practical backend-to-`active-tools` integration.
+- Limit this phase to service availability detection.
+- Use fake HTTP transport tests by default; leave a real backend-to-Compose
+  smoke for a later separately approved phase.
+
+Probable files:
+
+- `backend/app/active_tools_client.py`
+- `backend/app/config.py`
+- `backend/tests/test_backend.py`
+- `docs/future/active-nmap-basic-backend-active-tools-health-client-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No backend runtime invocation of the helper.
+- No backend call to `/active/nmap-basic`.
+- No backend-to-`active-tools` execution request.
+- No Nmap execution.
+- No `nmap --version`.
+- No target-bearing scan command.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No Docker or Compose smoke required in this phase.
+- No real jobs created from `active-tools`.
+- No live exports.
+- No frontend runtime changes.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No use of `www.urlbreve.es`, `www.vildek.es`, or `app.vildek.es`.
+- No approval for port `443` or port `80`.
+- No LAN/VPS/public target expansion.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_tools or active_nmap or nmap_basic or boundary or redaction"
+.venv/bin/python -m pytest tools/tests/test_active_tools_asgi_service_skeleton.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_health_readiness.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_fake_execution_boundary.py
+rg -n "active_tools_unconfigured|active_tools_unavailable|active_tools_timeout|active_tools_invalid_response|active_tools_unexpected_fields|active_tools_not_ready|disabled_no_scan|target_input_allowed|nmap_executed|network_requests_sent" backend docs README.md
+rg -n "subprocess|docker.sock|DockerClient|from docker|nmap --version|nmap -sT|tools/runner/main.py" backend tools docs README.md
+rg -n "vps-40567620|51.38.225.243" backend tools/tests
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- A health helper is mistaken for approved runtime wiring.
+- Future configuration accidentally enables a live backend call by default.
+- Unexpected health fields leak raw command, target, credential, header,
+  cookie, token, XML, stdout, or stderr data.
+- A future smoke accidentally calls `/active/nmap-basic` instead of `/health`.
+
+Acceptance criteria:
+
+- Backend settings expose `INSPECTRA_ACTIVE_TOOLS_URL` with default empty/
+  unconfigured and a bounded `INSPECTRA_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS`.
+- `check_active_tools_health` calls only `GET /health` when a base URL is
+  explicitly supplied.
+- Empty URL returns `active_tools_unconfigured` without making a request.
+- Valid fake health returns `available: true`, `status: scaffold_ready`,
+  `active_nmap_basic_status: disabled_no_scan`, `execution_enabled: false`,
+  `target_input_allowed: false`, `network_requests_sent: 0`, and
+  `nmap_executed: false`.
+- Timeout, unavailable transport, invalid JSON, unexpected fields, nonzero
+  `network_requests_sent`, and `nmap_executed: true` map to controlled states.
+- Dangerous response fields are not reflected.
+- Tests verify no `/active/nmap-basic` backend call.
+- No backend runtime path invokes the helper yet.
+
+Suggested commit:
+
+```text
+test(active): add backend active tools health client
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_43_BACKEND_ACTIVE_TOOLS_HEALTH_CLIENT_NO_LIVE_ACCEPTED`
+adds the backend health helper and config only. Tests use fake HTTP transport
+and no real Compose smoke. The helper is not wired into jobs, exports, frontend,
+archive/run-all, or the passive runner; it does not execute Nmap, call
+`/active/nmap-basic`, perform DNS/probe/external target HTTP checks, approve
+targets, or create release/tag state.
 
 ## Cross-Phase Validation Checklist
 

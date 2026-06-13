@@ -12,7 +12,7 @@ import zipfile
 
 import pytest
 from fastapi import HTTPException
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, ConnectError, MockTransport, ReadTimeout, Response
 
 from app.auth import (
     ADMIN_PASSWORD_HASH_SCHEME,
@@ -33,6 +33,8 @@ from app.auth_state_sqlite import (
 )
 from app.config import (
     DEFAULT_ACTIVE_NMAP_BASIC_ENABLED,
+    DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS,
+    DEFAULT_ACTIVE_TOOLS_URL,
     DEFAULT_AUTH_STATE_STORE,
     DEFAULT_AUTH_MODE,
     DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES,
@@ -46,6 +48,7 @@ from app.config import (
     is_single_admin_auth_configured,
     load_settings,
 )
+from app.active_tools_client import check_active_tools_health
 from app.domain_security import normalize_domain, normalize_subdomain_candidate
 from app.active_nmap_boundary import (
     build_active_nmap_basic_boundary_request,
@@ -4337,6 +4340,27 @@ def mocked_nmap_completed_xml() -> str:
     """
 
 
+def make_active_tools_health_payload(**overrides) -> dict:
+    payload = {
+        "service": "active-tools",
+        "status": "scaffold_ready",
+        "capabilities": {
+            "active_nmap_basic": {
+                "status": "disabled_no_scan",
+                "execution_enabled": False,
+                "target_input_allowed": False,
+            }
+        },
+        "network_requests_sent": 0,
+        "nmap_executed": False,
+    }
+    active_nmap_basic = overrides.pop("active_nmap_basic", None)
+    payload.update(overrides)
+    if active_nmap_basic is not None:
+        payload["capabilities"]["active_nmap_basic"].update(active_nmap_basic)
+    return payload
+
+
 def test_active_nmap_basic_boundary_request_builder_produces_single_safe_handoff_unit():
     plan = build_active_nmap_basic_handoff_plan(make_active_nmap_basic_payload(targets=["192.168.56.10"], ports=[443]))
     assert len(plan.units) == 1
@@ -4648,6 +4672,205 @@ def test_active_nmap_basic_boundary_source_has_no_live_endpoint_archive_or_runne
     assert "active_nmap_basic" not in runner_source
     assert "nmap_basic" not in runner_source
     assert "active_nmap_basic" not in archive_source[archive_source.find("async def launch_archive_audit") : archive_source.find("async def launch_manifest_audit")]
+
+
+def test_active_tools_health_client_config_defaults_to_unconfigured_and_allows_explicit_internal_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+
+    settings = load_settings()
+
+    assert DEFAULT_ACTIVE_TOOLS_URL == ""
+    assert settings.active_tools_url == ""
+    assert settings.active_tools_health_timeout_seconds == DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS
+
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_URL", " http://active-tools:8080/ ")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS", "1.25")
+
+    configured = load_settings()
+
+    assert configured.active_tools_url == "http://active-tools:8080"
+    assert configured.active_tools_health_timeout_seconds == 1.25
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_unconfigured_returns_controlled_error():
+    result = await check_active_tools_health("")
+
+    assert result == {
+        "available": False,
+        "status": None,
+        "active_nmap_basic_status": None,
+        "execution_enabled": None,
+        "target_input_allowed": None,
+        "network_requests_sent": None,
+        "nmap_executed": None,
+        "error_code": "active_tools_unconfigured",
+    }
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_valid_fake_health_returns_available_true():
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        assert request.method == "GET"
+        return Response(200, json=make_active_tools_health_payload())
+
+    result = await check_active_tools_health(
+        "http://active-tools:8080",
+        timeout_seconds=0.25,
+        transport=MockTransport(handler),
+    )
+
+    assert paths == ["/health"]
+    assert result == {
+        "available": True,
+        "status": "scaffold_ready",
+        "active_nmap_basic_status": "disabled_no_scan",
+        "execution_enabled": False,
+        "target_input_allowed": False,
+        "network_requests_sent": 0,
+        "nmap_executed": False,
+        "error_code": None,
+    }
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_preserves_disabled_no_scan_state_without_enabling_targets():
+    def handler(request):
+        return Response(200, json=make_active_tools_health_payload())
+
+    result = await check_active_tools_health(
+        "http://active-tools:8080/",
+        transport=MockTransport(handler),
+    )
+
+    assert result["active_nmap_basic_status"] == "disabled_no_scan"
+    assert result["execution_enabled"] is False
+    assert result["target_input_allowed"] is False
+    assert result["network_requests_sent"] == 0
+    assert result["nmap_executed"] is False
+    assert result["available"] is True
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_rejects_nmap_executed_true_as_invalid_response():
+    def handler(request):
+        return Response(200, json=make_active_tools_health_payload(nmap_executed=True))
+
+    result = await check_active_tools_health("http://active-tools:8080", transport=MockTransport(handler))
+
+    assert result["available"] is False
+    assert result["nmap_executed"] is True
+    assert result["error_code"] == "active_tools_invalid_response"
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_rejects_nonzero_network_requests_as_invalid_response():
+    def handler(request):
+        return Response(200, json=make_active_tools_health_payload(network_requests_sent=1))
+
+    result = await check_active_tools_health("http://active-tools:8080", transport=MockTransport(handler))
+
+    assert result["available"] is False
+    assert result["network_requests_sent"] == 1
+    assert result["error_code"] == "active_tools_invalid_response"
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_does_not_reflect_dangerous_unexpected_fields():
+    payload = make_active_tools_health_payload()
+    payload["raw_xml"] = "<nmaprun args='nmap -sT token_should_never_render' />"
+    payload["credentials"] = {"password": "token_should_never_render"}
+    payload["capabilities"]["active_nmap_basic"]["command"] = "nmap -sT --script default token_should_never_render"
+
+    def handler(request):
+        return Response(200, json=payload)
+
+    result = await check_active_tools_health("http://active-tools:8080", transport=MockTransport(handler))
+
+    assert result["available"] is False
+    assert result["error_code"] == "active_tools_unexpected_fields"
+    serialized = json.dumps(result, sort_keys=True)
+    for forbidden in ("token_should_never_render", "<nmaprun", "nmap -sT", "--script", "credentials", "raw_xml"):
+        assert forbidden not in serialized
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_timeout_maps_to_controlled_error():
+    def handler(request):
+        raise ReadTimeout("active-tools health timed out", request=request)
+
+    result = await check_active_tools_health("http://active-tools:8080", transport=MockTransport(handler))
+
+    assert result["available"] is False
+    assert result["error_code"] == "active_tools_timeout"
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_connection_error_maps_to_unavailable():
+    def handler(request):
+        raise ConnectError("active-tools unavailable", request=request)
+
+    result = await check_active_tools_health("http://active-tools:8080", transport=MockTransport(handler))
+
+    assert result["available"] is False
+    assert result["error_code"] == "active_tools_unavailable"
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_invalid_json_maps_to_invalid_response():
+    def handler(request):
+        return Response(200, content=b"{not-json")
+
+    result = await check_active_tools_health("http://active-tools:8080", transport=MockTransport(handler))
+
+    assert result["available"] is False
+    assert result["error_code"] == "active_tools_invalid_response"
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_only_calls_health_not_nmap_basic():
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        if request.url.path == "/active/nmap-basic":
+            raise AssertionError("backend health client must not call active nmap basic")
+        return Response(200, json=make_active_tools_health_payload())
+
+    result = await check_active_tools_health("http://active-tools:8080", transport=MockTransport(handler))
+
+    assert result["available"] is True
+    assert paths == ["/health"]
+    assert "/active/nmap-basic" not in paths
+
+
+def test_active_tools_health_client_source_has_no_nmap_job_archive_or_runner_integration():
+    client_source = Path("backend/app/active_tools_client.py").read_text(encoding="utf-8")
+    main_source = Path("backend/app/main.py").read_text(encoding="utf-8")
+    runner_source = Path("tools/runner/main.py").read_text(encoding="utf-8")
+
+    for forbidden in (
+        "/active/nmap-basic",
+        "import " + "subprocess",
+        "subprocess.",
+        "shell" + "=True",
+        "os." + "system",
+        "po" + "pen",
+        "P" + "open(",
+        "DockerClient",
+        "from docker",
+        "docker.sock",
+        "nmap --version",
+        "nmap -sT",
+        "tools/runner/main.py",
+    ):
+        assert forbidden not in client_source
+    assert "check_active_tools_health" not in main_source
+    assert "active_nmap_basic" not in runner_source
+    assert "nmap_basic" not in runner_source
 
 
 @pytest.mark.anyio
