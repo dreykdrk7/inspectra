@@ -3316,6 +3316,119 @@ wiring, real active-tools jobs, live exports, archive/run-all,
 `tools/runner/main.py` integration, frontend runtime changes, target approval,
 tags, or releases.
 
+## Microphase 36: Active Tools Internal Service Skeleton, No Scan
+
+Objective:
+
+Create the pure internal `active-tools` service skeleton for future
+`active_nmap_basic` handling. Provide offline-testable health and
+`active_nmap_basic` handlers while returning only controlled no-scan states.
+Do not run Docker, Compose, Nmap, `nmap --version`, probes, DNS checks, external
+HTTP checks, `curl`, or a browser. Do not add backend live calls, backend
+runtime wiring, public endpoints, real active-tools jobs, live exports,
+archive/run-all integration, `tools/runner/main.py` integration, frontend
+runtime changes, target approval, tags, or releases.
+
+Probable files:
+
+- `tools/active_runner/service.py`
+- `tools/tests/test_active_tools_internal_service_skeleton.py`
+- `docs/future/active-nmap-basic-active-tools-internal-service-skeleton-no-scan.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Compose execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No `curl` or browser checks.
+- No real `active-tools` server process.
+- No public endpoint.
+- No backend-to-active-tools live calls.
+- No backend runtime change to call the service.
+- No real jobs created from `active-tools`.
+- No live exports.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No frontend runtime changes.
+- No target approval for `www.vildek.es`.
+- No target approval for `app.vildek.es`.
+- No approval for port `80`.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest tools/tests/test_active_tools_internal_service_skeleton.py
+.venv/bin/python -m pytest tools/tests/test_active_runner.py -k "nmap"
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap or nmap_basic or boundary or redaction"
+rg -n "subprocess|docker|DockerClient|from docker|docker.sock|nmap --version|nmap -sT|Nmap execution|tools/runner/main.py" tools/active_runner tools/tests
+rg -n "raw_xml|stdout|stderr|ptr_hostname|resolved_ip|script_output|nse|credentials|cookies|tokens|headers|manual_validation_required|observed_exposure_review_indicator" tools backend docs README.md
+rg -n "vps-40567620|51.38.225.243" backend tools/tests || true
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- The skeleton drifts into a live HTTP server or public endpoint.
+- The handler imports the real executor or subprocess path.
+- Rejection responses leak targets, raw XML, stdout/stderr, command data, PTR,
+  resolved IPs, service/banner/version data, script output, credentials,
+  cookies, tokens, headers, or unsafe claims.
+- Health/readiness starts accepting target-bearing payloads.
+- The skeleton implies approval for backend live wiring, Docker/Compose
+  runtime, or public scanner behavior.
+
+Acceptance criteria:
+
+- Health/readiness returns `service: active-tools`, controlled readiness, zero
+  network requests, no target requirement, and `active_nmap_basic` disabled
+  no-scan status.
+- Target-bearing health payloads are rejected without target leakage.
+- `POST /active/nmap-basic` conceptual handler accepts only the single-unit
+  backend boundary shape and returns `not_executed` with
+  `manual_validation_required: true`.
+- No observation is emitted in this phase; therefore no
+  `observed_exposure_review_indicator` result is attached to an empty
+  observation set.
+- Raw flags, scripts/NSE, extra args, shell command fields, credentials,
+  cookies, tokens, headers, target files, multiple targets, target ranges,
+  custom profiles, and invalid ports are rejected.
+- Skeleton source imports no subprocess, Docker SDK, executor, backend service,
+  `tools/runner/main.py`, or live network client.
+- Backend runtime and `tools/runner/main.py` remain unchanged for live
+  integration.
+
+Suggested commit:
+
+```text
+feat(active): add active tools service skeleton
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_36_ACTIVE_TOOLS_INTERNAL_SERVICE_SKELETON_NO_SCAN_ACCEPTED`
+adds a pure internal `active-tools` service skeleton and offline tests for
+health/readiness, no-scan `active_nmap_basic`, dangerous-field rejection,
+response redaction, dispatch blocking, and source-boundary checks. It does not
+add Docker/Compose/Nmap execution, backend live calls, backend runtime wiring,
+public endpoints, real active-tools jobs, live exports, archive/run-all,
+`tools/runner/main.py` integration, frontend runtime changes, target approval,
+tags, or releases.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final

@@ -277,6 +277,8 @@ The Active Nmap Basic backend active-tools boundary design decision is `ACTIVE_N
 
 The Active Nmap Basic backend active-tools boundary contract tests decision is `ACTIVE_NMAP_BASIC_35_BACKEND_ACTIVE_TOOLS_BOUNDARY_CONTRACT_TESTS_NO_LIVE_ACCEPTED`. Backend now has pure boundary contract helpers and no-live tests for one-unit request building, response allowlisting, controlled boundary error mapping, policy drift, owner scope, redaction, and source-boundary checks. The helpers do not add an `active-tools` endpoint, backend live call, Docker/Nmap execution, Compose wiring, runner HTTP endpoint, live jobs, live exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime changes, new target approval, release, or tag state.
 
+The Active Nmap Basic active-tools internal service skeleton decision is `ACTIVE_NMAP_BASIC_36_ACTIVE_TOOLS_INTERNAL_SERVICE_SKELETON_NO_SCAN_ACCEPTED`. `tools/active_runner/service.py` now provides pure offline handlers for conceptual `GET /health` and `POST /active/nmap-basic` behavior. They return scaffold-ready or not-executed no-scan states, reject dangerous fields and expanded target shapes, and do not import the real Nmap executor. This phase does not add a running server, public endpoint, backend live call, backend runtime wiring, Docker/Compose/Nmap execution, runner HTTP endpoint, real jobs, live exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime changes, target approval, release, or tag state.
+
 ## Components
 
 ### Backend
