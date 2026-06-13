@@ -196,7 +196,8 @@ def test_dispatch_rejects_wrong_method_or_unknown_path_without_live_behavior():
 def test_internal_service_skeleton_signature_has_no_server_or_raw_parameters():
     parameters = inspect.signature(handle_active_nmap_basic_no_scan).parameters
 
-    assert set(parameters) == {"payload"}
+    assert set(parameters) == {"payload", "executor"}
+    assert parameters["executor"].kind is inspect.Parameter.KEYWORD_ONLY
     for forbidden in ("raw_flags", "extra_args", "scripts", "credentials", "headers", "target_file"):
         assert forbidden not in parameters
 

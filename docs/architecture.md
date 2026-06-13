@@ -281,6 +281,8 @@ The Active Nmap Basic active-tools internal service skeleton decision is `ACTIVE
 
 The Active Nmap Basic active-tools health readiness hardening decision is `ACTIVE_NMAP_BASIC_37_ACTIVE_TOOLS_HEALTH_READINESS_HARDENING_NO_SCAN_ACCEPTED`. The pure health handler now accepts only absent or empty payloads, returns small stable `scaffold_ready` metadata, marks `active_nmap_basic` as `disabled_no_scan` with `target_input_allowed: false`, and rejects target, port, credential, header, cookie, token, command, script, and NSE payloads without echoing values. This phase does not add fake execution, a running server, public endpoint, backend live call, backend runtime wiring, Docker/Compose/Nmap execution, runner HTTP endpoint, real jobs, live exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime changes, target approval, release, or tag state.
 
+The Active Nmap Basic active-tools fake execution boundary decision is `ACTIVE_NMAP_BASIC_38_ACTIVE_TOOLS_FAKE_EXECUTION_BOUNDARY_NO_LIVE_ACCEPTED`. The pure `active-tools` Nmap-basic handler now has an optional keyword-only fake executor for offline tests; without that injected executor it still returns `not_executed`. Injected synthetic responses are allowlisted, metadata-bounded, accepted-port checked, redaction-safe, and worded only as observed exposure / review indicators. This phase does not add a running server, public endpoint, backend live call, backend runtime wiring, Docker/Compose/Nmap execution, runner HTTP endpoint, real jobs, live exports, archive/run-all, `tools/runner/main.py` integration, frontend runtime changes, target approval, release, or tag state.
+
 ## Components
 
 ### Backend

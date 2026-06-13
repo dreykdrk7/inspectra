@@ -3545,6 +3545,119 @@ execution, backend live calls, backend runtime wiring, public endpoints, real
 active-tools jobs, live exports, archive/run-all, `tools/runner/main.py`
 integration, frontend runtime changes, target approval, tags, or releases.
 
+## Microphase 38: Active Tools Fake Execution Through Boundary, No Live
+
+Objective:
+
+Add a fake/no-live execution path through the pure internal `active-tools`
+boundary so `active_nmap_basic` can validate one synthetic executor response in
+offline tests without enabling real Nmap execution, Docker/Compose runtime,
+backend live calls, public endpoints, real jobs, live exports, or frontend
+runtime behavior.
+
+Probable files:
+
+- `tools/active_runner/service.py`
+- `tools/tests/test_active_tools_fake_execution_boundary.py`
+- `tools/tests/test_active_tools_internal_service_skeleton.py`
+- `docs/future/active-nmap-basic-active-tools-fake-execution-boundary-no-live.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No Docker execution.
+- No Compose execution.
+- No Nmap execution.
+- No `nmap --version`.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No `curl` or browser checks.
+- No real server process.
+- No real HTTP endpoint.
+- No backend-to-`active-tools` live calls.
+- No backend runtime change to call the service.
+- No real jobs created from `active-tools`.
+- No live exports.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No frontend runtime changes.
+- No target approval for `www.vildek.es`.
+- No target approval for `app.vildek.es`.
+- No approval for port `80`.
+- No public scanner behavior.
+- No migrations, tags, or releases.
+
+Expected validations:
+
+```text
+git status --short
+git status --branch --short
+git diff --check
+git diff --cached --check
+.venv/bin/python -m pytest tools/tests/test_active_tools_fake_execution_boundary.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_health_readiness.py
+.venv/bin/python -m pytest tools/tests/test_active_tools_internal_service_skeleton.py
+.venv/bin/python -m pytest tools/tests/test_active_runner.py -k "nmap"
+.venv/bin/python -m pytest backend/tests/test_backend.py -k "active_nmap or nmap_basic or boundary or redaction"
+rg -n "subprocess|docker|DockerClient|from docker|docker.sock|nmap --version|nmap -sT|Nmap execution|tools/runner/main.py" tools/active_runner tools/tests
+rg -n "raw_xml|stdout|stderr|ptr_hostname|resolved_ip|script_output|nse|credentials|cookies|tokens|headers|manual_validation_required|observed_exposure_review_indicator|policy_drift|not_executed" tools backend docs README.md
+rg -n "vps-40567620|51.38.225.243" backend tools/tests || true
+rg -n "confirmed vulnerability|exploitable|target is safe|all ports found|scan the internet|full network scan|brute force|credential validation|crawl|NSE|--script|raw flags|arbitrary internet scanning|broad ranges|public scanner|SaaS" backend tools docs README.md
+rg -n "active_nmap_basic|nmap_basic" tools/runner/main.py backend/app/services.py backend/app/main.py
+```
+
+Risks:
+
+- The fake executor becomes a hidden live execution seam instead of a pure
+  injected test helper.
+- Default handling changes from `not_executed` to a fake completed state.
+- Fake responses echo targets, raw XML, stdout/stderr, PTR, resolved IP,
+  service/banner/version data, commands, credentials, cookies, tokens, headers,
+  or unsafe vulnerability/exploitability wording.
+- Fake observations include ports outside the backend-accepted set.
+- Backend or runner code starts importing the pure service module as runtime
+  wiring.
+
+Acceptance criteria:
+
+- `handle_active_nmap_basic_no_scan(payload)` without executor still returns
+  `not_executed`, `network_requests_sent: 0`, `summary.nmap_executed: false`,
+  `job_created: false`, and no observations.
+- A keyword-only injected fake executor can return a minimal synthetic
+  `443/tcp open syn-ack` observation in offline tests only.
+- The executor receives only a sanitized request with sorted accepted ports and
+  no raw flags, scripts/NSE, credentials, cookies, tokens, headers, shell
+  commands, target files, raw XML, stdout/stderr, PTR, or resolved-IP fields.
+- Fake responses are allowlisted, accepted-port checked, metadata-bounded, and
+  forced to `manual_validation_required: true` plus
+  `observed_exposure_review_indicator`.
+- Fake executor exceptions and fake timeout/error states map to controlled
+  responses without leakage.
+- Source guards show no subprocess, Docker SDK, Docker socket, Nmap version
+  call, real executor import, backend import, or `tools/runner/main.py`
+  integration.
+
+Suggested commit:
+
+```text
+test(active): add active tools fake boundary execution
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_38_ACTIVE_TOOLS_FAKE_EXECUTION_BOUNDARY_NO_LIVE_ACCEPTED`
+adds an explicitly injected fake executor path for offline boundary tests while
+preserving default `not_executed` behavior. Synthetic responses are allowlisted,
+metadata-bounded, accepted-port checked, redaction-safe, and worded only as
+observed exposure / review indicators. It does not add Docker/Compose/Nmap
+execution, backend live calls, backend runtime wiring, public endpoints, real
+active-tools jobs, live exports, archive/run-all, `tools/runner/main.py`
+integration, frontend runtime changes, target approval, tags, or releases.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
