@@ -303,6 +303,8 @@ The Active Nmap Basic backend active Nmap job lifecycle skeleton no-live decisio
 
 The Active Nmap Basic backend route-to-lifecycle no-live decision is `ACTIVE_NMAP_BASIC_48_BACKEND_ACTIVE_NMAP_ROUTE_TO_LIFECYCLE_NO_LIVE_PASSED`. The existing `POST /active/network/nmap-basic` endpoint now uses the existing backend contract validation, target policy, and handoff builder before invoking the lifecycle skeleton with an explicit `fake_no_live` client. Enabled valid requests return controlled lifecycle metadata directly instead of creating a persistent job. The route reports no execution, no job creation, no storage persistence, no real active-tools call, no Nmap execution, no network/DNS requests, no evidence, and no observations. It remains disabled by default and does not add frontend runtime changes, exports, archive/run-all, `tools/runner/main.py`, Docker/Compose, probes, external HTTP, target approval, release, or tag state.
 
+The Active Nmap Basic backend no-live job persistence design decision is `ACTIVE_NMAP_BASIC_49_BACKEND_ACTIVE_NMAP_NO_LIVE_JOB_PERSISTENCE_DESIGN_ACCEPTED`. It freezes the future storage shape for converting controlled lifecycle results into owner-scoped `active_nmap_basic` jobs with `file_id: null`, redacted-before-write result payloads, generic wrong-owner responses, and no-live report wording. The lifecycle remains storage-free, and this docs-only phase does not implement persistence, create jobs, change exports or frontend runtime, call real active-tools, execute Nmap, perform probes/DNS/external HTTP checks, integrate archive/run-all, integrate `tools/runner/main.py`, approve targets, release, or tag state.
+
 ## Components
 
 ### Backend

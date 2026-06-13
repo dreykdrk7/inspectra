@@ -4748,6 +4748,102 @@ lifecycle skeleton with a fake client. It does not add persistent jobs, storage,
 real active-tools calls, Nmap execution, exports, frontend changes,
 archive/run-all, `tools/runner/main.py`, release, or tag state.
 
+## Microphase 49: Backend No-Live Job Persistence Design
+
+Objective:
+
+Design the future persistence shape for `active_nmap_basic` lifecycle results
+without implementing storage or creating jobs. The design defines how a
+controlled no-live lifecycle result may later become an owner-scoped job while
+remaining redacted-first and clearly non-executed.
+
+Product direction:
+
+- Keep the lifecycle storage-free.
+- Make backend storage admission explicit and fail-closed.
+- Preserve owner scope, generic wrong-owner responses, and no-live wording
+  before any persistence implementation.
+- Treat `not_executed` and `completed_no_live` as no-live lifecycle states, not
+  evidence-bearing execution states.
+
+Probable files:
+
+- `docs/future/active-nmap-basic-backend-no-live-job-persistence-design.md`
+- `docs/future/active-nmap-basic-implementation-plan.md`
+- `README.md`
+- `docs/architecture.md`
+- `docs/security-scope.md`
+
+No-scope:
+
+- No storage implementation.
+- No persistent job creation.
+- No runtime route behavior change.
+- No frontend runtime changes.
+- No export implementation changes.
+- No archive/run-all integration.
+- No `tools/runner/main.py` integration.
+- No real active-tools call.
+- No real `/active/nmap-basic` call.
+- No Nmap execution.
+- No `nmap --version`.
+- No Docker or Compose.
+- No probes.
+- No DNS checks.
+- No external HTTP checks.
+- No VPS, LAN, real domains, or real targets.
+- No migrations, tags, releases, push, or target approval.
+
+Expected validations:
+
+```text
+git status --short --branch
+git diff --check
+git diff --cached --check
+addition-only wording guardrail search for prohibited claims and scan-expansion terms
+git diff --name-only
+git diff -- backend/app backend/tests frontend tools
+```
+
+Risks:
+
+- Treating stored no-live jobs as completed live execution.
+- Letting lifecycle internals write storage directly.
+- Persisting raw target, payload, command, output, PTR, resolved IP, banner,
+  version, service, header, cookie, token, credential, or evidence fields.
+- Returning target-specific information in wrong-owner reads.
+- Letting Raw JSON or later report/export surfaces imply real observations.
+
+Acceptance criteria:
+
+- The design names the backend as authority for auth, owner scope, validation,
+  target policy, handoff, lifecycle, storage admission, redaction, and future
+  reporting/export surfaces.
+- Allowed and forbidden storage fields are explicit.
+- Accepted no-live states are limited to `blocked_unconfigured`,
+  `blocked_missing_approval`, `not_executed`, `client_error_controlled`,
+  `completed_no_live`, and `unsafe_lifecycle_result`.
+- Redaction guidance covers job detail, list, Raw JSON, and future Markdown,
+  HTML, XML, and PDF rendering.
+- Future tests cover disabled, invalid, rejected, wrong-owner, unsafe-result,
+  and redaction paths.
+- Source guardrails confirm no runtime storage/job/frontend/export/archive or
+  runner changes.
+
+Suggested commit:
+
+```text
+docs(active): design nmap no-live job persistence
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_49_BACKEND_ACTIVE_NMAP_NO_LIVE_JOB_PERSISTENCE_DESIGN_ACCEPTED`
+records the docs-only persistence design. It does not implement storage,
+create jobs, call real active-tools, execute Nmap, change frontend runtime,
+create exports, integrate archive/run-all, integrate `tools/runner/main.py`,
+approve targets, release, or tag state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
