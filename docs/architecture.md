@@ -321,6 +321,8 @@ The Active Nmap Basic v0 functional closeout decision is `ACTIVE_NMAP_BASIC_56_A
 
 The Active Nmap Basic v0 operational usage polish decision is `ACTIVE_NMAP_BASIC_57_OPERATIONAL_USAGE_POLISH_ACCEPTED`. The runtime architecture is unchanged: backend owns auth, owner scope, validation, lifecycle, storage, reporting, and redaction; Nmap execution remains isolated to internal `active-tools`; and the optional active-tools Compose profile remains private/internal with no public host port by default. The operational guide documents the required backend and active-tools flags, internal/local `INSPECTRA_ACTIVE_TOOLS_URL` boundary, targetless `GET /health/active-tools` readiness check, static Compose config review, approved local/private/self-hosted target policy, redacted result semantics, and troubleshooting. It adds no backend, frontend, active-tools, archive/run-all, or `tools/runner/main.py` runtime changes.
 
+The Active TLS Basic design decision is `ACTIVE_TLS_BASIC_01_DESIGN_FROZEN`. It documents a future opt-in `active_tls_basic` capability for one explicit authorized local/private/self-hosted target and one bounded port, with backend-owned auth, owner scope, request validation, target policy, lifecycle, storage, reporting, and redaction. The design allows only bounded TLS handshake status and certificate-summary review indicators, with no raw certificate PEM by default and no raw target in public surfaces. It adds no runtime, socket execution, OpenSSL command, Python `ssl` connection, Nmap, Docker, frontend runtime, archive/run-all, or `tools/runner/main.py` integration.
+
 ## Components
 
 ### Backend

@@ -293,6 +293,8 @@ The Active Nmap Basic no-live product E2E smoke phase is recorded in `docs/futur
 
 The Active Nmap Basic real minimal integration phase is recorded in `docs/future/active-nmap-basic-real-minimal-integration.md`.
 
+The Active TLS Basic docs-only design is recorded in `docs/future/active-tls-basic-design.md`.
+
 Current decision: `ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME`.
 
 Runbook decision: `ACTIVE_RUNBOOK_THREAT_MODEL_FROZEN_NO_RUNTIME`.
@@ -445,6 +447,8 @@ Active Nmap Basic v0 functional closeout decision: `ACTIVE_NMAP_BASIC_56_ACTIVE_
 
 Active Nmap Basic v0 operational usage polish decision: `ACTIVE_NMAP_BASIC_57_OPERATIONAL_USAGE_POLISH_ACCEPTED`.
 
+Active TLS Basic design decision: `ACTIVE_TLS_BASIC_01_DESIGN_FROZEN`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
@@ -534,6 +538,7 @@ This means:
 - Active Nmap Basic v0 functional closeout accepts only the bounded self-hosted/local/private minimum capability. It preserves disabled-by-default feature posture, explicit operator and active-tools execution opt-in, internal/local active-tools URL requirements, Nmap execution only inside active-tools, owner-scoped `file_id: null` target-redacted jobs, redaction-first reporting/Raw JSON/frontend, observed TCP exposure / review-indicator wording, and manual validation required. It does not approve public scanner/SaaS behavior, arbitrary public targets, unfrozen LAN/VPS/domain targets, port `80`, broad ranges, CIDR, wildcards, target files, top ports, `-p-`, raw flags, NSE/scripts, service/version detection, OS detection, UDP/SYN scans, brute force, exploit scripts, credential validation, crawling, DNS expansion, backend subprocesses, Docker socket use, archive/run-all, `tools/runner/main.py`, vulnerability/exploitability/target-safety/full-coverage claims, release, tag, or push state.
 - Active Nmap Basic v0 operational usage polish is documented in `docs/future/active-nmap-basic-v0-operational-usage.md`. It adds operator guidance for required flags, internal/local active-tools URLs, static Compose config review, targetless `/health/active-tools` readiness checks, enable/disable paths, loopback/local example shape, troubleshooting, and redaction/report wording while preserving the same bounded self-hosted/local/private scope. It adds no runtime features, Nmap execution, Docker runtime smoke, targets, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
 - No broad/public scanner or release-ready Nmap workflow exists. The only approved Nmap path is the bounded, opt-in, local/private/self-hosted Active Nmap Basic path through internal `active-tools`.
+- Active TLS Basic is a docs-only future design for one explicit authorized local/private/self-hosted target and one bounded port. It defines `audit_type: active_tls_basic`, explicit confirmations, short timeout, owner-scoped redacted jobs, bounded TLS handshake/certificate summary fields, manual validation, and review-indicator wording. It adds no runtime implementation, socket execution, OpenSSL command, Python `ssl` connection, Nmap, Docker, probes, DNS checks, HTTP requests, crawling, credential validation, brute force, frontend runtime, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
 
 The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.
 
