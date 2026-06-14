@@ -2,6 +2,7 @@ import type {
   ActiveDryRunRequest,
   ActiveHttpHeaderProbeRequest,
   ActiveNmapBasicRequest,
+  ActiveTlsBasicRequest,
   AuthSessionResponse,
   AuthStatusResponse,
   DeletedFileResponse,
@@ -330,6 +331,15 @@ export async function createActiveNmapBasic(request: ActiveNmapBasicRequest): Pr
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function createActiveTlsBasic(request: ActiveTlsBasicRequest): Promise<JobRecord> {
+  const response = await apiFetch('/active/network/tls-basic', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function listJobs(): Promise<JobListItem[]> {
   const response = await apiFetch('/jobs');
   return parseJsonResponse<JobListItem[]>(response);
@@ -384,6 +394,7 @@ export const api = {
   createActiveNetworkDryRun,
   createActiveHttpHeaderProbe,
   createActiveNmapBasic,
+  createActiveTlsBasic,
   listJobs,
   getJob,
   jobExportUrl,

@@ -36,6 +36,7 @@ export const AUDIT_TYPE_ORDER: AuditType[] = [
   "active_network_dry_run",
   "active_http_header_probe",
   "active_nmap_basic",
+  "active_tls_basic",
   "django_config_basic",
   "docker_config_basic",
   "secrets_review_basic",
@@ -122,6 +123,13 @@ export const AUDIT_TYPE_CATALOG: Record<AuditType, AuditTypeMetadata> = {
     "active_network",
     "target",
     "Renders bounded no-live lifecycle records for the future Nmap basic capability."
+  ),
+  active_tls_basic: metadata(
+    "active_tls_basic",
+    "Active TLS basic",
+    "active_network",
+    "target",
+    "Records one authorized bounded TLS handshake and redacted certificate review indicators."
   ),
   django_config_basic: metadata("django_config_basic", "Django config", "app_config", "archive", "Passive Django config review."),
   docker_config_basic: metadata("docker_config_basic", "Docker config", "containers_wiring", "archive", "Passive Docker config review."),

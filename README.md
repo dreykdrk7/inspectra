@@ -120,6 +120,7 @@ Reference docs:
 54. Active TLS Basic Microphase 01 freezes a docs-only design for a future `active_tls_basic` capability: one explicit authorized local/private/self-hosted target, one bounded port, explicit confirmations, short timeout, redaction-first owner-scoped jobs, bounded TLS handshake/certificate review indicators, and no runtime implementation, sockets, OpenSSL command, Python `ssl` connection, Nmap, Docker, crawling, credentials, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
 55. Active TLS Basic Microphase 02 adds the backend contract gate `POST /active/network/tls-basic`, disabled by default through `INSPECTRA_ACTIVE_TLS_BASIC_ENABLED=false`. Enabled valid requests validate the exact `live_tls_basic` / `tls_handshake_summary` contract and return a controlled `not_executed` response with no TLS handshake, sockets, DNS, HTTP, jobs, storage, frontend, reports/exports, archive/run-all, or `tools/runner/main.py`.
 56. Active TLS Basic Microphase 03 turns the same gated backend contract into a real-minimal TLS handshake job: one validated target, one bounded port, Python `socket`/`ssl` only in `backend/app/active_tls_basic.py`, owner-scoped `active_tls_basic` `JobRecord` with `file_id: null`, redacted target, bounded certificate summary, review-indicator wording, and no OpenSSL shell, subprocess, Nmap, Docker, HTTP/crawling, frontend, archive/run-all, or `tools/runner/main.py`.
+57. Active TLS Basic Microphase 04 connects the frontend to the real-minimal backend job contract with mocked product smoke coverage. The UI sends the exact `live_tls_basic` / `tls_handshake_summary` request, selects the returned `202 JobRecord`, refreshes jobs, and renders TLS handshake/certificate expiry review indicators with redacted Raw JSON. It adds no new real target execution, OpenSSL, subprocess, Nmap, Docker, HTTP/crawling, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
 
 ## What This MVP Does
 
@@ -149,6 +150,7 @@ Reference docs:
 - Starts opt-in Active network dry-run planning jobs with no network traffic when `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=true`.
 - Starts opt-in authorized Active HTTP header probe jobs when `INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED=true`; each permitted job sends at most one HTTP `HEAD` request after explicit live-traffic confirmation.
 - Creates opt-in Active / Nmap basic jobs when `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED=true`; real minimal execution requires an internal `active-tools` URL plus explicit active-tools execution enablement. Jobs are owner-scoped, target-redacted, bounded, and render TCP observations only as observed exposure / review indicators requiring manual validation. Without configured active-tools execution, controlled no-live or unconfigured states remain redacted.
+- Creates opt-in Active / TLS basic jobs when `INSPECTRA_ACTIVE_TLS_BASIC_ENABLED=true`; each accepted request is one explicit authorized local/private/self-hosted target and one bounded TLS-basic port. Jobs are owner-scoped, target-redacted, and render TLS handshake/certificate expiry values only as review indicators requiring manual validation.
 - Runs passive tools inside the `audit-tools` container.
 - Calculates file hashes inside the tool container.
 - Stores job state and results under `data/results/jobs`.
@@ -194,6 +196,7 @@ Reference docs:
 - It does not perform live Active probes in the Active dry-run flow; dry-run jobs send no DNS queries, HTTP requests, socket traffic, Nmap commands, or live checks.
 - It does not run Nmap, scan ports, crawl, read response bodies, follow redirects, validate certificates beyond the HTTP client default, or send more than one authorized `HEAD` request in the opt-in Active HTTP header probe flow.
 - It does not run Nmap in the backend, expose `active-tools` publicly by default, accept raw flags/NSE/scripts, perform broad scans, expand targets, collect raw output, or present Active / Nmap basic observations as vulnerability findings.
+- It does not run OpenSSL commands, subprocess TLS probes, HTTP crawling, credential validation, client-certificate checks, broad target expansion, or complete certificate inventory for Active / TLS basic; TLS results are bounded review indicators with redacted targets and certificate material.
 
 ## Passive Technical Alpha Scope
 
@@ -346,6 +349,8 @@ Active TLS Basic design is documented in `docs/future/active-tls-basic-design.md
 Active TLS Basic backend contract gate is documented in `docs/future/active-tls-basic-backend-contract-gate.md` with decision `ACTIVE_TLS_BASIC_02_BACKEND_CONTRACT_GATE_ACCEPTED`. It adds `INSPECTRA_ACTIVE_TLS_BASIC_ENABLED=false` and `POST /active/network/tls-basic`, validates only the exact future contract and required confirmations, rejects dangerous extra fields, and returns `not_executed` without creating jobs or attempting TLS/network execution.
 
 Active TLS Basic backend real-minimal job persistence is documented in `docs/future/active-tls-basic-backend-real-minimal-job-persistence.md` with decision `ACTIVE_TLS_BASIC_03_BACKEND_REAL_MINIMAL_TLS_JOB_PERSISTENCE_PASSED`. The enabled route now creates an owner-scoped `active_tls_basic` job after auth, feature gate, exact contract validation, target policy acceptance, and confirmations. It attempts one bounded TLS handshake through structured Python APIs in the dedicated backend module only, stores `[REDACTED_TARGET]`, bounded handshake/certificate metadata, controlled reason codes, and review-indicator wording, and still adds no OpenSSL shell, subprocess, Nmap, Docker, HTTP/crawling, frontend runtime, archive/run-all, or `tools/runner/main.py`.
+
+Active TLS Basic frontend and product smoke is documented in `docs/future/active-tls-basic-frontend-and-e2e-product-smoke.md` with decision `ACTIVE_TLS_BASIC_04_FRONTEND_AND_E2E_PRODUCT_SMOKE_PASSED`. The UI now provides a separate Active / TLS basic panel, sends the exact backend contract, selects the returned `202 JobRecord`, refreshes jobs, and renders TLS handshake and certificate expiry review indicators with redacted Raw JSON. The smoke uses mocks/control fixtures and adds no new real target execution, OpenSSL command, subprocess, Nmap, Docker, HTTP/crawling, archive/run-all, or `tools/runner/main.py`.
 
 ## Requirements
 

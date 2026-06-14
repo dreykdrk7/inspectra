@@ -57,6 +57,7 @@ export type AuditType =
   | 'active_network_dry_run'
   | 'active_http_header_probe'
   | 'active_nmap_basic'
+  | 'active_tls_basic'
   | 'django_config_basic'
   | 'docker_config_basic'
   | 'secrets_review_basic'
@@ -140,6 +141,16 @@ export type ActiveNmapBasicRequest = {
   profile: 'tcp_connect_small';
   targets: string[];
   ports: number[];
+  authorization_confirmed: true;
+  local_private_scope_confirmed: true;
+  live_traffic_confirmed: true;
+};
+
+export type ActiveTlsBasicRequest = {
+  mode: 'live_tls_basic';
+  profile: 'tls_handshake_summary';
+  target: string;
+  port: number;
   authorization_confirmed: true;
   local_private_scope_confirmed: true;
   live_traffic_confirmed: true;

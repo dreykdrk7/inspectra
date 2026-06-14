@@ -1522,6 +1522,169 @@ describe("App", () => {
     expect(rendered).not.toContain("completed scan");
   });
 
+  it("creates and opens an Active TLS basic review indicator job record", async () => {
+    const activeJob = {
+      id: "job-active-tls-basic-04",
+      audit_type: "active_tls_basic",
+      file_id: null,
+      target_url: "[REDACTED_TARGET]",
+      target_domain: null,
+      status: "completed",
+      created_at: "2026-06-14T10:00:00Z",
+      updated_at: "2026-06-14T10:00:00Z",
+      source_file_deleted_at: null,
+      result: {
+        audit_type: "active_tls_basic",
+        capability: "active_tls_basic",
+        mode: "live_tls_basic",
+        profile: "tls_handshake_summary",
+        status: "handshake_succeeded",
+        result_status: "handshake_succeeded",
+        target: "service.local",
+        raw_payload: { target: "service.local", token: "token_should_never_render" },
+        port: 443,
+        handshake: { status: "succeeded", protocol: "TLSv1.3", cipher: "TLS_AES_256_GCM_SHA384" },
+        certificate: {
+          available: true,
+          subject: "commonName=service.local",
+          issuer: "commonName=Inspectra Test CA",
+          san_count: 1,
+          san_sample: [{ type: "DNS", value: "service.local" }],
+          not_before: "2026-01-01T00:00:00Z",
+          not_after: "2026-01-31T00:00:00Z",
+          days_until_expiry: 30,
+          certificate_pem: "-----BEGIN CERTIFICATE-----token_should_never_render-----END CERTIFICATE-----",
+          certificate_der: "raw_der_should_not_render"
+        },
+        execution: {
+          tls_handshake_attempted: true,
+          network_requests_sent: 1,
+          http_requests_sent: 0,
+          target_expansion_performed: false,
+          dns_expansion_performed: false,
+          crawling_performed: false,
+          credential_validation_performed: false
+        },
+        limits: {
+          handshake_timeout_seconds: 3,
+          raw_certificate_persisted: false,
+          raw_target_persisted: false
+        },
+        legacy: {
+          raw_exception: "raw_exception_should_not_render service.local",
+          headers: { Authorization: "Bearer token_should_never_render" },
+          cookies: { session: "token_should_never_render" },
+          tokens: ["token_should_never_render"],
+          credentials: { api_key: "raw-api-key-123456" }
+        },
+        errors: []
+      },
+      error: null
+    };
+    let jobs = [] as unknown[];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/active/network/tls-basic")) {
+          jobs = [
+            {
+              ...activeJob,
+              result: undefined,
+              error: undefined,
+              summary: {
+                capability: "active_tls_basic",
+                result_status: "handshake_succeeded",
+                handshake_status: "succeeded",
+                protocol: "TLSv1.3",
+                cipher: "TLS_AES_256_GCM_SHA384",
+                certificate_available: true,
+                san_count: 1,
+                days_until_expiry: 30,
+                tls_handshake_attempted: true,
+                network_requests_sent: 1,
+                target_display: "[REDACTED_TARGET]"
+              }
+            }
+          ];
+          return Promise.resolve(jsonResponse(activeJob, 202));
+        }
+        if (url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse(jobs));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+    const heading = await screen.findByRole("heading", { name: "Active / TLS basic" });
+    const panel = heading.closest("section");
+    expect(panel).not.toBeNull();
+    const scoped = within(panel as HTMLElement);
+
+    fireEvent.change(scoped.getByLabelText("Target"), { target: { value: "service.local" } });
+    fireEvent.change(scoped.getByLabelText("TLS port"), { target: { value: "443" } });
+    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
+    fireEvent.click(scoped.getByLabelText("I confirm this is local, private, or self-hosted scope."));
+    fireEvent.click(scoped.getByLabelText("I understand this capability sends one bounded TLS handshake attempt if backend policy accepts it."));
+    fireEvent.click(scoped.getByRole("button", { name: /Create TLS review job/i }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/active/network/tls-basic",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    const request = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find(([input]) => String(input).endsWith("/active/network/tls-basic"))?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(request?.body))).toEqual({
+      mode: "live_tls_basic",
+      profile: "tls_handshake_summary",
+      target: "service.local",
+      port: 443,
+      authorization_confirmed: true,
+      local_private_scope_confirmed: true,
+      live_traffic_confirmed: true
+    });
+
+    expect(await scoped.findByText(/TLS review indicator job created/i)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Active / TLS basic report" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Show redacted Raw JSON"));
+    const rendered = view.container.textContent ?? "";
+    expect(rendered).toContain("handshake_succeeded");
+    expect(rendered).toContain("TLS handshake review indicator");
+    expect(rendered).toContain("Certificate expiry review indicator");
+    expect(rendered).toContain("Manual validation required");
+    expect(rendered).toContain("[REDACTED_TARGET]");
+    expect(rendered).toContain("TLSv1.3");
+    expect(rendered).toContain("TLS_AES_256_GCM_SHA384");
+    expect(rendered).toContain("30");
+    expect(rendered).toContain("Raw JSON (redacted)");
+    expect(rendered).toContain("[REDACTED");
+    expect(rendered).not.toContain("service.local");
+    expect(rendered).not.toContain("-----BEGIN CERTIFICATE-----");
+    expect(rendered).not.toContain("raw_der_should_not_render");
+    expect(rendered).not.toContain("raw_exception_should_not_render");
+    expect(rendered).not.toContain("token_should_never_render");
+    expect(rendered).not.toContain("raw-api-key-123456");
+    expect(rendered).not.toMatch(/confirmed\s+vulnerability/i);
+    expect(rendered).not.toMatch(/exploitable/i);
+    expect(rendered).not.toMatch(/target\s+is\s+safe/i);
+    expect(rendered).not.toMatch(/full\s+scan/i);
+    expect(rendered).not.toMatch(/all\s+certs\s+found/i);
+    expect(rendered).not.toMatch(/public\s+scanner/i);
+  });
+
   it("renders Active dry-run jobs with redacted target table and report payload", async () => {
     const activeJob = {
       id: "job-active-legacy-1",

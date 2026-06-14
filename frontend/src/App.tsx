@@ -22,6 +22,9 @@ import { redactActiveHttpHeaderProbeText } from "./activeHttpHeaderProbeReport";
 import { ActiveNmapBasicJobReport } from "./ActiveNmapBasicJobReport";
 import { ActiveNmapBasicPanel } from "./ActiveNmapBasicPanel";
 import { redactActiveNmapBasicText } from "./activeNmapBasicReport";
+import { ActiveTlsBasicJobReport } from "./ActiveTlsBasicJobReport";
+import { ActiveTlsBasicPanel } from "./ActiveTlsBasicPanel";
+import { redactActiveTlsBasicText } from "./activeTlsBasicReport";
 import {
   auditTypeCategoryLabel,
   auditTypeLabel,
@@ -652,6 +655,11 @@ export function App() {
     await refreshJobs();
   }
 
+  async function handleActiveTlsBasicJobCreated(job: JobRecord) {
+    setSelectedJob(job);
+    await refreshJobs();
+  }
+
   async function deleteFile(fileId: string) {
     setActionError(null);
     try {
@@ -1080,6 +1088,7 @@ export function App() {
         </Panel>
 
         <ActiveNmapBasicPanel health={health} onJobCreated={handleActiveNmapBasicJobCreated} />
+        <ActiveTlsBasicPanel onJobCreated={handleActiveTlsBasicJobCreated} />
       </section>
 
       <section className="content-grid">
@@ -1250,6 +1259,8 @@ export function App() {
             <ExportActions job={selectedJob} />
             {isActiveNmapBasicJob(selectedJob) ? (
               <ActiveNmapBasicJobReport job={selectedJob} />
+            ) : isActiveTlsBasicJob(selectedJob) ? (
+              <ActiveTlsBasicJobReport job={selectedJob} />
             ) : selectedJob.audit_type === "pdf_basic" ? (
               <PdfJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "image_basic" ? (
@@ -1461,11 +1472,18 @@ function jobTargetDisplay(job: JobListItem): string {
   if (job.audit_type === "active_nmap_basic") {
     return redactActiveNmapBasicText(target);
   }
+  if (job.audit_type === "active_tls_basic") {
+    return redactActiveTlsBasicText(target);
+  }
   return target;
 }
 
 function isActiveNmapBasicJob(job: JobRecord): boolean {
   return job.audit_type === "active_nmap_basic" || job.result?.capability === "active_nmap_basic";
+}
+
+function isActiveTlsBasicJob(job: JobRecord): boolean {
+  return job.audit_type === "active_tls_basic" || job.result?.capability === "active_tls_basic";
 }
 
 function acceptForKind(kind: FileRecord["kind"]): string {
@@ -1595,6 +1613,17 @@ function summarizeJob(job: JobListItem): string {
     }
     const observations = typeof job.summary.observation_count === "number" ? job.summary.observation_count : 0;
     return `${lifecycleState}, ${observations} review indicators`;
+  }
+  if (job.audit_type === "active_tls_basic") {
+    const resultStatus =
+      typeof job.summary.result_status === "string"
+        ? job.summary.result_status
+        : typeof job.summary.handshake_status === "string"
+          ? job.summary.handshake_status
+          : "tls_error_controlled";
+    const protocol = typeof job.summary.protocol === "string" ? job.summary.protocol : "TLS";
+    const daysUntilExpiry = typeof job.summary.days_until_expiry === "number" ? job.summary.days_until_expiry : null;
+    return `${resultStatus}, ${protocol} review indicator, expiry ${daysUntilExpiry === null ? "N/A" : `${daysUntilExpiry} days`}`;
   }
   if (job.audit_type === "django_config_basic") {
     const filesRead = typeof job.summary.files_read === "number" ? job.summary.files_read : 0;
