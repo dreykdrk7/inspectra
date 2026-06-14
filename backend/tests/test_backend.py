@@ -32,6 +32,7 @@ from app.auth_state_sqlite import (
     SQLiteLoginAttemptStore,
 )
 from app.config import (
+    DEFAULT_ACTIVE_DNS_INVENTORY_ENABLED,
     DEFAULT_ACTIVE_NMAP_BASIC_ENABLED,
     DEFAULT_ACTIVE_TLS_BASIC_ENABLED,
     DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS,
@@ -4564,6 +4565,23 @@ def make_active_tls_basic_payload(**overrides) -> dict:
     return payload
 
 
+def make_active_dns_inventory_payload(**overrides) -> dict:
+    payload = {
+        "mode": "live_dns_inventory",
+        "profile": "dns_inventory_authorized",
+        "domain": "example.com",
+        "record_types": ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"],
+        "include_security_records": True,
+        "include_subdomain_discovery": True,
+        "attempt_zone_transfer": False,
+        "authorization_confirmed": True,
+        "local_private_or_owned_scope_confirmed": True,
+        "live_dns_queries_confirmed": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
 ACTIVE_NMAP_BASIC_NO_LIVE_FORBIDDEN_STRINGS = (
     "192.168.56.10",
     "nas-01.local",
@@ -7760,6 +7778,305 @@ async def test_active_tls_basic_auth_required_anonymous_fails_before_validation(
     assert app.state.jobs.list() == []
 
 
+@pytest.mark.anyio
+async def test_active_dns_inventory_disabled_by_default_no_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_dns_inventory_payload(
+        domain="secret.example.com",
+        resolver_override="token_should_never_render",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "active_dns_inventory is disabled in this environment."
+    assert "secret.example.com" not in response.text
+    assert "token_should_never_render" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_enabled_valid_request_returns_not_executed_without_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=make_active_dns_inventory_payload())
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "audit_type": "active_dns_inventory",
+        "capability": "active_dns_inventory",
+        "status": "not_executed",
+        "result_status": "not_executed",
+        "coverage_level": "not_executed",
+        "domain": "[REDACTED_DOMAIN]",
+        "record_types": ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"],
+        "include_security_records": True,
+        "include_subdomain_discovery": True,
+        "dns_queries_sent": 0,
+        "subdomain_queries_sent": 0,
+        "zone_transfer_attempted": False,
+        "provider_import_attempted": False,
+        "job_created": False,
+        "storage_persisted": False,
+        "execution_enabled": False,
+        "manual_validation_required": True,
+        "result_interpretation": "dns_configuration_review_indicator",
+    }
+    assert jobs_response.json() == []
+    assert "example.com" not in response.text
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_enabled_requires_mode_and_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payloads = [
+        make_active_dns_inventory_payload(mode="dry_run"),
+        make_active_dns_inventory_payload(profile="dns_any"),
+        make_active_dns_inventory_payload(),
+        make_active_dns_inventory_payload(),
+    ]
+    payloads[2].pop("mode")
+    payloads[3].pop("profile")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [await client.post("/active/network/dns-inventory", json=payload) for payload in payloads]
+        jobs_response = await client.get("/jobs")
+
+    assert [response.status_code for response in responses] == [400, 400, 400, 400]
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_requires_authorization_confirmations(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    confirmation_fields = [
+        "authorization_confirmed",
+        "local_private_or_owned_scope_confirmed",
+        "live_dns_queries_confirmed",
+    ]
+    payloads = []
+    for field_name in confirmation_fields:
+        payloads.append(make_active_dns_inventory_payload(**{field_name: False}))
+        missing_payload = make_active_dns_inventory_payload()
+        missing_payload.pop(field_name)
+        payloads.append(missing_payload)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [await client.post("/active/network/dns-inventory", json=payload) for payload in payloads]
+        jobs_response = await client.get("/jobs")
+
+    assert [response.status_code for response in responses] == [400] * len(payloads)
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"domain": None},
+        {"domain": ""},
+        {"domain": ["example.com"]},
+        {"domain": 42},
+        {"domain": "a" * 64 + ".example.com"},
+        {"domain": "a" * 250 + ".com"},
+        {"domain": "example.com,example.net"},
+        {"domain": "example.com example.net"},
+        {"domain": "example.com\nexample.net"},
+        {"domain": "http://example.com"},
+        {"domain": "example.com/path"},
+        {"domain": "example.com?debug=true"},
+        {"domain": "example.com#fragment"},
+        {"domain": "user:pass@example.com"},
+        {"domain": "*.example.com"},
+        {"domain": "192.0.2.10"},
+        {"domain": "192.0.2.0/24"},
+        {"domain": "192.0.2.1-192.0.2.10"},
+        {"domain": "metadata.google.internal"},
+        {"domain": "targets.txt"},
+        {"domain": "singlelabel"},
+        {"include_security_records": "true"},
+        {"include_subdomain_discovery": "false"},
+        {"attempt_zone_transfer": "false"},
+    ],
+)
+async def test_active_dns_inventory_rejects_malformed_domain_and_flags(monkeypatch, tmp_path, override):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_dns_inventory_payload(**override)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 400
+    assert "example.com" not in response.text
+    assert "metadata.google.internal" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"record_types": None},
+        {"record_types": []},
+        {"record_types": ["A", "AXFR"]},
+        {"record_types": ["A", "SRV"]},
+        {"record_types": ["A", 1]},
+    ],
+)
+async def test_active_dns_inventory_rejects_missing_or_unallowed_record_types(monkeypatch, tmp_path, override):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_dns_inventory_payload(**override)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 400
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_rejects_zone_transfer_in_contract_gate(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_dns_inventory_payload(
+        domain="secret.example.com",
+        attempt_zone_transfer=True,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "active_dns_inventory zone transfer is not supported in this phase."
+    assert "secret.example.com" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "resolver_override",
+        "resolver",
+        "nameserver",
+        "provider_credentials",
+        "provider_api_token",
+        "api_token",
+        "ct_source",
+        "passive_dns_source",
+        "wordlist",
+        "axfr_server_override",
+        "shell_command",
+        "command",
+        "headers",
+        "cookies",
+        "tokens",
+        "credentials",
+        "target_file",
+    ],
+)
+async def test_active_dns_inventory_rejects_dangerous_extra_fields_without_job(monkeypatch, tmp_path, field_name):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_dns_inventory_payload(**{field_name: "token_should_never_render"})
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unsupported active_dns_inventory request field."
+    assert "token_should_never_render" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_error_output_does_not_reflect_domain_or_payload(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_dns_inventory_payload(
+        domain="secret.example.com/path?token=token_should_never_render",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+
+    assert response.status_code == 400
+    assert "secret.example.com" not in response.text
+    assert "token_should_never_render" not in response.text
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_auth_required_anonymous_fails_before_validation(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_dns_inventory_payload(resolver_override="token_should_never_render")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": AUTH_REQUIRED_DETAIL}
+    assert "Unsupported active_dns_inventory request field" not in response.text
+    assert "token_should_never_render" not in response.text
+    assert app.state.jobs.list() == []
+
+
+def test_active_dns_inventory_backend_source_has_no_dns_runtime_or_storage_integration():
+    main_source = Path("backend/app/main.py").read_text()
+    dns_module_source = Path("backend/app/active_dns_inventory.py").read_text()
+    route_source = main_source[
+        main_source.find('@app.post("/active/network/dns-inventory"') : main_source.find('@app.post("/audits/web/basic"')
+    ]
+    combined = route_source + "\n" + dns_module_source
+
+    forbidden = [
+        "socket",
+        "subprocess",
+        "os.system",
+        "shell=True",
+        "dig",
+        "nslookup",
+        "nmap",
+        "docker",
+        "httpx",
+        "requests.",
+        "archive/run-all",
+        "tools/runner/main.py",
+        "create_active_dns",
+        "background_tasks",
+    ]
+    for token in forbidden:
+        assert token not in combined
+    assert "dns_queries_sent" in combined
+    assert "job_created" in combined
+    assert "storage_persisted" in combined
+
+
 def test_active_tls_basic_backend_source_has_no_tls_socket_or_runner_integration():
     main_source = Path("backend/app/main.py").read_text()
     config_source = Path("backend/app/config.py").read_text()
@@ -9431,6 +9748,21 @@ def test_active_tls_basic_feature_flag_is_disabled_by_default_and_configurable(m
     enabled_settings = load_settings()
 
     assert enabled_settings.active_tls_basic_enabled is True
+
+
+def test_active_dns_inventory_feature_flag_is_disabled_by_default_and_configurable(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+
+    settings = load_settings()
+
+    assert DEFAULT_ACTIVE_DNS_INVENTORY_ENABLED is False
+    assert settings.active_dns_inventory_enabled is False
+
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+
+    enabled_settings = load_settings()
+
+    assert enabled_settings.active_dns_inventory_enabled is True
 
 
 def test_default_local_operator_has_stable_id(monkeypatch, tmp_path):

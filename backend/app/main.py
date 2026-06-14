@@ -26,6 +26,14 @@ from app.active_nmap_policy import (
     validate_active_nmap_basic_targets,
 )
 from app.active_nmap_handoff import build_active_nmap_basic_handoff_plan
+from app.active_dns_inventory import (
+    ACTIVE_DNS_INVENTORY_ALLOWED_RECORD_TYPES,
+    ActiveDnsInventoryContract,
+    ActiveDnsInventoryPolicyError,
+    build_active_dns_inventory_not_executed_response,
+    normalize_active_dns_inventory_domain,
+    normalize_active_dns_inventory_record_types,
+)
 from app.active_tls_basic import (
     ACTIVE_TLS_BASIC_DEFAULT_TIMEOUT_SECONDS,
     ActiveTlsBasicRequest,
@@ -519,6 +527,112 @@ def validate_active_tls_basic_contract(payload: Any) -> dict[str, Any]:
     }
 
 
+ACTIVE_DNS_INVENTORY_MODE = "live_dns_inventory"
+ACTIVE_DNS_INVENTORY_PROFILE = "dns_inventory_authorized"
+ACTIVE_DNS_INVENTORY_ALLOWED_FIELDS = frozenset(
+    {
+        "mode",
+        "profile",
+        "domain",
+        "record_types",
+        "include_security_records",
+        "include_subdomain_discovery",
+        "attempt_zone_transfer",
+        "authorization_confirmed",
+        "local_private_or_owned_scope_confirmed",
+        "live_dns_queries_confirmed",
+    }
+)
+ACTIVE_DNS_INVENTORY_REQUIRED_FIELDS = ACTIVE_DNS_INVENTORY_ALLOWED_FIELDS - {"attempt_zone_transfer"}
+ACTIVE_DNS_INVENTORY_CONFIRMATION_FIELDS = (
+    "authorization_confirmed",
+    "local_private_or_owned_scope_confirmed",
+    "live_dns_queries_confirmed",
+)
+ACTIVE_DNS_INVENTORY_CONTRACT_LIMITS = {
+    "max_domains": 1,
+    "allowed_record_types": sorted(ACTIVE_DNS_INVENTORY_ALLOWED_RECORD_TYPES),
+    "dns_queries_sent": 0,
+    "subdomain_queries_sent": 0,
+}
+
+
+def validate_active_dns_inventory_contract(payload: Any) -> ActiveDnsInventoryContract:
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_inventory request body must be a JSON object.",
+        )
+
+    fields = set(payload)
+    if fields - ACTIVE_DNS_INVENTORY_ALLOWED_FIELDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported active_dns_inventory request field.",
+        )
+    if ACTIVE_DNS_INVENTORY_REQUIRED_FIELDS - fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_inventory request is missing required fields.",
+        )
+
+    if payload.get("mode") != ACTIVE_DNS_INVENTORY_MODE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_inventory mode must be live_dns_inventory.",
+        )
+    if payload.get("profile") != ACTIVE_DNS_INVENTORY_PROFILE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_inventory profile must be dns_inventory_authorized.",
+        )
+
+    for field_name in ACTIVE_DNS_INVENTORY_CONFIRMATION_FIELDS:
+        if payload.get(field_name) is not True:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field_name} must be true.")
+
+    include_security_records = payload.get("include_security_records")
+    if not isinstance(include_security_records, bool):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_inventory include_security_records must be boolean.",
+        )
+    include_subdomain_discovery = payload.get("include_subdomain_discovery")
+    if not isinstance(include_subdomain_discovery, bool):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_inventory include_subdomain_discovery must be boolean.",
+        )
+    attempt_zone_transfer = payload.get("attempt_zone_transfer", False)
+    if not isinstance(attempt_zone_transfer, bool):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_inventory attempt_zone_transfer must be boolean.",
+        )
+    if attempt_zone_transfer is True:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_inventory zone transfer is not supported in this phase.",
+        )
+
+    try:
+        domain = normalize_active_dns_inventory_domain(payload.get("domain"))
+        record_types = normalize_active_dns_inventory_record_types(payload.get("record_types"))
+    except ActiveDnsInventoryPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"active_dns_inventory policy rejected the request: {exc.reason_code}.",
+        ) from exc
+
+    return ActiveDnsInventoryContract(
+        domain=domain,
+        record_types=record_types,
+        include_security_records=include_security_records,
+        include_subdomain_discovery=include_subdomain_discovery,
+        attempt_zone_transfer=attempt_zone_transfer,
+    )
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "inspectra-backend"}
@@ -992,6 +1106,22 @@ async def launch_active_tls_basic(
         error=active_tls_basic_job_error(result),
         owner_id=owner_id,
     )
+
+
+@app.post("/active/network/dns-inventory")
+async def launch_active_dns_inventory(
+    request: Request,
+    payload: Any = Body(...),
+) -> dict[str, Any]:
+    if not request.app.state.settings.active_dns_inventory_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="active_dns_inventory is disabled in this environment.",
+        )
+
+    current_owner_id_for_request(request)
+    contract = validate_active_dns_inventory_contract(payload)
+    return build_active_dns_inventory_not_executed_response(contract)
 
 
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
