@@ -59,6 +59,7 @@ from app.active_nmap_boundary import (
 )
 from app.active_nmap_handoff import build_active_nmap_basic_handoff_plan
 from app.active_nmap_lifecycle import ActiveNmapBasicRouteNoLiveClient, run_active_nmap_basic_lifecycle_skeleton
+from app.active_dns_inventory import ActiveDnsInventoryQueryResult, ActiveDnsInventoryRecord
 from app.active_tls_basic import ActiveTlsBasicConnectionSnapshot
 from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
 from app.models import JobRecord
@@ -340,6 +341,53 @@ class FakeActiveTlsBasicConnector:
         return self.snapshot
 
 
+class FakeActiveDnsInventoryResolver:
+    def __init__(self, responses: dict[tuple[str, str], ActiveDnsInventoryQueryResult | list[ActiveDnsInventoryRecord]] | None = None) -> None:
+        self.responses = responses or {}
+        self.calls: list[tuple[str, str]] = []
+
+    def query(self, name: str, record_type: str):
+        self.calls.append((name, record_type))
+        response = self.responses.get((name, record_type))
+        if response is None:
+            return ActiveDnsInventoryQueryResult(status="noerror_empty")
+        return response
+
+
+def dns_record(name: str, record_type: str, value: str, *, ttl: int = 300, priority: int | None = None) -> ActiveDnsInventoryRecord:
+    return ActiveDnsInventoryRecord(name=name, record_type=record_type, value=value, ttl=ttl, priority=priority)
+
+
+def make_active_dns_inventory_fake_resolver(
+    *,
+    include_subdomain_records: bool = True,
+    partial_timeout: bool = False,
+    empty_domain: bool = False,
+) -> FakeActiveDnsInventoryResolver:
+    if empty_domain:
+        return FakeActiveDnsInventoryResolver()
+    responses: dict[tuple[str, str], ActiveDnsInventoryQueryResult | list[ActiveDnsInventoryRecord]] = {
+        ("example.com", "A"): [dns_record("example.com", "A", "192.0.2.10")],
+        ("example.com", "AAAA"): [dns_record("example.com", "AAAA", "2001:db8::10")],
+        ("example.com", "CNAME"): ActiveDnsInventoryQueryResult(status="noerror_empty"),
+        ("example.com", "MX"): [dns_record("example.com", "MX", "mail.example.com", priority=10)],
+        ("example.com", "TXT"): [
+            dns_record("example.com", "TXT", "v=spf1 include:_spf.example.net -all"),
+            dns_record("example.com", "TXT", "token_should_never_render"),
+        ],
+        ("example.com", "NS"): [dns_record("example.com", "NS", "ns1.example.net")],
+        ("example.com", "SOA"): [dns_record("example.com", "SOA", "mname=ns1.example.net;rname=hostmaster.example.com;serial=1")],
+        ("example.com", "CAA"): [dns_record("example.com", "CAA", "issue ca.example.net")],
+        ("_dmarc.example.com", "TXT"): [dns_record("_dmarc.example.com", "TXT", "v=DMARC1; p=quarantine")],
+    }
+    if include_subdomain_records:
+        responses[("www.example.com", "A")] = [dns_record("www.example.com", "A", "192.0.2.20")]
+        responses[("api.example.com", "CNAME")] = [dns_record("api.example.com", "CNAME", "edge.example.net")]
+    if partial_timeout:
+        responses[("example.com", "MX")] = ActiveDnsInventoryQueryResult(status="timeout", error_code="dns_query_timeout")
+    return FakeActiveDnsInventoryResolver(responses)
+
+
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
     if max_upload_bytes is not None:
@@ -381,6 +429,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.active_nmap_basic_lifecycle_client = ActiveNmapBasicRouteNoLiveClient()
     app.state.active_tls_basic_connector = None
     app.state.active_tls_basic_now = None
+    app.state.active_dns_inventory_resolver = None
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -7781,6 +7830,8 @@ async def test_active_tls_basic_auth_required_anonymous_fails_before_validation(
 @pytest.mark.anyio
 async def test_active_dns_inventory_disabled_by_default_no_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
     payload = make_active_dns_inventory_payload(
         domain="secret.example.com",
         resolver_override="token_should_never_render",
@@ -7796,48 +7847,155 @@ async def test_active_dns_inventory_disabled_by_default_no_job(monkeypatch, tmp_
     assert "secret.example.com" not in response.text
     assert "token_should_never_render" not in response.text
     assert jobs_response.json() == []
+    assert fake_resolver.calls == []
 
 
 @pytest.mark.anyio
-async def test_active_dns_inventory_enabled_valid_request_returns_not_executed_without_job(monkeypatch, tmp_path):
+async def test_active_dns_inventory_enabled_valid_request_creates_redacted_inventory_job(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post("/active/network/dns-inventory", json=make_active_dns_inventory_payload())
+        job_id = response.json()["id"]
         jobs_response = await client.get("/jobs")
+        detail_response = await client.get(f"/jobs/{job_id}")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
 
-    assert response.status_code == 200
+    assert response.status_code == 202
+    assert detail_response.status_code == 200
+    assert all(export_response.status_code == 200 for export_response in export_responses.values())
     payload = response.json()
-    assert payload == {
-        "audit_type": "active_dns_inventory",
-        "capability": "active_dns_inventory",
-        "status": "not_executed",
-        "result_status": "not_executed",
-        "coverage_level": "not_executed",
-        "domain": "[REDACTED_DOMAIN]",
-        "record_types": ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"],
-        "include_security_records": True,
-        "include_subdomain_discovery": True,
-        "dns_queries_sent": 0,
-        "subdomain_queries_sent": 0,
-        "zone_transfer_attempted": False,
-        "provider_import_attempted": False,
-        "job_created": False,
-        "storage_persisted": False,
-        "execution_enabled": False,
-        "manual_validation_required": True,
-        "result_interpretation": "dns_configuration_review_indicator",
-    }
-    assert jobs_response.json() == []
+    detail_payload = detail_response.json()
+    list_payload = jobs_response.json()
+    assert payload["audit_type"] == "active_dns_inventory"
+    assert payload["file_id"] is None
+    assert payload["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert payload["status"] == "completed"
+    assert payload["target_url"] == "[REDACTED_DOMAIN]"
+    assert payload["target_domain"] is None
+    assert payload["result"]["status"] == "best_effort_inventory"
+    assert payload["result"]["coverage_level"] == "best_effort_inventory"
+    assert payload["result"]["domain"] == "[REDACTED_DOMAIN]"
+    assert payload["result"]["records"]["A"]["count"] == 1
+    assert payload["result"]["records"]["TXT"]["count"] == 2
+    assert payload["result"]["records"]["MX"]["sample"][0]["priority"] == 10
+    assert payload["result"]["security_records"]["spf"]["present"] is True
+    assert payload["result"]["security_records"]["dmarc"]["present"] is True
+    assert payload["result"]["security_records"]["caa"]["present"] is True
+    assert payload["result"]["security_records"]["dkim"]["checked"] is False
+    assert payload["result"]["zone_transfer"] == {"attempted": False, "status": "not_attempted"}
+    assert payload["result"]["provider_import"] == {"attempted": False, "status": "not_attempted"}
+    assert payload["result"]["subdomains"]["enabled"] is True
+    assert payload["result"]["subdomains"]["candidates_checked"] == 12
+    assert payload["result"]["subdomains"]["count"] == 2
+    assert payload["result"]["subdomain_queries_sent"] == 36
+    assert payload["result"]["dns_queries_sent"] == 45
+    assert len(fake_resolver.calls) == 45
+    assert ("example.com", "A") in fake_resolver.calls
+    assert ("_dmarc.example.com", "TXT") in fake_resolver.calls
+    assert ("www.example.com", "A") in fake_resolver.calls
+    assert list_payload[0]["target_url"] == "[REDACTED_DOMAIN]"
+    assert list_payload[0]["summary"]["coverage_level"] == "best_effort_inventory"
+    assert detail_payload["target_url"] == "[REDACTED_DOMAIN]"
+    assert detail_payload["result"]["domain"] == "[REDACTED_DOMAIN]"
+    assert detail_payload["result"]["records"]["A"]["sample"][0]["value"] == "[REDACTED_DNS_VALUE]"
+    combined = json.dumps({"create": payload, "detail": detail_payload, "list": list_payload}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        export.text if report_format != "pdf" else export.content.decode("latin1", errors="ignore")
+        for report_format, export in export_responses.items()
+    )
+    assert "DNS configuration review indicator" in combined
+    assert "[REDACTED_DOMAIN]" in combined
+    assert "[REDACTED_DNS_VALUE]" in combined
+    for forbidden in (
+        "example.com",
+        "192.0.2.10",
+        "2001:db8::10",
+        "mail.example.com",
+        "_spf.example.net",
+        "token_should_never_render",
+        "raw_dns_packet",
+        "provider_api_token",
+    ):
+        assert forbidden not in combined
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_subdomain_discovery_can_be_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
+    payload = make_active_dns_inventory_payload(include_subdomain_discovery=False)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+
+    assert response.status_code == 202
+    result = response.json()["result"]
+    assert result["subdomains"]["enabled"] is False
+    assert result["subdomains"]["candidates_checked"] == 0
+    assert result["subdomain_queries_sent"] == 0
+    assert result["dns_queries_sent"] == 9
+    assert all(not call[0].startswith("www.") for call in fake_resolver.calls)
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_partial_timeout_remains_controlled_and_redacted(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver(partial_timeout=True)
+    app.state.active_dns_inventory_resolver = fake_resolver
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=make_active_dns_inventory_payload(include_subdomain_discovery=False))
+        detail_response = await client.get(f"/jobs/{response.json()['id']}")
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "completed"
+    assert response.json()["error"] == "partial_inventory"
+    assert response.json()["result"]["coverage_level"] == "partial_inventory"
+    assert response.json()["result"]["errors"] == [{"code": "dns_query_timeout", "record_type": "MX", "purpose": "root_standard_record"}]
+    assert detail_response.json()["error"] == "partial_inventory"
     assert "example.com" not in response.text
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_nxdomain_or_empty_result_is_controlled(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver(empty_domain=True)
+    app.state.active_dns_inventory_resolver = fake_resolver
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=make_active_dns_inventory_payload(include_subdomain_discovery=False))
+
+    assert response.status_code == 202
+    result = response.json()["result"]
+    assert result["coverage_level"] == "best_effort_inventory"
+    assert result["records"]["A"]["count"] == 0
+    assert result["security_records"]["spf"]["present"] is False
+    assert result["security_records"]["dmarc"]["present"] is False
+    assert result["security_records"]["caa"]["present"] is False
+    assert result["errors"] == []
 
 
 @pytest.mark.anyio
 async def test_active_dns_inventory_enabled_requires_mode_and_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
     payloads = [
         make_active_dns_inventory_payload(mode="dry_run"),
         make_active_dns_inventory_payload(profile="dns_any"),
@@ -7854,12 +8012,15 @@ async def test_active_dns_inventory_enabled_requires_mode_and_profile(monkeypatc
 
     assert [response.status_code for response in responses] == [400, 400, 400, 400]
     assert jobs_response.json() == []
+    assert fake_resolver.calls == []
 
 
 @pytest.mark.anyio
 async def test_active_dns_inventory_requires_authorization_confirmations(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
     confirmation_fields = [
         "authorization_confirmed",
         "local_private_or_owned_scope_confirmed",
@@ -7879,6 +8040,7 @@ async def test_active_dns_inventory_requires_authorization_confirmations(monkeyp
 
     assert [response.status_code for response in responses] == [400] * len(payloads)
     assert jobs_response.json() == []
+    assert fake_resolver.calls == []
 
 
 @pytest.mark.anyio
@@ -7914,6 +8076,8 @@ async def test_active_dns_inventory_requires_authorization_confirmations(monkeyp
 async def test_active_dns_inventory_rejects_malformed_domain_and_flags(monkeypatch, tmp_path, override):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
     payload = make_active_dns_inventory_payload(**override)
     transport = ASGITransport(app=app)
 
@@ -7925,6 +8089,7 @@ async def test_active_dns_inventory_rejects_malformed_domain_and_flags(monkeypat
     assert "example.com" not in response.text
     assert "metadata.google.internal" not in response.text
     assert jobs_response.json() == []
+    assert fake_resolver.calls == []
 
 
 @pytest.mark.anyio
@@ -7941,6 +8106,8 @@ async def test_active_dns_inventory_rejects_malformed_domain_and_flags(monkeypat
 async def test_active_dns_inventory_rejects_missing_or_unallowed_record_types(monkeypatch, tmp_path, override):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
     payload = make_active_dns_inventory_payload(**override)
     transport = ASGITransport(app=app)
 
@@ -7950,12 +8117,15 @@ async def test_active_dns_inventory_rejects_missing_or_unallowed_record_types(mo
 
     assert response.status_code == 400
     assert jobs_response.json() == []
+    assert fake_resolver.calls == []
 
 
 @pytest.mark.anyio
 async def test_active_dns_inventory_rejects_zone_transfer_in_contract_gate(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
     payload = make_active_dns_inventory_payload(
         domain="secret.example.com",
         attempt_zone_transfer=True,
@@ -7970,6 +8140,7 @@ async def test_active_dns_inventory_rejects_zone_transfer_in_contract_gate(monke
     assert response.json()["detail"] == "active_dns_inventory zone transfer is not supported in this phase."
     assert "secret.example.com" not in response.text
     assert jobs_response.json() == []
+    assert fake_resolver.calls == []
 
 
 @pytest.mark.anyio
@@ -7998,6 +8169,8 @@ async def test_active_dns_inventory_rejects_zone_transfer_in_contract_gate(monke
 async def test_active_dns_inventory_rejects_dangerous_extra_fields_without_job(monkeypatch, tmp_path, field_name):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
     payload = make_active_dns_inventory_payload(**{field_name: "token_should_never_render"})
     transport = ASGITransport(app=app)
 
@@ -8009,12 +8182,15 @@ async def test_active_dns_inventory_rejects_dangerous_extra_fields_without_job(m
     assert response.json()["detail"] == "Unsupported active_dns_inventory request field."
     assert "token_should_never_render" not in response.text
     assert jobs_response.json() == []
+    assert fake_resolver.calls == []
 
 
 @pytest.mark.anyio
 async def test_active_dns_inventory_error_output_does_not_reflect_domain_or_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
     payload = make_active_dns_inventory_payload(
         domain="secret.example.com/path?token=token_should_never_render",
     )
@@ -8026,6 +8202,7 @@ async def test_active_dns_inventory_error_output_does_not_reflect_domain_or_payl
     assert response.status_code == 400
     assert "secret.example.com" not in response.text
     assert "token_should_never_render" not in response.text
+    assert fake_resolver.calls == []
 
 
 @pytest.mark.anyio
@@ -8033,6 +8210,8 @@ async def test_active_dns_inventory_auth_required_anonymous_fails_before_validat
     monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    app.state.active_dns_inventory_resolver = fake_resolver
     payload = make_active_dns_inventory_payload(resolver_override="token_should_never_render")
     transport = ASGITransport(app=app)
 
@@ -8044,37 +8223,162 @@ async def test_active_dns_inventory_auth_required_anonymous_fails_before_validat
     assert "Unsupported active_dns_inventory request field" not in response.text
     assert "token_should_never_render" not in response.text
     assert app.state.jobs.list() == []
+    assert fake_resolver.calls == []
 
 
-def test_active_dns_inventory_backend_source_has_no_dns_runtime_or_storage_integration():
+@pytest.mark.anyio
+async def test_active_dns_inventory_wrong_owner_cannot_read_detail_delete_or_exports(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    wrong_owner_job = app.state.jobs.create_active_dns_inventory_job(
+        {
+            "audit_type": "active_dns_inventory",
+            "capability": "active_dns_inventory",
+            "status": "best_effort_inventory",
+            "result_status": "best_effort_inventory",
+            "coverage_level": "best_effort_inventory",
+            "domain": "[REDACTED_DOMAIN]",
+            "records": {},
+            "security_records": {},
+            "subdomains": {"enabled": False, "count": 0},
+            "manual_validation_required": True,
+            "result_interpretation": "DNS configuration review indicator",
+        },
+        status="completed",
+        owner_id="other-owner",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        detail_response = await client.get(f"/jobs/{wrong_owner_job.id}")
+        delete_response = await client.delete(f"/jobs/{wrong_owner_job.id}")
+        export_responses = [
+            await client.get(f"/jobs/{wrong_owner_job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        ]
+
+    assert detail_response.status_code == 404
+    assert delete_response.status_code == 404
+    assert all(response.status_code == 404 for response in export_responses)
+    assert all(response.json()["detail"] == "Job not found." for response in [detail_response, delete_response, *export_responses])
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_legacy_raw_payload_is_redacted_in_detail_list_and_exports(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = app.state.jobs.create_active_dns_inventory_job(
+        {
+            "audit_type": "active_dns_inventory",
+            "capability": "active_dns_inventory",
+            "mode": "live_dns_inventory",
+            "profile": "dns_inventory_authorized",
+            "status": "best_effort_inventory",
+            "result_status": "best_effort_inventory",
+            "coverage_level": "best_effort_inventory",
+            "domain": "secret.example.com",
+            "raw_domain": "secret.example.com",
+            "records": {
+                "A": {
+                    "count": 1,
+                    "sample": [{"name": "secret.example.com", "type": "A", "value": "192.0.2.55", "ttl": 300}],
+                },
+                "TXT": {
+                    "count": 1,
+                    "sample": [{"name": "secret.example.com", "type": "TXT", "value": "token_should_never_render", "ttl": 300}],
+                },
+            },
+            "security_records": {
+                "spf": {"checked": True, "present": True, "record_value": "v=spf1 include:_spf.example.net -all"},
+                "dmarc": {"checked": True, "present": True, "record_value": "v=DMARC1; p=reject"},
+                "caa": {"checked": True, "present": True, "record_count": 1, "raw_value": "issue ca.example.net"},
+            },
+            "subdomains": {
+                "enabled": True,
+                "strategy": "fixed_candidate_allowlist",
+                "candidates_checked": 12,
+                "query_record_types": ["A", "AAAA", "CNAME"],
+                "count": 1,
+                "sample": [{"name": "admin.secret.example.com", "record_types": ["A"], "record_count": 1}],
+            },
+            "raw_dns_packet": "token_should_never_render",
+            "raw_resolver_log": "secret.example.com 192.0.2.55 token_should_never_render",
+            "provider_api_token": "token_should_never_render",
+            "credentials": {"password": "token_should_never_render"},
+            "execution": {"dns_queries_sent": 9, "subdomain_queries_sent": 0, "subprocess_invoked": False, "nmap_invoked": False},
+            "limits": {"raw_domain_persisted": False, "dns_packets_persisted": False, "resolver_logs_persisted": False},
+            "manual_validation_required": True,
+            "result_interpretation": "DNS configuration review indicator",
+        },
+        status="completed",
+        error="legacy error for secret.example.com token_should_never_render",
+        owner_id=DEFAULT_LOCAL_OPERATOR.id,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        detail_response = await client.get(f"/jobs/{job.id}")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    assert list_response.status_code == 200
+    assert detail_response.status_code == 200
+    assert all(response.status_code == 200 for response in export_responses.values())
+    combined = json.dumps({"list": list_response.json(), "detail": detail_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in export_responses.items()
+    )
+    assert "[REDACTED_DOMAIN]" in combined
+    assert "[REDACTED_DNS_VALUE]" in combined
+    assert "DNS configuration review indicator" in combined
+    for forbidden in (
+        "secret.example.com",
+        "admin.secret.example.com",
+        "192.0.2.55",
+        "_spf.example.net",
+        "ca.example.net",
+        "token_should_never_render",
+        "raw_dns_packet",
+        "raw_resolver_log",
+        "provider_api_token",
+        "password",
+    ):
+        assert forbidden not in combined
+
+
+def test_active_dns_inventory_backend_source_has_dns_runtime_only_in_dedicated_module():
     main_source = Path("backend/app/main.py").read_text()
     dns_module_source = Path("backend/app/active_dns_inventory.py").read_text()
     route_source = main_source[
         main_source.find('@app.post("/active/network/dns-inventory"') : main_source.find('@app.post("/audits/web/basic"')
     ]
-    combined = route_source + "\n" + dns_module_source
 
     forbidden = [
-        "socket",
-        "subprocess",
-        "os.system",
+        "import subprocess",
+        "subprocess.",
+        "os.system(",
+        "Popen(",
         "shell=True",
-        "dig",
+        "dig ",
         "nslookup",
-        "nmap",
-        "docker",
-        "httpx",
+        "host ",
+        "nmap ",
+        "docker ",
+        "httpx.",
         "requests.",
         "archive/run-all",
         "tools/runner/main.py",
-        "create_active_dns",
         "background_tasks",
     ]
     for token in forbidden:
-        assert token not in combined
-    assert "dns_queries_sent" in combined
-    assert "job_created" in combined
-    assert "storage_persisted" in combined
+        assert token not in dns_module_source
+        assert token not in route_source
+    assert "socket" in dns_module_source
+    assert "socket" not in route_source
+    assert "create_active_dns_inventory_job" in route_source
+    assert "dns_queries_sent" in dns_module_source
 
 
 def test_active_tls_basic_backend_source_has_no_tls_socket_or_runner_integration():

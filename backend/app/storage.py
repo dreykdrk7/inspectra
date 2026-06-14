@@ -427,6 +427,32 @@ class JobStore:
             self._save_unlocked(record)
         return record
 
+    def create_active_dns_inventory_job(
+        self,
+        result: dict,
+        *,
+        status: JobStatus,
+        error: str | None = None,
+        owner_id: str | None = None,
+    ) -> JobRecord:
+        now = utc_now()
+        record = JobRecord(
+            id=uuid4().hex,
+            owner_id=owner_id,
+            audit_type="active_dns_inventory",
+            file_id=None,
+            target_url="[REDACTED_DOMAIN]",
+            target_domain=None,
+            status=status,
+            created_at=now,
+            updated_at=now,
+            result=result,
+            error=error,
+        )
+        with storage_lock(self.settings):
+            self._save_unlocked(record)
+        return record
+
     def _create_job(
         self,
         file_id: str | None,
@@ -547,6 +573,8 @@ class JobStore:
             target_url = _redact_active_summary_text(target_url)
         if record.audit_type in {"active_nmap_basic", "active_tls_basic"} and target_url:
             target_url = "[REDACTED_TARGET]"
+        if record.audit_type == "active_dns_inventory" and target_url:
+            target_url = "[REDACTED_DOMAIN]"
         return JobListItem(
             id=record.id,
             owner_id=record.owner_id,
@@ -985,6 +1013,39 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["http_requests_sent"] = execution.get("http_requests_sent", 0)
             summary["target_expansion_performed"] = execution.get("target_expansion_performed", False)
             summary["dns_expansion_performed"] = execution.get("dns_expansion_performed", False)
+        if record.audit_type == "active_dns_inventory":
+            records = record.result.get("records")
+            security_records = record.result.get("security_records")
+            subdomains = record.result.get("subdomains")
+            execution = record.result.get("execution")
+            if not isinstance(records, dict):
+                records = {}
+            if not isinstance(security_records, dict):
+                security_records = {}
+            if not isinstance(subdomains, dict):
+                subdomains = {}
+            if not isinstance(execution, dict):
+                execution = {}
+            summary["capability"] = record.result.get("capability", "active_dns_inventory")
+            summary["profile"] = record.result.get("profile")
+            summary["result_status"] = record.result.get("result_status", record.result.get("status"))
+            summary["coverage_level"] = record.result.get("coverage_level")
+            summary["target_display"] = "[REDACTED_DOMAIN]"
+            summary["record_types"] = record.result.get("record_types")
+            summary["record_count"] = sum(
+                int(group.get("count", 0))
+                for group in records.values()
+                if isinstance(group, dict) and isinstance(group.get("count", 0), int)
+            )
+            summary["spf_present"] = bool((security_records.get("spf") or {}).get("present")) if isinstance(security_records.get("spf"), dict) else False
+            summary["dmarc_present"] = bool((security_records.get("dmarc") or {}).get("present")) if isinstance(security_records.get("dmarc"), dict) else False
+            summary["caa_present"] = bool((security_records.get("caa") or {}).get("present")) if isinstance(security_records.get("caa"), dict) else False
+            summary["subdomain_candidates_checked"] = subdomains.get("candidates_checked", 0)
+            summary["subdomain_observed_count"] = subdomains.get("count", 0)
+            summary["dns_queries_sent"] = execution.get("dns_queries_sent", record.result.get("dns_queries_sent", 0))
+            summary["subdomain_queries_sent"] = execution.get("subdomain_queries_sent", record.result.get("subdomain_queries_sent", 0))
+            summary["manual_validation_required"] = True
+            summary["surface_interpretation"] = "DNS configuration review indicator"
         return summary
     if record.error:
         return {"error": record.error}

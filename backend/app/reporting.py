@@ -236,6 +236,47 @@ ACTIVE_TLS_BASIC_CAVEATS = [
     "No target expansion performed",
     "No raw certificate PEM or DER stored",
 ]
+ACTIVE_DNS_INVENTORY_ALLOWED_STATUSES = {"best_effort_inventory", "partial_inventory", "not_executed"}
+ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS = ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS | {
+    "account_id",
+    "axfr",
+    "command",
+    "dns_message",
+    "dns_packet",
+    "domain",
+    "provider_account",
+    "provider_api_token",
+    "provider_credentials",
+    "provider_secret",
+    "raw_dns_message",
+    "raw_dns_packet",
+    "raw_domain",
+    "raw_payload",
+    "raw_query",
+    "raw_resolver_log",
+    "raw_response",
+    "resolver_log",
+    "resolver_logs",
+    "target_domain",
+    "zone_id",
+}
+ACTIVE_DNS_INVENTORY_TOKEN_SOURCE_KEYS = ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS | {
+    "domain",
+    "name",
+    "raw_domain",
+    "target_domain",
+    "value",
+}
+ACTIVE_DNS_INVENTORY_CAVEATS = [
+    "DNS configuration review indicator",
+    "Manual validation required",
+    "Best-effort DNS inventory only",
+    "No complete-zone claim",
+    "No zone transfer",
+    "No provider import",
+    "No brute-force discovery",
+    "No raw DNS packets, resolver logs, or domain values stored",
+]
 
 
 @dataclass(frozen=True)
@@ -421,6 +462,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_active_nmap_basic_sections(result))
     elif job.audit_type == "active_tls_basic":
         sections.extend(build_active_tls_basic_sections(result))
+    elif job.audit_type == "active_dns_inventory":
+        sections.extend(build_active_dns_inventory_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -967,6 +1010,70 @@ def build_active_tls_basic_sections(result: dict[str, Any]) -> list[ReportSectio
         ReportSection("Limits", flatten_mapping(limits)),
         ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
     ]
+
+
+def build_active_dns_inventory_sections(result: dict[str, Any]) -> list[ReportSection]:
+    public_result = public_active_dns_inventory_result(result)
+    summary = as_dict(public_result.get("summary"))
+    security_records = as_dict(public_result.get("security_records"))
+    subdomains = as_dict(public_result.get("subdomains"))
+    limits = as_dict(public_result.get("limits"))
+    raw_json = json.dumps(public_result, indent=2, sort_keys=True)
+    return [
+        ReportSection(
+            "Active DNS Inventory Scope Notice",
+            [
+                ("Result wording", "DNS configuration review indicator. Manual validation required."),
+                ("Assertion boundary", "No complete-zone, provider, or target-safety claim is asserted."),
+                ("Discovery boundary", "Standard records and fixed candidate subdomain discovery only."),
+                ("Authorization boundary", "Operator confirmation is required but is not proof of target ownership."),
+                ("Redaction boundary", "Domain, DNS values, raw resolver logs, and packets are redacted before public surfaces."),
+            ],
+        ),
+        ReportSection(
+            "Active DNS Inventory Summary",
+            [
+                ("Capability", stringify(public_result.get("capability", "active_dns_inventory"))),
+                ("Profile", stringify(public_result.get("profile", "N/A"))),
+                ("Result status", stringify(public_result.get("result_status", public_result.get("status", "N/A")))),
+                ("Coverage level", stringify(public_result.get("coverage_level", "N/A"))),
+                ("Domain", stringify(public_result.get("domain", "[REDACTED_DOMAIN]"))),
+                ("Record types", stringify(public_result.get("record_types", []))),
+                ("DNS queries sent", stringify(public_result.get("dns_queries_sent", 0))),
+                ("Manual validation", stringify(summary.get("manual_validation_required", True))),
+                ("Interpretation", stringify(summary.get("result_interpretation", public_result.get("result_interpretation", "N/A")))),
+            ],
+        ),
+        ReportSection("Standard Records", flatten_active_dns_inventory_record_groups(public_result.get("records"))),
+        ReportSection("Security Record Indicators", flatten_mapping(security_records)),
+        ReportSection(
+            "Bounded Subdomain Discovery",
+            [
+                ("Enabled", stringify(subdomains.get("enabled", False))),
+                ("Strategy", stringify(subdomains.get("strategy", "fixed_candidate_allowlist"))),
+                ("Candidates checked", stringify(subdomains.get("candidates_checked", 0))),
+                ("Query record types", stringify(subdomains.get("query_record_types", []))),
+                ("Observed candidate count", stringify(subdomains.get("count", 0))),
+                ("Sample", stringify(subdomains.get("sample", []))),
+                ("Sample truncated", stringify(subdomains.get("sample_truncated", False))),
+            ],
+        ),
+        ReportSection("Active DNS Inventory Caveats", [(f"Caveat {index}", caveat) for index, caveat in enumerate(ACTIVE_DNS_INVENTORY_CAVEATS, start=1)]),
+        ReportSection("Limits", flatten_mapping(limits)),
+        ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
+    ]
+
+
+def flatten_active_dns_inventory_record_groups(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, dict):
+        return []
+    rows: list[tuple[str, str]] = []
+    for record_type in sorted(value):
+        group = as_dict(value.get(record_type))
+        rows.append((f"{record_type} count", stringify(group.get("count", 0))))
+        rows.append((f"{record_type} sample", stringify(group.get("sample", []))))
+        rows.append((f"{record_type} truncated", stringify(group.get("truncated", False))))
+    return rows
 
 
 def flatten_active_nmap_basic_observations(value: Any) -> list[tuple[str, str]]:
@@ -1642,6 +1749,39 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["http_requests_sent"] = execution.get("http_requests_sent", 0)
         data["target_expansion_performed"] = execution.get("target_expansion_performed", False)
         data["dns_expansion_performed"] = execution.get("dns_expansion_performed", False)
+    elif job.audit_type == "active_dns_inventory":
+        result = public_active_dns_inventory_result(result)
+        dns_summary = as_dict(result.get("summary"))
+        execution = as_dict(result.get("execution"))
+        records = as_dict(result.get("records"))
+        security_records = as_dict(result.get("security_records"))
+        subdomains = as_dict(result.get("subdomains"))
+        data["capability"] = result.get("capability", "active_dns_inventory")
+        data["profile"] = result.get("profile", "N/A")
+        data["result_status"] = result.get("result_status", result.get("status", "N/A"))
+        data["coverage_level"] = result.get("coverage_level", "N/A")
+        data["target_display"] = "[REDACTED_DOMAIN]"
+        data["record_types"] = result.get("record_types", [])
+        data["record_count"] = sum(
+            int(group.get("count", 0))
+            for group in records.values()
+            if isinstance(group, dict) and isinstance(group.get("count", 0), int)
+        )
+        spf = as_dict(security_records.get("spf"))
+        dmarc = as_dict(security_records.get("dmarc"))
+        caa = as_dict(security_records.get("caa"))
+        data["spf_present"] = spf.get("present", False)
+        data["dmarc_present"] = dmarc.get("present", False)
+        data["caa_present"] = caa.get("present", False)
+        data["subdomain_candidates_checked"] = subdomains.get("candidates_checked", 0)
+        data["subdomain_observed_count"] = subdomains.get("count", 0)
+        data["manual_validation_required"] = True
+        data["surface_interpretation"] = dns_summary.get("result_interpretation", "DNS configuration review indicator")
+        data["dns_queries_sent"] = execution.get("dns_queries_sent", result.get("dns_queries_sent", 0))
+        data["subdomain_queries_sent"] = execution.get("subdomain_queries_sent", result.get("subdomain_queries_sent", 0))
+        data["http_requests_sent"] = execution.get("http_requests_sent", 0)
+        data["target_expansion_performed"] = execution.get("target_expansion_performed", False)
+        data["recursive_discovery_performed"] = execution.get("recursive_discovery_performed", False)
     return data
 
 
@@ -1701,7 +1841,170 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return public_active_nmap_basic_result(result)
     if job.audit_type == "active_tls_basic":
         return public_active_tls_basic_result(result)
+    if job.audit_type == "active_dns_inventory":
+        return public_active_dns_inventory_result(result)
     return result
+
+
+def public_active_dns_inventory_result(result: dict[str, Any]) -> dict[str, Any]:
+    redacted = as_dict(redact_active_dns_inventory_value(result))
+    result_status = str(redacted.get("result_status") or redacted.get("status") or "partial_inventory")
+    if result_status not in ACTIVE_DNS_INVENTORY_ALLOWED_STATUSES:
+        result_status = "partial_inventory"
+    coverage_level = str(redacted.get("coverage_level") or result_status)
+    if coverage_level not in {"best_effort_inventory", "partial_inventory", "not_executed"}:
+        coverage_level = result_status
+
+    records = _public_active_dns_inventory_record_groups(redacted.get("records"))
+    security_records = _public_active_dns_inventory_security_records(redacted.get("security_records"))
+    subdomains = _public_active_dns_inventory_subdomains(redacted.get("subdomains"))
+    execution = as_dict(redacted.get("execution"))
+    limits = as_dict(redacted.get("limits"))
+    errors = redacted.get("errors")
+    if not isinstance(errors, list):
+        errors = []
+
+    public_result = {
+        "audit_type": "active_dns_inventory",
+        "capability": "active_dns_inventory",
+        "mode": "live_dns_inventory",
+        "profile": "dns_inventory_authorized",
+        "status": result_status,
+        "result_status": result_status,
+        "coverage_level": coverage_level,
+        "domain": "[REDACTED_DOMAIN]",
+        "record_types": redacted.get("record_types") if isinstance(redacted.get("record_types"), list) else [],
+        "records": records,
+        "security_records": security_records,
+        "subdomains": subdomains,
+        "zone_transfer": {"attempted": False, "status": "not_attempted"},
+        "provider_import": {"attempted": False, "status": "not_attempted"},
+        "dns_queries_sent": execution.get("dns_queries_sent", redacted.get("dns_queries_sent", 0)),
+        "subdomain_queries_sent": execution.get("subdomain_queries_sent", redacted.get("subdomain_queries_sent", 0)),
+        "summary": {
+            "manual_validation_required": True,
+            "result_interpretation": "DNS configuration review indicator",
+            "coverage_level": coverage_level,
+            "spf_present": as_dict(security_records.get("spf")).get("present", False),
+            "dmarc_present": as_dict(security_records.get("dmarc")).get("present", False),
+            "caa_present": as_dict(security_records.get("caa")).get("present", False),
+            "subdomain_observed_count": subdomains.get("count", 0),
+        },
+        "execution": {
+            "dns_queries_sent": execution.get("dns_queries_sent", redacted.get("dns_queries_sent", 0)),
+            "subdomain_queries_sent": execution.get("subdomain_queries_sent", redacted.get("subdomain_queries_sent", 0)),
+            "http_requests_sent": 0,
+            "subprocess_invoked": False,
+            "nmap_invoked": False,
+            "target_expansion_performed": False,
+            "recursive_discovery_performed": False,
+            "zone_transfer_attempted": False,
+            "provider_api_used": False,
+            "credential_validation_performed": False,
+            "crawling_performed": False,
+        },
+        "manual_validation_required": True,
+        "result_interpretation": "DNS configuration review indicator",
+        "errors": [{"code": stringify(as_dict(error).get("code", "dns_query_error"))} for error in errors[:8]],
+        "warnings": [],
+        "limits": {
+            "timeout_seconds": limits.get("timeout_seconds"),
+            "allowed_record_types": limits.get("allowed_record_types"),
+            "subdomain_candidates": limits.get("subdomain_candidates"),
+            "subdomain_record_types": limits.get("subdomain_record_types"),
+            "max_records_per_type": limits.get("max_records_per_type"),
+            "max_subdomain_sample": limits.get("max_subdomain_sample"),
+            "raw_domain_persisted": False,
+            "dns_packets_persisted": False,
+            "resolver_logs_persisted": False,
+        },
+        "surface_caveats": list(ACTIVE_DNS_INVENTORY_CAVEATS),
+    }
+    return as_dict(redact_active_dns_inventory_value(public_result))
+
+
+def _public_active_dns_inventory_record_groups(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    public_records: dict[str, Any] = {}
+    for record_type, group_value in value.items():
+        normalized_type = str(record_type).upper()
+        if normalized_type not in {"A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"}:
+            continue
+        group = as_dict(group_value)
+        sample = group.get("sample")
+        if not isinstance(sample, list):
+            sample = []
+        public_records[normalized_type] = {
+            "count": group.get("count", 0) if isinstance(group.get("count", 0), int) else 0,
+            "sample": [_public_active_dns_inventory_record(record) for record in sample[:12]],
+            "truncated": bool(group.get("truncated", False)),
+        }
+    return public_records
+
+
+def _public_active_dns_inventory_record(value: Any) -> dict[str, Any]:
+    record = as_dict(value)
+    public = {
+        "name": "[REDACTED_DOMAIN]" if record.get("name") == "[REDACTED_DOMAIN]" else "[REDACTED_DNS_NAME]",
+        "type": stringify(record.get("type", "UNKNOWN")),
+        "value": "[REDACTED_DNS_VALUE]",
+        "ttl": record.get("ttl") if isinstance(record.get("ttl"), int) else None,
+    }
+    if isinstance(record.get("priority"), int):
+        public["priority"] = record.get("priority")
+    return public
+
+
+def _public_active_dns_inventory_security_records(value: Any) -> dict[str, Any]:
+    records = as_dict(value)
+    spf = as_dict(records.get("spf"))
+    dmarc = as_dict(records.get("dmarc"))
+    caa = as_dict(records.get("caa"))
+    return {
+        "spf": {
+            "checked": True,
+            "present": bool(spf.get("present", False)),
+            "record_value": "[REDACTED_DNS_VALUE]" if spf.get("present", False) else None,
+            "interpretation": "dns_mail_authentication_review_indicator",
+        },
+        "dmarc": {
+            "checked": True,
+            "present": bool(dmarc.get("present", False)),
+            "record_value": "[REDACTED_DNS_VALUE]" if dmarc.get("present", False) else None,
+            "interpretation": "dns_mail_authentication_review_indicator",
+        },
+        "caa": {
+            "checked": True,
+            "present": bool(caa.get("present", False)),
+            "record_count": caa.get("record_count", 0) if isinstance(caa.get("record_count", 0), int) else 0,
+            "interpretation": "dns_certificate_authority_review_indicator",
+        },
+        "dkim": {"checked": False, "status": "not_attempted"},
+    }
+
+
+def _public_active_dns_inventory_subdomains(value: Any) -> dict[str, Any]:
+    subdomains = as_dict(value)
+    sample = subdomains.get("sample")
+    if not isinstance(sample, list):
+        sample = []
+    return {
+        "enabled": bool(subdomains.get("enabled", False)),
+        "strategy": "fixed_candidate_allowlist",
+        "candidates_checked": subdomains.get("candidates_checked", 0) if isinstance(subdomains.get("candidates_checked", 0), int) else 0,
+        "query_record_types": subdomains.get("query_record_types") if isinstance(subdomains.get("query_record_types"), list) else [],
+        "count": subdomains.get("count", 0) if isinstance(subdomains.get("count", 0), int) else 0,
+        "sample": [
+            {
+                "name": "[REDACTED_DNS_NAME]",
+                "record_types": item.get("record_types") if isinstance(item, dict) and isinstance(item.get("record_types"), list) else [],
+                "record_count": item.get("record_count", 0) if isinstance(item, dict) and isinstance(item.get("record_count", 0), int) else 0,
+            }
+            for item in sample[:12]
+        ],
+        "sample_truncated": bool(subdomains.get("sample_truncated", False)),
+    }
 
 
 def public_active_tls_basic_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -1852,6 +2155,8 @@ def public_job_target_url(job: JobRecord) -> str:
         return "[REDACTED_TARGET]"
     if job.audit_type == "active_tls_basic":
         return "[REDACTED_TARGET]"
+    if job.audit_type == "active_dns_inventory":
+        return "[REDACTED_DOMAIN]"
     return redact_url_query(job.target_url)
 
 
@@ -1890,6 +2195,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_active_nmap_basic_text(job.error, collect_active_nmap_basic_sensitive_tokens(job.result or {}))
     if job.audit_type == "active_tls_basic":
         return redact_active_tls_basic_text(job.error, collect_active_tls_basic_sensitive_tokens(job.result or {}))
+    if job.audit_type == "active_dns_inventory":
+        return redact_active_dns_inventory_text(job.error, collect_active_dns_inventory_sensitive_tokens(job.result or {}))
     return job.error
 
 
@@ -2825,6 +3132,69 @@ def redact_active_tls_basic_text(value: str, sensitive_tokens: set[str] | None =
     redacted = re.sub(
         r"\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\b",
         "[REDACTED_TARGET]",
+        redacted,
+        flags=re.IGNORECASE,
+    )
+    redacted = re.sub(r"(?i)\b(?:confirmed vulnerability|exploitable|target is safe|all certs found|full scan|public scanner)\b", "[REDACTED_CLAIM]", redacted)
+    return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
+
+
+def redact_active_dns_inventory_value(value: Any, sensitive_tokens: set[str] | None = None) -> Any:
+    tokens = sensitive_tokens if sensitive_tokens is not None else collect_active_dns_inventory_sensitive_tokens(value)
+    if isinstance(value, str):
+        return redact_active_dns_inventory_text(value, tokens)
+    if isinstance(value, list):
+        return [redact_active_dns_inventory_value(item, tokens) for item in value]
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            normalized_key = str(key).lower().replace("-", "_")
+            if normalized_key == "domain":
+                redacted[key] = "[REDACTED_DOMAIN]"
+            elif normalized_key == "name":
+                redacted[key] = "[REDACTED_DNS_NAME]" if item != "[REDACTED_DOMAIN]" else "[REDACTED_DOMAIN]"
+            elif normalized_key == "value":
+                redacted[key] = "[REDACTED_DNS_VALUE]" if item else item
+            elif normalized_key in ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS or is_active_secret_mapping_key(str(key)):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_active_dns_inventory_value(item, tokens)
+        return redacted
+    return value
+
+
+def collect_active_dns_inventory_sensitive_tokens(value: Any) -> set[str]:
+    tokens: set[str] = set()
+
+    def collect(item: Any, *, sensitive_context: bool = False) -> None:
+        if isinstance(item, str):
+            token = item.strip()
+            if sensitive_context and 3 <= len(token) <= 512:
+                tokens.add(token)
+            return
+        if isinstance(item, list):
+            for child in item:
+                collect(child, sensitive_context=sensitive_context)
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                normalized_key = str(key).lower().replace("-", "_")
+                collect(child, sensitive_context=sensitive_context or normalized_key in ACTIVE_DNS_INVENTORY_TOKEN_SOURCE_KEYS)
+
+    collect(value)
+    return tokens
+
+
+def redact_active_dns_inventory_text(value: str, sensitive_tokens: set[str] | None = None) -> str:
+    redacted = redact_active_secret_text(value)
+    for token in sorted(sensitive_tokens or set(), key=len, reverse=True):
+        if token:
+            redacted = redacted.replace(token, "[REDACTED]")
+    redacted = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[REDACTED_DNS_VALUE]", redacted)
+    redacted = re.sub(r"\b(?:[A-F0-9]{1,4}:){2,}[A-F0-9:]{1,}\b", "[REDACTED_DNS_VALUE]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(
+        r"\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\b",
+        "[REDACTED_DOMAIN]",
         redacted,
         flags=re.IGNORECASE,
     )

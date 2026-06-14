@@ -30,9 +30,11 @@ from app.active_dns_inventory import (
     ACTIVE_DNS_INVENTORY_ALLOWED_RECORD_TYPES,
     ActiveDnsInventoryContract,
     ActiveDnsInventoryPolicyError,
-    build_active_dns_inventory_not_executed_response,
+    active_dns_inventory_job_error,
+    active_dns_inventory_job_status,
     normalize_active_dns_inventory_domain,
     normalize_active_dns_inventory_record_types,
+    run_active_dns_inventory,
 )
 from app.active_tls_basic import (
     ACTIVE_TLS_BASIC_DEFAULT_TIMEOUT_SECONDS,
@@ -154,6 +156,7 @@ async def lifespan(app: FastAPI):
     app.state.active_nmap_basic_service = ActiveNmapBasicService(settings, job_store)
     app.state.active_tools_health_checker = check_active_tools_health
     app.state.active_nmap_basic_lifecycle_client = ActiveNmapBasicRouteActiveToolsClient()
+    app.state.active_dns_inventory_resolver = None
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -1108,20 +1111,27 @@ async def launch_active_tls_basic(
     )
 
 
-@app.post("/active/network/dns-inventory")
+@app.post("/active/network/dns-inventory", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_active_dns_inventory(
     request: Request,
     payload: Any = Body(...),
-) -> dict[str, Any]:
+) -> JobRecord:
     if not request.app.state.settings.active_dns_inventory_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="active_dns_inventory is disabled in this environment.",
         )
 
-    current_owner_id_for_request(request)
+    owner_id = current_owner_id_for_request(request)
     contract = validate_active_dns_inventory_contract(payload)
-    return build_active_dns_inventory_not_executed_response(contract)
+    resolver = getattr(request.app.state, "active_dns_inventory_resolver", None)
+    result = run_active_dns_inventory(contract, resolver=resolver)
+    return request.app.state.jobs.create_active_dns_inventory_job(
+        result,
+        status=active_dns_inventory_job_status(result),
+        error=active_dns_inventory_job_error(result),
+        owner_id=owner_id,
+    )
 
 
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
@@ -1192,6 +1202,7 @@ async def get_job(request: Request, job_id: str) -> JobRecord:
         "active_http_header_probe",
         "active_nmap_basic",
         "active_tls_basic",
+        "active_dns_inventory",
     }:
         return job.model_copy(
             update={
