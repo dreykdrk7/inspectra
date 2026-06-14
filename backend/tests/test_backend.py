@@ -8304,7 +8304,7 @@ async def test_active_dns_inventory_legacy_raw_payload_is_redacted_in_detail_lis
             "provider_api_token": "token_should_never_render",
             "credentials": {"password": "token_should_never_render"},
             "execution": {"dns_queries_sent": 9, "subdomain_queries_sent": 0, "subprocess_invoked": False, "nmap_invoked": False},
-            "limits": {"raw_domain_persisted": False, "dns_packets_persisted": False, "resolver_logs_persisted": False},
+            "limits": {"domain_value_persisted": False, "dns_packets_persisted": False, "resolver_logs_persisted": False},
             "manual_validation_required": True,
             "result_interpretation": "DNS configuration review indicator",
         },
@@ -8377,6 +8377,7 @@ def test_active_dns_inventory_backend_source_has_dns_runtime_only_in_dedicated_m
         assert token not in route_source
     assert "socket" in dns_module_source
     assert "socket" not in route_source
+    assert "ACTIVE_DNS_INVENTORY_MAX_NAMESERVERS = 1" in dns_module_source
     assert "create_active_dns_inventory_job" in route_source
     assert "dns_queries_sent" in dns_module_source
 

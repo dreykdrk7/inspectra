@@ -1914,7 +1914,7 @@ def public_active_dns_inventory_result(result: dict[str, Any]) -> dict[str, Any]
             "subdomain_record_types": limits.get("subdomain_record_types"),
             "max_records_per_type": limits.get("max_records_per_type"),
             "max_subdomain_sample": limits.get("max_subdomain_sample"),
-            "raw_domain_persisted": False,
+            "domain_value_persisted": False,
             "dns_packets_persisted": False,
             "resolver_logs_persisted": False,
         },

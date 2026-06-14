@@ -31,7 +31,7 @@ ACTIVE_DNS_INVENTORY_MAX_RECORDS_PER_TYPE = 12
 ACTIVE_DNS_INVENTORY_MAX_SUBDOMAIN_SAMPLE = 12
 ACTIVE_DNS_INVENTORY_MAX_ERRORS = 16
 ACTIVE_DNS_INVENTORY_TIMEOUT_SECONDS = 2.0
-ACTIVE_DNS_INVENTORY_MAX_NAMESERVERS = 2
+ACTIVE_DNS_INVENTORY_MAX_NAMESERVERS = 1
 
 _DNS_PORT = 53
 _DNS_CLASS_IN = 1
@@ -325,7 +325,7 @@ def run_active_dns_inventory(
             "subdomain_record_types": list(ACTIVE_DNS_INVENTORY_SUBDOMAIN_RECORD_TYPES),
             "max_records_per_type": ACTIVE_DNS_INVENTORY_MAX_RECORDS_PER_TYPE,
             "max_subdomain_sample": ACTIVE_DNS_INVENTORY_MAX_SUBDOMAIN_SAMPLE,
-            "raw_domain_persisted": False,
+            "domain_value_persisted": False,
             "dns_packets_persisted": False,
             "resolver_logs_persisted": False,
         },
