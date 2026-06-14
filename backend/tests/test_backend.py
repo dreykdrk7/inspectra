@@ -58,6 +58,7 @@ from app.active_nmap_boundary import (
 )
 from app.active_nmap_handoff import build_active_nmap_basic_handoff_plan
 from app.active_nmap_lifecycle import ActiveNmapBasicRouteNoLiveClient, run_active_nmap_basic_lifecycle_skeleton
+from app.active_tls_basic import ActiveTlsBasicConnectionSnapshot
 from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
 from app.models import JobRecord
 from app.reporting import markdown_block_value, markdown_inline_value
@@ -310,6 +311,34 @@ class FakeActiveNmapBasicLifecycleRunner:
         )
 
 
+class FakeActiveTlsBasicConnector:
+    def __init__(self, snapshot: ActiveTlsBasicConnectionSnapshot | None = None, exc: Exception | None = None) -> None:
+        self.snapshot = snapshot or ActiveTlsBasicConnectionSnapshot(
+            protocol="TLSv1.3",
+            cipher=("TLS_AES_256_GCM_SHA384", "TLSv1.3", 256),
+            certificate={
+                "subject": ((("commonName", "192.168.56.10"),),),
+                "issuer": ((("commonName", "Inspectra Test CA"),),),
+                "notBefore": "Jan  1 00:00:00 2026 GMT",
+                "notAfter": "Jan 31 00:00:00 2026 GMT",
+                "subjectAltName": (
+                    ("DNS", "192.168.56.10"),
+                    ("DNS", "nas-01.local"),
+                    ("DNS", "secret-lab.internal"),
+                    ("DNS", "extra.internal"),
+                ),
+            },
+        )
+        self.exc = exc
+        self.calls = []
+
+    def __call__(self, request):
+        self.calls.append(request)
+        if self.exc is not None:
+            raise self.exc
+        return self.snapshot
+
+
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
     if max_upload_bytes is not None:
@@ -349,6 +378,8 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.active_nmap_basic_service = ActiveNmapBasicService(settings, job_store)
     app.state.active_tools_health_checker = backend_main.check_active_tools_health
     app.state.active_nmap_basic_lifecycle_client = ActiveNmapBasicRouteNoLiveClient()
+    app.state.active_tls_basic_connector = None
+    app.state.active_tls_basic_now = None
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -6135,7 +6166,7 @@ def test_active_nmap_basic_lifecycle_skeleton_source_has_only_bounded_route_inte
     assert "run_active_nmap_basic_lifecycle_skeleton" in main_source
     assert "active_nmap_basic_lifecycle" in main_source
     route_start = main_source.index('@app.post("/active/network/nmap-basic"')
-    route_end = main_source.index('@app.post("/audits/web/basic"', route_start)
+    route_end = main_source.index('@app.post("/active/network/tls-basic"', route_start)
     route_source = main_source[route_start:route_end]
     assert "run_active_nmap_basic_lifecycle_skeleton" in route_source
     assert "ActiveNmapBasicRouteActiveToolsClient" in route_source
@@ -7281,6 +7312,8 @@ async def test_active_nmap_basic_auth_required_anonymous_fails_before_validation
 @pytest.mark.anyio
 async def test_active_tls_basic_disabled_by_default_no_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
+    fake_connector = FakeActiveTlsBasicConnector()
+    app.state.active_tls_basic_connector = fake_connector
     payload = make_active_tls_basic_payload(target="secret-lab.internal", raw_flags="token_should_never_render")
     transport = ASGITransport(app=app)
 
@@ -7293,42 +7326,268 @@ async def test_active_tls_basic_disabled_by_default_no_job(monkeypatch, tmp_path
     assert "secret-lab.internal" not in response.text
     assert "token_should_never_render" not in response.text
     assert jobs_response.json() == []
+    assert fake_connector.calls == []
 
 
 @pytest.mark.anyio
-async def test_active_tls_basic_enabled_valid_request_returns_not_executed(monkeypatch, tmp_path):
+async def test_active_tls_basic_enabled_valid_request_creates_redacted_handshake_job(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_connector = FakeActiveTlsBasicConnector()
+    app.state.active_tls_basic_connector = fake_connector
+    app.state.active_tls_basic_now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post("/active/network/tls-basic", json=make_active_tls_basic_payload())
+        job_id = response.json()["id"]
         jobs_response = await client.get("/jobs")
+        detail_response = await client.get(f"/jobs/{job_id}")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
 
     assert response.status_code == 202
+    assert detail_response.status_code == 200
+    assert all(export_response.status_code == 200 for export_response in export_responses.values())
     payload = response.json()
+    detail_payload = detail_response.json()
+    list_payload = jobs_response.json()
+    assert len(fake_connector.calls) == 1
+    assert fake_connector.calls[0].target == "192.168.56.10"
+    assert fake_connector.calls[0].port == 443
     assert payload["audit_type"] == "active_tls_basic"
-    assert payload["capability"] == "active_tls_basic"
-    assert payload["status"] == "not_executed"
-    assert payload["result_status"] == "not_executed"
-    assert payload["execution_enabled"] is False
-    assert payload["tls_handshake_attempted"] is False
-    assert payload["network_requests_sent"] == 0
-    assert payload["dns_queries_sent"] == 0
-    assert payload["job_created"] is False
-    assert payload["storage_persisted"] is False
-    assert payload["target"] == "[REDACTED_TARGET]"
-    assert payload["port"] == 443
-    assert payload["manual_validation_required"] is True
-    assert payload["result_interpretation"] == "tls_configuration_review_indicator"
-    assert "192.168.56.10" not in response.text
-    assert jobs_response.json() == []
+    assert payload["file_id"] is None
+    assert payload["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert payload["status"] == "completed"
+    assert payload["target_url"] == "[REDACTED_TARGET]"
+    assert payload["result"]["audit_type"] == "active_tls_basic"
+    assert payload["result"]["capability"] == "active_tls_basic"
+    assert payload["result"]["status"] == "handshake_succeeded"
+    assert payload["result"]["result_status"] == "handshake_succeeded"
+    assert payload["result"]["target"] == "[REDACTED_TARGET]"
+    assert payload["result"]["port"] == 443
+    assert payload["result"]["handshake"]["status"] == "succeeded"
+    assert payload["result"]["handshake"]["protocol"] == "TLSv1.3"
+    assert payload["result"]["handshake"]["cipher"] == "TLS_AES_256_GCM_SHA384"
+    assert payload["result"]["certificate"]["subject"] == "commonName=[REDACTED_TARGET]"
+    assert payload["result"]["certificate"]["issuer"] == "commonName=Inspectra Test CA"
+    assert payload["result"]["certificate"]["san_count"] == 4
+    assert payload["result"]["certificate"]["san_sample"] == [
+        {"type": "DNS", "value": "[REDACTED_SAN]"},
+        {"type": "DNS", "value": "[REDACTED_SAN]"},
+        {"type": "DNS", "value": "[REDACTED_SAN]"},
+    ]
+    assert payload["result"]["certificate"]["not_before"] == "2026-01-01T00:00:00Z"
+    assert payload["result"]["certificate"]["not_after"] == "2026-01-31T00:00:00Z"
+    assert payload["result"]["certificate"]["days_until_expiry"] == 30
+    assert payload["result"]["manual_validation_required"] is True
+    assert payload["result"]["result_interpretation"] == "tls_configuration_review_indicator"
+    assert payload["result"]["execution"]["tls_handshake_attempted"] is True
+    assert payload["result"]["execution"]["network_requests_sent"] == 1
+    assert payload["result"]["execution"]["http_requests_sent"] == 0
+    assert payload["result"]["execution"]["target_expansion_performed"] is False
+    assert detail_payload["target_url"] == "[REDACTED_TARGET]"
+    assert detail_payload["result"]["certificate"]["san_sample"][0]["value"] == "[REDACTED_SAN]"
+    assert list_payload[0]["audit_type"] == "active_tls_basic"
+    assert list_payload[0]["file_id"] is None
+    assert list_payload[0]["target_url"] == "[REDACTED_TARGET]"
+    assert list_payload[0]["summary"]["result_status"] == "handshake_succeeded"
+    assert list_payload[0]["summary"]["days_until_expiry"] == 30
+
+    combined = json.dumps({"create": payload, "detail": detail_payload, "list": list_payload}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        export.text if report_format != "pdf" else export.content.decode("latin1", errors="ignore")
+        for report_format, export in export_responses.items()
+    )
+    assert "TLS configuration review indicator" in combined
+    assert "Manual validation required" in combined
+    assert "No raw certificate PEM or DER stored" in combined
+    for forbidden in (
+        "192.168.56.10",
+        "nas-01.local",
+        "secret-lab.internal",
+        "extra.internal",
+        "BEGIN CERTIFICATE",
+        "certificate_pem",
+        "certificate_der",
+        "token_should_never_render",
+        "confirmed vulnerability",
+        "exploitable",
+        "target is safe",
+    ):
+        assert forbidden not in combined
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("exc", "expected_status", "expected_reason"),
+    [
+        (TimeoutError("timeout against 192.168.56.10 token_should_never_render"), "timed_out", "timeout"),
+        (RuntimeError("tls failure for 192.168.56.10 token_should_never_render"), "tls_error_controlled", "unexpected_tls_error"),
+    ],
+)
+async def test_active_tls_basic_controlled_errors_are_persisted_redacted(monkeypatch, tmp_path, exc, expected_status, expected_reason):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_connector = FakeActiveTlsBasicConnector(exc=exc)
+    app.state.active_tls_basic_connector = fake_connector
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/tls-basic", json=make_active_tls_basic_payload())
+        job_id = response.json()["id"]
+        detail_response = await client.get(f"/jobs/{job_id}")
+        export_response = await client.get(f"/jobs/{job_id}/export/markdown")
+
+    assert response.status_code == 202
+    assert len(fake_connector.calls) == 1
+    payload = response.json()
+    detail_payload = detail_response.json()
+    assert payload["status"] == "failed"
+    assert payload["error"] == expected_reason
+    assert payload["target_url"] == "[REDACTED_TARGET]"
+    assert payload["result"]["result_status"] == expected_status
+    assert payload["result"]["reason_codes"] == [expected_reason]
+    assert payload["result"]["errors"] == [{"code": expected_reason}]
+    assert detail_payload["error"] == expected_reason
+    assert detail_payload["result"]["certificate"]["available"] is False
+    combined = json.dumps({"create": payload, "detail": detail_payload}, sort_keys=True) + "\n" + export_response.text
+    assert expected_reason in combined
+    for forbidden in ("192.168.56.10", "token_should_never_render", "RuntimeError", "TimeoutError"):
+        assert forbidden not in combined
+
+
+@pytest.mark.anyio
+async def test_active_tls_basic_wrong_owner_cannot_read_detail_delete_or_exports(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    wrong_owner_job = app.state.jobs.create_active_tls_basic_job(
+        {
+            "audit_type": "active_tls_basic",
+            "capability": "active_tls_basic",
+            "mode": "live_tls_basic",
+            "profile": "tls_handshake_summary",
+            "status": "handshake_succeeded",
+            "result_status": "handshake_succeeded",
+            "target": "[REDACTED_TARGET]",
+            "port": 443,
+            "handshake": {"status": "succeeded", "protocol": "TLSv1.3", "cipher": "TLS_AES_256_GCM_SHA384"},
+            "certificate": {"available": True, "subject": "commonName=[REDACTED_TARGET]", "issuer": "commonName=Test CA", "san_count": 0, "san_sample": [], "not_before": None, "not_after": None, "days_until_expiry": None},
+            "summary": {"manual_validation_required": True, "result_interpretation": "tls_configuration_review_indicator"},
+            "execution": {"tls_handshake_attempted": True, "network_requests_sent": 1, "http_requests_sent": 0, "target_expansion_performed": False, "dns_expansion_performed": False},
+            "manual_validation_required": True,
+            "result_interpretation": "tls_configuration_review_indicator",
+            "limits": {"raw_certificate_persisted": False, "raw_target_persisted": False},
+        },
+        status="completed",
+        owner_id="other-owner",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        detail_response = await client.get(f"/jobs/{wrong_owner_job.id}")
+        delete_response = await client.delete(f"/jobs/{wrong_owner_job.id}")
+        export_responses = [
+            await client.get(f"/jobs/{wrong_owner_job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        ]
+
+    assert detail_response.status_code == 404
+    assert detail_response.json()["detail"] == "Job not found."
+    assert delete_response.status_code == 404
+    assert delete_response.json()["detail"] == "Job not found."
+    assert all(response.status_code == 404 for response in export_responses)
+
+
+@pytest.mark.anyio
+async def test_active_tls_basic_legacy_raw_payload_is_redacted_in_detail_list_and_exports(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = app.state.jobs.create_active_tls_basic_job(
+        {
+            "audit_type": "active_tls_basic",
+            "capability": "active_tls_basic",
+            "mode": "live_tls_basic",
+            "profile": "tls_handshake_summary",
+            "status": "handshake_succeeded",
+            "result_status": "handshake_succeeded",
+            "target": "192.168.56.10",
+            "raw_target": "secret-lab.internal",
+            "port": 443,
+            "handshake": {"status": "succeeded", "protocol": "TLSv1.3", "cipher": "TLS_AES_256_GCM_SHA384"},
+            "certificate": {
+                "available": True,
+                "subject": "CN=secret-lab.internal",
+                "issuer": "CN=Inspectra Test CA",
+                "san_count": 2,
+                "san_sample": [{"type": "DNS", "value": "secret-lab.internal"}],
+                "not_before": "2026-01-01T00:00:00Z",
+                "not_after": "2026-01-31T00:00:00Z",
+                "days_until_expiry": 30,
+                "certificate_pem": "-----BEGIN CERTIFICATE-----token_should_never_render-----END CERTIFICATE-----",
+                "certificate_der": "raw_der_should_not_render",
+            },
+            "raw_exception": "failure for 192.168.56.10 token_should_never_render",
+            "headers": {"Authorization": "Bearer token_should_never_render"},
+            "cookies": {"session": "token_should_never_render"},
+            "credentials": {"password": "token_should_never_render"},
+            "tokens": ["token_should_never_render"],
+            "summary": {"manual_validation_required": True, "result_interpretation": "tls_configuration_review_indicator"},
+            "execution": {"tls_handshake_attempted": True, "network_requests_sent": 1, "http_requests_sent": 0, "target_expansion_performed": False, "dns_expansion_performed": False},
+            "manual_validation_required": True,
+            "result_interpretation": "tls_configuration_review_indicator",
+            "limits": {"raw_certificate_persisted": False, "raw_target_persisted": False},
+        },
+        status="completed",
+        error="legacy error for 192.168.56.10 token_should_never_render",
+        owner_id=DEFAULT_LOCAL_OPERATOR.id,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/jobs")
+        detail_response = await client.get(f"/jobs/{job.id}")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    assert list_response.status_code == 200
+    assert detail_response.status_code == 200
+    assert all(response.status_code == 200 for response in export_responses.values())
+    combined = json.dumps({"list": list_response.json(), "detail": detail_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in export_responses.items()
+    )
+    assert "[REDACTED_TARGET]" in combined
+    assert "TLS configuration review indicator" in combined
+    for forbidden in (
+        "192.168.56.10",
+        "secret-lab.internal",
+        "BEGIN CERTIFICATE",
+        "raw_der_should_not_render",
+        "token_should_never_render",
+        "certificate_pem",
+        "certificate_der",
+        "raw_exception",
+        "Bearer",
+        "session",
+        "password",
+        "confirmed vulnerability",
+        "exploitable",
+        "target is safe",
+    ):
+        assert forbidden not in combined
 
 
 @pytest.mark.anyio
 async def test_active_tls_basic_enabled_requires_mode_and_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_connector = FakeActiveTlsBasicConnector()
+    app.state.active_tls_basic_connector = fake_connector
     payloads = [
         make_active_tls_basic_payload(mode="dry_run"),
         make_active_tls_basic_payload(profile="tls_full_scan"),
@@ -7345,12 +7604,15 @@ async def test_active_tls_basic_enabled_requires_mode_and_profile(monkeypatch, t
 
     assert [response.status_code for response in responses] == [400, 400, 400, 400]
     assert jobs_response.json() == []
+    assert fake_connector.calls == []
 
 
 @pytest.mark.anyio
 async def test_active_tls_basic_requires_authorization_confirmations(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_connector = FakeActiveTlsBasicConnector()
+    app.state.active_tls_basic_connector = fake_connector
     confirmation_fields = [
         "authorization_confirmed",
         "local_private_scope_confirmed",
@@ -7370,6 +7632,7 @@ async def test_active_tls_basic_requires_authorization_confirmations(monkeypatch
 
     assert [response.status_code for response in responses] == [400] * len(payloads)
     assert jobs_response.json() == []
+    assert fake_connector.calls == []
 
 
 @pytest.mark.anyio
@@ -7396,6 +7659,8 @@ async def test_active_tls_basic_requires_authorization_confirmations(monkeypatch
 async def test_active_tls_basic_rejects_dangerous_extra_fields_without_job(monkeypatch, tmp_path, field_name):
     monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_connector = FakeActiveTlsBasicConnector()
+    app.state.active_tls_basic_connector = fake_connector
     payload = make_active_tls_basic_payload(**{field_name: "token_should_never_render"})
     transport = ASGITransport(app=app)
 
@@ -7407,6 +7672,7 @@ async def test_active_tls_basic_rejects_dangerous_extra_fields_without_job(monke
     assert response.json()["detail"] == "Unsupported active_tls_basic request field."
     assert "token_should_never_render" not in response.text
     assert jobs_response.json() == []
+    assert fake_connector.calls == []
 
 
 @pytest.mark.anyio
@@ -7443,6 +7709,8 @@ async def test_active_tls_basic_rejects_dangerous_extra_fields_without_job(monke
 async def test_active_tls_basic_rejects_malformed_target_and_port(monkeypatch, tmp_path, override):
     monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_connector = FakeActiveTlsBasicConnector()
+    app.state.active_tls_basic_connector = fake_connector
     payload = make_active_tls_basic_payload(**override)
     transport = ASGITransport(app=app)
 
@@ -7453,6 +7721,7 @@ async def test_active_tls_basic_rejects_malformed_target_and_port(monkeypatch, t
     assert response.status_code == 400
     assert "192.168.56.10" not in response.text
     assert jobs_response.json() == []
+    assert fake_connector.calls == []
 
 
 @pytest.mark.anyio
@@ -7494,6 +7763,7 @@ async def test_active_tls_basic_auth_required_anonymous_fails_before_validation(
 def test_active_tls_basic_backend_source_has_no_tls_socket_or_runner_integration():
     main_source = Path("backend/app/main.py").read_text()
     config_source = Path("backend/app/config.py").read_text()
+    tls_module_source = Path("backend/app/active_tls_basic.py").read_text()
     route_source = main_source[
         main_source.find('@app.post("/active/network/tls-basic"') : main_source.find('@app.post("/audits/web/basic"')
     ]
@@ -7501,10 +7771,6 @@ def test_active_tls_basic_backend_source_has_no_tls_socket_or_runner_integration
     combined = route_source + tls_config_lines
 
     forbidden = [
-        "socket.",
-        "import socket",
-        " ssl",
-        "import ssl",
         "openssl",
         "OpenSSL",
         "subprocess",
@@ -7516,6 +7782,13 @@ def test_active_tls_basic_backend_source_has_no_tls_socket_or_runner_integration
     ]
     for token in forbidden:
         assert token not in combined
+        assert token not in tls_module_source
+    assert "import socket" in tls_module_source
+    assert "import ssl" in tls_module_source
+    assert "subprocess" not in tls_module_source
+    assert "requests." not in tls_module_source
+    assert "httpx" not in tls_module_source
+    assert "nmap" not in tls_module_source.lower()
 
 
 @pytest.mark.anyio

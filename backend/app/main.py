@@ -26,6 +26,13 @@ from app.active_nmap_policy import (
     validate_active_nmap_basic_targets,
 )
 from app.active_nmap_handoff import build_active_nmap_basic_handoff_plan
+from app.active_tls_basic import (
+    ACTIVE_TLS_BASIC_DEFAULT_TIMEOUT_SECONDS,
+    ActiveTlsBasicRequest,
+    active_tls_basic_job_error,
+    active_tls_basic_job_status,
+    run_active_tls_basic,
+)
 from app.auth import (
     ADMIN_CSRF_HEADER_NAME,
     ADMIN_SESSION_COOKIE_NAME,
@@ -436,7 +443,7 @@ ACTIVE_TLS_BASIC_CONTRACT_LIMITS = {
     "max_targets": 1,
     "max_ports": 1,
     "allowed_ports": sorted(ACTIVE_TLS_BASIC_ALLOWED_PORTS),
-    "handshake_timeout_seconds": 3,
+    "handshake_timeout_seconds": int(ACTIVE_TLS_BASIC_DEFAULT_TIMEOUT_SECONDS),
 }
 
 
@@ -509,26 +516,6 @@ def validate_active_tls_basic_contract(payload: Any) -> dict[str, Any]:
         "target_count": target_policy.target_count,
         "target": target_policy.normalized_targets[0],
         "port": port,
-    }
-
-
-def build_active_tls_basic_not_executed_response(contract: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "audit_type": "active_tls_basic",
-        "capability": "active_tls_basic",
-        "status": "not_executed",
-        "result_status": "not_executed",
-        "execution_enabled": False,
-        "tls_handshake_attempted": False,
-        "network_requests_sent": 0,
-        "dns_queries_sent": 0,
-        "job_created": False,
-        "storage_persisted": False,
-        "target": "[REDACTED_TARGET]",
-        "port": contract["port"],
-        "manual_validation_required": True,
-        "result_interpretation": "tls_configuration_review_indicator",
-        "limits": dict(ACTIVE_TLS_BASIC_CONTRACT_LIMITS),
     }
 
 
@@ -975,20 +962,36 @@ async def launch_active_nmap_basic(
     )
 
 
-@app.post("/active/network/tls-basic", status_code=status.HTTP_202_ACCEPTED)
+@app.post("/active/network/tls-basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_active_tls_basic(
     request: Request,
     payload: Any = Body(...),
-) -> dict[str, Any]:
+) -> JobRecord:
     if not request.app.state.settings.active_tls_basic_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="active_tls_basic is disabled in this environment.",
         )
 
-    current_owner_id_for_request(request)
+    owner_id = current_owner_id_for_request(request)
     contract = validate_active_tls_basic_contract(payload)
-    return build_active_tls_basic_not_executed_response(contract)
+    connector = getattr(request.app.state, "active_tls_basic_connector", None)
+    now = getattr(request.app.state, "active_tls_basic_now", None)
+    result = run_active_tls_basic(
+        ActiveTlsBasicRequest(
+            target=contract["target"],
+            port=contract["port"],
+            timeout_seconds=ACTIVE_TLS_BASIC_DEFAULT_TIMEOUT_SECONDS,
+        ),
+        connector=connector,
+        now=now,
+    )
+    return request.app.state.jobs.create_active_tls_basic_job(
+        result,
+        status=active_tls_basic_job_status(result),
+        error=active_tls_basic_job_error(result),
+        owner_id=owner_id,
+    )
 
 
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
@@ -1058,6 +1061,7 @@ async def get_job(request: Request, job_id: str) -> JobRecord:
         "active_network_dry_run",
         "active_http_header_probe",
         "active_nmap_basic",
+        "active_tls_basic",
     }:
         return job.model_copy(
             update={

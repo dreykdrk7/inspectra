@@ -401,6 +401,32 @@ class JobStore:
             self._save_unlocked(record)
         return record
 
+    def create_active_tls_basic_job(
+        self,
+        result: dict,
+        *,
+        status: JobStatus,
+        error: str | None = None,
+        owner_id: str | None = None,
+    ) -> JobRecord:
+        now = utc_now()
+        record = JobRecord(
+            id=uuid4().hex,
+            owner_id=owner_id,
+            audit_type="active_tls_basic",
+            file_id=None,
+            target_url="[REDACTED_TARGET]",
+            target_domain=None,
+            status=status,
+            created_at=now,
+            updated_at=now,
+            result=result,
+            error=error,
+        )
+        with storage_lock(self.settings):
+            self._save_unlocked(record)
+        return record
+
     def _create_job(
         self,
         file_id: str | None,
@@ -519,7 +545,7 @@ class JobStore:
         target_url = record.target_url
         if record.audit_type in {"active_network_dry_run", "active_http_header_probe"} and target_url:
             target_url = _redact_active_summary_text(target_url)
-        if record.audit_type == "active_nmap_basic" and target_url:
+        if record.audit_type in {"active_nmap_basic", "active_tls_basic"} and target_url:
             target_url = "[REDACTED_TARGET]"
         return JobListItem(
             id=record.id,
@@ -928,6 +954,37 @@ def _job_summary(record: JobRecord) -> dict | None:
                 summary["dns_queries_sent"] = execution.get("dns_queries_sent", 0)
                 summary["evidence_collected"] = execution.get("evidence_available", False)
                 summary["observations_available"] = bool(observations)
+        if record.audit_type == "active_tls_basic":
+            tls_summary = record.result.get("summary")
+            execution = record.result.get("execution")
+            certificate = record.result.get("certificate")
+            handshake = record.result.get("handshake")
+            if not isinstance(tls_summary, dict):
+                tls_summary = {}
+            if not isinstance(execution, dict):
+                execution = {}
+            if not isinstance(certificate, dict):
+                certificate = {}
+            if not isinstance(handshake, dict):
+                handshake = {}
+            summary["capability"] = record.result.get("capability", "active_tls_basic")
+            summary["profile"] = record.result.get("profile")
+            summary["result_status"] = record.result.get("result_status", record.result.get("status"))
+            summary["target_display"] = "[REDACTED_TARGET]"
+            summary["port"] = record.result.get("port")
+            summary["handshake_status"] = handshake.get("status")
+            summary["protocol"] = handshake.get("protocol")
+            summary["cipher"] = handshake.get("cipher")
+            summary["certificate_available"] = certificate.get("available", tls_summary.get("certificate_available", False))
+            summary["san_count"] = certificate.get("san_count", tls_summary.get("san_count", 0))
+            summary["days_until_expiry"] = certificate.get("days_until_expiry")
+            summary["manual_validation_required"] = True
+            summary["surface_interpretation"] = "TLS configuration review indicator"
+            summary["tls_handshake_attempted"] = execution.get("tls_handshake_attempted", True)
+            summary["network_requests_sent"] = execution.get("network_requests_sent", 1)
+            summary["http_requests_sent"] = execution.get("http_requests_sent", 0)
+            summary["target_expansion_performed"] = execution.get("target_expansion_performed", False)
+            summary["dns_expansion_performed"] = execution.get("dns_expansion_performed", False)
         return summary
     if record.error:
         return {"error": record.error}

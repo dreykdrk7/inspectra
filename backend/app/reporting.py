@@ -199,6 +199,43 @@ ACTIVE_NMAP_BASIC_TEXT_REDACT_PATTERNS = (
     re.compile(r"(?i)\b(?:service(?:_banner)?|banner|product|version)\s*[:=]\s*[^\n\r,;}\]]+"),
     re.compile(r"(?i)\b(?:confirmed vulnerability|exploitable|target is safe|all ports found|full network scan|scan the internet)\b"),
 )
+ACTIVE_TLS_BASIC_ALLOWED_STATUSES = {
+    "handshake_succeeded",
+    "handshake_failed",
+    "timed_out",
+    "certificate_unavailable",
+    "tls_error_controlled",
+}
+ACTIVE_TLS_BASIC_SENSITIVE_VALUE_KEYS = ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS | {
+    "certificate_der",
+    "certificate_pem",
+    "chain",
+    "client_certificate",
+    "client_certificates",
+    "client_key",
+    "der",
+    "exception",
+    "full_chain",
+    "key",
+    "pem",
+    "private_key",
+    "raw_certificate",
+    "raw_der",
+    "raw_exception",
+    "raw_pem",
+    "sni",
+    "sni_override",
+    "sni_overrides",
+}
+ACTIVE_TLS_BASIC_TOKEN_SOURCE_KEYS = ACTIVE_TLS_BASIC_SENSITIVE_VALUE_KEYS | {"raw_target", "target", "target_url"}
+ACTIVE_TLS_BASIC_CAVEATS = [
+    "TLS configuration review indicator",
+    "Manual validation required",
+    "No HTTP request sent",
+    "No crawling performed",
+    "No target expansion performed",
+    "No raw certificate PEM or DER stored",
+]
 
 
 @dataclass(frozen=True)
@@ -382,6 +419,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_active_http_header_probe_sections(result))
     elif job.audit_type == "active_nmap_basic":
         sections.extend(build_active_nmap_basic_sections(result))
+    elif job.audit_type == "active_tls_basic":
+        sections.extend(build_active_tls_basic_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -868,6 +907,63 @@ def build_active_nmap_basic_sections(result: dict[str, Any]) -> list[ReportSecti
         ),
         *caveat_sections,
         ReportSection(observation_title, observation_rows),
+        ReportSection("Limits", flatten_mapping(limits)),
+        ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
+    ]
+
+
+def build_active_tls_basic_sections(result: dict[str, Any]) -> list[ReportSection]:
+    public_result = public_active_tls_basic_result(result)
+    summary = as_dict(public_result.get("summary"))
+    handshake = as_dict(public_result.get("handshake"))
+    certificate = as_dict(public_result.get("certificate"))
+    limits = as_dict(public_result.get("limits"))
+    raw_json = json.dumps(public_result, indent=2, sort_keys=True)
+    return [
+        ReportSection(
+            "Active TLS Basic Scope Notice",
+            [
+                ("Result wording", "TLS configuration review indicator. Manual validation required."),
+                ("Assertion boundary", "No vulnerability confirmation is asserted."),
+                ("Traffic boundary", "One bounded TLS handshake attempt; no HTTP request or crawling."),
+                ("Authorization boundary", "Operator confirmation is required but is not proof of target ownership."),
+                ("Redaction boundary", "Target and certificate raw material are redacted before public surfaces."),
+            ],
+        ),
+        ReportSection(
+            "Active TLS Basic Summary",
+            [
+                ("Capability", stringify(public_result.get("capability", "active_tls_basic"))),
+                ("Profile", stringify(public_result.get("profile", "N/A"))),
+                ("Result status", stringify(public_result.get("result_status", public_result.get("status", "N/A")))),
+                ("Target", stringify(public_result.get("target", "[REDACTED_TARGET]"))),
+                ("Port", stringify(public_result.get("port", "N/A"))),
+                ("Manual validation", stringify(summary.get("manual_validation_required", True))),
+                ("Interpretation", stringify(summary.get("result_interpretation", public_result.get("result_interpretation", "N/A")))),
+            ],
+        ),
+        ReportSection(
+            "TLS Handshake Review Indicator",
+            [
+                ("Handshake status", stringify(handshake.get("status", "N/A"))),
+                ("Protocol", stringify(handshake.get("protocol", "N/A"))),
+                ("Cipher", stringify(handshake.get("cipher", "N/A"))),
+            ],
+        ),
+        ReportSection(
+            "Certificate Summary",
+            [
+                ("Certificate available", stringify(certificate.get("available", False))),
+                ("Subject", stringify(certificate.get("subject", "N/A"))),
+                ("Issuer", stringify(certificate.get("issuer", "N/A"))),
+                ("SAN count", stringify(certificate.get("san_count", 0))),
+                ("SAN sample", stringify(certificate.get("san_sample", []))),
+                ("Not before", stringify(certificate.get("not_before", "N/A"))),
+                ("Not after", stringify(certificate.get("not_after", "N/A"))),
+                ("Days until expiry", stringify(certificate.get("days_until_expiry", "N/A"))),
+            ],
+        ),
+        ReportSection("Active TLS Basic Caveats", [(f"Caveat {index}", caveat) for index, caveat in enumerate(ACTIVE_TLS_BASIC_CAVEATS, start=1)]),
         ReportSection("Limits", flatten_mapping(limits)),
         ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
     ]
@@ -1522,6 +1618,30 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
             data["evidence_collected"] = execution.get("evidence_available", False)
             data["observations_available"] = bool(observations)
             data["evidence_wording"] = "Observed TCP exposure; Review indicator; Manual validation required."
+    elif job.audit_type == "active_tls_basic":
+        result = public_active_tls_basic_result(result)
+        tls_summary = as_dict(result.get("summary"))
+        execution = as_dict(result.get("execution"))
+        certificate = as_dict(result.get("certificate"))
+        handshake = as_dict(result.get("handshake"))
+        data["capability"] = result.get("capability", "active_tls_basic")
+        data["profile"] = result.get("profile", "N/A")
+        data["result_status"] = result.get("result_status", result.get("status", "N/A"))
+        data["target_display"] = "[REDACTED_TARGET]"
+        data["port"] = result.get("port", "N/A")
+        data["handshake_status"] = handshake.get("status", "N/A")
+        data["protocol"] = handshake.get("protocol", "N/A")
+        data["cipher"] = handshake.get("cipher", "N/A")
+        data["certificate_available"] = certificate.get("available", False)
+        data["san_count"] = certificate.get("san_count", 0)
+        data["days_until_expiry"] = certificate.get("days_until_expiry", "N/A")
+        data["manual_validation_required"] = True
+        data["surface_interpretation"] = tls_summary.get("result_interpretation", "TLS configuration review indicator")
+        data["tls_handshake_attempted"] = execution.get("tls_handshake_attempted", True)
+        data["network_requests_sent"] = execution.get("network_requests_sent", 1)
+        data["http_requests_sent"] = execution.get("http_requests_sent", 0)
+        data["target_expansion_performed"] = execution.get("target_expansion_performed", False)
+        data["dns_expansion_performed"] = execution.get("dns_expansion_performed", False)
     return data
 
 
@@ -1579,7 +1699,88 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_active_config_value(result))
     if job.audit_type == "active_nmap_basic":
         return public_active_nmap_basic_result(result)
+    if job.audit_type == "active_tls_basic":
+        return public_active_tls_basic_result(result)
     return result
+
+
+def public_active_tls_basic_result(result: dict[str, Any]) -> dict[str, Any]:
+    redacted = as_dict(redact_active_tls_basic_value(result))
+    result_status = str(redacted.get("result_status") or redacted.get("status") or "tls_error_controlled")
+    if result_status not in ACTIVE_TLS_BASIC_ALLOWED_STATUSES:
+        result_status = "tls_error_controlled"
+
+    handshake = as_dict(redacted.get("handshake"))
+    certificate = as_dict(redacted.get("certificate"))
+    summary = as_dict(redacted.get("summary"))
+    execution = as_dict(redacted.get("execution"))
+    limits = as_dict(redacted.get("limits"))
+    reason_codes = redacted.get("reason_codes")
+    if not isinstance(reason_codes, list):
+        reason_codes = []
+    san_sample = certificate.get("san_sample")
+    if not isinstance(san_sample, list):
+        san_sample = []
+    errors = redacted.get("errors")
+    if not isinstance(errors, list):
+        errors = []
+
+    public_result = {
+        "audit_type": "active_tls_basic",
+        "capability": "active_tls_basic",
+        "mode": "live_tls_basic",
+        "profile": "tls_handshake_summary",
+        "status": result_status,
+        "result_status": result_status,
+        "target": "[REDACTED_TARGET]",
+        "port": redacted.get("port"),
+        "handshake": {
+            "status": stringify(handshake.get("status", result_status)),
+            "protocol": handshake.get("protocol"),
+            "cipher": handshake.get("cipher"),
+        },
+        "certificate": {
+            "available": bool(certificate.get("available", False)),
+            "subject": certificate.get("subject"),
+            "issuer": certificate.get("issuer"),
+            "san_count": certificate.get("san_count", 0),
+            "san_sample": san_sample[:3],
+            "not_before": certificate.get("not_before"),
+            "not_after": certificate.get("not_after"),
+            "days_until_expiry": certificate.get("days_until_expiry"),
+        },
+        "summary": {
+            "manual_validation_required": True,
+            "result_interpretation": "tls_configuration_review_indicator",
+            "certificate_available": bool(certificate.get("available", summary.get("certificate_available", False))),
+            "san_count": certificate.get("san_count", summary.get("san_count", 0)),
+            "reason_codes": [stringify(code) for code in reason_codes[:8]],
+        },
+        "execution": {
+            "tls_handshake_attempted": bool(execution.get("tls_handshake_attempted", True)),
+            "network_requests_sent": execution.get("network_requests_sent", 1),
+            "http_requests_sent": 0,
+            "target_expansion_performed": False,
+            "dns_expansion_performed": False,
+            "crawling_performed": False,
+            "credential_validation_performed": False,
+        },
+        "manual_validation_required": True,
+        "result_interpretation": "tls_configuration_review_indicator",
+        "reason_codes": [stringify(code) for code in reason_codes[:8]],
+        "errors": [{"code": stringify(as_dict(error).get("code", "tls_error_controlled"))} for error in errors[:8]],
+        "warnings": [],
+        "limits": {
+            "connect_timeout_seconds": limits.get("connect_timeout_seconds"),
+            "handshake_timeout_seconds": limits.get("handshake_timeout_seconds"),
+            "max_san_sample": limits.get("max_san_sample", 3),
+            "max_text_length": limits.get("max_text_length", 160),
+            "raw_certificate_persisted": False,
+            "raw_target_persisted": False,
+        },
+        "surface_caveats": list(ACTIVE_TLS_BASIC_CAVEATS),
+    }
+    return as_dict(redact_active_tls_basic_value(public_result))
 
 
 def public_active_nmap_basic_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -1649,6 +1850,8 @@ def public_job_target_url(job: JobRecord) -> str:
         return redact_active_secret_text(job.target_url)
     if job.audit_type == "active_nmap_basic":
         return "[REDACTED_TARGET]"
+    if job.audit_type == "active_tls_basic":
+        return "[REDACTED_TARGET]"
     return redact_url_query(job.target_url)
 
 
@@ -1685,6 +1888,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_active_secret_text(job.error)
     if job.audit_type == "active_nmap_basic":
         return redact_active_nmap_basic_text(job.error, collect_active_nmap_basic_sensitive_tokens(job.result or {}))
+    if job.audit_type == "active_tls_basic":
+        return redact_active_tls_basic_text(job.error, collect_active_tls_basic_sensitive_tokens(job.result or {}))
     return job.error
 
 
@@ -2565,6 +2770,65 @@ def redact_active_nmap_basic_text(value: str, sensitive_tokens: set[str] | None 
     )
     for pattern, replacement in zip(ACTIVE_NMAP_BASIC_TEXT_REDACT_PATTERNS, replacements, strict=True):
         redacted = pattern.sub(replacement, redacted)
+    return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
+
+
+def redact_active_tls_basic_value(value: Any, sensitive_tokens: set[str] | None = None) -> Any:
+    tokens = sensitive_tokens if sensitive_tokens is not None else collect_active_tls_basic_sensitive_tokens(value)
+    if isinstance(value, str):
+        return redact_active_tls_basic_text(value, tokens)
+    if isinstance(value, list):
+        return [redact_active_tls_basic_value(item, tokens) for item in value]
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            normalized_key = str(key).lower().replace("-", "_")
+            if normalized_key == "target":
+                redacted[key] = "[REDACTED_TARGET]"
+            elif normalized_key in ACTIVE_TLS_BASIC_SENSITIVE_VALUE_KEYS or is_active_secret_mapping_key(str(key)):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_active_tls_basic_value(item, tokens)
+        return redacted
+    return value
+
+
+def collect_active_tls_basic_sensitive_tokens(value: Any) -> set[str]:
+    tokens: set[str] = set()
+
+    def collect(item: Any, *, sensitive_context: bool = False) -> None:
+        if isinstance(item, str):
+            token = item.strip()
+            if sensitive_context and 3 <= len(token) <= 256:
+                tokens.add(token)
+            return
+        if isinstance(item, list):
+            for child in item:
+                collect(child, sensitive_context=sensitive_context)
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                normalized_key = str(key).lower().replace("-", "_")
+                collect(child, sensitive_context=sensitive_context or normalized_key in ACTIVE_TLS_BASIC_TOKEN_SOURCE_KEYS)
+
+    collect(value)
+    return tokens
+
+
+def redact_active_tls_basic_text(value: str, sensitive_tokens: set[str] | None = None) -> str:
+    redacted = redact_active_secret_text(value)
+    for token in sorted(sensitive_tokens or set(), key=len, reverse=True):
+        if token:
+            redacted = redacted.replace(token, "[REDACTED]")
+    redacted = re.sub(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", "[REDACTED_CERTIFICATE]", redacted, flags=re.DOTALL)
+    redacted = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[REDACTED_TARGET]", redacted)
+    redacted = re.sub(
+        r"\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\b",
+        "[REDACTED_TARGET]",
+        redacted,
+        flags=re.IGNORECASE,
+    )
+    redacted = re.sub(r"(?i)\b(?:confirmed vulnerability|exploitable|target is safe|all certs found|full scan|public scanner)\b", "[REDACTED_CLAIM]", redacted)
     return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
 
 

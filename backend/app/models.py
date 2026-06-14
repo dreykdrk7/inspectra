@@ -29,6 +29,7 @@ AuditType = Literal[
     "active_network_dry_run",
     "active_http_header_probe",
     "active_nmap_basic",
+    "active_tls_basic",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 AuthMode = Literal[
