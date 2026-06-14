@@ -10,6 +10,16 @@ requests, Certificate Transparency lookups, passive DNS API calls, AXFR
 execution, archive/run-all integration, `tools/runner/main.py` integration,
 release state, tag state, or push state.
 
+Implementation status update: `active_dns_inventory` v0 was later implemented
+and closed as a bounded functional minimum in
+`docs/future/active-dns-inventory-v0-functional-closeout.md` with decision
+`ACTIVE_DNS_INVENTORY_06_FUNCTIONAL_REVIEW_AND_CLOSEOUT_ACCEPTED`. The closed
+v0 state keeps the original one-domain, allowlisted-record, redaction-first,
+best-effort/partial-inventory boundaries. AXFR, provider import,
+Certificate Transparency, passive DNS, broad discovery, custom resolver
+override, public scanner behavior, and complete-zone claims remain out of
+scope unless separately designed and accepted.
+
 ## Objective
 
 `active_dns_inventory` is intended to perform an authorized DNS inventory for

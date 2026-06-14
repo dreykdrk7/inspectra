@@ -179,6 +179,7 @@ The Active scope, runbook/threat model, dry-run contracts, skeleton, and backend
 - `docs/future/active-dns-inventory-standard-records-bounded-discovery.md`
 - `docs/future/active-dns-inventory-backend-runtime-review.md`
 - `docs/future/active-dns-inventory-frontend-e2e-product-smoke.md`
+- `docs/future/active-dns-inventory-v0-functional-closeout.md`
 
 The dry-run contract requires Active planning results to report `network_requests_sent: 0` and include no DNS results, response headers, HTTP status codes, live data, or Nmap output. The implemented backend endpoint is `POST /active/network/dry-run`, gated by `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false` by default. It creates `active_network_dry_run` target-based jobs with no `file_id`, uses existing job statuses, represents blocked dry-runs inside `result.policy`, and applies defensive redaction to storage, public API responses, errors, summaries, and Markdown/HTML/XML/PDF exports. The frontend now provides a separate `Active / Network dry-run` panel, required authorization checkbox, dry-run-only request body, catalog/filter entry, redacted job-table target display, and redacted report view; it does not add archive actions or live probing controls. The closeout decision is `ACTIVE_DRY_RUN_V0_CLOSED_NO_NETWORK`; the hardening review decision is `ACTIVE_DRY_RUN_HARDENING_ACCEPTED_FOR_LIVE_PROBE_DESIGN`, which clears docs-first design only and does not approve live runtime. Active code must not be added to the passive runner monolith in `tools/runner/main.py`; the separate runner architecture decision is documented in `docs/future/post-passive-alpha-runner-architecture-decision.md`.
 
@@ -345,6 +346,8 @@ The Active DNS Inventory standard-records decision is `ACTIVE_DNS_INVENTORY_03_S
 The Active DNS Inventory backend runtime review decision is `ACTIVE_DNS_INVENTORY_04_BACKEND_RUNTIME_REVIEW_PASSED`. It confirms the DNS runtime boundary after reviewing `d1ad2d9`, hardens query accounting to one configured nameserver per logical query, keeps public limit metadata redaction-first, and confirms no AXFR/provider/CT/passive DNS, DNS CLI, subprocess, Nmap, Docker, HTTP, broad discovery, frontend runtime, archive/run-all, or `tools/runner/main.py` integration. `best_effort_inventory` and `partial_inventory` remain distinct from complete-zone states reserved for future authorized AXFR or provider-import phases.
 
 The Active DNS Inventory frontend product-smoke decision is `ACTIVE_DNS_INVENTORY_05_FRONTEND_AND_E2E_PRODUCT_SMOKE_PASSED`. The frontend now exposes a separate `Active / DNS inventory` panel wired to `POST /active/network/dns-inventory`, sends only the exact bounded contract, forces `attempt_zone_transfer: false`, opens the returned `JobRecord`, refreshes jobs, and renders grouped redacted DNS records, SPF/DMARC/CAA indicators, bounded subdomain summary, not-attempted AXFR/provider states, manual validation copy, and redacted Raw JSON. It adds no frontend DNS resolver, no new backend runtime, no AXFR/provider/CT/passive DNS, no subprocess/DNS CLI, no Nmap, Docker, HTTP, archive/run-all, or `tools/runner/main.py`.
+
+The Active DNS Inventory v0 closeout decision is `ACTIVE_DNS_INVENTORY_06_FUNCTIONAL_REVIEW_AND_CLOSEOUT_ACCEPTED`. It closes `active_dns_inventory` as a bounded functional minimum: backend-owned feature gate, auth/owner scope, request validation, one-domain policy, isolated DNS runtime, owner-scoped `file_id: null` jobs, storage/report/export redaction, frontend review-indicator rendering, and explicit `best_effort_inventory` / `partial_inventory` coverage. The architecture still excludes complete-zone claims, AXFR runtime, provider import, CT/passive DNS, broad wordlists, recursive discovery, wildcard expansion, DKIM guessing, custom resolver override, DNS CLI/subprocess, Nmap, Docker, HTTP/crawling, archive/run-all, and `tools/runner/main.py`.
 
 ## Components
 
@@ -518,6 +521,7 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `POST /audits/web/basic`: start a controlled baseline web configuration audit for one authorized URL.
 - `POST /audits/domain/basic`: start a controlled passive DNS baseline audit for one authorized domain.
 - `POST /audits/subdomains/basic`: start a controlled passive inventory for explicit authorized subdomain candidates.
+- `POST /active/network/dns-inventory`: start an opt-in Active DNS inventory job for one authorized root domain when `INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED=true`.
 - `GET /jobs`: list jobs, newest first, with summaries when available.
 - `GET /jobs/{job_id}`: read one full job record.
 - `DELETE /jobs/{job_id}`: delete an owned completed or failed job/result record.
