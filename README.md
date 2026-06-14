@@ -118,6 +118,7 @@ Reference docs:
 52. Active Nmap Basic Microphase 57 adds operational usage guidance for local/private/self-hosted deployments: required flags, internal `active-tools` URL requirements, static Compose config review, targetless health checks, bounded target policy, loopback/local example shape, troubleshooting, and redaction/report wording. It adds no runtime features, Nmap execution, Docker runtime smoke, archive/run-all, release, tag, or push state.
 53. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
 54. Active TLS Basic Microphase 01 freezes a docs-only design for a future `active_tls_basic` capability: one explicit authorized local/private/self-hosted target, one bounded port, explicit confirmations, short timeout, redaction-first owner-scoped jobs, bounded TLS handshake/certificate review indicators, and no runtime implementation, sockets, OpenSSL command, Python `ssl` connection, Nmap, Docker, crawling, credentials, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
+55. Active TLS Basic Microphase 02 adds the backend contract gate `POST /active/network/tls-basic`, disabled by default through `INSPECTRA_ACTIVE_TLS_BASIC_ENABLED=false`. Enabled valid requests validate the exact `live_tls_basic` / `tls_handshake_summary` contract and return a controlled `not_executed` response with no TLS handshake, sockets, DNS, HTTP, jobs, storage, frontend, reports/exports, archive/run-all, or `tools/runner/main.py`.
 
 ## What This MVP Does
 
@@ -341,6 +342,8 @@ Active Nmap Basic v0 operational usage polish is documented in `docs/future/acti
 
 Active TLS Basic design is documented in `docs/future/active-tls-basic-design.md` with decision `ACTIVE_TLS_BASIC_01_DESIGN_FROZEN`. It defines a future opt-in `active_tls_basic` contract for one explicit authorized local/private/self-hosted target, one bounded port, explicit confirmations, short timeout, owner-scoped redacted storage, bounded handshake/certificate summary fields, manual validation, and TLS review-indicator wording. This phase is docs-only and does not add socket/network execution, OpenSSL commands, Python `ssl` connections, Nmap, Docker, crawling, credential validation, frontend runtime, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
 
+Active TLS Basic backend contract gate is documented in `docs/future/active-tls-basic-backend-contract-gate.md` with decision `ACTIVE_TLS_BASIC_02_BACKEND_CONTRACT_GATE_ACCEPTED`. It adds `INSPECTRA_ACTIVE_TLS_BASIC_ENABLED=false` and `POST /active/network/tls-basic`, validates only the exact future contract and required confirmations, rejects dangerous extra fields, and returns `not_executed` without creating jobs or attempting TLS/network execution.
+
 ## Requirements
 
 - Docker
@@ -444,6 +447,7 @@ The application defaults are intentionally conservative. Docker Compose sets man
 | `INSPECTRA_ACTIVE_DRY_RUN_ENABLED` | backend | `false` | Enables `POST /active/network/dry-run`, which creates no-network `active_network_dry_run` planning jobs. Disabled deployments reject the endpoint without creating jobs. |
 | `INSPECTRA_ACTIVE_HTTP_HEADER_PROBE_ENABLED` | backend | `false` | Enables `POST /active/network/http-header-probe`, which creates `active_http_header_probe` jobs after explicit live authorization. Disabled deployments reject the endpoint without creating jobs. |
 | `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED` | backend | `false` | Enables the bounded `POST /active/network/nmap-basic` backend contract gate. Real minimal execution still requires configured internal `active-tools`, explicit confirmations, target policy acceptance, and active-tools execution enablement. |
+| `INSPECTRA_ACTIVE_TLS_BASIC_ENABLED` | backend | `false` | Enables the initial `POST /active/network/tls-basic` backend contract gate. Enabled valid requests currently return controlled `not_executed` metadata only; no TLS connection, socket, DNS, HTTP, job, storage, frontend, report/export, archive/run-all, or runner behavior is added. |
 | `INSPECTRA_ACTIVE_TOOLS_URL` | backend | empty | Optional internal `active-tools` base URL for backend health checks and the Active / Nmap basic internal client. Empty means unconfigured and maps to controlled unavailable/no-live behavior. Non-empty values must be internal/local service URLs without credentials, path, query, or fragment. |
 | `INSPECTRA_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS` | backend | `2` | Timeout for the backend `active-tools` `/health` helper. |
 | `INSPECTRA_ACTIVE_TOOLS_NMAP_BASIC_EXECUTION_ENABLED` | active-tools | `false` | Enables bounded Nmap execution inside the internal `active-tools` service only. Disabled mode returns controlled no-live behavior; the backend never executes Nmap directly. |

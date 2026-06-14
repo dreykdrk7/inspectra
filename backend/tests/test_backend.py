@@ -33,6 +33,7 @@ from app.auth_state_sqlite import (
 )
 from app.config import (
     DEFAULT_ACTIVE_NMAP_BASIC_ENABLED,
+    DEFAULT_ACTIVE_TLS_BASIC_ENABLED,
     DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS,
     DEFAULT_ACTIVE_TOOLS_URL,
     DEFAULT_AUTH_STATE_STORE,
@@ -4518,6 +4519,20 @@ def make_active_nmap_basic_payload(**overrides) -> dict:
     return payload
 
 
+def make_active_tls_basic_payload(**overrides) -> dict:
+    payload = {
+        "mode": "live_tls_basic",
+        "profile": "tls_handshake_summary",
+        "target": "192.168.56.10",
+        "port": 443,
+        "authorization_confirmed": True,
+        "local_private_scope_confirmed": True,
+        "live_traffic_confirmed": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
 ACTIVE_NMAP_BASIC_NO_LIVE_FORBIDDEN_STRINGS = (
     "192.168.56.10",
     "nas-01.local",
@@ -7264,6 +7279,246 @@ async def test_active_nmap_basic_auth_required_anonymous_fails_before_validation
 
 
 @pytest.mark.anyio
+async def test_active_tls_basic_disabled_by_default_no_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_tls_basic_payload(target="secret-lab.internal", raw_flags="token_should_never_render")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/tls-basic", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "active_tls_basic is disabled in this environment."
+    assert "secret-lab.internal" not in response.text
+    assert "token_should_never_render" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_tls_basic_enabled_valid_request_returns_not_executed(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/tls-basic", json=make_active_tls_basic_payload())
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["audit_type"] == "active_tls_basic"
+    assert payload["capability"] == "active_tls_basic"
+    assert payload["status"] == "not_executed"
+    assert payload["result_status"] == "not_executed"
+    assert payload["execution_enabled"] is False
+    assert payload["tls_handshake_attempted"] is False
+    assert payload["network_requests_sent"] == 0
+    assert payload["dns_queries_sent"] == 0
+    assert payload["job_created"] is False
+    assert payload["storage_persisted"] is False
+    assert payload["target"] == "[REDACTED_TARGET]"
+    assert payload["port"] == 443
+    assert payload["manual_validation_required"] is True
+    assert payload["result_interpretation"] == "tls_configuration_review_indicator"
+    assert "192.168.56.10" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_tls_basic_enabled_requires_mode_and_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payloads = [
+        make_active_tls_basic_payload(mode="dry_run"),
+        make_active_tls_basic_payload(profile="tls_full_scan"),
+        make_active_tls_basic_payload(),
+        make_active_tls_basic_payload(),
+    ]
+    payloads[2].pop("mode")
+    payloads[3].pop("profile")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [await client.post("/active/network/tls-basic", json=payload) for payload in payloads]
+        jobs_response = await client.get("/jobs")
+
+    assert [response.status_code for response in responses] == [400, 400, 400, 400]
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_tls_basic_requires_authorization_confirmations(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    confirmation_fields = [
+        "authorization_confirmed",
+        "local_private_scope_confirmed",
+        "live_traffic_confirmed",
+    ]
+    payloads = []
+    for field_name in confirmation_fields:
+        payloads.append(make_active_tls_basic_payload(**{field_name: False}))
+        missing_payload = make_active_tls_basic_payload()
+        missing_payload.pop(field_name)
+        payloads.append(missing_payload)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [await client.post("/active/network/tls-basic", json=payload) for payload in payloads]
+        jobs_response = await client.get("/jobs")
+
+    assert [response.status_code for response in responses] == [400] * len(payloads)
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "raw_flags",
+        "headers",
+        "cookies",
+        "tokens",
+        "credentials",
+        "client_certificates",
+        "client_certificate",
+        "client_key",
+        "sni_overrides",
+        "sni_override_list",
+        "cipher_brute_force",
+        "protocol_fuzzing",
+        "http_request",
+        "crawl",
+        "urls",
+    ],
+)
+async def test_active_tls_basic_rejects_dangerous_extra_fields_without_job(monkeypatch, tmp_path, field_name):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_tls_basic_payload(**{field_name: "token_should_never_render"})
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/tls-basic", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unsupported active_tls_basic request field."
+    assert "token_should_never_render" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"target": None},
+        {"target": ""},
+        {"target": ["192.168.56.10"]},
+        {"target": 42},
+        {"target": "a" * 254},
+        {"target": "192.168.56.0/24"},
+        {"target": "192.168.1.1-254"},
+        {"target": "*.example.test"},
+        {"target": "http://192.168.56.10"},
+        {"target": "lab.internal/path"},
+        {"target": "lab.internal?debug=true"},
+        {"target": "lab.internal#fragment"},
+        {"target": "user:pass@lab.internal"},
+        {"target": "169.254.169.254"},
+        {"target": "metadata.google.internal"},
+        {"target": "example.com"},
+        {"target": "lab.internal."},
+        {"target": "192.168.56.10,192.168.56.11"},
+        {"target": "192.168.56.10 192.168.56.11"},
+        {"port": None},
+        {"port": "443"},
+        {"port": True},
+        {"port": 0},
+        {"port": 65536},
+        {"port": 80},
+    ],
+)
+async def test_active_tls_basic_rejects_malformed_target_and_port(monkeypatch, tmp_path, override):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_tls_basic_payload(**override)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/tls-basic", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 400
+    assert "192.168.56.10" not in response.text
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_active_tls_basic_error_output_does_not_reflect_target_or_payload(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_tls_basic_payload(
+        target="secret-lab.internal/path?token=token_should_never_render",
+        port=443,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/tls-basic", json=payload)
+
+    assert response.status_code == 400
+    assert "secret-lab.internal" not in response.text
+    assert "token_should_never_render" not in response.text
+
+
+@pytest.mark.anyio
+async def test_active_tls_basic_auth_required_anonymous_fails_before_validation(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    payload = make_active_tls_basic_payload(raw_flags="token_should_never_render")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/tls-basic", json=payload)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": AUTH_REQUIRED_DETAIL}
+    assert "Unsupported active_tls_basic request field" not in response.text
+    assert "token_should_never_render" not in response.text
+    assert app.state.jobs.list() == []
+
+
+def test_active_tls_basic_backend_source_has_no_tls_socket_or_runner_integration():
+    main_source = Path("backend/app/main.py").read_text()
+    config_source = Path("backend/app/config.py").read_text()
+    route_source = main_source[
+        main_source.find('@app.post("/active/network/tls-basic"') : main_source.find('@app.post("/audits/web/basic"')
+    ]
+    tls_config_lines = "\n".join(line for line in config_source.splitlines() if "ACTIVE_TLS_BASIC" in line or "active_tls_basic" in line)
+    combined = route_source + tls_config_lines
+
+    forbidden = [
+        "socket.",
+        "import socket",
+        " ssl",
+        "import ssl",
+        "openssl",
+        "OpenSSL",
+        "subprocess",
+        "os.system",
+        "shell=True",
+        "docker",
+        "archive/run-all",
+        "tools/runner/main.py",
+    ]
+    for token in forbidden:
+        assert token not in combined
+
+
+@pytest.mark.anyio
 async def test_active_network_dry_run_disabled_by_default_no_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
@@ -8888,6 +9143,21 @@ def test_active_nmap_basic_feature_flag_is_disabled_by_default_and_configurable(
     enabled_settings = load_settings()
 
     assert enabled_settings.active_nmap_basic_enabled is True
+
+
+def test_active_tls_basic_feature_flag_is_disabled_by_default_and_configurable(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+
+    settings = load_settings()
+
+    assert DEFAULT_ACTIVE_TLS_BASIC_ENABLED is False
+    assert settings.active_tls_basic_enabled is False
+
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TLS_BASIC_ENABLED", "true")
+
+    enabled_settings = load_settings()
+
+    assert enabled_settings.active_tls_basic_enabled is True
 
 
 def test_default_local_operator_has_stable_id(monkeypatch, tmp_path):

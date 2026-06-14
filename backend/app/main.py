@@ -413,6 +413,125 @@ def validate_active_nmap_basic_target_policy(targets: object) -> ActiveNmapTarge
         ) from exc
 
 
+ACTIVE_TLS_BASIC_MODE = "live_tls_basic"
+ACTIVE_TLS_BASIC_PROFILE = "tls_handshake_summary"
+ACTIVE_TLS_BASIC_ALLOWED_PORTS = frozenset({443, 8443, 9443})
+ACTIVE_TLS_BASIC_ALLOWED_FIELDS = frozenset(
+    {
+        "mode",
+        "profile",
+        "target",
+        "port",
+        "authorization_confirmed",
+        "local_private_scope_confirmed",
+        "live_traffic_confirmed",
+    }
+)
+ACTIVE_TLS_BASIC_CONFIRMATION_FIELDS = (
+    "authorization_confirmed",
+    "local_private_scope_confirmed",
+    "live_traffic_confirmed",
+)
+ACTIVE_TLS_BASIC_CONTRACT_LIMITS = {
+    "max_targets": 1,
+    "max_ports": 1,
+    "allowed_ports": sorted(ACTIVE_TLS_BASIC_ALLOWED_PORTS),
+    "handshake_timeout_seconds": 3,
+}
+
+
+def validate_active_tls_basic_contract(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_tls_basic request body must be a JSON object.",
+        )
+
+    fields = set(payload)
+    if fields - ACTIVE_TLS_BASIC_ALLOWED_FIELDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported active_tls_basic request field.",
+        )
+    if ACTIVE_TLS_BASIC_ALLOWED_FIELDS - fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_tls_basic request is missing required fields.",
+        )
+
+    if payload.get("mode") != ACTIVE_TLS_BASIC_MODE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_tls_basic mode must be live_tls_basic.",
+        )
+    if payload.get("profile") != ACTIVE_TLS_BASIC_PROFILE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_tls_basic profile must be tls_handshake_summary.",
+        )
+
+    for field_name in ACTIVE_TLS_BASIC_CONFIRMATION_FIELDS:
+        if payload.get(field_name) is not True:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field_name} must be true.")
+
+    target = payload.get("target")
+    if not isinstance(target, str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_tls_basic target must be a single explicit string.",
+        )
+    try:
+        target_policy = validate_active_nmap_basic_targets([target])
+    except ActiveNmapTargetPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"active_tls_basic target policy rejected the request: {exc.reason_code}.",
+        ) from exc
+
+    port = payload.get("port")
+    if isinstance(port, bool) or not isinstance(port, int):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_tls_basic port must be an integer TCP port.",
+        )
+    if port < 1 or port > 65535:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_tls_basic port must be between 1 and 65535.",
+        )
+    if port not in ACTIVE_TLS_BASIC_ALLOWED_PORTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_tls_basic port is outside the allowed TLS basic port set.",
+        )
+
+    return {
+        "target_count": target_policy.target_count,
+        "target": target_policy.normalized_targets[0],
+        "port": port,
+    }
+
+
+def build_active_tls_basic_not_executed_response(contract: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "audit_type": "active_tls_basic",
+        "capability": "active_tls_basic",
+        "status": "not_executed",
+        "result_status": "not_executed",
+        "execution_enabled": False,
+        "tls_handshake_attempted": False,
+        "network_requests_sent": 0,
+        "dns_queries_sent": 0,
+        "job_created": False,
+        "storage_persisted": False,
+        "target": "[REDACTED_TARGET]",
+        "port": contract["port"],
+        "manual_validation_required": True,
+        "result_interpretation": "tls_configuration_review_indicator",
+        "limits": dict(ACTIVE_TLS_BASIC_CONTRACT_LIMITS),
+    }
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "inspectra-backend"}
@@ -854,6 +973,22 @@ async def launch_active_nmap_basic(
         error=active_nmap_basic_no_live_job_error(job_result),
         owner_id=owner_id,
     )
+
+
+@app.post("/active/network/tls-basic", status_code=status.HTTP_202_ACCEPTED)
+async def launch_active_tls_basic(
+    request: Request,
+    payload: Any = Body(...),
+) -> dict[str, Any]:
+    if not request.app.state.settings.active_tls_basic_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="active_tls_basic is disabled in this environment.",
+        )
+
+    current_owner_id_for_request(request)
+    contract = validate_active_tls_basic_contract(payload)
+    return build_active_tls_basic_not_executed_response(contract)
 
 
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)

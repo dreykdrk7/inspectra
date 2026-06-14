@@ -295,6 +295,8 @@ The Active Nmap Basic real minimal integration phase is recorded in `docs/future
 
 The Active TLS Basic docs-only design is recorded in `docs/future/active-tls-basic-design.md`.
 
+The Active TLS Basic backend contract gate is recorded in `docs/future/active-tls-basic-backend-contract-gate.md`.
+
 Current decision: `ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME`.
 
 Runbook decision: `ACTIVE_RUNBOOK_THREAT_MODEL_FROZEN_NO_RUNTIME`.
@@ -449,6 +451,8 @@ Active Nmap Basic v0 operational usage polish decision: `ACTIVE_NMAP_BASIC_57_OP
 
 Active TLS Basic design decision: `ACTIVE_TLS_BASIC_01_DESIGN_FROZEN`.
 
+Active TLS Basic backend contract gate decision: `ACTIVE_TLS_BASIC_02_BACKEND_CONTRACT_GATE_ACCEPTED`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
@@ -539,6 +543,7 @@ This means:
 - Active Nmap Basic v0 operational usage polish is documented in `docs/future/active-nmap-basic-v0-operational-usage.md`. It adds operator guidance for required flags, internal/local active-tools URLs, static Compose config review, targetless `/health/active-tools` readiness checks, enable/disable paths, loopback/local example shape, troubleshooting, and redaction/report wording while preserving the same bounded self-hosted/local/private scope. It adds no runtime features, Nmap execution, Docker runtime smoke, targets, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
 - No broad/public scanner or release-ready Nmap workflow exists. The only approved Nmap path is the bounded, opt-in, local/private/self-hosted Active Nmap Basic path through internal `active-tools`.
 - Active TLS Basic is a docs-only future design for one explicit authorized local/private/self-hosted target and one bounded port. It defines `audit_type: active_tls_basic`, explicit confirmations, short timeout, owner-scoped redacted jobs, bounded TLS handshake/certificate summary fields, manual validation, and review-indicator wording. It adds no runtime implementation, socket execution, OpenSSL command, Python `ssl` connection, Nmap, Docker, probes, DNS checks, HTTP requests, crawling, credential validation, brute force, frontend runtime, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
+- Active TLS Basic backend contract gate exists as `POST /active/network/tls-basic`, disabled by default through `INSPECTRA_ACTIVE_TLS_BASIC_ENABLED=false`. It validates only the exact `live_tls_basic` / `tls_handshake_summary` contract, one explicit local/private/self-hosted target, one bounded TLS-basic port, and required confirmations. Enabled valid requests return controlled `not_executed` metadata with `tls_handshake_attempted: false`, `network_requests_sent: 0`, `job_created: false`, and `storage_persisted: false`. It adds no TLS connection, sockets, Python `ssl`, OpenSSL command, Nmap, Docker, DNS checks, HTTP requests, crawling, credential validation, persistent jobs, storage, frontend runtime, reports/exports, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
 
 The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.
 

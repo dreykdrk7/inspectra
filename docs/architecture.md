@@ -323,6 +323,8 @@ The Active Nmap Basic v0 operational usage polish decision is `ACTIVE_NMAP_BASIC
 
 The Active TLS Basic design decision is `ACTIVE_TLS_BASIC_01_DESIGN_FROZEN`. It documents a future opt-in `active_tls_basic` capability for one explicit authorized local/private/self-hosted target and one bounded port, with backend-owned auth, owner scope, request validation, target policy, lifecycle, storage, reporting, and redaction. The design allows only bounded TLS handshake status and certificate-summary review indicators, with no raw certificate PEM by default and no raw target in public surfaces. It adds no runtime, socket execution, OpenSSL command, Python `ssl` connection, Nmap, Docker, frontend runtime, archive/run-all, or `tools/runner/main.py` integration.
 
+The Active TLS Basic backend contract gate decision is `ACTIVE_TLS_BASIC_02_BACKEND_CONTRACT_GATE_ACCEPTED`. The backend now reads `INSPECTRA_ACTIVE_TLS_BASIC_ENABLED=false` by default and exposes `POST /active/network/tls-basic` behind that gate. Disabled mode rejects without jobs or execution. Enabled valid requests validate the exact `live_tls_basic` / `tls_handshake_summary` contract, required confirmations, one explicit target, and one bounded TLS-basic port before returning controlled `not_executed` metadata. No TLS connection, socket, Python `ssl`, OpenSSL command, Nmap, Docker, DNS, HTTP, persistent job, storage, frontend runtime, report/export, archive/run-all, or `tools/runner/main.py` behavior is added.
+
 ## Components
 
 ### Backend
