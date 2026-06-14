@@ -236,7 +236,7 @@ ACTIVE_TLS_BASIC_CAVEATS = [
     "No target expansion performed",
     "No raw certificate PEM or DER stored",
 ]
-ACTIVE_DNS_INVENTORY_ALLOWED_STATUSES = {"best_effort_inventory", "partial_inventory", "not_executed"}
+ACTIVE_DNS_INVENTORY_ALLOWED_STATUSES = {"best_effort_inventory", "partial_inventory", "zone_transfer_complete", "not_executed"}
 ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS = ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS | {
     "account_id",
     "axfr",
@@ -244,6 +244,10 @@ ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS = ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KE
     "dns_message",
     "dns_packet",
     "domain",
+    "authoritative_nameserver",
+    "authoritative_nameservers",
+    "nameserver",
+    "nameservers",
     "provider_account",
     "provider_api_token",
     "provider_credentials",
@@ -255,9 +259,11 @@ ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS = ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KE
     "raw_query",
     "raw_resolver_log",
     "raw_response",
+    "raw_zone",
     "resolver_log",
     "resolver_logs",
     "target_domain",
+    "zone_file",
     "zone_id",
 }
 ACTIVE_DNS_INVENTORY_TOKEN_SOURCE_KEYS = ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS | {
@@ -270,9 +276,9 @@ ACTIVE_DNS_INVENTORY_TOKEN_SOURCE_KEYS = ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KE
 ACTIVE_DNS_INVENTORY_CAVEATS = [
     "DNS configuration review indicator",
     "Manual validation required",
-    "Best-effort DNS inventory only",
-    "No complete-zone claim",
-    "No zone transfer",
+    "Best-effort DNS inventory unless authorized AXFR completes",
+    "Complete-zone coverage only when coverage_level is zone_transfer_complete",
+    "Zone transfer requires explicit authorization",
     "No provider import",
     "No brute-force discovery",
     "No raw DNS packets, resolver logs, or domain values stored",
@@ -1017,6 +1023,7 @@ def build_active_dns_inventory_sections(result: dict[str, Any]) -> list[ReportSe
     summary = as_dict(public_result.get("summary"))
     security_records = as_dict(public_result.get("security_records"))
     subdomains = as_dict(public_result.get("subdomains"))
+    zone_transfer = as_dict(public_result.get("zone_transfer"))
     limits = as_dict(public_result.get("limits"))
     raw_json = json.dumps(public_result, indent=2, sort_keys=True)
     return [
@@ -1024,8 +1031,8 @@ def build_active_dns_inventory_sections(result: dict[str, Any]) -> list[ReportSe
             "Active DNS Inventory Scope Notice",
             [
                 ("Result wording", "DNS configuration review indicator. Manual validation required."),
-                ("Assertion boundary", "No complete-zone, provider, or target-safety claim is asserted."),
-                ("Discovery boundary", "Standard records and fixed candidate subdomain discovery only."),
+                ("Assertion boundary", "Complete-zone coverage is asserted only when authorized AXFR completes."),
+                ("Discovery boundary", "Standard records, fixed candidate subdomain discovery, and optional authorized AXFR only."),
                 ("Authorization boundary", "Operator confirmation is required but is not proof of target ownership."),
                 ("Redaction boundary", "Domain, DNS values, raw resolver logs, and packets are redacted before public surfaces."),
             ],
@@ -1046,6 +1053,7 @@ def build_active_dns_inventory_sections(result: dict[str, Any]) -> list[ReportSe
         ),
         ReportSection("Standard Records", flatten_active_dns_inventory_record_groups(public_result.get("records"))),
         ReportSection("Security Record Indicators", flatten_mapping(security_records)),
+        ReportSection("Authorized Zone Transfer", flatten_mapping(zone_transfer)),
         ReportSection(
             "Bounded Subdomain Discovery",
             [
@@ -1852,12 +1860,13 @@ def public_active_dns_inventory_result(result: dict[str, Any]) -> dict[str, Any]
     if result_status not in ACTIVE_DNS_INVENTORY_ALLOWED_STATUSES:
         result_status = "partial_inventory"
     coverage_level = str(redacted.get("coverage_level") or result_status)
-    if coverage_level not in {"best_effort_inventory", "partial_inventory", "not_executed"}:
+    if coverage_level not in {"best_effort_inventory", "partial_inventory", "zone_transfer_complete", "not_executed"}:
         coverage_level = result_status
 
     records = _public_active_dns_inventory_record_groups(redacted.get("records"))
     security_records = _public_active_dns_inventory_security_records(redacted.get("security_records"))
     subdomains = _public_active_dns_inventory_subdomains(redacted.get("subdomains"))
+    zone_transfer = _public_active_dns_inventory_zone_transfer(redacted.get("zone_transfer"))
     execution = as_dict(redacted.get("execution"))
     limits = as_dict(redacted.get("limits"))
     errors = redacted.get("errors")
@@ -1877,7 +1886,7 @@ def public_active_dns_inventory_result(result: dict[str, Any]) -> dict[str, Any]
         "records": records,
         "security_records": security_records,
         "subdomains": subdomains,
-        "zone_transfer": {"attempted": False, "status": "not_attempted"},
+        "zone_transfer": zone_transfer,
         "provider_import": {"attempted": False, "status": "not_attempted"},
         "dns_queries_sent": execution.get("dns_queries_sent", redacted.get("dns_queries_sent", 0)),
         "subdomain_queries_sent": execution.get("subdomain_queries_sent", redacted.get("subdomain_queries_sent", 0)),
@@ -1889,6 +1898,8 @@ def public_active_dns_inventory_result(result: dict[str, Any]) -> dict[str, Any]
             "dmarc_present": as_dict(security_records.get("dmarc")).get("present", False),
             "caa_present": as_dict(security_records.get("caa")).get("present", False),
             "subdomain_observed_count": subdomains.get("count", 0),
+            "zone_transfer_status": zone_transfer.get("status", "not_attempted"),
+            "zone_transfer_records_retained_count": zone_transfer.get("records_retained_count", 0),
         },
         "execution": {
             "dns_queries_sent": execution.get("dns_queries_sent", redacted.get("dns_queries_sent", 0)),
@@ -1898,7 +1909,7 @@ def public_active_dns_inventory_result(result: dict[str, Any]) -> dict[str, Any]
             "nmap_invoked": False,
             "target_expansion_performed": False,
             "recursive_discovery_performed": False,
-            "zone_transfer_attempted": False,
+            "zone_transfer_attempted": bool(zone_transfer.get("attempted", False)),
             "provider_api_used": False,
             "credential_validation_performed": False,
             "crawling_performed": False,
@@ -1914,9 +1925,14 @@ def public_active_dns_inventory_result(result: dict[str, Any]) -> dict[str, Any]
             "subdomain_record_types": limits.get("subdomain_record_types"),
             "max_records_per_type": limits.get("max_records_per_type"),
             "max_subdomain_sample": limits.get("max_subdomain_sample"),
+            "zone_transfer_timeout_seconds": limits.get("zone_transfer_timeout_seconds"),
+            "zone_transfer_max_nameservers": limits.get("zone_transfer_max_nameservers"),
+            "zone_transfer_max_records": limits.get("zone_transfer_max_records"),
+            "zone_transfer_max_bytes": limits.get("zone_transfer_max_bytes"),
             "domain_value_persisted": False,
             "dns_packets_persisted": False,
             "resolver_logs_persisted": False,
+            "zone_file_persisted": False,
         },
         "surface_caveats": list(ACTIVE_DNS_INVENTORY_CAVEATS),
     }
@@ -2005,6 +2021,47 @@ def _public_active_dns_inventory_subdomains(value: Any) -> dict[str, Any]:
         ],
         "sample_truncated": bool(subdomains.get("sample_truncated", False)),
     }
+
+
+def _public_active_dns_inventory_zone_transfer(value: Any) -> dict[str, Any]:
+    zone_transfer = as_dict(value)
+    status_value = stringify(zone_transfer.get("status", "not_attempted"))
+    allowed_statuses = {
+        "not_attempted",
+        "authorization_required",
+        "no_authoritative_nameservers",
+        "refused",
+        "unavailable",
+        "timed_out",
+        "malformed_response",
+        "record_limit_exceeded",
+        "zone_transfer_complete",
+    }
+    if status_value not in allowed_statuses:
+        status_value = "unavailable"
+    reason_code = stringify(zone_transfer.get("reason_code", status_value))
+    public = {
+        "attempted": bool(zone_transfer.get("attempted", False)),
+        "status": status_value,
+        "nameservers_considered": zone_transfer.get("nameservers_considered", 0)
+        if isinstance(zone_transfer.get("nameservers_considered", 0), int)
+        else 0,
+        "nameservers_attempted": zone_transfer.get("nameservers_attempted", 0)
+        if isinstance(zone_transfer.get("nameservers_attempted", 0), int)
+        else 0,
+        "records_received_count": zone_transfer.get("records_received_count", 0)
+        if isinstance(zone_transfer.get("records_received_count", 0), int)
+        else 0,
+        "records_retained_count": zone_transfer.get("records_retained_count", 0)
+        if isinstance(zone_transfer.get("records_retained_count", 0), int)
+        else 0,
+        "truncated": bool(zone_transfer.get("truncated", False)),
+    }
+    if status_value != "zone_transfer_complete":
+        public["reason_code"] = reason_code
+    else:
+        public["interpretation"] = "zone transfer accepted by authoritative server / high-risk configuration review indicator"
+    return public
 
 
 def public_active_tls_basic_result(result: dict[str, Any]) -> dict[str, Any]:

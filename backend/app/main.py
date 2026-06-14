@@ -157,6 +157,7 @@ async def lifespan(app: FastAPI):
     app.state.active_tools_health_checker = check_active_tools_health
     app.state.active_nmap_basic_lifecycle_client = ActiveNmapBasicRouteActiveToolsClient()
     app.state.active_dns_inventory_resolver = None
+    app.state.active_dns_inventory_axfr_transport = None
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -541,12 +542,16 @@ ACTIVE_DNS_INVENTORY_ALLOWED_FIELDS = frozenset(
         "include_security_records",
         "include_subdomain_discovery",
         "attempt_zone_transfer",
+        "zone_transfer_authorized_confirmed",
         "authorization_confirmed",
         "local_private_or_owned_scope_confirmed",
         "live_dns_queries_confirmed",
     }
 )
-ACTIVE_DNS_INVENTORY_REQUIRED_FIELDS = ACTIVE_DNS_INVENTORY_ALLOWED_FIELDS - {"attempt_zone_transfer"}
+ACTIVE_DNS_INVENTORY_REQUIRED_FIELDS = ACTIVE_DNS_INVENTORY_ALLOWED_FIELDS - {
+    "attempt_zone_transfer",
+    "zone_transfer_authorized_confirmed",
+}
 ACTIVE_DNS_INVENTORY_CONFIRMATION_FIELDS = (
     "authorization_confirmed",
     "local_private_or_owned_scope_confirmed",
@@ -612,10 +617,16 @@ def validate_active_dns_inventory_contract(payload: Any) -> ActiveDnsInventoryCo
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="active_dns_inventory attempt_zone_transfer must be boolean.",
         )
-    if attempt_zone_transfer is True:
+    zone_transfer_authorized_confirmed = payload.get("zone_transfer_authorized_confirmed", False)
+    if not isinstance(zone_transfer_authorized_confirmed, bool):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="active_dns_inventory zone transfer is not supported in this phase.",
+            detail="active_dns_inventory zone_transfer_authorized_confirmed must be boolean.",
+        )
+    if attempt_zone_transfer is True and zone_transfer_authorized_confirmed is not True:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="zone_transfer_authorized_confirmed must be true.",
         )
 
     try:
@@ -633,6 +644,7 @@ def validate_active_dns_inventory_contract(payload: Any) -> ActiveDnsInventoryCo
         include_security_records=include_security_records,
         include_subdomain_discovery=include_subdomain_discovery,
         attempt_zone_transfer=attempt_zone_transfer,
+        zone_transfer_authorized_confirmed=zone_transfer_authorized_confirmed,
     )
 
 
@@ -1125,7 +1137,8 @@ async def launch_active_dns_inventory(
     owner_id = current_owner_id_for_request(request)
     contract = validate_active_dns_inventory_contract(payload)
     resolver = getattr(request.app.state, "active_dns_inventory_resolver", None)
-    result = run_active_dns_inventory(contract, resolver=resolver)
+    axfr_transport = getattr(request.app.state, "active_dns_inventory_axfr_transport", None)
+    result = run_active_dns_inventory(contract, resolver=resolver, axfr_transport=axfr_transport)
     return request.app.state.jobs.create_active_dns_inventory_job(
         result,
         status=active_dns_inventory_job_status(result),

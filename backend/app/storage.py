@@ -1017,6 +1017,7 @@ def _job_summary(record: JobRecord) -> dict | None:
             records = record.result.get("records")
             security_records = record.result.get("security_records")
             subdomains = record.result.get("subdomains")
+            zone_transfer = record.result.get("zone_transfer")
             execution = record.result.get("execution")
             if not isinstance(records, dict):
                 records = {}
@@ -1024,6 +1025,8 @@ def _job_summary(record: JobRecord) -> dict | None:
                 security_records = {}
             if not isinstance(subdomains, dict):
                 subdomains = {}
+            if not isinstance(zone_transfer, dict):
+                zone_transfer = {}
             if not isinstance(execution, dict):
                 execution = {}
             summary["capability"] = record.result.get("capability", "active_dns_inventory")
@@ -1042,6 +1045,9 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["caa_present"] = bool((security_records.get("caa") or {}).get("present")) if isinstance(security_records.get("caa"), dict) else False
             summary["subdomain_candidates_checked"] = subdomains.get("candidates_checked", 0)
             summary["subdomain_observed_count"] = subdomains.get("count", 0)
+            summary["zone_transfer_status"] = zone_transfer.get("status", "not_attempted")
+            summary["zone_transfer_attempted"] = bool(zone_transfer.get("attempted", False))
+            summary["zone_transfer_records_retained_count"] = zone_transfer.get("records_retained_count", 0)
             summary["dns_queries_sent"] = execution.get("dns_queries_sent", record.result.get("dns_queries_sent", 0))
             summary["subdomain_queries_sent"] = execution.get("subdomain_queries_sent", record.result.get("subdomain_queries_sent", 0))
             summary["manual_validation_required"] = True

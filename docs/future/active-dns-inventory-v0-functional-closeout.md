@@ -9,6 +9,11 @@ Certificate Transparency lookup, no passive DNS lookup, no Docker execution,
 no Nmap execution, no HTTP crawling, no archive/run-all behavior, no
 `tools/runner/main.py` behavior, no release, no tag, and no push state.
 
+Status note: this document remains the historical v0 closeout before the
+separate authorized AXFR backend extension. That later extension is documented
+in `docs/future/active-dns-inventory-authorized-axfr-backend.md` with decision
+`ACTIVE_DNS_INVENTORY_07_AUTHORIZED_AXFR_BACKEND_PASSED`.
+
 ## Reviewed Commits
 
 Reviewed as the functional v0 line:

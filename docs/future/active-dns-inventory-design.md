@@ -14,11 +14,15 @@ Implementation status update: `active_dns_inventory` v0 was later implemented
 and closed as a bounded functional minimum in
 `docs/future/active-dns-inventory-v0-functional-closeout.md` with decision
 `ACTIVE_DNS_INVENTORY_06_FUNCTIONAL_REVIEW_AND_CLOSEOUT_ACCEPTED`. The closed
-v0 state keeps the original one-domain, allowlisted-record, redaction-first,
-best-effort/partial-inventory boundaries. AXFR, provider import,
+v0 state kept the original one-domain, allowlisted-record, redaction-first,
+best-effort/partial-inventory boundaries. Authorized AXFR was later accepted as
+a separate backend-only extension in
+`docs/future/active-dns-inventory-authorized-axfr-backend.md` with decision
+`ACTIVE_DNS_INVENTORY_07_AUTHORIZED_AXFR_BACKEND_PASSED`. Provider import,
 Certificate Transparency, passive DNS, broad discovery, custom resolver
-override, public scanner behavior, and complete-zone claims remain out of
-scope unless separately designed and accepted.
+override, public scanner behavior, and complete-zone claims outside explicit
+`zone_transfer_complete` still remain out of scope unless separately designed
+and accepted.
 
 ## Objective
 
@@ -231,7 +235,9 @@ guessing, sibling-domain expansion, and recursive discovery loops.
 
 ## AXFR / Zone Transfer
 
-AXFR is a future separate phase. It must be:
+AXFR was reserved as a future separate phase in the original design and is now
+accepted only for the backend path documented in
+`docs/future/active-dns-inventory-authorized-axfr-backend.md`. It must remain:
 
 - disabled by default;
 - attempted only against authoritative nameservers for the exact domain;
@@ -239,11 +245,11 @@ AXFR is a future separate phase. It must be:
 - bounded by timeout, response-size, and record-count limits;
 - owner-scoped and redaction-first before storage or rendering.
 
-If AXFR is refused or unavailable, the result should use controlled states such
-as `zone_transfer_unavailable` or `refused`. If AXFR succeeds, the report may
-say "zone transfer accepted by authoritative server / review indicator" and
-must treat the returned zone as sensitive operator data, not as an exploit
-result.
+If AXFR is refused or unavailable, the result uses controlled states such as
+`unavailable`, `timed_out`, or `refused`. If bounded authorized AXFR succeeds,
+the report may say "zone transfer accepted by authoritative server / high-risk
+configuration review indicator" and must treat the returned zone as sensitive
+operator data, not as an exploit result.
 
 ## Provider Zone Import
 

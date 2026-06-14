@@ -59,7 +59,13 @@ from app.active_nmap_boundary import (
 )
 from app.active_nmap_handoff import build_active_nmap_basic_handoff_plan
 from app.active_nmap_lifecycle import ActiveNmapBasicRouteNoLiveClient, run_active_nmap_basic_lifecycle_skeleton
-from app.active_dns_inventory import ActiveDnsInventoryQueryResult, ActiveDnsInventoryRecord
+from app.active_dns_inventory import (
+    ActiveDnsInventoryContract,
+    ActiveDnsInventoryQueryResult,
+    ActiveDnsInventoryRecord,
+    ActiveDnsInventoryZoneTransferResult,
+    run_active_dns_inventory,
+)
 from app.active_tls_basic import ActiveTlsBasicConnectionSnapshot
 from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
 from app.models import JobRecord
@@ -352,6 +358,21 @@ class FakeActiveDnsInventoryResolver:
         if response is None:
             return ActiveDnsInventoryQueryResult(status="noerror_empty")
         return response
+
+
+class FakeActiveDnsInventoryAxfrTransport:
+    def __init__(
+        self,
+        response: ActiveDnsInventoryZoneTransferResult | list[ActiveDnsInventoryRecord] | Exception | None = None,
+    ) -> None:
+        self.response = response if response is not None else ActiveDnsInventoryZoneTransferResult(status="refused", reason_code="zone_transfer_refused")
+        self.calls: list[tuple[str, str]] = []
+
+    def transfer(self, domain: str, nameserver: str):
+        self.calls.append((domain, nameserver))
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
 
 
 def dns_record(name: str, record_type: str, value: str, *, ttl: int = 300, priority: int | None = None) -> ActiveDnsInventoryRecord:
@@ -7831,9 +7852,13 @@ async def test_active_tls_basic_auth_required_anonymous_fails_before_validation(
 async def test_active_dns_inventory_disabled_by_default_no_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     fake_resolver = make_active_dns_inventory_fake_resolver()
+    fake_axfr = FakeActiveDnsInventoryAxfrTransport()
     app.state.active_dns_inventory_resolver = fake_resolver
+    app.state.active_dns_inventory_axfr_transport = fake_axfr
     payload = make_active_dns_inventory_payload(
         domain="secret.example.com",
+        attempt_zone_transfer=True,
+        zone_transfer_authorized_confirmed=True,
         resolver_override="token_should_never_render",
     )
     transport = ASGITransport(app=app)
@@ -7848,6 +7873,7 @@ async def test_active_dns_inventory_disabled_by_default_no_job(monkeypatch, tmp_
     assert "token_should_never_render" not in response.text
     assert jobs_response.json() == []
     assert fake_resolver.calls == []
+    assert fake_axfr.calls == []
 
 
 @pytest.mark.anyio
@@ -7890,7 +7916,15 @@ async def test_active_dns_inventory_enabled_valid_request_creates_redacted_inven
     assert payload["result"]["security_records"]["dmarc"]["present"] is True
     assert payload["result"]["security_records"]["caa"]["present"] is True
     assert payload["result"]["security_records"]["dkim"]["checked"] is False
-    assert payload["result"]["zone_transfer"] == {"attempted": False, "status": "not_attempted"}
+    assert payload["result"]["zone_transfer"] == {
+        "attempted": False,
+        "status": "not_attempted",
+        "nameservers_considered": 0,
+        "nameservers_attempted": 0,
+        "records_received_count": 0,
+        "records_retained_count": 0,
+        "truncated": False,
+    }
     assert payload["result"]["provider_import"] == {"attempted": False, "status": "not_attempted"}
     assert payload["result"]["subdomains"]["enabled"] is True
     assert payload["result"]["subdomains"]["candidates_checked"] == 12
@@ -8071,6 +8105,7 @@ async def test_active_dns_inventory_requires_authorization_confirmations(monkeyp
         {"include_security_records": "true"},
         {"include_subdomain_discovery": "false"},
         {"attempt_zone_transfer": "false"},
+        {"zone_transfer_authorized_confirmed": "true"},
     ],
 )
 async def test_active_dns_inventory_rejects_malformed_domain_and_flags(monkeypatch, tmp_path, override):
@@ -8121,11 +8156,13 @@ async def test_active_dns_inventory_rejects_missing_or_unallowed_record_types(mo
 
 
 @pytest.mark.anyio
-async def test_active_dns_inventory_rejects_zone_transfer_in_contract_gate(monkeypatch, tmp_path):
+async def test_active_dns_inventory_requires_specific_zone_transfer_authorization(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
     fake_resolver = make_active_dns_inventory_fake_resolver()
+    fake_axfr = FakeActiveDnsInventoryAxfrTransport()
     app.state.active_dns_inventory_resolver = fake_resolver
+    app.state.active_dns_inventory_axfr_transport = fake_axfr
     payload = make_active_dns_inventory_payload(
         domain="secret.example.com",
         attempt_zone_transfer=True,
@@ -8137,10 +8174,255 @@ async def test_active_dns_inventory_rejects_zone_transfer_in_contract_gate(monke
         jobs_response = await client.get("/jobs")
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "active_dns_inventory zone transfer is not supported in this phase."
+    assert response.json()["detail"] == "zone_transfer_authorized_confirmed must be true."
     assert "secret.example.com" not in response.text
     assert jobs_response.json() == []
     assert fake_resolver.calls == []
+    assert fake_axfr.calls == []
+
+
+def test_active_dns_inventory_helper_blocks_axfr_without_internal_authorization():
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    fake_axfr = FakeActiveDnsInventoryAxfrTransport()
+    result = run_active_dns_inventory(
+        ActiveDnsInventoryContract(
+            domain="example.com",
+            record_types=("A",),
+            include_security_records=False,
+            include_subdomain_discovery=False,
+            attempt_zone_transfer=True,
+            zone_transfer_authorized_confirmed=False,
+        ),
+        resolver=fake_resolver,
+        axfr_transport=fake_axfr,
+    )
+
+    assert result["zone_transfer"]["status"] == "authorization_required"
+    assert result["zone_transfer"]["attempted"] is False
+    assert fake_axfr.calls == []
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_zone_transfer_no_authoritative_ns_is_controlled(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = FakeActiveDnsInventoryResolver(
+        {
+            ("example.com", "A"): [dns_record("example.com", "A", "192.0.2.10")],
+            ("example.com", "NS"): ActiveDnsInventoryQueryResult(status="noerror_empty"),
+        }
+    )
+    fake_axfr = FakeActiveDnsInventoryAxfrTransport()
+    app.state.active_dns_inventory_resolver = fake_resolver
+    app.state.active_dns_inventory_axfr_transport = fake_axfr
+    payload = make_active_dns_inventory_payload(
+        record_types=["A"],
+        include_security_records=False,
+        include_subdomain_discovery=False,
+        attempt_zone_transfer=True,
+        zone_transfer_authorized_confirmed=True,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+
+    assert response.status_code == 202
+    result = response.json()["result"]
+    assert result["coverage_level"] == "best_effort_inventory"
+    assert result["zone_transfer"]["attempted"] is False
+    assert result["zone_transfer"]["status"] == "no_authoritative_nameservers"
+    assert result["zone_transfer"]["nameservers_considered"] == 0
+    assert fake_axfr.calls == []
+    assert "example.com" not in response.text
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_zone_transfer_refused_is_controlled(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    fake_axfr = FakeActiveDnsInventoryAxfrTransport(
+        ActiveDnsInventoryZoneTransferResult(status="refused", reason_code="zone_transfer_refused")
+    )
+    app.state.active_dns_inventory_resolver = fake_resolver
+    app.state.active_dns_inventory_axfr_transport = fake_axfr
+    payload = make_active_dns_inventory_payload(
+        include_subdomain_discovery=False,
+        attempt_zone_transfer=True,
+        zone_transfer_authorized_confirmed=True,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+
+    assert response.status_code == 202
+    result = response.json()["result"]
+    assert result["coverage_level"] == "best_effort_inventory"
+    assert result["zone_transfer"]["attempted"] is True
+    assert result["zone_transfer"]["status"] == "refused"
+    assert result["zone_transfer"]["reason_code"] == "zone_transfer_refused"
+    assert result["zone_transfer"]["nameservers_considered"] == 1
+    assert result["zone_transfer"]["nameservers_attempted"] == 1
+    assert fake_axfr.calls == [("example.com", "ns1.example.net")]
+    assert "ns1.example.net" not in response.text
+    assert "example.com" not in response.text
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_zone_transfer_timeout_is_partial_controlled(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    fake_axfr = FakeActiveDnsInventoryAxfrTransport(TimeoutError("secret.example.com timed out"))
+    app.state.active_dns_inventory_resolver = fake_resolver
+    app.state.active_dns_inventory_axfr_transport = fake_axfr
+    payload = make_active_dns_inventory_payload(
+        include_subdomain_discovery=False,
+        attempt_zone_transfer=True,
+        zone_transfer_authorized_confirmed=True,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["error"] == "partial_inventory"
+    result = payload["result"]
+    assert result["coverage_level"] == "partial_inventory"
+    assert result["zone_transfer"]["status"] == "timed_out"
+    assert result["zone_transfer"]["reason_code"] == "zone_transfer_timed_out"
+    assert {"code": "zone_transfer_timed_out", "record_type": "AXFR", "purpose": "authorized_zone_transfer"} in result["errors"]
+    assert "secret.example.com" not in response.text
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_zone_transfer_success_is_complete_and_redacted(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    axfr_records = [
+        dns_record("example.com", "SOA", "mname=ns1.example.net;rname=hostmaster.example.com;serial=1"),
+        dns_record("example.com", "A", "192.0.2.10"),
+        dns_record("www.example.com", "A", "192.0.2.20"),
+        dns_record("example.com", "MX", "mail.example.com", priority=10),
+        dns_record("example.com", "TXT", "token_should_never_render"),
+        dns_record("example.com", "SOA", "mname=ns1.example.net;rname=hostmaster.example.com;serial=1"),
+    ]
+    fake_axfr = FakeActiveDnsInventoryAxfrTransport(
+        ActiveDnsInventoryZoneTransferResult(
+            status="zone_transfer_complete",
+            records=tuple(axfr_records),
+            records_received_count=len(axfr_records),
+            records_retained_count=len(axfr_records),
+            bytes_received=512,
+        )
+    )
+    app.state.active_dns_inventory_resolver = fake_resolver
+    app.state.active_dns_inventory_axfr_transport = fake_axfr
+    payload = make_active_dns_inventory_payload(
+        include_subdomain_discovery=False,
+        attempt_zone_transfer=True,
+        zone_transfer_authorized_confirmed=True,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+        job_id = response.json()["id"]
+        jobs_response = await client.get("/jobs")
+        detail_response = await client.get(f"/jobs/{job_id}")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    assert response.status_code == 202
+    assert detail_response.status_code == 200
+    assert all(export_response.status_code == 200 for export_response in export_responses.values())
+    payload = response.json()
+    result = payload["result"]
+    assert payload["status"] == "completed"
+    assert payload["error"] is None
+    assert result["status"] == "zone_transfer_complete"
+    assert result["result_status"] == "zone_transfer_complete"
+    assert result["coverage_level"] == "zone_transfer_complete"
+    assert result["zone_transfer"]["attempted"] is True
+    assert result["zone_transfer"]["status"] == "zone_transfer_complete"
+    assert result["zone_transfer"]["records_received_count"] == len(axfr_records)
+    assert result["zone_transfer"]["records_retained_count"] == len(axfr_records)
+    assert result["zone_transfer"]["truncated"] is False
+    assert result["records"]["A"]["count"] == 2
+    assert result["records"]["MX"]["sample"][0]["priority"] == 10
+    assert jobs_response.json()[0]["summary"]["coverage_level"] == "zone_transfer_complete"
+    assert jobs_response.json()[0]["summary"]["zone_transfer_status"] == "zone_transfer_complete"
+    assert detail_response.json()["result"]["zone_transfer"]["interpretation"] == "zone transfer accepted by authoritative server / high-risk configuration review indicator"
+    combined = json.dumps({"create": payload, "detail": detail_response.json(), "list": jobs_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        export.text if report_format != "pdf" else export.content.decode("latin1", errors="ignore")
+        for report_format, export in export_responses.items()
+    )
+    assert "zone transfer accepted by authoritative server / high-risk configuration review indicator" in combined
+    assert "[REDACTED_DOMAIN]" in combined
+    assert "[REDACTED_DNS_VALUE]" in combined
+    for forbidden in (
+        "example.com",
+        "www.example.com",
+        "ns1.example.net",
+        "hostmaster.example.com",
+        "mail.example.com",
+        "192.0.2.10",
+        "192.0.2.20",
+        "token_should_never_render",
+        "raw_zone",
+        "raw_dns_packet",
+    ):
+        assert forbidden not in combined
+
+
+@pytest.mark.anyio
+async def test_active_dns_inventory_zone_transfer_record_limit_is_partial(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    axfr_records = [
+        dns_record("example.com", "A", f"192.0.2.{index % 250}", ttl=300)
+        for index in range(105)
+    ]
+    fake_axfr = FakeActiveDnsInventoryAxfrTransport(
+        ActiveDnsInventoryZoneTransferResult(
+            status="zone_transfer_complete",
+            records=tuple(axfr_records),
+            records_received_count=len(axfr_records),
+            records_retained_count=len(axfr_records),
+            bytes_received=2048,
+        )
+    )
+    app.state.active_dns_inventory_resolver = fake_resolver
+    app.state.active_dns_inventory_axfr_transport = fake_axfr
+    payload = make_active_dns_inventory_payload(
+        include_subdomain_discovery=False,
+        attempt_zone_transfer=True,
+        zone_transfer_authorized_confirmed=True,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+
+    assert response.status_code == 202
+    result = response.json()["result"]
+    assert result["coverage_level"] == "partial_inventory"
+    assert result["zone_transfer"]["status"] == "record_limit_exceeded"
+    assert result["zone_transfer"]["truncated"] is True
+    assert result["zone_transfer"]["records_received_count"] == 105
+    assert result["zone_transfer"]["records_retained_count"] == 100
+    assert {"code": "record_limit_exceeded", "record_type": "AXFR", "purpose": "authorized_zone_transfer"} in result["errors"]
+    assert "192.0.2." not in response.text
 
 
 @pytest.mark.anyio

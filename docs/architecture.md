@@ -349,6 +349,8 @@ The Active DNS Inventory frontend product-smoke decision is `ACTIVE_DNS_INVENTOR
 
 The Active DNS Inventory v0 closeout decision is `ACTIVE_DNS_INVENTORY_06_FUNCTIONAL_REVIEW_AND_CLOSEOUT_ACCEPTED`. It closes `active_dns_inventory` as a bounded functional minimum: backend-owned feature gate, auth/owner scope, request validation, one-domain policy, isolated DNS runtime, owner-scoped `file_id: null` jobs, storage/report/export redaction, frontend review-indicator rendering, and explicit `best_effort_inventory` / `partial_inventory` coverage. The architecture still excludes complete-zone claims, AXFR runtime, provider import, CT/passive DNS, broad wordlists, recursive discovery, wildcard expansion, DKIM guessing, custom resolver override, DNS CLI/subprocess, Nmap, Docker, HTTP/crawling, archive/run-all, and `tools/runner/main.py`.
 
+The Active DNS Inventory authorized AXFR backend decision is `ACTIVE_DNS_INVENTORY_07_AUTHORIZED_AXFR_BACKEND_PASSED`. The existing `POST /active/network/dns-inventory` route may now accept `attempt_zone_transfer: true` only with `zone_transfer_authorized_confirmed: true`; after the normal feature gate, auth/owner scope, exact contract validation, and domain policy, the backend resolves authoritative NS records for the exact domain and invokes a bounded TCP AXFR transport isolated to `backend/app/active_dns_inventory.py`. Results remain owner-scoped, `file_id: null`, redaction-first, and bounded to counters plus allowlisted record groups. `zone_transfer_complete` is reserved for bounded authorized AXFR acceptance; refused, unavailable, timed-out, malformed, or oversized AXFR maps to controlled best-effort/partial inventory. The architecture still excludes frontend AXFR controls, user-supplied nameserver overrides, provider import, CT/passive DNS, broad discovery, DNS CLI/subprocess, Nmap, Docker, HTTP/crawling, archive/run-all, `tools/runner/main.py`, public scanner behavior, and vulnerability/exploitability claims.
+
 ## Components
 
 ### Backend
@@ -521,7 +523,7 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 - `POST /audits/web/basic`: start a controlled baseline web configuration audit for one authorized URL.
 - `POST /audits/domain/basic`: start a controlled passive DNS baseline audit for one authorized domain.
 - `POST /audits/subdomains/basic`: start a controlled passive inventory for explicit authorized subdomain candidates.
-- `POST /active/network/dns-inventory`: start an opt-in Active DNS inventory job for one authorized root domain when `INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED=true`.
+- `POST /active/network/dns-inventory`: start an opt-in Active DNS inventory job for one authorized root domain when `INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED=true`, with optional bounded AXFR only when `attempt_zone_transfer` and `zone_transfer_authorized_confirmed` are both true.
 - `GET /jobs`: list jobs, newest first, with summaries when available.
 - `GET /jobs/{job_id}`: read one full job record.
 - `DELETE /jobs/{job_id}`: delete an owned completed or failed job/result record.

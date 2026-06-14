@@ -32,9 +32,14 @@ ACTIVE_DNS_INVENTORY_MAX_SUBDOMAIN_SAMPLE = 12
 ACTIVE_DNS_INVENTORY_MAX_ERRORS = 16
 ACTIVE_DNS_INVENTORY_TIMEOUT_SECONDS = 2.0
 ACTIVE_DNS_INVENTORY_MAX_NAMESERVERS = 1
+ACTIVE_DNS_INVENTORY_AXFR_TIMEOUT_SECONDS = 3.0
+ACTIVE_DNS_INVENTORY_AXFR_MAX_NAMESERVERS = 1
+ACTIVE_DNS_INVENTORY_AXFR_MAX_RECORDS = 100
+ACTIVE_DNS_INVENTORY_AXFR_MAX_BYTES = 65_536
 
 _DNS_PORT = 53
 _DNS_CLASS_IN = 1
+_DNS_QTYPE_AXFR = 252
 _DNS_QTYPE_BY_NAME = {
     "A": 1,
     "NS": 2,
@@ -73,6 +78,7 @@ class ActiveDnsInventoryContract:
     include_security_records: bool
     include_subdomain_discovery: bool
     attempt_zone_transfer: bool
+    zone_transfer_authorized_confirmed: bool = False
 
 
 class ActiveDnsInventoryPolicyError(ValueError):
@@ -98,6 +104,17 @@ class ActiveDnsInventoryQueryResult:
     truncated: bool = False
 
 
+@dataclass(frozen=True)
+class ActiveDnsInventoryZoneTransferResult:
+    status: str
+    records: tuple[ActiveDnsInventoryRecord, ...] = ()
+    reason_code: str | None = None
+    truncated: bool = False
+    records_received_count: int = 0
+    records_retained_count: int = 0
+    bytes_received: int = 0
+
+
 class UdpDnsInventoryResolver:
     def __init__(
         self,
@@ -120,6 +137,17 @@ class UdpDnsInventoryResolver:
             except ValueError:
                 last_error = "dns_parse_error"
         return ActiveDnsInventoryQueryResult(status="error", error_code=last_error)
+
+
+class TcpDnsZoneTransferTransport:
+    def transfer(self, domain: str, nameserver: str) -> ActiveDnsInventoryZoneTransferResult:
+        return _query_tcp_axfr(
+            nameserver,
+            domain,
+            timeout_seconds=ACTIVE_DNS_INVENTORY_AXFR_TIMEOUT_SECONDS,
+            max_bytes=ACTIVE_DNS_INVENTORY_AXFR_MAX_BYTES,
+            max_records=ACTIVE_DNS_INVENTORY_AXFR_MAX_RECORDS,
+        )
 
 
 def normalize_active_dns_inventory_domain(raw_domain: Any) -> str:
@@ -205,8 +233,10 @@ def run_active_dns_inventory(
     contract: ActiveDnsInventoryContract,
     *,
     resolver: Any | None = None,
+    axfr_transport: Any | None = None,
 ) -> dict[str, Any]:
     dns_resolver = resolver or UdpDnsInventoryResolver()
+    zone_transfer_transport = axfr_transport or TcpDnsZoneTransferTransport()
     query_cache: dict[tuple[str, str], ActiveDnsInventoryQueryResult] = {}
     root_records: dict[str, list[ActiveDnsInventoryRecord]] = {record_type: [] for record_type in contract.record_types}
     security_raw: dict[str, list[ActiveDnsInventoryRecord]] = {"TXT": [], "DMARC": [], "CAA": []}
@@ -272,7 +302,46 @@ def run_active_dns_inventory(
                     }
                 )
 
+    zone_transfer = _build_not_attempted_zone_transfer()
+    if contract.attempt_zone_transfer:
+        if not contract.zone_transfer_authorized_confirmed:
+            zone_transfer = _public_zone_transfer_summary(
+                ActiveDnsInventoryZoneTransferResult(
+                    status="authorization_required",
+                    reason_code="zone_transfer_authorization_required",
+                ),
+                nameservers_considered=0,
+                nameservers_attempted=0,
+            )
+        else:
+            ns_result = safe_query(contract.domain, "NS", purpose="zone_transfer_authoritative_ns_lookup")
+            authoritative_nameservers = [record.value for record in ns_result.records if record.record_type == "NS"]
+            zone_transfer_result = _run_authorized_zone_transfer(
+                contract.domain,
+                authoritative_nameservers,
+                zone_transfer_transport,
+            )
+            zone_transfer = _public_zone_transfer_summary(
+                zone_transfer_result,
+                nameservers_considered=len(authoritative_nameservers),
+                nameservers_attempted=min(len(authoritative_nameservers), ACTIVE_DNS_INVENTORY_AXFR_MAX_NAMESERVERS),
+            )
+            if zone_transfer_result.status == "zone_transfer_complete":
+                root_records = _group_records_by_type(zone_transfer_result.records)
+            elif zone_transfer_result.status in {"timed_out", "malformed_response", "record_limit_exceeded"}:
+                partial = True
+                if len(errors) < ACTIVE_DNS_INVENTORY_MAX_ERRORS:
+                    errors.append(
+                        {
+                            "code": zone_transfer_result.reason_code or zone_transfer_result.status,
+                            "record_type": "AXFR",
+                            "purpose": "authorized_zone_transfer",
+                        }
+                    )
+
     coverage_level = "partial_inventory" if partial else "best_effort_inventory"
+    if zone_transfer.get("status") == "zone_transfer_complete" and not partial:
+        coverage_level = "zone_transfer_complete"
     grouped_records = {
         record_type: _public_record_group(records)
         for record_type, records in root_records.items()
@@ -300,7 +369,7 @@ def run_active_dns_inventory(
             "sample": subdomain_results[:ACTIVE_DNS_INVENTORY_MAX_SUBDOMAIN_SAMPLE],
             "sample_truncated": len(subdomain_results) > ACTIVE_DNS_INVENTORY_MAX_SUBDOMAIN_SAMPLE,
         },
-        "zone_transfer": {"attempted": False, "status": "not_attempted"},
+        "zone_transfer": zone_transfer,
         "provider_import": {"attempted": False, "status": "not_attempted"},
         "dns_queries_sent": dns_queries_sent,
         "subdomain_queries_sent": subdomain_queries_sent,
@@ -313,7 +382,7 @@ def run_active_dns_inventory(
             "nmap_invoked": False,
             "target_expansion_performed": False,
             "recursive_discovery_performed": False,
-            "zone_transfer_attempted": False,
+            "zone_transfer_attempted": bool(zone_transfer.get("attempted", False)),
             "provider_api_used": False,
             "credential_validation_performed": False,
             "crawling_performed": False,
@@ -325,18 +394,23 @@ def run_active_dns_inventory(
             "subdomain_record_types": list(ACTIVE_DNS_INVENTORY_SUBDOMAIN_RECORD_TYPES),
             "max_records_per_type": ACTIVE_DNS_INVENTORY_MAX_RECORDS_PER_TYPE,
             "max_subdomain_sample": ACTIVE_DNS_INVENTORY_MAX_SUBDOMAIN_SAMPLE,
+            "zone_transfer_timeout_seconds": ACTIVE_DNS_INVENTORY_AXFR_TIMEOUT_SECONDS,
+            "zone_transfer_max_nameservers": ACTIVE_DNS_INVENTORY_AXFR_MAX_NAMESERVERS,
+            "zone_transfer_max_records": ACTIVE_DNS_INVENTORY_AXFR_MAX_RECORDS,
+            "zone_transfer_max_bytes": ACTIVE_DNS_INVENTORY_AXFR_MAX_BYTES,
             "domain_value_persisted": False,
             "dns_packets_persisted": False,
             "resolver_logs_persisted": False,
+            "zone_file_persisted": False,
         },
         "manual_validation_required": True,
         "result_interpretation": "dns_configuration_review_indicator",
         "surface_caveats": [
-            "Best-effort DNS inventory only",
+            "Best-effort DNS inventory unless authorized AXFR completes",
             "Manual validation required",
-            "No complete-zone claim",
+            "Complete-zone coverage only when coverage_level is zone_transfer_complete",
             "No provider import",
-            "No zone transfer",
+            "Zone transfer requires explicit authorization",
             "No brute-force discovery",
             "No raw domain or resolver output stored",
         ],
@@ -344,7 +418,7 @@ def run_active_dns_inventory(
 
 
 def active_dns_inventory_job_status(result: dict[str, Any]) -> str:
-    if result.get("result_status") in {"best_effort_inventory", "partial_inventory"}:
+    if result.get("result_status") in {"best_effort_inventory", "partial_inventory", "zone_transfer_complete"}:
         return "completed"
     return "failed"
 
@@ -352,9 +426,146 @@ def active_dns_inventory_job_status(result: dict[str, Any]) -> str:
 def active_dns_inventory_job_error(result: dict[str, Any]) -> str | None:
     if result.get("result_status") == "partial_inventory":
         return "partial_inventory"
-    if result.get("result_status") not in {"best_effort_inventory", "partial_inventory"}:
+    if result.get("result_status") not in {"best_effort_inventory", "partial_inventory", "zone_transfer_complete"}:
         return "dns_inventory_error_controlled"
     return None
+
+
+def _build_not_attempted_zone_transfer() -> dict[str, Any]:
+    return {
+        "attempted": False,
+        "status": "not_attempted",
+        "nameservers_considered": 0,
+        "nameservers_attempted": 0,
+        "records_received_count": 0,
+        "records_retained_count": 0,
+        "truncated": False,
+    }
+
+
+def _run_authorized_zone_transfer(
+    domain: str,
+    authoritative_nameservers: list[str],
+    transport: Any,
+) -> ActiveDnsInventoryZoneTransferResult:
+    candidates = [
+        nameserver
+        for nameserver in authoritative_nameservers[:ACTIVE_DNS_INVENTORY_AXFR_MAX_NAMESERVERS]
+        if isinstance(nameserver, str) and nameserver.strip()
+    ]
+    if not candidates:
+        return ActiveDnsInventoryZoneTransferResult(status="no_authoritative_nameservers")
+
+    last_result = ActiveDnsInventoryZoneTransferResult(status="unavailable", reason_code="zone_transfer_unavailable")
+    for nameserver in candidates:
+        try:
+            result = _coerce_zone_transfer_result(transport.transfer(domain, nameserver))
+        except TimeoutError:
+            result = ActiveDnsInventoryZoneTransferResult(status="timed_out", reason_code="zone_transfer_timed_out")
+        except PermissionError:
+            result = ActiveDnsInventoryZoneTransferResult(status="refused", reason_code="zone_transfer_refused")
+        except ValueError:
+            result = ActiveDnsInventoryZoneTransferResult(status="malformed_response", reason_code="zone_transfer_malformed_response")
+        except OSError:
+            result = ActiveDnsInventoryZoneTransferResult(status="unavailable", reason_code="zone_transfer_unavailable")
+        except Exception:
+            result = ActiveDnsInventoryZoneTransferResult(status="unavailable", reason_code="zone_transfer_unavailable")
+        if result.status == "zone_transfer_complete":
+            return result
+        last_result = result
+    return last_result
+
+
+def _coerce_zone_transfer_result(value: Any) -> ActiveDnsInventoryZoneTransferResult:
+    if isinstance(value, ActiveDnsInventoryZoneTransferResult):
+        return _bounded_zone_transfer_result(value)
+    if isinstance(value, list):
+        return _bounded_zone_transfer_result(
+            ActiveDnsInventoryZoneTransferResult(status="zone_transfer_complete", records=_coerce_records(value))
+        )
+    if isinstance(value, tuple):
+        return _bounded_zone_transfer_result(
+            ActiveDnsInventoryZoneTransferResult(status="zone_transfer_complete", records=_coerce_records(list(value)))
+        )
+    if isinstance(value, dict):
+        status_value = str(value.get("status") or "unavailable")
+        records_value = value.get("records") if isinstance(value.get("records"), list) else []
+        return _bounded_zone_transfer_result(
+            ActiveDnsInventoryZoneTransferResult(
+                status=status_value,
+                records=_coerce_records(records_value),
+                reason_code=str(value.get("reason_code")) if value.get("reason_code") is not None else None,
+                truncated=bool(value.get("truncated", False)),
+                records_received_count=value.get("records_received_count", 0) if isinstance(value.get("records_received_count", 0), int) else 0,
+                records_retained_count=value.get("records_retained_count", 0) if isinstance(value.get("records_retained_count", 0), int) else 0,
+                bytes_received=value.get("bytes_received", 0) if isinstance(value.get("bytes_received", 0), int) else 0,
+            )
+        )
+    return ActiveDnsInventoryZoneTransferResult(status="unavailable", reason_code="zone_transfer_result_invalid")
+
+
+def _bounded_zone_transfer_result(result: ActiveDnsInventoryZoneTransferResult) -> ActiveDnsInventoryZoneTransferResult:
+    allowed_statuses = {
+        "refused",
+        "authorization_required",
+        "no_authoritative_nameservers",
+        "unavailable",
+        "timed_out",
+        "malformed_response",
+        "record_limit_exceeded",
+        "zone_transfer_complete",
+    }
+    status_value = result.status if result.status in allowed_statuses else "unavailable"
+    filtered_records = tuple(record for record in result.records if record.record_type in ACTIVE_DNS_INVENTORY_ALLOWED_RECORD_TYPES)
+    received_count = result.records_received_count or len(filtered_records)
+    truncated = result.truncated or received_count > ACTIVE_DNS_INVENTORY_AXFR_MAX_RECORDS
+    retained_records = filtered_records[:ACTIVE_DNS_INVENTORY_AXFR_MAX_RECORDS]
+    if truncated and status_value == "zone_transfer_complete":
+        status_value = "record_limit_exceeded"
+    if status_value == "zone_transfer_complete" and not retained_records:
+        status_value = "unavailable"
+    return ActiveDnsInventoryZoneTransferResult(
+        status=status_value,
+        records=retained_records,
+        reason_code=result.reason_code,
+        truncated=truncated,
+        records_received_count=received_count,
+        records_retained_count=len(retained_records),
+        bytes_received=max(result.bytes_received, 0),
+    )
+
+
+def _public_zone_transfer_summary(
+    result: ActiveDnsInventoryZoneTransferResult,
+    *,
+    nameservers_considered: int,
+    nameservers_attempted: int,
+) -> dict[str, Any]:
+    attempted = nameservers_attempted > 0
+    reason_code = result.reason_code or result.status
+    summary = {
+        "attempted": attempted,
+        "status": result.status,
+        "nameservers_considered": nameservers_considered,
+        "nameservers_attempted": nameservers_attempted,
+        "records_received_count": result.records_received_count,
+        "records_retained_count": result.records_retained_count,
+        "truncated": result.truncated,
+    }
+    if result.status != "zone_transfer_complete":
+        summary["reason_code"] = reason_code
+    if result.status == "zone_transfer_complete":
+        summary["interpretation"] = "zone transfer accepted by authoritative server / high-risk configuration review indicator"
+    return summary
+
+
+def _group_records_by_type(records: tuple[ActiveDnsInventoryRecord, ...]) -> dict[str, list[ActiveDnsInventoryRecord]]:
+    grouped: dict[str, list[ActiveDnsInventoryRecord]] = {record_type: [] for record_type in ACTIVE_DNS_INVENTORY_ALLOWED_RECORD_TYPES}
+    for record in records:
+        if record.record_type not in ACTIVE_DNS_INVENTORY_ALLOWED_RECORD_TYPES:
+            continue
+        grouped.setdefault(record.record_type, []).append(record)
+    return grouped
 
 
 def _public_record_group(records: list[ActiveDnsInventoryRecord]) -> dict[str, Any]:
@@ -480,6 +691,102 @@ def _query_udp_dns(nameserver: str, name: str, record_type: str, *, timeout_seco
             raise TimeoutError("dns query timed out") from exc
 
     return _parse_dns_response(response, packet_id, record_type)
+
+
+def _query_tcp_axfr(
+    nameserver: str,
+    domain: str,
+    *,
+    timeout_seconds: float,
+    max_bytes: int,
+    max_records: int,
+) -> ActiveDnsInventoryZoneTransferResult:
+    packet_id = (hash((domain, "AXFR")) & 0xFFFF) or 1
+    query = _build_dns_query(packet_id, domain, _DNS_QTYPE_AXFR)
+    framed_query = struct.pack("!H", len(query)) + query
+    records: list[ActiveDnsInventoryRecord] = []
+    bytes_received = 0
+
+    try:
+        with socket.create_connection((nameserver, _DNS_PORT), timeout=timeout_seconds) as sock:
+            sock.settimeout(timeout_seconds)
+            sock.sendall(framed_query)
+            while True:
+                length_prefix = _recv_exactly(sock, 2)
+                if not length_prefix:
+                    break
+                message_length = struct.unpack("!H", length_prefix)[0]
+                if message_length <= 0:
+                    break
+                bytes_received += message_length
+                if bytes_received > max_bytes:
+                    return ActiveDnsInventoryZoneTransferResult(
+                        status="record_limit_exceeded",
+                        records=tuple(records[:max_records]),
+                        reason_code="zone_transfer_response_limit_exceeded",
+                        truncated=True,
+                        records_received_count=len(records),
+                        records_retained_count=min(len(records), max_records),
+                        bytes_received=bytes_received,
+                    )
+                packet = _recv_exactly(sock, message_length)
+                if len(packet) != message_length:
+                    return ActiveDnsInventoryZoneTransferResult(
+                        status="malformed_response",
+                        reason_code="zone_transfer_short_response",
+                        records=tuple(records[:max_records]),
+                        truncated=True,
+                        records_received_count=len(records),
+                        records_retained_count=min(len(records), max_records),
+                        bytes_received=bytes_received,
+                    )
+                result = _parse_dns_response(packet, packet_id, "AXFR")
+                if result.error_code == "dns_rcode_5":
+                    return ActiveDnsInventoryZoneTransferResult(status="refused", reason_code="zone_transfer_refused", bytes_received=bytes_received)
+                if result.status == "error":
+                    return ActiveDnsInventoryZoneTransferResult(status="unavailable", reason_code=result.error_code or "zone_transfer_unavailable", bytes_received=bytes_received)
+                records.extend(result.records)
+                if len(records) > max_records or result.truncated:
+                    return ActiveDnsInventoryZoneTransferResult(
+                        status="record_limit_exceeded",
+                        records=tuple(records[:max_records]),
+                        reason_code="zone_transfer_record_limit_exceeded",
+                        truncated=True,
+                        records_received_count=len(records),
+                        records_retained_count=min(len(records), max_records),
+                        bytes_received=bytes_received,
+                    )
+                if _zone_transfer_has_terminal_soa(records, domain):
+                    break
+    except socket.timeout as exc:
+        raise TimeoutError("zone transfer timed out") from exc
+
+    if not records:
+        return ActiveDnsInventoryZoneTransferResult(status="unavailable", reason_code="zone_transfer_empty_response", bytes_received=bytes_received)
+    return ActiveDnsInventoryZoneTransferResult(
+        status="zone_transfer_complete",
+        records=tuple(records),
+        records_received_count=len(records),
+        records_retained_count=len(records),
+        bytes_received=bytes_received,
+    )
+
+
+def _recv_exactly(sock: socket.socket, length: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = length
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _zone_transfer_has_terminal_soa(records: list[ActiveDnsInventoryRecord], domain: str) -> bool:
+    soa_records = [record for record in records if record.record_type == "SOA" and record.name.rstrip(".").lower() == domain]
+    return len(soa_records) >= 2
 
 
 def _build_dns_query(packet_id: int, name: str, qtype: int) -> bytes:
