@@ -5071,6 +5071,30 @@ def test_active_nmap_basic_boundary_response_validator_detects_policy_drift_port
     assert response["observations"] == []
 
 
+def test_active_nmap_basic_boundary_response_validator_rejects_unallowlisted_state_and_reason():
+    for observation in (
+        {"port": 443, "protocol": "tcp", "state": "confirmed vulnerability", "reason": "syn-ack"},
+        {"port": 443, "protocol": "tcp", "state": "open", "reason": "service banner token_should_never_render"},
+    ):
+        response = validate_active_nmap_basic_boundary_response(
+            {
+                "status": "completed",
+                "profile": "tcp_connect_small",
+                "manual_validation_required": True,
+                "result_interpretation": "observed_exposure_review_indicator",
+                "observations": [observation],
+            },
+            accepted_ports=(443,),
+        )
+
+        assert response["status"] == "malformed"
+        assert response["errors"] == ["malformed_output"]
+        assert response["observations"] == []
+        serialized = json.dumps(response, sort_keys=True)
+        assert "confirmed vulnerability" not in serialized
+        assert "token_should_never_render" not in serialized
+
+
 def test_active_nmap_basic_boundary_response_validator_blocks_oversized_payload():
     response = validate_active_nmap_basic_boundary_response(
         {
@@ -5239,6 +5263,26 @@ async def test_active_tools_health_client_unconfigured_returns_controlled_error(
         "nmap_executed": None,
         "error_code": "active_tools_unconfigured",
     }
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_rejects_non_internal_url_without_request():
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return Response(200, json=make_active_tools_health_payload())
+
+    for url in (
+        "https://example.com",
+        "http://active-tools:8080/private/path",
+        "http://user:pass@active-tools:8080",
+    ):
+        result = await check_active_tools_health(url, transport=MockTransport(handler))
+        assert result["available"] is False
+        assert result["error_code"] == "active_tools_unconfigured"
+
+    assert calls == []
 
 
 @pytest.mark.anyio
@@ -5473,6 +5517,18 @@ async def test_active_tools_nmap_basic_client_accepts_real_minimal_contract_and_
 async def test_active_tools_nmap_basic_client_rejects_real_response_policy_drift_or_raw_output():
     dangerous_responses = [
         make_active_tools_nmap_basic_real_response(observations=[{"port": 22, "protocol": "tcp", "state": "open"}]),
+        make_active_tools_nmap_basic_real_response(
+            observations=[
+                {
+                    "port": 443,
+                    "protocol": "tcp",
+                    "state": "confirmed vulnerability",
+                    "reason": "syn-ack",
+                    "manual_validation_required": True,
+                    "result_interpretation": "observed_exposure_review_indicator",
+                }
+            ]
+        ),
         make_active_tools_nmap_basic_real_response(raw_xml="<nmaprun args='nmap -sT example.invalid'/>"),
         make_active_tools_nmap_basic_real_response(execution_metadata={"executor": "active_nmap_basic", "raw_command": "nmap -sT example.invalid"}),
         make_active_tools_nmap_basic_real_response(target_input_allowed=True),
@@ -5532,6 +5588,31 @@ async def test_active_tools_nmap_basic_client_unconfigured_returns_controlled_er
     assert result["status"] == "failed"
     assert result["error_code"] == "active_tools_unconfigured"
     assert "example.invalid" not in json.dumps(result, sort_keys=True)
+
+
+@pytest.mark.anyio
+async def test_active_tools_nmap_basic_client_rejects_non_internal_url_without_request():
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return Response(200, json=make_active_tools_nmap_basic_response())
+
+    for url in (
+        "https://example.com",
+        "http://active-tools:8080/private/path",
+        "http://user:pass@active-tools:8080",
+    ):
+        result = await run_active_nmap_basic(
+            url,
+            make_active_tools_nmap_basic_request(),
+            transport=MockTransport(handler),
+        )
+        assert result["available"] is False
+        assert result["error_code"] == "active_tools_unconfigured"
+        assert "example.invalid" not in json.dumps(result, sort_keys=True)
+
+    assert calls == []
 
 
 @pytest.mark.anyio
@@ -5953,6 +6034,52 @@ async def test_active_nmap_basic_lifecycle_skeleton_rejects_dangerous_client_fla
         assert result["nmap_executed"] is False
         assert result["network_requests_sent"] == 0
         assert "example.invalid" not in json.dumps(result, sort_keys=True)
+
+
+@pytest.mark.anyio
+async def test_active_nmap_basic_lifecycle_skeleton_rejects_unallowlisted_real_observation_values(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_TOOLS_URL", "http://active-tools:8080")
+    settings = load_settings()
+    plan = make_active_nmap_lifecycle_plan(targets=["192.168.56.10"], ports=[443])
+
+    for observation in (
+        {
+            "port": 443,
+            "protocol": "tcp",
+            "state": "confirmed vulnerability",
+            "reason": "syn-ack",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+        },
+        {
+            "port": 443,
+            "protocol": "tcp",
+            "state": "open",
+            "reason": "service banner token_should_never_render",
+            "manual_validation_required": True,
+            "result_interpretation": "observed_exposure_review_indicator",
+        },
+    ):
+        real_client = FakeActiveToolsRealNmapBasicClient(
+            make_active_tools_nmap_basic_real_client_result(observations=[observation])
+        )
+        result = await run_active_nmap_basic_lifecycle_skeleton(
+            settings,
+            plan,
+            client=real_client,
+            internal_approval_confirmed=True,
+            fake_client_approved=False,
+            active_tools_real_client_approved=True,
+        )
+
+        assert result["lifecycle_state"] == "client_error_controlled"
+        assert result["reason"] == "unsafe_client_result"
+        assert result["observations"] == []
+        serialized = json.dumps(result, sort_keys=True)
+        assert "confirmed vulnerability" not in serialized
+        assert "token_should_never_render" not in serialized
 
 
 def test_active_nmap_basic_lifecycle_skeleton_source_has_only_bounded_route_integration():

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from ipaddress import ip_address
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 import httpx
 
@@ -529,7 +531,45 @@ def _active_tools_nmap_basic_error(
 def _normalize_active_tools_base_url(base_url: str | None) -> str:
     if not isinstance(base_url, str):
         return ""
-    return base_url.strip().rstrip("/")
+    candidate = base_url.strip().rstrip("/")
+    if not candidate:
+        return ""
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return ""
+    if parsed.username or parsed.password or parsed.params or parsed.query or parsed.fragment:
+        return ""
+    if parsed.path not in {"", "/"}:
+        return ""
+    if not _is_internal_active_tools_host(parsed.hostname):
+        return ""
+    return candidate
+
+
+def _is_internal_active_tools_host(hostname: str) -> bool:
+    host = hostname.strip().lower().rstrip(".")
+    if not host:
+        return False
+    if host in {"active-tools", "localhost"}:
+        return True
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return _is_internal_service_name(host)
+    return address.is_loopback or address.is_private
+
+
+def _is_internal_service_name(host: str) -> bool:
+    if len(host) > 253:
+        return False
+    labels = host.split(".")
+    if any(not label or len(label) > 63 for label in labels):
+        return False
+    if any(not all(char.isalnum() or char == "-" for char in label) for label in labels):
+        return False
+    if len(labels) == 1:
+        return False
+    return host.endswith((".internal", ".local", ".localhost"))
 
 
 def _safe_status(value: Any) -> str | None:

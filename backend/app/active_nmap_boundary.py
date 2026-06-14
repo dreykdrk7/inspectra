@@ -85,6 +85,36 @@ ACTIVE_NMAP_BASIC_BOUNDARY_SENSITIVE_FIELDS = {
     "version",
     "xml",
 }
+ACTIVE_NMAP_BASIC_BOUNDARY_ALLOWED_PORT_STATES = {
+    "closed",
+    "closed|filtered",
+    "filtered",
+    "open",
+    "open|filtered",
+    "unknown",
+    "unfiltered",
+}
+ACTIVE_NMAP_BASIC_BOUNDARY_ALLOWED_STATE_REASONS = {
+    "admin-prohibited",
+    "arp-response",
+    "conn-refused",
+    "echo-reply",
+    "host-prohibited",
+    "host-unreach",
+    "localhost-response",
+    "net-prohibited",
+    "net-unreach",
+    "no-response",
+    "no-responses",
+    "port-unreach",
+    "proto-response",
+    "reset",
+    "reset-ttl",
+    "syn-ack",
+    "timestamp-reply",
+    "udp-response",
+    "user-set",
+}
 ACTIVE_NMAP_BASIC_BOUNDARY_CONTROLLED_ERROR_CODES = {
     "active_tools_unavailable",
     "active_tools_timeout",
@@ -238,7 +268,7 @@ def _safe_observations(value: Any, *, accepted_ports: tuple[int, ...] | list[int
         if str(protocol).lower() != "tcp":
             return [], "unsupported_shape"
         state = item.get("state")
-        if not isinstance(state, str) or not state:
+        if not isinstance(state, str) or state not in ACTIVE_NMAP_BASIC_BOUNDARY_ALLOWED_PORT_STATES:
             return [], "malformed_output"
         observation = {
             "port": port,
@@ -248,8 +278,10 @@ def _safe_observations(value: Any, *, accepted_ports: tuple[int, ...] | list[int
             "result_interpretation": "observed_exposure_review_indicator",
         }
         reason = item.get("reason")
-        if isinstance(reason, str) and reason:
+        if isinstance(reason, str) and reason in ACTIVE_NMAP_BASIC_BOUNDARY_ALLOWED_STATE_REASONS:
             observation["reason"] = reason
+        elif reason is not None:
+            return [], "malformed_output"
         observations.append(observation)
     return observations, None
 

@@ -119,6 +119,40 @@ _ALLOWED_FAKE_OBSERVATION_FIELDS = frozenset(
         "state",
     }
 )
+_ALLOWED_PORT_STATES = frozenset(
+    {
+        "closed",
+        "closed|filtered",
+        "filtered",
+        "open",
+        "open|filtered",
+        "unknown",
+        "unfiltered",
+    }
+)
+_ALLOWED_STATE_REASONS = frozenset(
+    {
+        "admin-prohibited",
+        "arp-response",
+        "conn-refused",
+        "echo-reply",
+        "host-prohibited",
+        "host-unreach",
+        "localhost-response",
+        "net-prohibited",
+        "net-unreach",
+        "no-response",
+        "no-responses",
+        "port-unreach",
+        "proto-response",
+        "reset",
+        "reset-ttl",
+        "syn-ack",
+        "timestamp-reply",
+        "udp-response",
+        "user-set",
+    }
+)
 _ALLOWED_FAKE_EXECUTION_METADATA_FIELDS = frozenset({"duration_ms", "executor", "nmap_executed"})
 _ALLOWED_FAKE_STATUSES = frozenset(
     {"completed", "failed", "timed_out", "nmap_missing", "malformed", "unsupported_shape", "blocked"}
@@ -513,7 +547,7 @@ def _validated_fake_observations(
         if item.get("result_interpretation") != _SAFE_RESULT_INTERPRETATION:
             return [], "unsupported_shape"
         state = item.get("state")
-        if not isinstance(state, str) or not state:
+        if not isinstance(state, str) or state not in _ALLOWED_PORT_STATES:
             return [], "malformed"
         observation = {
             "port": port,
@@ -523,8 +557,10 @@ def _validated_fake_observations(
             "result_interpretation": _SAFE_RESULT_INTERPRETATION,
         }
         reason = item.get("reason")
-        if isinstance(reason, str) and reason:
+        if isinstance(reason, str) and reason in _ALLOWED_STATE_REASONS:
             observation["reason"] = reason
+        elif reason is not None:
+            return [], "malformed"
         observations.append(observation)
     return observations, None
 

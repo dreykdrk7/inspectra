@@ -285,6 +285,36 @@ def test_fake_response_with_unsafe_observation_semantics_is_controlled(observati
     assert_no_sensitive_output(response)
 
 
+@pytest.mark.parametrize(
+    "observation_override",
+    [
+        {"state": "confirmed vulnerability"},
+        {"reason": "service banner token_should_never_render"},
+    ],
+)
+def test_fake_response_with_unallowlisted_observation_values_is_malformed(observation_override):
+    observation = {
+        "port": 443,
+        "protocol": "tcp",
+        "state": "open",
+        "reason": "syn-ack",
+        "manual_validation_required": True,
+        "result_interpretation": "observed_exposure_review_indicator",
+    }
+    observation.update(observation_override)
+
+    def fake_executor(request):
+        return completed_fake_response(observations=[observation])
+
+    response = handle_active_nmap_basic_no_scan(make_boundary_request(), executor=fake_executor)
+
+    assert response["status"] == "malformed"
+    assert response["errors"] == ["malformed"]
+    assert "confirmed vulnerability" not in json.dumps(response, sort_keys=True)
+    assert "token_should_never_render" not in json.dumps(response, sort_keys=True)
+    assert_no_sensitive_output(response)
+
+
 def test_fake_response_with_unexpected_port_is_policy_drift():
     def fake_executor(request):
         return completed_fake_response(

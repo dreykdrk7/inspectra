@@ -69,6 +69,36 @@ ACTIVE_NMAP_BASIC_LIFECYCLE_FORBIDDEN_RESULT_KEYS = {
     "versions",
     "xml",
 }
+ACTIVE_NMAP_BASIC_LIFECYCLE_ALLOWED_PORT_STATES = {
+    "closed",
+    "closed|filtered",
+    "filtered",
+    "open",
+    "open|filtered",
+    "unknown",
+    "unfiltered",
+}
+ACTIVE_NMAP_BASIC_LIFECYCLE_ALLOWED_STATE_REASONS = {
+    "admin-prohibited",
+    "arp-response",
+    "conn-refused",
+    "echo-reply",
+    "host-prohibited",
+    "host-unreach",
+    "localhost-response",
+    "net-prohibited",
+    "net-unreach",
+    "no-response",
+    "no-responses",
+    "port-unreach",
+    "proto-response",
+    "reset",
+    "reset-ttl",
+    "syn-ack",
+    "timestamp-reply",
+    "udp-response",
+    "user-set",
+}
 ACTIVE_NMAP_BASIC_NO_LIVE_PERSISTABLE_STATES = {
     "blocked_missing_approval",
     "blocked_unconfigured",
@@ -219,7 +249,7 @@ def _normalize_lifecycle_client_result(client_result: Mapping[str, Any], *, hand
         return result
 
     if not _client_result_is_no_live_safe(client_result):
-        if not _client_result_is_real_safe(client_result):
+        if not _client_result_is_real_safe(client_result, handoff_plan=handoff_plan):
             result = _lifecycle_state("client_error_controlled", "unsafe_client_result")
             result["client_invoked"] = True
             result["active_tools_client_available"] = True
@@ -515,7 +545,7 @@ def _client_result_is_no_live_safe(client_result: Mapping[str, Any]) -> bool:
     )
 
 
-def _client_result_is_real_safe(client_result: Mapping[str, Any]) -> bool:
+def _client_result_is_real_safe(client_result: Mapping[str, Any], *, handoff_plan: ActiveNmapBasicHandoffPlan) -> bool:
     observations = client_result.get("observations")
     return (
         client_result.get("status") in {
@@ -542,6 +572,7 @@ def _client_result_is_real_safe(client_result: Mapping[str, Any]) -> bool:
         and isinstance(client_result.get("nmap_executed"), bool)
         and isinstance(client_result.get("evidence_available"), bool)
         and isinstance(observations, list)
+        and _safe_real_observations(observations, handoff_plan=handoff_plan) == observations
         and client_result.get("error_code") is None
         and not _real_route_result_has_forbidden_key(client_result)
     )
@@ -766,7 +797,7 @@ def _safe_real_observations(value: Any, *, handoff_plan: ActiveNmapBasicHandoffP
         if str(item.get("protocol", "")).lower() != "tcp":
             return []
         state = item.get("state")
-        if not isinstance(state, str) or not state:
+        if not isinstance(state, str) or state not in ACTIVE_NMAP_BASIC_LIFECYCLE_ALLOWED_PORT_STATES:
             return []
         observation = {
             "port": port,
@@ -776,8 +807,10 @@ def _safe_real_observations(value: Any, *, handoff_plan: ActiveNmapBasicHandoffP
             "result_interpretation": "observed_exposure_review_indicator",
         }
         reason = item.get("reason")
-        if isinstance(reason, str) and reason:
+        if isinstance(reason, str) and reason in ACTIVE_NMAP_BASIC_LIFECYCLE_ALLOWED_STATE_REASONS:
             observation["reason"] = reason
+        elif reason is not None:
+            return []
         observations.append(observation)
     return observations
 
