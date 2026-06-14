@@ -329,6 +329,8 @@ The Active TLS Basic backend real-minimal persistence decision is `ACTIVE_TLS_BA
 
 The Active TLS Basic frontend and product smoke decision is `ACTIVE_TLS_BASIC_04_FRONTEND_AND_E2E_PRODUCT_SMOKE_PASSED`. The frontend now has a separate Active / TLS basic panel that sends the exact `live_tls_basic` / `tls_handshake_summary` contract, receives the backend `202 JobRecord`, selects it, refreshes the job list, and renders TLS handshake and certificate-expiry review indicators through a dedicated report component. Frontend Raw JSON applies defensive redaction for raw targets, PEM/DER material, raw exceptions, credentials, headers, cookies, and tokens. This adds no new TLS runtime outside `backend/app/active_tls_basic.py`, no OpenSSL shell, subprocess, Nmap, Docker, HTTP/crawling, archive/run-all, or `tools/runner/main.py` behavior.
 
+The Active TLS Basic v0 functional closeout decision is `ACTIVE_TLS_BASIC_05_FUNCTIONAL_REVIEW_AND_CLOSEOUT_ACCEPTED`. The architecture is frozen as a bounded self-hosted/local/private v0: backend owns auth, owner scope, request validation, target policy, one-handshake execution, storage, reporting, and redaction; `socket`/`ssl` use remains isolated to `backend/app/active_tls_basic.py`; jobs are owner-scoped with `file_id: null`; and frontend/report/Raw JSON surfaces render TLS configuration review indicators with manual validation required. It adds no new runtime feature, OpenSSL command, subprocess, Nmap, Docker/Compose, HTTP/crawling, credential/header/cookie/token input, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
+
 ## Components
 
 ### Backend

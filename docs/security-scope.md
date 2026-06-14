@@ -301,6 +301,8 @@ The Active TLS Basic backend real-minimal job persistence is recorded in `docs/f
 
 The Active TLS Basic frontend and product smoke is recorded in `docs/future/active-tls-basic-frontend-and-e2e-product-smoke.md`.
 
+The Active TLS Basic v0 functional closeout is recorded in `docs/future/active-tls-basic-v0-functional-closeout.md`.
+
 Current decision: `ACTIVE_NETWORK_SCOPE_FROZEN_DOCS_FIRST_NO_RUNTIME`.
 
 Runbook decision: `ACTIVE_RUNBOOK_THREAT_MODEL_FROZEN_NO_RUNTIME`.
@@ -461,6 +463,8 @@ Active TLS Basic backend real-minimal job persistence decision: `ACTIVE_TLS_BASI
 
 Active TLS Basic frontend and product smoke decision: `ACTIVE_TLS_BASIC_04_FRONTEND_AND_E2E_PRODUCT_SMOKE_PASSED`.
 
+Active TLS Basic v0 functional closeout decision: `ACTIVE_TLS_BASIC_05_FUNCTIONAL_REVIEW_AND_CLOSEOUT_ACCEPTED`.
+
 This means:
 
 - The backend endpoint `POST /active/network/dry-run` exists but is disabled by default through `INSPECTRA_ACTIVE_DRY_RUN_ENABLED=false`.
@@ -554,6 +558,7 @@ This means:
 - Active TLS Basic backend contract gate exists as `POST /active/network/tls-basic`, disabled by default through `INSPECTRA_ACTIVE_TLS_BASIC_ENABLED=false`. It validates only the exact `live_tls_basic` / `tls_handshake_summary` contract, one explicit local/private/self-hosted target, one bounded TLS-basic port, and required confirmations. Enabled valid requests return controlled `not_executed` metadata with `tls_handshake_attempted: false`, `network_requests_sent: 0`, `job_created: false`, and `storage_persisted: false`. It adds no TLS connection, sockets, Python `ssl`, OpenSSL command, Nmap, Docker, DNS checks, HTTP requests, crawling, credential validation, persistent jobs, storage, frontend runtime, reports/exports, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
 - Active TLS Basic backend real-minimal job persistence is now enabled only behind `INSPECTRA_ACTIVE_TLS_BASIC_ENABLED=true`, exact contract validation, target policy acceptance, and explicit confirmations. The route creates owner-scoped `active_tls_basic` jobs with `file_id: null`, stores `[REDACTED_TARGET]`, and records only bounded TLS handshake status, protocol/cipher, certificate subject/issuer/SAN-count/sample/date metadata, controlled reason codes, manual validation, and TLS configuration review-indicator wording. Python `socket`/`ssl` are confined to `backend/app/active_tls_basic.py`; there is no OpenSSL shell, subprocess, Nmap, Docker runtime, HTTP request, crawling, credential validation, target expansion, frontend runtime, archive/run-all, `tools/runner/main.py`, raw target, raw payload, PEM/DER, full chain, raw exception text, credential, header, cookie, token, vulnerability, exploitability, target-safety, or complete-coverage claim.
 - Active TLS Basic frontend and product smoke connects the UI to the accepted backend job contract only. The frontend sends the exact bounded contract, receives and selects the returned owner-scoped `active_tls_basic` `JobRecord`, refreshes jobs, and renders TLS handshake/certificate expiry review indicators with redacted Raw JSON. Frontend defensive redaction removes raw target, PEM/DER, raw exception, credential, header, cookie, and token-shaped content from display surfaces. It adds no new target execution, OpenSSL command, subprocess, Nmap, Docker, HTTP/crawling, credential validation, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
+- Active TLS Basic v0 functional closeout freezes the accepted boundary as disabled-by-default, explicit opt-in, local/private/self-hosted, one target, one bounded TLS-basic port, one structured Python TLS handshake attempt inside `backend/app/active_tls_basic.py`, owner-scoped `file_id: null` jobs, redacted target/certificate surfaces, and TLS configuration review-indicator wording with manual validation required. It does not add target expansion, alternate-port retry behavior, redirects, HTTP/crawling, DNS expansion, OpenSSL command invocation, subprocess, Nmap, Docker/Compose runtime, credential/header/cookie/token/client-certificate input, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
 
 The future Active block must reject exploitation, exploit payloads, stealth, evasion, brute force, credential attacks, credential validation, fuzzing, destructive checks, DoS/stress behavior, broad scans, and third-party scanning without authorization.
 

@@ -313,3 +313,13 @@ ACTIVE_TLS_BASIC_01_DESIGN_FROZEN
 The `active_tls_basic` capability is designed as a future bounded, opt-in,
 local/private/self-hosted TLS review indicator for one explicit authorized
 target. No runtime implementation is added by this phase.
+
+## Functional v0 Closeout
+
+The accepted v0 boundary is closed in
+`docs/future/active-tls-basic-v0-functional-closeout.md` with decision
+`ACTIVE_TLS_BASIC_05_FUNCTIONAL_REVIEW_AND_CLOSEOUT_ACCEPTED`. That closeout
+keeps the original design constraints: disabled by default, exact contract, one
+authorized local/private/self-hosted target, one bounded TLS-basic port,
+owner-scoped redacted jobs, review-indicator wording, and no archive/run-all or
+`tools/runner/main.py` integration.
