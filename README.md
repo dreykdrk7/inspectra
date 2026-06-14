@@ -115,7 +115,8 @@ Reference docs:
 49. Active Nmap Basic Microphase 54 wires the minimal real path through backend -> internal `active-tools` -> bounded Nmap executor only when the backend feature flag, internal active-tools URL, request contract, target policy, confirmations, and active-tools execution flag are all explicitly enabled. Jobs remain owner-scoped, target-redacted, `file_id: null`, and report minimal TCP observations only as observed exposure / review indicators requiring manual validation; the backend still runs no subprocesses and the flow adds no public scanner behavior, archive/run-all, `tools/runner/main.py`, release, tag, or push state.
 50. Active Nmap Basic Microphase 55 reviews and hardens the real minimal integration. Backend active-tools URLs now fail closed unless they are internal/local service URLs, observation state/reason values are allowlisted across active-tools, backend boundary, and lifecycle layers, and review evidence confirms backend has no Nmap/subprocess/Docker execution path while storage, reports, frontend, and Compose remain redaction-first and bounded.
 51. Active Nmap Basic Microphase 56 closes Active / Nmap basic v0 as a functional minimum for self-hosted/local/private use: disabled by default, explicit opt-in, backend policy/lifecycle/storage/reporting authority, Nmap execution isolated to internal `active-tools`, owner-scoped redacted jobs, redaction-first UI/reports/Raw JSON, and observed TCP exposure / review-indicator wording with manual validation required.
-52. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
+52. Active Nmap Basic Microphase 57 adds operational usage guidance for local/private/self-hosted deployments: required flags, internal `active-tools` URL requirements, static Compose config review, targetless health checks, bounded target policy, loopback/local example shape, troubleshooting, and redaction/report wording. It adds no runtime features, Nmap execution, Docker runtime smoke, archive/run-all, release, tag, or push state.
+53. Any future `active_nmap_basic` expansion must be separately approved, disabled by default, opt-in, local/private/self-hosted, explicitly authorized, bounded, redaction-first, and worded as observed exposure or review indicators.
 
 ## What This MVP Does
 
@@ -335,6 +336,8 @@ Active Nmap Basic Microphase 48 is documented in `docs/future/active-nmap-basic-
 
 Active Nmap Basic v0 functional closeout is documented in `docs/future/active-nmap-basic-v0-functional-closeout.md` with decision `ACTIVE_NMAP_BASIC_56_ACTIVE_NMAP_V0_FUNCTIONAL_CLOSEOUT_ACCEPTED`. It closes the bounded v0 capability after real-minimal integration and boundary review: frontend submit contract, backend policy/lifecycle/storage/reporting, internal/local active-tools calls only, Nmap isolated to active-tools, owner-scoped redacted jobs, redaction-first reporting/Raw JSON/frontend, observed TCP exposure / review-indicator wording, manual validation required, and disabled-by-default feature posture. It does not approve public scanner/SaaS behavior, arbitrary public targets, unfrozen LAN/VPS/domain targets, port `80`, broad ranges/CIDR/wildcards, top ports, `-p-`, raw flags, NSE/scripts, service/version or OS detection, UDP/SYN, brute force, exploit scripts, credential validation, crawling, DNS expansion, backend subprocesses, Docker socket, archive/run-all, `tools/runner/main.py`, vulnerability/exploitability/target-safety/full-coverage claims, release, tag, or push state.
 
+Active Nmap Basic v0 operational usage polish is documented in `docs/future/active-nmap-basic-v0-operational-usage.md` with decision `ACTIVE_NMAP_BASIC_57_OPERATIONAL_USAGE_POLISH_ACCEPTED`. It explains how trusted operators enable or disable the backend and internal `active-tools` flags, review the optional active-tools Compose profile, check `GET /health/active-tools`, use only authorized local/private/self-hosted targets, interpret owner-scoped redacted jobs, and troubleshoot controlled disabled/unconfigured/no-live states. This is documentation only and adds no runtime behavior, Docker runtime smoke, Nmap execution, release, tag, or push state.
+
 ## Requirements
 
 - Docker
@@ -444,6 +447,18 @@ The application defaults are intentionally conservative. Docker Compose sets man
 | `VITE_API_BASE_URL` | frontend | `http://localhost:8000` | Browser-facing backend URL used by the React app. |
 
 The `audit-tools` container is attached to the internal Inspectra network and to a separate egress-capable network so `web_basic` can make authorized HTTP/HTTPS requests and `domain_basic`/`subdomain_inventory_basic` can make bounded DNS queries. The runner still does not publish a public port.
+
+### Active / Nmap Basic v0
+
+Active / Nmap basic v0 is an opt-in local/private/self-hosted capability. The backend gate is controlled by `INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED`; real minimal execution also requires `INSPECTRA_ACTIVE_TOOLS_URL` to point to an internal/local active-tools base URL without credentials, path, query, or fragment, and requires `INSPECTRA_ACTIVE_TOOLS_NMAP_BASIC_EXECUTION_ENABLED=true` inside active-tools. The backend never executes Nmap directly.
+
+The optional active-tools Compose example is behind profile `active`, publishes no host ports by default, and can be reviewed statically with:
+
+```bash
+COMPOSE_DISABLE_ENV_FILE=1 docker compose -f docker-compose.active-tools.example.yml --profile active config --no-interpolate
+```
+
+Use `GET /health/active-tools` for targetless active-tools readiness. Approved targets must be authorized and local/private/self-hosted; broad ranges, CIDR, wildcards, top ports, `-p-`, port `80`, raw flags, NSE/scripts, service/version or OS detection, UDP/SYN, brute force, credential validation, crawling, DNS expansion, and arbitrary public target use remain outside v0. Jobs are owner-scoped, `file_id: null`, target-redacted, and reports/Raw JSON/frontend render minimal TCP observations only as observed exposure / review indicators requiring manual validation. See `docs/future/active-nmap-basic-v0-operational-usage.md` for the full operational guide.
 
 ## Use the Web UI
 

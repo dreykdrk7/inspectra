@@ -5279,6 +5279,32 @@ credential validation, crawling, DNS expansion, backend subprocesses, Docker
 socket use, archive/run-all, `tools/runner/main.py`, vulnerability claims,
 release, tag, or push state.
 
+## Microphase 57: Operational Usage Polish
+
+Document:
+
+```text
+docs/future/active-nmap-basic-v0-operational-usage.md
+```
+
+Commit:
+
+```text
+docs(active): add nmap v0 operational usage guide
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_57_OPERATIONAL_USAGE_POLISH_ACCEPTED` records docs-only
+operator guidance for local/private/self-hosted Active / Nmap basic v0 usage.
+It documents backend and active-tools flags, the internal/local
+`INSPECTRA_ACTIVE_TOOLS_URL` boundary, static active-tools Compose config
+review, targetless `/health/active-tools`, enable/disable paths, bounded target
+policy, redacted result semantics, loopback/local example shape, and
+troubleshooting. It adds no runtime features, Nmap execution, Docker runtime
+smoke, target approval, backend/frontend/active-tools code changes,
+archive/run-all, `tools/runner/main.py`, release, tag, or push state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
