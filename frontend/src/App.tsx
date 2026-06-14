@@ -17,6 +17,9 @@ import {
 import { ApiError, api } from "./api";
 import { ActiveDryRunJobReport } from "./ActiveDryRunJobReport";
 import { redactActiveDryRunText } from "./activeDryRunReport";
+import { ActiveDnsInventoryJobReport } from "./ActiveDnsInventoryJobReport";
+import { ActiveDnsInventoryPanel } from "./ActiveDnsInventoryPanel";
+import { redactActiveDnsInventoryText } from "./activeDnsInventoryReport";
 import { ActiveHttpHeaderProbeJobReport } from "./ActiveHttpHeaderProbeJobReport";
 import { redactActiveHttpHeaderProbeText } from "./activeHttpHeaderProbeReport";
 import { ActiveNmapBasicJobReport } from "./ActiveNmapBasicJobReport";
@@ -660,6 +663,11 @@ export function App() {
     await refreshJobs();
   }
 
+  async function handleActiveDnsInventoryJobCreated(job: JobRecord) {
+    setSelectedJob(job);
+    await refreshJobs();
+  }
+
   async function deleteFile(fileId: string) {
     setActionError(null);
     try {
@@ -1089,6 +1097,7 @@ export function App() {
 
         <ActiveNmapBasicPanel health={health} onJobCreated={handleActiveNmapBasicJobCreated} />
         <ActiveTlsBasicPanel onJobCreated={handleActiveTlsBasicJobCreated} />
+        <ActiveDnsInventoryPanel onJobCreated={handleActiveDnsInventoryJobCreated} />
       </section>
 
       <section className="content-grid">
@@ -1261,6 +1270,8 @@ export function App() {
               <ActiveNmapBasicJobReport job={selectedJob} />
             ) : isActiveTlsBasicJob(selectedJob) ? (
               <ActiveTlsBasicJobReport job={selectedJob} />
+            ) : isActiveDnsInventoryJob(selectedJob) ? (
+              <ActiveDnsInventoryJobReport job={selectedJob} />
             ) : selectedJob.audit_type === "pdf_basic" ? (
               <PdfJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "image_basic" ? (
@@ -1475,6 +1486,9 @@ function jobTargetDisplay(job: JobListItem): string {
   if (job.audit_type === "active_tls_basic") {
     return redactActiveTlsBasicText(target);
   }
+  if (job.audit_type === "active_dns_inventory") {
+    return redactActiveDnsInventoryText(target);
+  }
   return target;
 }
 
@@ -1484,6 +1498,10 @@ function isActiveNmapBasicJob(job: JobRecord): boolean {
 
 function isActiveTlsBasicJob(job: JobRecord): boolean {
   return job.audit_type === "active_tls_basic" || job.result?.capability === "active_tls_basic";
+}
+
+function isActiveDnsInventoryJob(job: JobRecord): boolean {
+  return job.audit_type === "active_dns_inventory" || job.result?.capability === "active_dns_inventory";
 }
 
 function acceptForKind(kind: FileRecord["kind"]): string {
@@ -1624,6 +1642,15 @@ function summarizeJob(job: JobListItem): string {
     const protocol = typeof job.summary.protocol === "string" ? job.summary.protocol : "TLS";
     const daysUntilExpiry = typeof job.summary.days_until_expiry === "number" ? job.summary.days_until_expiry : null;
     return `${resultStatus}, ${protocol} review indicator, expiry ${daysUntilExpiry === null ? "N/A" : `${daysUntilExpiry} days`}`;
+  }
+  if (job.audit_type === "active_dns_inventory") {
+    const coverageLevel = typeof job.summary.coverage_level === "string" ? job.summary.coverage_level : "partial_inventory";
+    const recordCount = typeof job.summary.record_count === "number" ? job.summary.record_count : 0;
+    const subdomainCount = typeof job.summary.subdomain_observed_count === "number" ? job.summary.subdomain_observed_count : 0;
+    const spf = job.summary.spf_present === true ? "SPF present" : "SPF absent";
+    const dmarc = job.summary.dmarc_present === true ? "DMARC present" : "DMARC absent";
+    const caa = job.summary.caa_present === true ? "CAA present" : "CAA absent";
+    return `${coverageLevel}, ${recordCount} redacted records, ${spf}, ${dmarc}, ${caa}, ${subdomainCount} bounded subdomains`;
   }
   if (job.audit_type === "django_config_basic") {
     const filesRead = typeof job.summary.files_read === "number" ? job.summary.files_read : 0;

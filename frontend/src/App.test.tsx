@@ -1685,6 +1685,207 @@ describe("App", () => {
     expect(rendered).not.toMatch(/public\s+scanner/i);
   });
 
+  it("creates and opens an Active DNS inventory review indicator job record", async () => {
+    const activeJob = {
+      id: "job-active-dns-inventory-05",
+      audit_type: "active_dns_inventory",
+      file_id: null,
+      target_url: "[REDACTED_DOMAIN]",
+      target_domain: null,
+      status: "completed",
+      created_at: "2026-06-14T10:00:00Z",
+      updated_at: "2026-06-14T10:00:00Z",
+      source_file_deleted_at: null,
+      result: {
+        audit_type: "active_dns_inventory",
+        capability: "active_dns_inventory",
+        mode: "live_dns_inventory",
+        profile: "dns_inventory_authorized",
+        status: "best_effort_inventory",
+        result_status: "best_effort_inventory",
+        coverage_level: "best_effort_inventory",
+        domain: "secret.example.internal",
+        record_types: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"],
+        records: {
+          A: { count: 1, sample: [{ name: "secret.example.internal", type: "A", value: "192.0.2.55", ttl: 300 }] },
+          MX: {
+            count: 1,
+            sample: [{ name: "secret.example.internal", type: "MX", value: "mail.secret.example.internal", ttl: 300, priority: 10 }]
+          },
+          TXT: {
+            count: 2,
+            sample: [{ name: "secret.example.internal", type: "TXT", value: "v=spf1 include:_spf.example.net -all", ttl: 300 }]
+          }
+        },
+        security_records: {
+          spf: { checked: true, present: true, record_value: "v=spf1 include:_spf.example.net -all" },
+          dmarc: { checked: true, present: true, record_value: "v=DMARC1; p=reject" },
+          caa: { checked: true, present: true, record_count: 1, raw_value: "issue ca.example.net" },
+          dkim: { checked: false, status: "not_attempted" }
+        },
+        subdomains: {
+          enabled: true,
+          strategy: "fixed_candidate_allowlist",
+          candidates_checked: 12,
+          query_record_types: ["A", "AAAA", "CNAME"],
+          count: 2,
+          sample: [
+            { name: "www.secret.example.internal", record_types: ["A"], record_count: 1 },
+            { name: "admin.secret.example.internal", record_types: ["CNAME"], record_count: 1 }
+          ],
+          sample_truncated: false
+        },
+        zone_transfer: { attempted: false, status: "not_attempted" },
+        provider_import: { attempted: false, status: "not_attempted" },
+        execution: {
+          dns_queries_sent: 45,
+          subdomain_queries_sent: 36,
+          http_requests_sent: 0,
+          subprocess_invoked: false,
+          nmap_invoked: false,
+          zone_transfer_attempted: false,
+          provider_api_used: false
+        },
+        limits: {
+          domain_value_persisted: false,
+          dns_packets_persisted: false,
+          resolver_logs_persisted: false
+        },
+        raw_dns_packet: "raw_dns_packet token_should_never_render",
+        raw_resolver_log: "raw_resolver_log secret.example.internal 192.0.2.55",
+        provider_api_token: "provider_api_token token_should_never_render",
+        provider_zone_id: "provider-zone-123",
+        credentials: { api_key: "raw-api-key-123456" },
+        headers: { Authorization: "Bearer token_should_never_render" },
+        cookies: "sessionid=secret-session-cookie",
+        tokens: ["token_should_never_render"],
+        legacy: {
+          notes: "confirmed vulnerability exploitable target is safe all records found full DNS inventory public scanner"
+        },
+        surface_caveats: ["Manual validation required."]
+      },
+      error: null
+    };
+    let jobs = [] as unknown[];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/active/network/dns-inventory")) {
+          jobs = [
+            {
+              ...activeJob,
+              result: undefined,
+              error: undefined,
+              summary: {
+                capability: "active_dns_inventory",
+                result_status: "best_effort_inventory",
+                coverage_level: "best_effort_inventory",
+                target_display: "[REDACTED_DOMAIN]",
+                record_count: 4,
+                spf_present: true,
+                dmarc_present: true,
+                caa_present: true,
+                subdomain_observed_count: 2,
+                dns_queries_sent: 45,
+                subdomain_queries_sent: 36
+              }
+            }
+          ];
+          return Promise.resolve(jsonResponse(activeJob, 202));
+        }
+        if (url.endsWith("/jobs")) {
+          return Promise.resolve(jsonResponse(jobs));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+    const heading = await screen.findByRole("heading", { name: "Active / DNS inventory" });
+    const panel = heading.closest("section");
+    expect(panel).not.toBeNull();
+    const scoped = within(panel as HTMLElement);
+
+    fireEvent.change(scoped.getByLabelText("Domain"), { target: { value: "secret.example.internal" } });
+    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to query this domain."));
+    fireEvent.click(scoped.getByLabelText("I confirm this domain is local, private, self-hosted, or owned scope."));
+    fireEvent.click(scoped.getByLabelText("I understand this capability sends bounded live DNS queries if backend policy accepts it."));
+    fireEvent.click(scoped.getByRole("button", { name: /Create DNS inventory job/i }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/active/network/dns-inventory",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    const request = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find(([input]) => String(input).endsWith("/active/network/dns-inventory"))?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(request?.body))).toEqual({
+      mode: "live_dns_inventory",
+      profile: "dns_inventory_authorized",
+      domain: "secret.example.internal",
+      record_types: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"],
+      include_security_records: true,
+      include_subdomain_discovery: true,
+      attempt_zone_transfer: false,
+      authorization_confirmed: true,
+      local_private_or_owned_scope_confirmed: true,
+      live_dns_queries_confirmed: true
+    });
+
+    expect(await scoped.findByText(/DNS configuration review indicator job created/i)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Active / DNS inventory report" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Show redacted Raw JSON"));
+    const rendered = view.container.textContent ?? "";
+    expect(rendered).toContain("best_effort_inventory");
+    expect(rendered).toContain("DNS configuration review indicator");
+    expect(rendered).toContain("best-effort DNS inventory");
+    expect(rendered).toContain("Manual validation required");
+    expect(rendered).toContain("Grouped DNS Records");
+    expect(rendered).toContain("Security Record Indicators");
+    expect(rendered).toContain("Bounded Subdomain Summary");
+    expect(rendered).toContain("[REDACTED_DOMAIN]");
+    expect(rendered).toContain("[REDACTED_DNS_VALUE]");
+    expect(rendered).toContain("[REDACTED_DNS_NAME]");
+    expect(rendered).toContain("not_attempted");
+    expect(rendered).toContain("Raw JSON (redacted)");
+    expect(rendered).toContain("[REDACTED");
+    for (const secret of [
+      "secret.example.internal",
+      "www.secret.example.internal",
+      "admin.secret.example.internal",
+      "mail.secret.example.internal",
+      "192.0.2.55",
+      "_spf.example.net",
+      "ca.example.net",
+      "raw_dns_packet",
+      "raw_resolver_log",
+      "provider_api_token",
+      "provider-zone-123",
+      "token_should_never_render",
+      "raw-api-key-123456"
+    ]) {
+      expect(rendered).not.toContain(secret);
+    }
+    expect(rendered).not.toMatch(/confirmed\s+vulnerability/i);
+    expect(rendered).not.toMatch(/exploitable/i);
+    expect(rendered).not.toMatch(/target\s+is\s+safe/i);
+    expect(rendered).not.toMatch(/all\s+records\s+found/i);
+    expect(rendered).not.toMatch(/full\s+DNS\s+inventory/i);
+    expect(rendered).not.toMatch(/public\s+scanner/i);
+  });
+
   it("renders Active dry-run jobs with redacted target table and report payload", async () => {
     const activeJob = {
       id: "job-active-legacy-1",

@@ -58,6 +58,7 @@ export type AuditType =
   | 'active_http_header_probe'
   | 'active_nmap_basic'
   | 'active_tls_basic'
+  | 'active_dns_inventory'
   | 'django_config_basic'
   | 'docker_config_basic'
   | 'secrets_review_basic'
@@ -154,4 +155,17 @@ export type ActiveTlsBasicRequest = {
   authorization_confirmed: true;
   local_private_scope_confirmed: true;
   live_traffic_confirmed: true;
+};
+
+export type ActiveDnsInventoryRequest = {
+  mode: 'live_dns_inventory';
+  profile: 'dns_inventory_authorized';
+  domain: string;
+  record_types: string[];
+  include_security_records: boolean;
+  include_subdomain_discovery: boolean;
+  attempt_zone_transfer: false;
+  authorization_confirmed: true;
+  local_private_or_owned_scope_confirmed: true;
+  live_dns_queries_confirmed: true;
 };
