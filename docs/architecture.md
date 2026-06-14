@@ -317,6 +317,8 @@ The Active Nmap Basic real minimal integration decision is `ACTIVE_NMAP_BASIC_54
 
 The Active Nmap Basic real minimal integration review decision is `ACTIVE_NMAP_BASIC_55_REAL_MINIMAL_INTEGRATION_REVIEW_PASSED`. The review fixed the active-tools client boundary so configured active-tools URLs must be internal/local service URLs and added allowlisted observation state/reason validation across active-tools, backend boundary, and lifecycle normalization. The reviewed architecture still keeps Nmap execution isolated to `active-tools`; backend remains auth, owner-scope, validation, lifecycle, storage, reporting, and redaction authority without subprocess, Docker SDK, Docker socket, archive/run-all, or `tools/runner/main.py` integration.
 
+The Active Nmap Basic v0 functional closeout decision is `ACTIVE_NMAP_BASIC_56_ACTIVE_NMAP_V0_FUNCTIONAL_CLOSEOUT_ACCEPTED`. It closes the v0 line as a bounded self-hosted/local/private capability: disabled by default, explicit opt-in, frontend bounded submit contract, backend policy/lifecycle/storage/reporting authority, internal/local active-tools calls only, Nmap execution isolated to `active-tools`, owner-scoped redacted jobs with `file_id: null`, and reporting/Raw JSON/frontend wording limited to observed TCP exposure / review indicators requiring manual validation. Public scanner/SaaS behavior, arbitrary public targets, broad target expansion, port `80`, raw flags, NSE/scripts, service/version or OS detection, UDP/SYN, brute force, exploit scripts, credential validation, crawling, DNS expansion, backend subprocesses, Docker socket use, archive/run-all, `tools/runner/main.py`, release, tag, and push state remain not approved.
+
 ## Components
 
 ### Backend

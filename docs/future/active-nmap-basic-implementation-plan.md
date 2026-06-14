@@ -5227,6 +5227,58 @@ rendering. Backend subprocess execution, public active-tools exposure by
 default, raw flags, NSE/scripts, broad scans, DNS expansion, archive/run-all,
 `tools/runner/main.py`, release, tag, and push state remain out of scope.
 
+## Microphase 55: Real Minimal Integration Review
+
+Document:
+
+```text
+docs/future/active-nmap-basic-real-minimal-integration-review.md
+```
+
+Commit:
+
+```text
+fix(active): harden real nmap minimal integration
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_55_REAL_MINIMAL_INTEGRATION_REVIEW_PASSED` records the
+technical review of commit `212399f`. The review found and fixed a real
+`INSPECTRA_ACTIVE_TOOLS_URL` boundary gap by requiring internal/local
+active-tools service URLs, and it hardened TCP observation state/reason
+allowlists across active-tools, backend boundary, and lifecycle layers. Backend
+Nmap/subprocess/Docker execution, public scanner behavior, archive/run-all,
+`tools/runner/main.py`, release, tag, and push state remain out of scope.
+
+## Microphase 56: Active Nmap v0 Functional Closeout
+
+Document:
+
+```text
+docs/future/active-nmap-basic-v0-functional-closeout.md
+```
+
+Commit:
+
+```text
+docs(active): close active nmap v0 functional block
+```
+
+Status:
+
+`ACTIVE_NMAP_BASIC_56_ACTIVE_NMAP_V0_FUNCTIONAL_CLOSEOUT_ACCEPTED` closes Active
+/ Nmap basic v0 as a bounded functional minimum for self-hosted/local/private
+use. The closeout accepts only the disabled-by-default, explicit opt-in,
+internal-active-tools, owner-scoped, target-redacted, redaction-first,
+review-indicator capability. It does not approve public scanner/SaaS behavior,
+arbitrary public targets, unfrozen LAN/VPS/domain targets, port `80`, broad
+ranges/CIDR/wildcards, top ports, `-p-`, raw flags, NSE/scripts,
+service/version or OS detection, UDP/SYN, brute force, exploit scripts,
+credential validation, crawling, DNS expansion, backend subprocesses, Docker
+socket use, archive/run-all, `tools/runner/main.py`, vulnerability claims,
+release, tag, or push state.
+
 ## Cross-Phase Validation Checklist
 
 Every implementation phase should run the smallest relevant subset plus final
