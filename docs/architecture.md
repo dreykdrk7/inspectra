@@ -355,6 +355,8 @@ The Active DNS Inventory authorized AXFR backend review decision is `ACTIVE_DNS_
 
 The Active DNS Inventory authorized AXFR frontend decision is `ACTIVE_DNS_INVENTORY_09_FRONTEND_AUTHORIZED_AXFR_PASSED`. The existing DNS inventory panel now exposes an optional AXFR control that remains off by default and requires a separate `zone_transfer_authorized_confirmed` checkbox before sending `attempt_zone_transfer: true`. Reports render `not_attempted`, `authorization_required`, `no_authoritative_nameservers`, `refused`, `unavailable`, `timed_out`, `malformed_response`, `record_limit_exceeded`, and `zone_transfer_complete` with redacted counters and manual-validation copy. `zone_transfer_complete` is worded only as `zone transfer accepted by authoritative server` and `high-risk configuration review indicator`. The frontend adds no DNS resolver, real AXFR execution, provider import, CT/passive DNS, DNS CLI/subprocess, Nmap, Docker, HTTP/crawling, archive/run-all, or `tools/runner/main.py`.
 
+The Active DNS Inventory authorized AXFR frontend review decision is `ACTIVE_DNS_INVENTORY_10_FRONTEND_AUTHORIZED_AXFR_REVIEW_PASSED`. It reviews `fb01b7c` and confirms the UI/contract boundary: AXFR remains off by default, `zone_transfer_authorized_confirmed` is sent only when AXFR is enabled and confirmed, submit is blocked without the specific confirmation, AXFR states render as controlled DNS configuration review indicators, and Raw JSON stays redaction-first. No frontend DNS resolver, new DNS runtime, real AXFR execution, provider import, CT/passive DNS, DNS CLI/subprocess, Nmap, Docker, HTTP/crawling, archive/run-all, or `tools/runner/main.py` behavior is added.
+
 ## Components
 
 ### Backend
