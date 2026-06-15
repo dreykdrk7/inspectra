@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import ipaddress
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+import httpx
 
 
 ACTIVE_DNS_OSINT_REDACTED_DOMAIN = "[REDACTED_DOMAIN]"
@@ -14,6 +17,9 @@ ACTIVE_DNS_OSINT_MIN_NAMES = 1
 ACTIVE_DNS_OSINT_MAX_NAMES = 100
 ACTIVE_DNS_OSINT_DEFAULT_MAX_NAMES = 100
 ACTIVE_DNS_OSINT_SAMPLE_SIZE = 5
+ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH = "crtsh"
+ACTIVE_DNS_OSINT_CRTSH_ALLOWED_HOST = "crt.sh"
+ACTIVE_DNS_OSINT_CRTSH_EXPECTED_FIELDS = ("name_value", "common_name")
 ACTIVE_DNS_OSINT_SOURCE_STATUSES = {
     "not_attempted",
     "disabled",
@@ -60,6 +66,10 @@ class ActiveDnsOsintCtSourceResult:
     status: str
     observed_names: tuple[str, ...] = ()
     truncated: bool = False
+    external_requests_sent: int = 0
+    ct_queries_sent: int = 0
+    http_requests_sent: int = 0
+    source_kind: str = "injected"
 
 
 class ActiveDnsOsintCtSource(Protocol):
@@ -91,7 +101,143 @@ class DisabledActiveDnsOsintCtSource:
         domain: str,
         max_names: int,
     ) -> ActiveDnsOsintCtSourceResult:
-        return ActiveDnsOsintCtSourceResult(status="disabled")
+        return ActiveDnsOsintCtSourceResult(status="disabled", source_kind="disabled")
+
+
+class BlockedActiveDnsOsintCtSource:
+    def query_certificate_transparency(
+        self,
+        *,
+        domain: str,
+        max_names: int,
+    ) -> ActiveDnsOsintCtSourceResult:
+        return ActiveDnsOsintCtSourceResult(status="blocked_by_policy", source_kind="blocked")
+
+
+class CrtShActiveDnsOsintCtSource:
+    def __init__(
+        self,
+        *,
+        source_url: str,
+        timeout_seconds: float,
+        max_response_bytes: int,
+        max_names_parsed: int,
+        http_transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self.source_url = source_url
+        self.timeout_seconds = timeout_seconds
+        self.max_response_bytes = max_response_bytes
+        self.max_names_parsed = max_names_parsed
+        self.http_transport = http_transport
+
+    def query_certificate_transparency(
+        self,
+        *,
+        domain: str,
+        max_names: int,
+    ) -> ActiveDnsOsintCtSourceResult:
+        if max_names < ACTIVE_DNS_OSINT_MIN_NAMES or max_names > ACTIVE_DNS_OSINT_MAX_NAMES:
+            return ActiveDnsOsintCtSourceResult(status="blocked_by_policy", source_kind=ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH)
+
+        try:
+            with httpx.Client(
+                follow_redirects=False,
+                timeout=self.timeout_seconds,
+                transport=self.http_transport,
+            ) as client:
+                with client.stream(
+                    "GET",
+                    self.source_url,
+                    params={"q": f"%.{domain}", "output": "json"},
+                ) as response:
+                    status_result = _status_from_crtsh_http_response(response.status_code)
+                    if status_result is not None:
+                        return ActiveDnsOsintCtSourceResult(
+                            status=status_result,
+                            external_requests_sent=1,
+                            ct_queries_sent=1,
+                            http_requests_sent=1,
+                            source_kind=ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH,
+                        )
+                    response_bytes = _read_bounded_response_bytes(response, self.max_response_bytes)
+        except httpx.TimeoutException:
+            return ActiveDnsOsintCtSourceResult(
+                status="timed_out",
+                external_requests_sent=1,
+                ct_queries_sent=1,
+                http_requests_sent=1,
+                source_kind=ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH,
+            )
+        except httpx.TransportError:
+            return ActiveDnsOsintCtSourceResult(
+                status="source_unavailable",
+                external_requests_sent=1,
+                ct_queries_sent=1,
+                http_requests_sent=1,
+                source_kind=ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH,
+            )
+        except Exception:
+            return ActiveDnsOsintCtSourceResult(
+                status="source_error_controlled",
+                external_requests_sent=1,
+                ct_queries_sent=1,
+                http_requests_sent=1,
+                source_kind=ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH,
+            )
+
+        if response_bytes is None:
+            return ActiveDnsOsintCtSourceResult(
+                status="truncated",
+                truncated=True,
+                external_requests_sent=1,
+                ct_queries_sent=1,
+                http_requests_sent=1,
+                source_kind=ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH,
+            )
+
+        parsed_names = _parse_crtsh_response(response_bytes, self.max_names_parsed)
+        if parsed_names is None:
+            return ActiveDnsOsintCtSourceResult(
+                status="invalid_source_response",
+                external_requests_sent=1,
+                ct_queries_sent=1,
+                http_requests_sent=1,
+                source_kind=ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH,
+            )
+
+        observed_names, truncated = parsed_names
+        return ActiveDnsOsintCtSourceResult(
+            status="truncated" if truncated else "completed",
+            observed_names=observed_names,
+            truncated=truncated,
+            external_requests_sent=1,
+            ct_queries_sent=1,
+            http_requests_sent=1,
+            source_kind=ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH,
+        )
+
+
+def build_active_dns_osint_ct_source(
+    *,
+    enabled: bool,
+    source_url: str,
+    timeout_seconds: float,
+    max_response_bytes: int,
+    max_names_parsed: int,
+    http_transport: httpx.BaseTransport | None = None,
+) -> ActiveDnsOsintCtSource:
+    if not enabled:
+        return DisabledActiveDnsOsintCtSource()
+    normalized_source_url = _normalize_crtsh_source_url(source_url)
+    if normalized_source_url is None:
+        return DisabledActiveDnsOsintCtSource() if not str(source_url).strip() else BlockedActiveDnsOsintCtSource()
+    return CrtShActiveDnsOsintCtSource(
+        source_url=normalized_source_url,
+        timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        max_names_parsed=max_names_parsed,
+        http_transport=http_transport,
+    )
 
 
 def normalize_active_dns_osint_domain(raw_domain: Any) -> str:
@@ -212,11 +358,11 @@ def run_active_dns_osint(
             "passive_dns_status": "not_attempted",
         },
         "execution": {
-            "external_requests_sent": 0,
-            "ct_queries_sent": 0,
+            "external_requests_sent": _bounded_counter(ct_result.external_requests_sent),
+            "ct_queries_sent": _bounded_counter(ct_result.ct_queries_sent),
             "passive_dns_queries_sent": 0,
             "dns_queries_sent": 0,
-            "http_requests_sent": 0,
+            "http_requests_sent": _bounded_counter(ct_result.http_requests_sent),
             "provider_api_used": False,
             "credential_validation_performed": False,
             "crawling_performed": False,
@@ -224,11 +370,15 @@ def run_active_dns_osint(
             "nmap_invoked": False,
             "target_expansion_performed": False,
             "observed_name_auto_scan_performed": False,
+            "ct_real_call_performed": ct_result.source_kind == ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH
+            and _bounded_counter(ct_result.ct_queries_sent) == 1,
+            "passive_dns_api_used": False,
         },
         "limits": {
             "max_names": contract.max_names,
             "backend_max_names": ACTIVE_DNS_OSINT_MAX_NAMES,
             "sample_size": ACTIVE_DNS_OSINT_SAMPLE_SIZE,
+            "ct_source_kind": ct_result.source_kind,
             "domain_value_persisted": False,
             "observed_name_values_persisted": False,
             "ct_source_values_persisted": False,
@@ -283,7 +433,17 @@ def _query_certificate_transparency_source(
         return ActiveDnsOsintCtSourceResult(status="invalid_source_response")
     if not isinstance(result.observed_names, tuple) or any(not isinstance(name, str) for name in result.observed_names):
         return ActiveDnsOsintCtSourceResult(status="invalid_source_response")
-    return result
+    return ActiveDnsOsintCtSourceResult(
+        status=result.status,
+        observed_names=result.observed_names,
+        truncated=bool(result.truncated),
+        external_requests_sent=_bounded_counter(result.external_requests_sent),
+        ct_queries_sent=_bounded_counter(result.ct_queries_sent),
+        http_requests_sent=_bounded_counter(result.http_requests_sent),
+        source_kind=result.source_kind
+        if result.source_kind in {"disabled", "blocked", "injected", ACTIVE_DNS_OSINT_CT_SOURCE_KIND_CRTSH}
+        else "controlled",
+    )
 
 
 def _bounded_observed_names(domain: str, raw_names: tuple[str, ...], max_names: int) -> dict[str, int]:
@@ -335,3 +495,79 @@ def _source_errors(status: str) -> list[dict[str, str]]:
     if status in {"completed", "disabled", "not_attempted", "partial", "truncated"}:
         return []
     return [{"code": status, "source": "certificate_transparency"}]
+
+
+def _normalize_crtsh_source_url(raw_url: str) -> str | None:
+    try:
+        url = httpx.URL(raw_url.strip())
+    except Exception:
+        return None
+    if url.scheme != "https":
+        return None
+    if url.host != ACTIVE_DNS_OSINT_CRTSH_ALLOWED_HOST:
+        return None
+    if url.username or url.password or url.query or url.fragment:
+        return None
+    if url.path not in {"", "/"}:
+        return None
+    return str(url.copy_with(path="/", query=None, fragment=None))
+
+
+def _status_from_crtsh_http_response(status_code: int) -> str | None:
+    if status_code == 200:
+        return None
+    if status_code == 429:
+        return "rate_limited"
+    if status_code in {408, 504}:
+        return "timed_out"
+    if 500 <= status_code <= 599:
+        return "source_unavailable"
+    return "source_error_controlled"
+
+
+def _read_bounded_response_bytes(response: httpx.Response, max_response_bytes: int) -> bytes | None:
+    content = bytearray()
+    for chunk in response.iter_bytes():
+        content.extend(chunk)
+        if len(content) > max_response_bytes:
+            return None
+    return bytes(content)
+
+
+def _parse_crtsh_response(response_bytes: bytes, max_names_parsed: int) -> tuple[tuple[str, ...], bool] | None:
+    try:
+        decoded = response_bytes.decode("utf-8")
+        payload = json.loads(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, list):
+        return None
+
+    names: list[str] = []
+    truncated = False
+    for entry in payload:
+        if not isinstance(entry, dict):
+            return None
+        for field_name in ACTIVE_DNS_OSINT_CRTSH_EXPECTED_FIELDS:
+            if field_name not in entry:
+                continue
+            raw_value = entry[field_name]
+            if not isinstance(raw_value, str):
+                return None
+            for candidate in raw_value.splitlines():
+                value = candidate.strip()
+                if not value:
+                    continue
+                if len(names) >= max_names_parsed:
+                    truncated = True
+                    return tuple(names), truncated
+                names.append(value)
+    return tuple(names), truncated
+
+
+def _bounded_counter(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    if value <= 0:
+        return 0
+    return min(value, 1)

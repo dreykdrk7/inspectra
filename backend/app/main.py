@@ -46,6 +46,7 @@ from app.active_dns_osint import (
     ActiveDnsOsintPolicyError,
     active_dns_osint_job_error,
     active_dns_osint_job_status,
+    build_active_dns_osint_ct_source,
     normalize_active_dns_osint_domain,
     normalize_active_dns_osint_max_names,
     run_active_dns_osint,
@@ -172,7 +173,13 @@ async def lifespan(app: FastAPI):
     app.state.active_nmap_basic_lifecycle_client = ActiveNmapBasicRouteActiveToolsClient()
     app.state.active_dns_inventory_resolver = None
     app.state.active_dns_inventory_axfr_transport = None
-    app.state.active_dns_osint_ct_source = None
+    app.state.active_dns_osint_ct_source = build_active_dns_osint_ct_source(
+        enabled=settings.active_dns_osint_ct_source_enabled,
+        source_url=settings.active_dns_osint_ct_source_url,
+        timeout_seconds=settings.active_dns_osint_ct_source_timeout_seconds,
+        max_response_bytes=settings.active_dns_osint_ct_source_max_response_bytes,
+        max_names_parsed=settings.active_dns_osint_ct_source_max_names_parsed,
+    )
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)

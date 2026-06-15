@@ -10,9 +10,12 @@ persistence step is accepted in
 decision
 `ACTIVE_DNS_OSINT_03_CT_BOUNDED_BACKEND_JOB_PERSISTENCE_PASSED`. The backend
 can now create owner-scoped redacted `active_dns_osint` jobs from an injectable
-fakeable CT source adapter, but it still performs no real CT, passive DNS,
-HTTP, DNS, provider, crawling, scraping, frontend, archive/run-all, or runner
-behavior.
+fakeable CT source adapter. The source-specific real CT phase is accepted in
+`docs/future/active-dns-osint-real-ct-source-bounded.md` with decision
+`ACTIVE_DNS_OSINT_05_REAL_CT_SOURCE_BOUNDED_PASSED`; it selects only a bounded
+`crt.sh` source behind explicit CT-source opt-in and configuration. Passive
+DNS, provider API import, DNS queries, crawling, broad scraping, frontend,
+archive/run-all, and runner behavior remain out of scope.
 
 This document freezes a docs-only design for a future `active_dns_osint`
 capability. It does not implement backend runtime, frontend runtime, runner
@@ -76,6 +79,16 @@ A suggested backend flag is:
 ```text
 INSPECTRA_ACTIVE_DNS_OSINT_ENABLED=false
 ```
+
+The accepted first CT source also has a separate source flag and URL:
+
+```text
+INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_ENABLED=false
+INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_URL=
+```
+
+For the accepted `crt.sh` source, the URL must be explicitly configured as
+`https://crt.sh/`.
 
 Enabled mode must still require:
 

@@ -58,6 +58,14 @@ DEFAULT_ACTIVE_NMAP_BASIC_ENABLED = False
 DEFAULT_ACTIVE_TLS_BASIC_ENABLED = False
 DEFAULT_ACTIVE_DNS_INVENTORY_ENABLED = False
 DEFAULT_ACTIVE_DNS_OSINT_ENABLED = False
+DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_ENABLED = False
+DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_URL = ""
+DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_TIMEOUT_SECONDS = 5.0
+DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_RESPONSE_BYTES = 262_144
+DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_NAMES_PARSED = 500
+MAX_ACTIVE_DNS_OSINT_CT_SOURCE_TIMEOUT_SECONDS = 10.0
+MAX_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_RESPONSE_BYTES = 1_048_576
+MAX_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_NAMES_PARSED = 1_000
 DEFAULT_ACTIVE_TOOLS_URL = ""
 DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS = 2.0
 DEFAULT_SESSION_TTL_SECONDS = 3600
@@ -156,6 +164,11 @@ class Settings:
     active_tls_basic_enabled: bool = DEFAULT_ACTIVE_TLS_BASIC_ENABLED
     active_dns_inventory_enabled: bool = DEFAULT_ACTIVE_DNS_INVENTORY_ENABLED
     active_dns_osint_enabled: bool = DEFAULT_ACTIVE_DNS_OSINT_ENABLED
+    active_dns_osint_ct_source_enabled: bool = DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_ENABLED
+    active_dns_osint_ct_source_url: str = DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_URL
+    active_dns_osint_ct_source_timeout_seconds: float = DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_TIMEOUT_SECONDS
+    active_dns_osint_ct_source_max_response_bytes: int = DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_RESPONSE_BYTES
+    active_dns_osint_ct_source_max_names_parsed: int = DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_NAMES_PARSED
     active_tools_url: str = DEFAULT_ACTIVE_TOOLS_URL
     active_tools_health_timeout_seconds: float = DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
@@ -385,6 +398,29 @@ def load_settings() -> Settings:
         "INSPECTRA_ACTIVE_DNS_OSINT_ENABLED",
         DEFAULT_ACTIVE_DNS_OSINT_ENABLED,
     )
+    active_dns_osint_ct_source_enabled = _bool_from_env(
+        "INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_ENABLED",
+        DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_ENABLED,
+    )
+    active_dns_osint_ct_source_url = os.getenv(
+        "INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_URL",
+        DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_URL,
+    ).strip()
+    active_dns_osint_ct_source_timeout_seconds = _bounded_positive_float_from_env(
+        "INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_TIMEOUT_SECONDS",
+        DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_TIMEOUT_SECONDS,
+        MAX_ACTIVE_DNS_OSINT_CT_SOURCE_TIMEOUT_SECONDS,
+    )
+    active_dns_osint_ct_source_max_response_bytes = _bounded_positive_int_from_env(
+        "INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_RESPONSE_BYTES",
+        DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_RESPONSE_BYTES,
+        MAX_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_RESPONSE_BYTES,
+    )
+    active_dns_osint_ct_source_max_names_parsed = _bounded_positive_int_from_env(
+        "INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_NAMES_PARSED",
+        DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_NAMES_PARSED,
+        MAX_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_NAMES_PARSED,
+    )
     active_tools_url = os.getenv("INSPECTRA_ACTIVE_TOOLS_URL", DEFAULT_ACTIVE_TOOLS_URL).strip().rstrip("/")
     active_tools_health_timeout_seconds = _positive_float_from_env(
         "INSPECTRA_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS",
@@ -468,6 +504,11 @@ def load_settings() -> Settings:
         active_tls_basic_enabled=active_tls_basic_enabled,
         active_dns_inventory_enabled=active_dns_inventory_enabled,
         active_dns_osint_enabled=active_dns_osint_enabled,
+        active_dns_osint_ct_source_enabled=active_dns_osint_ct_source_enabled,
+        active_dns_osint_ct_source_url=active_dns_osint_ct_source_url,
+        active_dns_osint_ct_source_timeout_seconds=active_dns_osint_ct_source_timeout_seconds,
+        active_dns_osint_ct_source_max_response_bytes=active_dns_osint_ct_source_max_response_bytes,
+        active_dns_osint_ct_source_max_names_parsed=active_dns_osint_ct_source_max_names_parsed,
         active_tools_url=active_tools_url,
         active_tools_health_timeout_seconds=active_tools_health_timeout_seconds,
         session_ttl_seconds=session_ttl_seconds,
@@ -561,6 +602,20 @@ def _positive_float_from_env(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a positive number.") from exc
     if value <= 0:
         raise ValueError(f"{name} must be greater than zero.")
+    return value
+
+
+def _bounded_positive_int_from_env(name: str, default: int, maximum: int) -> int:
+    value = _positive_int_from_env(name, default)
+    if value > maximum:
+        raise ValueError(f"{name} must be less than or equal to {maximum}.")
+    return value
+
+
+def _bounded_positive_float_from_env(name: str, default: float, maximum: float) -> float:
+    value = _positive_float_from_env(name, default)
+    if value > maximum:
+        raise ValueError(f"{name} must be less than or equal to {maximum}.")
     return value
 
 

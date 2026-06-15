@@ -32,6 +32,11 @@ from app.auth_state_sqlite import (
     SQLiteLoginAttemptStore,
 )
 from app.config import (
+    DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_ENABLED,
+    DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_NAMES_PARSED,
+    DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_RESPONSE_BYTES,
+    DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_TIMEOUT_SECONDS,
+    DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_URL,
     DEFAULT_ACTIVE_DNS_OSINT_ENABLED,
     DEFAULT_ACTIVE_DNS_INVENTORY_ENABLED,
     DEFAULT_ACTIVE_NMAP_BASIC_ENABLED,
@@ -67,7 +72,14 @@ from app.active_dns_inventory import (
     ActiveDnsInventoryZoneTransferResult,
     run_active_dns_inventory,
 )
-from app.active_dns_osint import ActiveDnsOsintCtSourceResult, ActiveDnsOsintSourceError
+from app.active_dns_osint import (
+    ActiveDnsOsintCtSourceResult,
+    ActiveDnsOsintSourceError,
+    BlockedActiveDnsOsintCtSource,
+    CrtShActiveDnsOsintCtSource,
+    DisabledActiveDnsOsintCtSource,
+    build_active_dns_osint_ct_source,
+)
 from app.active_tls_basic import ActiveTlsBasicConnectionSnapshot
 from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
 from app.models import JobRecord
@@ -465,7 +477,13 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.active_tls_basic_connector = None
     app.state.active_tls_basic_now = None
     app.state.active_dns_inventory_resolver = None
-    app.state.active_dns_osint_ct_source = None
+    app.state.active_dns_osint_ct_source = build_active_dns_osint_ct_source(
+        enabled=settings.active_dns_osint_ct_source_enabled,
+        source_url=settings.active_dns_osint_ct_source_url,
+        timeout_seconds=settings.active_dns_osint_ct_source_timeout_seconds,
+        max_response_bytes=settings.active_dns_osint_ct_source_max_response_bytes,
+        max_names_parsed=settings.active_dns_osint_ct_source_max_names_parsed,
+    )
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -8837,6 +8855,155 @@ async def test_active_dns_osint_default_ct_source_is_disabled_but_persists_contr
     assert payload["result"]["execution"]["external_requests_sent"] == 0
 
 
+def test_active_dns_osint_ct_source_factory_is_disabled_or_blocked_without_valid_config():
+    disabled_source = build_active_dns_osint_ct_source(
+        enabled=False,
+        source_url="https://crt.sh/",
+        timeout_seconds=1.0,
+        max_response_bytes=1024,
+        max_names_parsed=10,
+    )
+    missing_url_source = build_active_dns_osint_ct_source(
+        enabled=True,
+        source_url="",
+        timeout_seconds=1.0,
+        max_response_bytes=1024,
+        max_names_parsed=10,
+    )
+    blocked_source = build_active_dns_osint_ct_source(
+        enabled=True,
+        source_url="https://example.invalid/",
+        timeout_seconds=1.0,
+        max_response_bytes=1024,
+        max_names_parsed=10,
+    )
+
+    assert isinstance(disabled_source, DisabledActiveDnsOsintCtSource)
+    assert isinstance(missing_url_source, DisabledActiveDnsOsintCtSource)
+    assert isinstance(blocked_source, BlockedActiveDnsOsintCtSource)
+    assert blocked_source.query_certificate_transparency(domain="example.invalid", max_names=10).status == "blocked_by_policy"
+
+
+@pytest.mark.anyio
+async def test_active_dns_osint_real_ct_source_uses_single_bounded_fake_http_request(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.scheme == "https"
+        assert request.url.host == "crt.sh"
+        assert request.url.params["q"] == "%.example.invalid"
+        assert request.url.params["output"] == "json"
+        return Response(
+            200,
+            json=[
+                {
+                    "name_value": "www.example.invalid\n*.api.example.invalid\noutside.example.test",
+                    "common_name": "portal.example.invalid",
+                },
+                {"name_value": "WWW.example.invalid"},
+            ],
+        )
+
+    app.state.active_dns_osint_ct_source = build_active_dns_osint_ct_source(
+        enabled=True,
+        source_url="https://crt.sh/",
+        timeout_seconds=1.0,
+        max_response_bytes=4096,
+        max_names_parsed=20,
+        http_transport=MockTransport(handler),
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-osint", json=make_active_dns_osint_payload(max_names=100))
+        job_id = response.json()["id"]
+        detail_response = await client.get(f"/jobs/{job_id}")
+        export_response = await client.get(f"/jobs/{job_id}/export/markdown")
+
+    assert response.status_code == 202
+    assert detail_response.status_code == 200
+    assert export_response.status_code == 200
+    assert len(requests) == 1
+    payload = response.json()
+    ct_source = payload["result"]["sources"]["certificate_transparency"]
+    assert payload["status"] == "completed"
+    assert payload["error"] is None
+    assert ct_source["attempted"] is True
+    assert ct_source["status"] == "completed"
+    assert ct_source["names_observed_count"] == 5
+    assert ct_source["names_retained_count"] == 3
+    assert ct_source["names_discarded_count"] == 1
+    assert payload["result"]["observed_names"]["sample"] == ["[REDACTED_DNS_NAME]"] * 3
+    assert payload["result"]["execution"]["external_requests_sent"] == 1
+    assert payload["result"]["execution"]["ct_queries_sent"] == 1
+    assert payload["result"]["execution"]["http_requests_sent"] == 1
+    assert payload["result"]["execution"]["dns_queries_sent"] == 0
+    assert payload["result"]["execution"]["observed_name_auto_scan_performed"] is False
+    combined = json.dumps({"create": payload, "detail": detail_response.json(), "markdown": export_response.text}, sort_keys=True)
+    assert "DNS OSINT review indicator" in combined
+    assert "[REDACTED_DOMAIN]" in combined
+    assert "[REDACTED_DNS_NAME]" in combined
+    for forbidden in (
+        "example.invalid",
+        "www.example.invalid",
+        "api.example.invalid",
+        "portal.example.invalid",
+        "outside.example.test",
+    ):
+        assert forbidden not in combined
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("handler_result", "expected_status"),
+    [
+        (ReadTimeout("secret.example.invalid timeout"), "timed_out"),
+        (Response(429, json={"error": "secret.example.invalid"}), "rate_limited"),
+        (Response(503, json={"error": "secret.example.invalid"}), "source_unavailable"),
+        (Response(200, content=b"not-json-secret.example.invalid"), "invalid_source_response"),
+        (Response(200, json={"unexpected": "format"}), "invalid_source_response"),
+        (Response(200, content=b"[{}]" * 200), "truncated"),
+    ],
+)
+async def test_active_dns_osint_real_ct_source_errors_are_controlled(monkeypatch, tmp_path, handler_result, expected_status):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+
+    def handler(request):
+        if isinstance(handler_result, Exception):
+            raise handler_result
+        return handler_result
+
+    app.state.active_dns_osint_ct_source = build_active_dns_osint_ct_source(
+        enabled=True,
+        source_url="https://crt.sh/",
+        timeout_seconds=1.0,
+        max_response_bytes=16 if expected_status == "truncated" else 4096,
+        max_names_parsed=20,
+        http_transport=MockTransport(handler),
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-osint", json=make_active_dns_osint_payload(domain="secret.example.invalid"))
+        detail_response = await client.get(f"/jobs/{response.json()['id']}")
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["error"] == expected_status if expected_status not in {"truncated"} else payload["error"] is None
+    assert payload["result"]["sources"]["certificate_transparency"]["status"] == expected_status
+    assert payload["result"]["execution"]["external_requests_sent"] == 1
+    assert payload["result"]["execution"]["ct_queries_sent"] == 1
+    assert payload["result"]["observed_names"]["count"] == 0
+    combined = json.dumps({"create": payload, "detail": detail_response.json()}, sort_keys=True)
+    assert "secret.example.invalid" not in combined
+    assert "not-json-secret.example.invalid" not in combined
+
+
 @pytest.mark.anyio
 async def test_active_dns_osint_max_names_truncates_without_expanding_wildcards(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
@@ -9301,10 +9468,32 @@ def test_active_dns_osint_backend_source_has_bounded_persistence_only():
     osint_config_lines = "\n".join(
         line for line in config_source.splitlines() if "ACTIVE_DNS_OSINT" in line or "active_dns_osint" in line
     )
-    combined = route_source + osint_config_lines + osint_module_source
+    non_source_runtime = route_source + osint_config_lines
 
-    forbidden = [
+    forbidden_outside_source_module = [
         "httpx",
+        "requests.",
+        "requests.get",
+        "requests.post",
+        "urllib.",
+        "dns.resolver",
+        "import subprocess",
+        "subprocess.",
+        "Popen(",
+        "os.system",
+        "shell=True",
+        "nmap ",
+        "docker ",
+        "dig ",
+        "nslookup",
+        "archive/run-all",
+        "tools/runner/main.py",
+        "BackgroundTasks",
+    ]
+    for token in forbidden_outside_source_module:
+        assert token not in non_source_runtime
+
+    forbidden_in_source_module = [
         "requests.",
         "requests.get",
         "requests.post",
@@ -9320,20 +9509,22 @@ def test_active_dns_osint_backend_source_has_bounded_persistence_only():
         "nmap ",
         "docker ",
         "dig ",
-        "host ",
         "nslookup",
         "archive/run-all",
         "tools/runner/main.py",
         "BackgroundTasks",
     ]
-    for token in forbidden:
-        assert token not in combined
+    for token in forbidden_in_source_module:
+        assert token not in osint_module_source
     assert "run_active_dns_osint" in route_source
     assert "active_dns_osint_ct_source" in route_source
     assert "create_active_dns_osint_job" in route_source
     assert "JobRecord" in route_source
     assert "DisabledActiveDnsOsintCtSource" in osint_module_source
+    assert "CrtShActiveDnsOsintCtSource" in osint_module_source
+    assert "httpx.Client" in osint_module_source
     assert "query_certificate_transparency" in osint_module_source
+    assert "params={\"q\": f\"%.{domain}\", \"output\": \"json\"}" in osint_module_source
     assert "external_requests_sent" in osint_module_source
     assert "ct_queries_sent" in osint_module_source
     assert "passive_dns_queries_sent" in osint_module_source
@@ -11069,12 +11260,28 @@ def test_active_dns_osint_feature_flag_is_disabled_by_default_and_configurable(m
 
     assert DEFAULT_ACTIVE_DNS_OSINT_ENABLED is False
     assert settings.active_dns_osint_enabled is False
+    assert DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_ENABLED is False
+    assert settings.active_dns_osint_ct_source_enabled is False
+    assert settings.active_dns_osint_ct_source_url == DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_URL
+    assert settings.active_dns_osint_ct_source_timeout_seconds == DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_TIMEOUT_SECONDS
+    assert settings.active_dns_osint_ct_source_max_response_bytes == DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_RESPONSE_BYTES
+    assert settings.active_dns_osint_ct_source_max_names_parsed == DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_NAMES_PARSED
 
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_URL", "https://crt.sh/")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_TIMEOUT_SECONDS", "3.5")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_RESPONSE_BYTES", "4096")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_NAMES_PARSED", "20")
 
     enabled_settings = load_settings()
 
     assert enabled_settings.active_dns_osint_enabled is True
+    assert enabled_settings.active_dns_osint_ct_source_enabled is True
+    assert enabled_settings.active_dns_osint_ct_source_url == "https://crt.sh/"
+    assert enabled_settings.active_dns_osint_ct_source_timeout_seconds == 3.5
+    assert enabled_settings.active_dns_osint_ct_source_max_response_bytes == 4096
+    assert enabled_settings.active_dns_osint_ct_source_max_names_parsed == 20
 
 
 def test_default_local_operator_has_stable_id(monkeypatch, tmp_path):
