@@ -31,6 +31,7 @@ AuditType = Literal[
     "active_nmap_basic",
     "active_tls_basic",
     "active_dns_inventory",
+    "active_dns_osint",
 ]
 JobStatus = Literal["queued", "running", "completed", "failed"]
 AuthMode = Literal[

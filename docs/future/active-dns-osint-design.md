@@ -2,12 +2,17 @@
 
 Decision: `ACTIVE_DNS_OSINT_01_DESIGN_FROZEN`
 
-Implementation status: the first backend contract gate is now accepted in
+Implementation status: the backend contract gate is accepted in
 `docs/future/active-dns-osint-backend-contract-gate.md` with decision
-`ACTIVE_DNS_OSINT_02_BACKEND_CONTRACT_GATE_ACCEPTED`. It validates the future
-request contract and returns controlled `not_executed` metadata only; it does
-not perform CT, passive DNS, HTTP, DNS, provider, crawling, scraping, job,
-storage, frontend, archive/run-all, or runner behavior.
+`ACTIVE_DNS_OSINT_02_BACKEND_CONTRACT_GATE_ACCEPTED`. The first backend
+persistence step is accepted in
+`docs/future/active-dns-osint-ct-bounded-backend-job-persistence.md` with
+decision
+`ACTIVE_DNS_OSINT_03_CT_BOUNDED_BACKEND_JOB_PERSISTENCE_PASSED`. The backend
+can now create owner-scoped redacted `active_dns_osint` jobs from an injectable
+fakeable CT source adapter, but it still performs no real CT, passive DNS,
+HTTP, DNS, provider, crawling, scraping, frontend, archive/run-all, or runner
+behavior.
 
 This document freezes a docs-only design for a future `active_dns_osint`
 capability. It does not implement backend runtime, frontend runtime, runner

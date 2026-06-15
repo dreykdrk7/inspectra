@@ -67,6 +67,7 @@ from app.active_dns_inventory import (
     ActiveDnsInventoryZoneTransferResult,
     run_active_dns_inventory,
 )
+from app.active_dns_osint import ActiveDnsOsintCtSourceResult, ActiveDnsOsintSourceError
 from app.active_tls_basic import ActiveTlsBasicConnectionSnapshot
 from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
 from app.models import JobRecord
@@ -376,6 +377,18 @@ class FakeActiveDnsInventoryAxfrTransport:
         return self.response
 
 
+class FakeActiveDnsOsintCtSource:
+    def __init__(self, response: ActiveDnsOsintCtSourceResult | Exception | object | None = None) -> None:
+        self.response = response if response is not None else ActiveDnsOsintCtSourceResult(status="completed")
+        self.calls: list[tuple[str, int]] = []
+
+    def query_certificate_transparency(self, *, domain: str, max_names: int):
+        self.calls.append((domain, max_names))
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
 def dns_record(name: str, record_type: str, value: str, *, ttl: int = 300, priority: int | None = None) -> ActiveDnsInventoryRecord:
     return ActiveDnsInventoryRecord(name=name, record_type=record_type, value=value, ttl=ttl, priority=priority)
 
@@ -452,6 +465,7 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.active_tls_basic_connector = None
     app.state.active_tls_basic_now = None
     app.state.active_dns_inventory_resolver = None
+    app.state.active_dns_osint_ct_source = None
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -8693,6 +8707,8 @@ async def test_active_dns_inventory_legacy_raw_payload_is_redacted_in_detail_lis
 @pytest.mark.anyio
 async def test_active_dns_osint_disabled_by_default_no_job(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(ActiveDnsOsintCtSourceResult(status="completed", observed_names=("secret.example.invalid",)))
+    app.state.active_dns_osint_ct_source = fake_ct
     payload = make_active_dns_osint_payload(
         domain="secret.example.invalid",
         provider_credentials="token_should_never_render",
@@ -8708,61 +8724,227 @@ async def test_active_dns_osint_disabled_by_default_no_job(monkeypatch, tmp_path
     assert "secret.example.invalid" not in response.text
     assert "token_should_never_render" not in response.text
     assert jobs_response.json() == []
+    assert fake_ct.calls == []
 
 
 @pytest.mark.anyio
-async def test_active_dns_osint_enabled_valid_request_returns_not_executed_without_job(monkeypatch, tmp_path):
+async def test_active_dns_osint_enabled_valid_fake_ct_creates_redacted_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(
+        ActiveDnsOsintCtSourceResult(
+            status="completed",
+            observed_names=(
+                "example.invalid",
+                "www.example.invalid",
+                "WWW.example.invalid",
+                "*.api.example.invalid",
+                "outside.example.test",
+                "token_should_never_render.example.invalid",
+            ),
+        )
+    )
+    app.state.active_dns_osint_ct_source = fake_ct
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-osint", json=make_active_dns_osint_payload())
+        job_id = response.json()["id"]
+        jobs_response = await client.get("/jobs")
+        detail_response = await client.get(f"/jobs/{job_id}")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    assert response.status_code == 202
+    assert detail_response.status_code == 200
+    assert all(export_response.status_code == 200 for export_response in export_responses.values())
+    payload = response.json()
+    detail_payload = detail_response.json()
+    list_payload = jobs_response.json()
+    assert fake_ct.calls == [("example.invalid", 100)]
+    assert payload["audit_type"] == "active_dns_osint"
+    assert payload["file_id"] is None
+    assert payload["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert payload["status"] == "completed"
+    assert payload["error"] is None
+    assert payload["target_url"] == "[REDACTED_DOMAIN]"
+    assert payload["target_domain"] is None
+    assert payload["result"]["audit_type"] == "active_dns_osint"
+    assert payload["result"]["capability"] == "active_dns_osint"
+    assert payload["result"]["result_status"] == "osint_best_effort"
+    assert payload["result"]["coverage_level"] == "osint_best_effort"
+    assert payload["result"]["domain"] == "[REDACTED_DOMAIN]"
+    assert payload["result"]["sources"]["certificate_transparency"] == {
+        "attempted": True,
+        "status": "completed",
+        "names_observed_count": 6,
+        "names_retained_count": 3,
+        "names_discarded_count": 2,
+        "truncated": False,
+    }
+    assert payload["result"]["sources"]["passive_dns"] == {"attempted": False, "status": "not_attempted"}
+    assert payload["result"]["observed_names"] == {
+        "count": 3,
+        "sample": ["[REDACTED_DNS_NAME]"] * 3,
+        "max_names": 100,
+        "truncated": False,
+    }
+    assert payload["result"]["execution"]["external_requests_sent"] == 0
+    assert payload["result"]["execution"]["ct_queries_sent"] == 0
+    assert payload["result"]["execution"]["passive_dns_queries_sent"] == 0
+    assert payload["result"]["manual_validation_required"] is True
+    assert list_payload[0]["target_url"] == "[REDACTED_DOMAIN]"
+    assert list_payload[0]["summary"]["capability"] == "active_dns_osint"
+    assert list_payload[0]["summary"]["observed_names_count"] == 3
+    assert detail_payload["result"]["observed_names"]["sample"] == ["[REDACTED_DNS_NAME]"] * 3
+    combined = json.dumps({"create": payload, "detail": detail_payload, "list": list_payload}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        export.text if report_format != "pdf" else export.content.decode("latin1", errors="ignore")
+        for report_format, export in export_responses.items()
+    )
+    assert "DNS OSINT review indicator" in combined
+    assert "[REDACTED_DOMAIN]" in combined
+    assert "[REDACTED_DNS_NAME]" in combined
+    for forbidden in (
+        "example.invalid",
+        "www.example.invalid",
+        "api.example.invalid",
+        "outside.example.test",
+        "token_should_never_render",
+        "raw_ct_payload",
+        "certificate_body",
+    ):
+        assert forbidden not in combined
+
+
+@pytest.mark.anyio
+async def test_active_dns_osint_default_ct_source_is_disabled_but_persists_controlled_job(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post("/active/network/dns-osint", json=make_active_dns_osint_payload())
-        jobs_response = await client.get("/jobs")
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     payload = response.json()
-    assert payload == {
-        "status": "not_executed",
-        "capability": "active_dns_osint",
-        "audit_type": "active_dns_osint",
-        "result_status": "not_executed",
-        "coverage_level": "osint_best_effort",
-        "domain": "[REDACTED_DOMAIN]",
-        "external_requests_sent": 0,
-        "ct_queries_sent": 0,
-        "passive_dns_queries_sent": 0,
-        "job_created": False,
-        "storage_persisted": False,
-        "sources": {
-            "certificate_transparency": {
-                "attempted": False,
-                "status": "not_executed",
-                "enabled_by_contract": True,
-            },
-            "passive_dns": {
-                "attempted": False,
-                "status": "not_supported",
-                "enabled_by_contract": False,
-            },
-        },
-        "observed_names": {
-            "count": 0,
-            "sample": [],
-            "max_names": 100,
-            "truncated": False,
-        },
-        "manual_validation_required": True,
-        "result_interpretation": "dns_osint_review_indicator",
+    assert payload["status"] == "completed"
+    assert payload["result"]["sources"]["certificate_transparency"]["attempted"] is False
+    assert payload["result"]["sources"]["certificate_transparency"]["status"] == "disabled"
+    assert payload["result"]["observed_names"]["count"] == 0
+    assert payload["result"]["execution"]["external_requests_sent"] == 0
+
+
+@pytest.mark.anyio
+async def test_active_dns_osint_max_names_truncates_without_expanding_wildcards(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(
+        ActiveDnsOsintCtSourceResult(
+            status="completed",
+            observed_names=(
+                "example.invalid",
+                "*.api.example.invalid",
+                "app.example.invalid",
+                "portal.example.invalid",
+                "outside.example.test",
+            ),
+        )
+    )
+    app.state.active_dns_osint_ct_source = fake_ct
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-osint", json=make_active_dns_osint_payload(max_names=2))
+
+    assert response.status_code == 202
+    payload = response.json()
+    ct_source = payload["result"]["sources"]["certificate_transparency"]
+    assert fake_ct.calls == [("example.invalid", 2)]
+    assert ct_source["status"] == "truncated"
+    assert ct_source["names_observed_count"] == 5
+    assert ct_source["names_retained_count"] == 2
+    assert ct_source["names_discarded_count"] == 1
+    assert ct_source["truncated"] is True
+    assert payload["result"]["observed_names"] == {
+        "count": 2,
+        "sample": ["[REDACTED_DNS_NAME]", "[REDACTED_DNS_NAME]"],
+        "max_names": 2,
+        "truncated": True,
     }
-    assert jobs_response.json() == []
-    assert "example.invalid" not in response.text
+    assert "api.example.invalid" not in json.dumps(payload)
+
+
+@pytest.mark.anyio
+async def test_active_dns_osint_empty_ct_result_is_best_effort(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(ActiveDnsOsintCtSourceResult(status="completed", observed_names=()))
+    app.state.active_dns_osint_ct_source = fake_ct
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-osint", json=make_active_dns_osint_payload())
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["error"] is None
+    assert payload["result"]["coverage_level"] == "osint_best_effort"
+    assert payload["result"]["sources"]["certificate_transparency"]["status"] == "completed"
+    assert payload["result"]["observed_names"]["count"] == 0
+    assert payload["result"]["observed_names"]["sample"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("response_or_error", "expected_status"),
+    [
+        (TimeoutError("secret.example.invalid timed out"), "timed_out"),
+        (ActiveDnsOsintSourceError("rate_limited"), "rate_limited"),
+        (ActiveDnsOsintSourceError("source_unavailable"), "source_unavailable"),
+        (RuntimeError("secret.example.invalid token_should_never_render"), "source_error_controlled"),
+        ("not a ct source result", "invalid_source_response"),
+    ],
+)
+async def test_active_dns_osint_source_errors_are_controlled_and_redacted(
+    monkeypatch,
+    tmp_path,
+    response_or_error,
+    expected_status,
+):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(response_or_error)
+    app.state.active_dns_osint_ct_source = fake_ct
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-osint", json=make_active_dns_osint_payload())
+        job_id = response.json()["id"]
+        detail_response = await client.get(f"/jobs/{job_id}")
+
+    assert response.status_code == 202
+    assert detail_response.status_code == 200
+    payload = response.json()
+    detail_payload = detail_response.json()
+    assert payload["status"] == "completed"
+    assert payload["error"] == expected_status
+    assert payload["result"]["sources"]["certificate_transparency"]["status"] == expected_status
+    assert payload["result"]["errors"] == [{"code": expected_status, "source": "certificate_transparency"}]
+    combined = json.dumps({"create": payload, "detail": detail_payload}, sort_keys=True)
+    assert "secret.example.invalid" not in combined
+    assert "token_should_never_render" not in combined
 
 
 @pytest.mark.anyio
 async def test_active_dns_osint_enabled_requires_mode_and_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(ActiveDnsOsintCtSourceResult(status="completed", observed_names=("example.invalid",)))
+    app.state.active_dns_osint_ct_source = fake_ct
     payloads = [
         make_active_dns_osint_payload(mode="dry_run"),
         make_active_dns_osint_payload(profile="passive_dns_full"),
@@ -8779,12 +8961,15 @@ async def test_active_dns_osint_enabled_requires_mode_and_profile(monkeypatch, t
 
     assert [response.status_code for response in responses] == [400, 400, 400, 400]
     assert jobs_response.json() == []
+    assert fake_ct.calls == []
 
 
 @pytest.mark.anyio
 async def test_active_dns_osint_requires_authorization_confirmations(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(ActiveDnsOsintCtSourceResult(status="completed", observed_names=("example.invalid",)))
+    app.state.active_dns_osint_ct_source = fake_ct
     confirmation_fields = [
         "authorization_confirmed",
         "owned_or_authorized_domain_confirmed",
@@ -8804,6 +8989,7 @@ async def test_active_dns_osint_requires_authorization_confirmations(monkeypatch
 
     assert [response.status_code for response in responses] == [400] * len(payloads)
     assert jobs_response.json() == []
+    assert fake_ct.calls == []
 
 
 @pytest.mark.anyio
@@ -8845,6 +9031,8 @@ async def test_active_dns_osint_requires_authorization_confirmations(monkeypatch
 async def test_active_dns_osint_rejects_malformed_domain_and_flags(monkeypatch, tmp_path, override):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(ActiveDnsOsintCtSourceResult(status="completed", observed_names=("example.invalid",)))
+    app.state.active_dns_osint_ct_source = fake_ct
     payload = make_active_dns_osint_payload(**override)
     transport = ASGITransport(app=app)
 
@@ -8856,6 +9044,7 @@ async def test_active_dns_osint_rejects_malformed_domain_and_flags(monkeypatch, 
     assert "example.invalid" not in response.text
     assert "metadata.google.internal" not in response.text
     assert jobs_response.json() == []
+    assert fake_ct.calls == []
 
 
 @pytest.mark.anyio
@@ -8889,6 +9078,8 @@ async def test_active_dns_osint_rejects_malformed_domain_and_flags(monkeypatch, 
 async def test_active_dns_osint_rejects_dangerous_extra_fields_without_job(monkeypatch, tmp_path, field_name):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(ActiveDnsOsintCtSourceResult(status="completed", observed_names=("example.invalid",)))
+    app.state.active_dns_osint_ct_source = fake_ct
     payload = make_active_dns_osint_payload(**{field_name: "token_should_never_render"})
     transport = ASGITransport(app=app)
 
@@ -8900,12 +9091,15 @@ async def test_active_dns_osint_rejects_dangerous_extra_fields_without_job(monke
     assert response.json()["detail"] == "Unsupported active_dns_osint request field."
     assert "token_should_never_render" not in response.text
     assert jobs_response.json() == []
+    assert fake_ct.calls == []
 
 
 @pytest.mark.anyio
 async def test_active_dns_osint_error_output_does_not_reflect_domain_or_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(ActiveDnsOsintCtSourceResult(status="completed", observed_names=("secret.example.invalid",)))
+    app.state.active_dns_osint_ct_source = fake_ct
     payload = make_active_dns_osint_payload(
         domain="secret.example.invalid/path?token=token_should_never_render",
     )
@@ -8917,6 +9111,7 @@ async def test_active_dns_osint_error_output_does_not_reflect_domain_or_payload(
     assert response.status_code == 400
     assert "secret.example.invalid" not in response.text
     assert "token_should_never_render" not in response.text
+    assert fake_ct.calls == []
 
 
 @pytest.mark.anyio
@@ -8924,6 +9119,8 @@ async def test_active_dns_osint_auth_required_anonymous_fails_before_validation(
     monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
+    fake_ct = FakeActiveDnsOsintCtSource(ActiveDnsOsintCtSourceResult(status="completed", observed_names=("example.invalid",)))
+    app.state.active_dns_osint_ct_source = fake_ct
     payload = make_active_dns_osint_payload(provider_credentials="token_should_never_render")
     transport = ASGITransport(app=app)
 
@@ -8935,9 +9132,166 @@ async def test_active_dns_osint_auth_required_anonymous_fails_before_validation(
     assert "Unsupported active_dns_osint request field" not in response.text
     assert "token_should_never_render" not in response.text
     assert app.state.jobs.list() == []
+    assert fake_ct.calls == []
 
 
-def test_active_dns_osint_backend_source_has_contract_gate_only():
+@pytest.mark.anyio
+async def test_active_dns_osint_wrong_owner_cannot_read_detail_delete_or_exports(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    wrong_owner_job = app.state.jobs.create_active_dns_osint_job(
+        {
+            "audit_type": "active_dns_osint",
+            "capability": "active_dns_osint",
+            "mode": "live_dns_osint",
+            "profile": "ct_subdomain_discovery_bounded",
+            "status": "osint_best_effort",
+            "result_status": "osint_best_effort",
+            "coverage_level": "osint_best_effort",
+            "domain": "[REDACTED_DOMAIN]",
+            "sources": {
+                "certificate_transparency": {
+                    "attempted": True,
+                    "status": "completed",
+                    "names_observed_count": 1,
+                    "names_retained_count": 1,
+                    "truncated": False,
+                },
+                "passive_dns": {"attempted": False, "status": "not_attempted"},
+            },
+            "observed_names": {"count": 1, "sample": ["[REDACTED_DNS_NAME]"], "max_names": 100, "truncated": False},
+            "manual_validation_required": True,
+            "result_interpretation": "DNS OSINT review indicator",
+        },
+        status="completed",
+        owner_id="other-owner",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        detail_response = await client.get(f"/jobs/{wrong_owner_job.id}")
+        delete_response = await client.delete(f"/jobs/{wrong_owner_job.id}")
+        export_responses = [
+            await client.get(f"/jobs/{wrong_owner_job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        ]
+
+    assert detail_response.status_code == 404
+    assert delete_response.status_code == 404
+    assert all(response.status_code == 404 for response in export_responses)
+    assert all(response.json()["detail"] == "Job not found." for response in [detail_response, delete_response, *export_responses])
+
+
+@pytest.mark.anyio
+async def test_active_dns_osint_legacy_raw_payload_is_redacted_in_detail_list_and_exports(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = app.state.jobs.create_active_dns_osint_job(
+        {
+            "audit_type": "active_dns_osint",
+            "capability": "active_dns_osint",
+            "mode": "live_dns_osint",
+            "profile": "ct_subdomain_discovery_bounded",
+            "status": "osint_best_effort",
+            "result_status": "osint_best_effort",
+            "coverage_level": "osint_best_effort",
+            "domain": "secret.example.invalid",
+            "raw_domain": "secret.example.invalid",
+            "sources": {
+                "certificate_transparency": {
+                    "attempted": True,
+                    "status": "completed",
+                    "names_observed_count": 3,
+                    "names_retained_count": 2,
+                    "names_discarded_count": 1,
+                    "truncated": False,
+                    "raw_ct_payload": {"name_value": "www.secret.example.invalid"},
+                    "source_error": "secret.example.invalid token_should_never_render",
+                },
+                "passive_dns": {
+                    "attempted": False,
+                    "status": "not_attempted",
+                    "provider_api_token": "token_should_never_render",
+                },
+            },
+            "observed_names": {
+                "count": 2,
+                "sample": ["www.secret.example.invalid", "api.secret.example.invalid"],
+                "max_names": 100,
+                "truncated": False,
+            },
+            "raw_ct_payload": {"certificate_body": "-----BEGIN CERTIFICATE-----token_should_never_render-----END CERTIFICATE-----"},
+            "raw_certificate_body": "token_should_never_render",
+            "source_payload": "api.secret.example.invalid token_should_never_render",
+            "email": "admin@secret.example.invalid",
+            "execution": {
+                "external_requests_sent": 99,
+                "ct_queries_sent": 99,
+                "passive_dns_queries_sent": 99,
+                "dns_queries_sent": 99,
+                "http_requests_sent": 99,
+                "provider_api_used": True,
+                "observed_name_auto_scan_performed": True,
+                "subprocess_invoked": True,
+            },
+            "limits": {
+                "max_names": 100,
+                "domain_value_persisted": False,
+                "observed_name_values_persisted": False,
+                "ct_source_values_persisted": False,
+            },
+            "errors": [
+                {
+                    "code": "source_error_controlled",
+                    "source": "certificate_transparency",
+                    "message": "secret.example.invalid token_should_never_render",
+                }
+            ],
+            "manual_validation_required": True,
+            "result_interpretation": "DNS OSINT review indicator",
+        },
+        status="completed",
+        error="legacy source error for secret.example.invalid token_should_never_render",
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        detail_response = await client.get(f"/jobs/{job.id}")
+        list_response = await client.get("/jobs")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    assert detail_response.status_code == 200
+    assert list_response.status_code == 200
+    assert all(response.status_code == 200 for response in export_responses.values())
+    detail_payload = detail_response.json()
+    assert detail_payload["target_url"] == "[REDACTED_DOMAIN]"
+    assert detail_payload["result"]["domain"] == "[REDACTED_DOMAIN]"
+    assert detail_payload["result"]["observed_names"]["sample"] == ["[REDACTED_DNS_NAME]", "[REDACTED_DNS_NAME]"]
+    assert detail_payload["result"]["execution"]["external_requests_sent"] == 0
+    assert detail_payload["result"]["execution"]["ct_queries_sent"] == 0
+    assert detail_payload["result"]["execution"]["provider_api_used"] is False
+    combined = json.dumps({"detail": detail_payload, "list": list_response.json()}, sort_keys=True)
+    combined += "\n" + "\n".join(
+        export.text if report_format != "pdf" else export.content.decode("latin1", errors="ignore")
+        for report_format, export in export_responses.items()
+    )
+    assert "[REDACTED_DOMAIN]" in combined
+    assert "[REDACTED_DNS_NAME]" in combined
+    for forbidden in (
+        "secret.example.invalid",
+        "www.secret.example.invalid",
+        "api.secret.example.invalid",
+        "admin@secret.example.invalid",
+        "token_should_never_render",
+        "raw_ct_payload",
+        "certificate_body",
+        "provider_api_token",
+    ):
+        assert forbidden not in combined
+
+
+def test_active_dns_osint_backend_source_has_bounded_persistence_only():
     main_source = Path("backend/app/main.py").read_text()
     config_source = Path("backend/app/config.py").read_text()
     osint_module_source = Path("backend/app/active_dns_osint.py").read_text()
@@ -8954,31 +9308,36 @@ def test_active_dns_osint_backend_source_has_contract_gate_only():
         "requests.",
         "requests.get",
         "requests.post",
-        "urllib",
-        "socket",
-        "ssl",
+        "urllib.",
+        "socket.",
+        "ssl.",
         "dns.resolver",
-        "subprocess",
+        "import subprocess",
+        "subprocess.",
         "Popen(",
         "os.system",
         "shell=True",
-        "nmap",
-        "docker",
+        "nmap ",
+        "docker ",
         "dig ",
         "host ",
         "nslookup",
         "archive/run-all",
         "tools/runner/main.py",
-        "create_active_dns_osint_job",
-        "JobRecord",
         "BackgroundTasks",
     ]
     for token in forbidden:
         assert token not in combined
+    assert "run_active_dns_osint" in route_source
+    assert "active_dns_osint_ct_source" in route_source
+    assert "create_active_dns_osint_job" in route_source
+    assert "JobRecord" in route_source
+    assert "DisabledActiveDnsOsintCtSource" in osint_module_source
+    assert "query_certificate_transparency" in osint_module_source
     assert "external_requests_sent" in osint_module_source
     assert "ct_queries_sent" in osint_module_source
     assert "passive_dns_queries_sent" in osint_module_source
-    assert "build_active_dns_osint_not_executed_result" in route_source
+    assert "observed_name_auto_scan_performed" in osint_module_source
 
 
 def test_active_dns_inventory_backend_source_has_dns_runtime_only_in_dedicated_module():

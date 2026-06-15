@@ -283,6 +283,58 @@ ACTIVE_DNS_INVENTORY_CAVEATS = [
     "No brute-force discovery",
     "No raw DNS packets, resolver logs, or domain values stored",
 ]
+ACTIVE_DNS_OSINT_ALLOWED_STATUSES = {"osint_best_effort", "not_executed", "failed_controlled"}
+ACTIVE_DNS_OSINT_SOURCE_STATUSES = {
+    "not_attempted",
+    "disabled",
+    "completed",
+    "partial",
+    "timed_out",
+    "rate_limited",
+    "source_unavailable",
+    "source_error_controlled",
+    "truncated",
+    "invalid_source_response",
+    "blocked_by_policy",
+}
+ACTIVE_DNS_OSINT_SENSITIVE_VALUE_KEYS = ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS | {
+    "certificate",
+    "certificate_body",
+    "common_name",
+    "ct_payload",
+    "email",
+    "emails",
+    "issuer",
+    "observed_name",
+    "person",
+    "raw_certificate",
+    "raw_certificate_body",
+    "raw_ct_payload",
+    "raw_source_error",
+    "source_error",
+    "source_payload",
+    "subject",
+    "subject_alt_name",
+    "subject_alt_names",
+}
+ACTIVE_DNS_OSINT_TOKEN_SOURCE_KEYS = ACTIVE_DNS_OSINT_SENSITIVE_VALUE_KEYS | {
+    "domain",
+    "name",
+    "observed_name",
+    "raw_domain",
+    "value",
+}
+ACTIVE_DNS_OSINT_CAVEATS = [
+    "DNS OSINT review indicator",
+    "Manual validation required",
+    "Best-effort public-source observed-name inventory",
+    "Observed names are redacted",
+    "No passive DNS source used",
+    "No provider import",
+    "No DNS queries",
+    "No HTTP requests from the backend in this phase",
+    "No auto-scan of observed names",
+]
 
 
 @dataclass(frozen=True)
@@ -470,6 +522,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_active_tls_basic_sections(result))
     elif job.audit_type == "active_dns_inventory":
         sections.extend(build_active_dns_inventory_sections(result))
+    elif job.audit_type == "active_dns_osint":
+        sections.extend(build_active_dns_osint_sections(result))
 
     sections.append(ReportSection("Errors And Timeouts", flatten_mapping(collect_errors(job))))
     return sections
@@ -1082,6 +1136,58 @@ def flatten_active_dns_inventory_record_groups(value: Any) -> list[tuple[str, st
         rows.append((f"{record_type} sample", stringify(group.get("sample", []))))
         rows.append((f"{record_type} truncated", stringify(group.get("truncated", False))))
     return rows
+
+
+def build_active_dns_osint_sections(result: dict[str, Any]) -> list[ReportSection]:
+    public_result = public_active_dns_osint_result(result)
+    summary = as_dict(public_result.get("summary"))
+    sources = as_dict(public_result.get("sources"))
+    certificate_transparency = as_dict(sources.get("certificate_transparency"))
+    passive_dns = as_dict(sources.get("passive_dns"))
+    observed_names = as_dict(public_result.get("observed_names"))
+    execution = as_dict(public_result.get("execution"))
+    limits = as_dict(public_result.get("limits"))
+    raw_json = json.dumps(public_result, indent=2, sort_keys=True)
+    return [
+        ReportSection(
+            "Active DNS OSINT Scope Notice",
+            [
+                ("Result wording", "DNS OSINT review indicator. Manual validation required."),
+                ("Coverage boundary", "Best-effort public-source observed-name inventory only."),
+                ("Source boundary", "Certificate Transparency adapter only; passive DNS and provider import are not used."),
+                ("Discovery boundary", "Observed names are not auto-scanned, resolved, crawled, or expanded."),
+                ("Redaction boundary", "Domain, observed names, source payloads, certificates, and source errors are redacted."),
+            ],
+        ),
+        ReportSection(
+            "Active DNS OSINT Summary",
+            [
+                ("Capability", stringify(public_result.get("capability", "active_dns_osint"))),
+                ("Profile", stringify(public_result.get("profile", "N/A"))),
+                ("Result status", stringify(public_result.get("result_status", public_result.get("status", "N/A")))),
+                ("Coverage level", stringify(public_result.get("coverage_level", "N/A"))),
+                ("Domain", stringify(public_result.get("domain", "[REDACTED_DOMAIN]"))),
+                ("Observed names count", stringify(observed_names.get("count", 0))),
+                ("Manual validation", stringify(summary.get("manual_validation_required", True))),
+                ("Interpretation", stringify(summary.get("result_interpretation", public_result.get("result_interpretation", "N/A")))),
+            ],
+        ),
+        ReportSection("Certificate Transparency Source", flatten_mapping(certificate_transparency)),
+        ReportSection("Passive DNS Source", flatten_mapping(passive_dns)),
+        ReportSection(
+            "Observed Names",
+            [
+                ("Count", stringify(observed_names.get("count", 0))),
+                ("Sample", stringify(observed_names.get("sample", []))),
+                ("Max names", stringify(observed_names.get("max_names", "N/A"))),
+                ("Truncated", stringify(observed_names.get("truncated", False))),
+            ],
+        ),
+        ReportSection("Execution Boundary", flatten_mapping(execution)),
+        ReportSection("Active DNS OSINT Caveats", [(f"Caveat {index}", caveat) for index, caveat in enumerate(ACTIVE_DNS_OSINT_CAVEATS, start=1)]),
+        ReportSection("Limits", flatten_mapping(limits)),
+        ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
+    ]
 
 
 def flatten_active_nmap_basic_observations(value: Any) -> list[tuple[str, str]]:
@@ -1790,6 +1896,36 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["http_requests_sent"] = execution.get("http_requests_sent", 0)
         data["target_expansion_performed"] = execution.get("target_expansion_performed", False)
         data["recursive_discovery_performed"] = execution.get("recursive_discovery_performed", False)
+    elif job.audit_type == "active_dns_osint":
+        result = public_active_dns_osint_result(result)
+        osint_summary = as_dict(result.get("summary"))
+        execution = as_dict(result.get("execution"))
+        sources = as_dict(result.get("sources"))
+        certificate_transparency = as_dict(sources.get("certificate_transparency"))
+        passive_dns = as_dict(sources.get("passive_dns"))
+        observed_names = as_dict(result.get("observed_names"))
+        data["capability"] = result.get("capability", "active_dns_osint")
+        data["profile"] = result.get("profile", "N/A")
+        data["result_status"] = result.get("result_status", result.get("status", "N/A"))
+        data["coverage_level"] = result.get("coverage_level", "N/A")
+        data["target_display"] = "[REDACTED_DOMAIN]"
+        data["observed_names_count"] = observed_names.get("count", 0)
+        data["observed_names_sample"] = observed_names.get("sample", [])
+        data["observed_names_truncated"] = observed_names.get("truncated", False)
+        data["ct_source_status"] = certificate_transparency.get("status", "not_attempted")
+        data["ct_names_observed_count"] = certificate_transparency.get("names_observed_count", 0)
+        data["ct_names_retained_count"] = certificate_transparency.get("names_retained_count", 0)
+        data["ct_truncated"] = certificate_transparency.get("truncated", False)
+        data["passive_dns_status"] = passive_dns.get("status", "not_attempted")
+        data["manual_validation_required"] = True
+        data["surface_interpretation"] = osint_summary.get("result_interpretation", "DNS OSINT review indicator")
+        data["external_requests_sent"] = execution.get("external_requests_sent", 0)
+        data["ct_queries_sent"] = execution.get("ct_queries_sent", 0)
+        data["passive_dns_queries_sent"] = execution.get("passive_dns_queries_sent", 0)
+        data["dns_queries_sent"] = execution.get("dns_queries_sent", 0)
+        data["http_requests_sent"] = execution.get("http_requests_sent", 0)
+        data["observed_name_auto_scan_performed"] = execution.get("observed_name_auto_scan_performed", False)
+        data["provider_api_used"] = execution.get("provider_api_used", False)
     return data
 
 
@@ -1851,7 +1987,146 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return public_active_tls_basic_result(result)
     if job.audit_type == "active_dns_inventory":
         return public_active_dns_inventory_result(result)
+    if job.audit_type == "active_dns_osint":
+        return public_active_dns_osint_result(result)
     return result
+
+
+def public_active_dns_osint_result(result: dict[str, Any]) -> dict[str, Any]:
+    redacted = as_dict(redact_active_dns_osint_value(result))
+    result_status = stringify(redacted.get("result_status") or redacted.get("status") or "osint_best_effort")
+    if result_status not in ACTIVE_DNS_OSINT_ALLOWED_STATUSES:
+        result_status = "failed_controlled"
+    coverage_level = stringify(redacted.get("coverage_level") or "osint_best_effort")
+    if coverage_level != "osint_best_effort":
+        coverage_level = "osint_best_effort"
+
+    sources = as_dict(redacted.get("sources"))
+    certificate_transparency = _public_active_dns_osint_ct_source(sources.get("certificate_transparency"))
+    passive_dns = _public_active_dns_osint_passive_dns_source(sources.get("passive_dns"))
+    observed_names = _public_active_dns_osint_observed_names(redacted.get("observed_names"), certificate_transparency)
+    execution = as_dict(redacted.get("execution"))
+    limits = as_dict(redacted.get("limits"))
+    errors = redacted.get("errors")
+    if not isinstance(errors, list):
+        errors = []
+
+    public_result = {
+        "audit_type": "active_dns_osint",
+        "capability": "active_dns_osint",
+        "mode": "live_dns_osint",
+        "profile": "ct_subdomain_discovery_bounded",
+        "status": result_status,
+        "result_status": result_status,
+        "coverage_level": coverage_level,
+        "domain": "[REDACTED_DOMAIN]",
+        "sources": {
+            "certificate_transparency": certificate_transparency,
+            "passive_dns": passive_dns,
+        },
+        "observed_names": observed_names,
+        "summary": {
+            "manual_validation_required": True,
+            "result_interpretation": "DNS OSINT review indicator",
+            "coverage_level": coverage_level,
+            "observed_names_count": observed_names.get("count", 0),
+            "ct_source_status": certificate_transparency.get("status", "not_attempted"),
+            "passive_dns_status": passive_dns.get("status", "not_attempted"),
+        },
+        "execution": {
+            "external_requests_sent": 0,
+            "ct_queries_sent": 0,
+            "passive_dns_queries_sent": 0,
+            "dns_queries_sent": 0,
+            "http_requests_sent": 0,
+            "provider_api_used": False,
+            "credential_validation_performed": False,
+            "crawling_performed": False,
+            "subprocess_invoked": False,
+            "nmap_invoked": False,
+            "target_expansion_performed": False,
+            "observed_name_auto_scan_performed": False,
+            "ct_real_call_performed": False,
+            "passive_dns_api_used": False,
+        },
+        "manual_validation_required": True,
+        "result_interpretation": "DNS OSINT review indicator",
+        "errors": [_public_active_dns_osint_error(error) for error in errors[:8]],
+        "warnings": [],
+        "limits": {
+            "max_names": limits.get("max_names") if isinstance(limits.get("max_names"), int) else observed_names.get("max_names", 100),
+            "backend_max_names": limits.get("backend_max_names") if isinstance(limits.get("backend_max_names"), int) else 100,
+            "sample_size": limits.get("sample_size") if isinstance(limits.get("sample_size"), int) else 5,
+            "domain_value_persisted": False,
+            "observed_name_values_persisted": False,
+            "ct_source_values_persisted": False,
+            "certificate_material_persisted": False,
+            "source_error_details_persisted": False,
+            "provider_secret_values_persisted": False,
+        },
+        "surface_caveats": list(ACTIVE_DNS_OSINT_CAVEATS),
+    }
+    return as_dict(redact_active_dns_osint_value(public_result))
+
+
+def _public_active_dns_osint_ct_source(value: Any) -> dict[str, Any]:
+    source = as_dict(value)
+    status_value = stringify(source.get("status", "not_attempted"))
+    if status_value not in ACTIVE_DNS_OSINT_SOURCE_STATUSES:
+        status_value = "invalid_source_response"
+    return {
+        "attempted": bool(source.get("attempted", False)),
+        "status": status_value,
+        "names_observed_count": source.get("names_observed_count", 0)
+        if isinstance(source.get("names_observed_count", 0), int)
+        else 0,
+        "names_retained_count": source.get("names_retained_count", 0)
+        if isinstance(source.get("names_retained_count", 0), int)
+        else 0,
+        "names_discarded_count": source.get("names_discarded_count", 0)
+        if isinstance(source.get("names_discarded_count", 0), int)
+        else 0,
+        "truncated": bool(source.get("truncated", False)),
+    }
+
+
+def _public_active_dns_osint_passive_dns_source(value: Any) -> dict[str, Any]:
+    source = as_dict(value)
+    status_value = stringify(source.get("status", "not_attempted"))
+    if status_value != "not_attempted":
+        status_value = "not_attempted"
+    return {
+        "attempted": False,
+        "status": status_value,
+    }
+
+
+def _public_active_dns_osint_observed_names(value: Any, ct_source: dict[str, Any]) -> dict[str, Any]:
+    observed = as_dict(value)
+    count = observed.get("count", ct_source.get("names_retained_count", 0))
+    if not isinstance(count, int) or count < 0:
+        count = 0
+    max_names = observed.get("max_names", 100)
+    if not isinstance(max_names, int) or max_names < 1:
+        max_names = 100
+    sample_count = min(count, 5)
+    return {
+        "count": count,
+        "sample": ["[REDACTED_DNS_NAME]" for _ in range(sample_count)],
+        "max_names": max_names,
+        "truncated": bool(observed.get("truncated", ct_source.get("truncated", False))),
+    }
+
+
+def _public_active_dns_osint_error(value: Any) -> dict[str, str]:
+    error = as_dict(value)
+    code = stringify(error.get("code", "source_error_controlled"))
+    if code not in ACTIVE_DNS_OSINT_SOURCE_STATUSES:
+        code = "source_error_controlled"
+    source = stringify(error.get("source", "certificate_transparency"))
+    if source != "certificate_transparency":
+        source = "certificate_transparency"
+    return {"code": code, "source": source}
 
 
 def public_active_dns_inventory_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -2215,6 +2490,8 @@ def public_job_target_url(job: JobRecord) -> str:
         return "[REDACTED_TARGET]"
     if job.audit_type == "active_dns_inventory":
         return "[REDACTED_DOMAIN]"
+    if job.audit_type == "active_dns_osint":
+        return "[REDACTED_DOMAIN]"
     return redact_url_query(job.target_url)
 
 
@@ -2255,6 +2532,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_active_tls_basic_text(job.error, collect_active_tls_basic_sensitive_tokens(job.result or {}))
     if job.audit_type == "active_dns_inventory":
         return redact_active_dns_inventory_text(job.error, collect_active_dns_inventory_sensitive_tokens(job.result or {}))
+    if job.audit_type == "active_dns_osint":
+        return redact_active_dns_osint_text(job.error, collect_active_dns_osint_sensitive_tokens(job.result or {}))
     return job.error
 
 
@@ -3257,6 +3536,75 @@ def redact_active_dns_inventory_text(value: str, sensitive_tokens: set[str] | No
         flags=re.IGNORECASE,
     )
     redacted = re.sub(r"(?i)\b(?:confirmed vulnerability|exploitable|target is safe|all certs found|full scan|public scanner)\b", "[REDACTED_CLAIM]", redacted)
+    return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
+
+
+def redact_active_dns_osint_value(value: Any, sensitive_tokens: set[str] | None = None) -> Any:
+    tokens = sensitive_tokens if sensitive_tokens is not None else collect_active_dns_osint_sensitive_tokens(value)
+    if isinstance(value, str):
+        return redact_active_dns_osint_text(value, tokens)
+    if isinstance(value, list):
+        return [redact_active_dns_osint_value(item, tokens) for item in value]
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            normalized_key = str(key).lower().replace("-", "_")
+            if normalized_key in {"domain", "raw_domain", "target_domain"}:
+                redacted[key] = "[REDACTED_DOMAIN]"
+            elif normalized_key in {"name", "observed_name", "common_name", "subject", "subject_alt_name"}:
+                redacted[key] = "[REDACTED_DNS_NAME]" if item else item
+            elif normalized_key in {"value", "email", "issuer"}:
+                redacted[key] = "[REDACTED_DNS_VALUE]" if item else item
+            elif normalized_key in ACTIVE_DNS_OSINT_SENSITIVE_VALUE_KEYS or is_active_secret_mapping_key(str(key)):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_active_dns_osint_value(item, tokens)
+        return redacted
+    return value
+
+
+def collect_active_dns_osint_sensitive_tokens(value: Any) -> set[str]:
+    tokens: set[str] = set()
+
+    def collect(item: Any, *, sensitive_context: bool = False) -> None:
+        if isinstance(item, str):
+            token = item.strip()
+            if sensitive_context and 3 <= len(token) <= 512:
+                tokens.add(token)
+            return
+        if isinstance(item, list):
+            for child in item:
+                collect(child, sensitive_context=sensitive_context)
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                normalized_key = str(key).lower().replace("-", "_")
+                collect(child, sensitive_context=sensitive_context or normalized_key in ACTIVE_DNS_OSINT_TOKEN_SOURCE_KEYS)
+
+    collect(value)
+    return tokens
+
+
+def redact_active_dns_osint_text(value: str, sensitive_tokens: set[str] | None = None) -> str:
+    redacted = redact_active_secret_text(value)
+    for token in sorted(sensitive_tokens or set(), key=len, reverse=True):
+        if token:
+            redacted = redacted.replace(token, "[REDACTED]")
+    redacted = re.sub(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", "[REDACTED_CERTIFICATE]", redacted, flags=re.DOTALL)
+    redacted = re.sub(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[REDACTED_DNS_VALUE]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[REDACTED_DNS_VALUE]", redacted)
+    redacted = re.sub(r"\b(?:[A-F0-9]{1,4}:){2,}[A-F0-9:]{1,}\b", "[REDACTED_DNS_VALUE]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(
+        r"\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\b",
+        "[REDACTED_DNS_NAME]",
+        redacted,
+        flags=re.IGNORECASE,
+    )
+    redacted = re.sub(
+        r"(?i)\b(?:all\s+subdomains\s+found|all\s+records\s+found|complete\s+coverage|confirmed\s+vulnerability|exploitable|target\s+is\s+safe|public\s+scanner)\b",
+        "[REDACTED_CLAIM]",
+        redacted,
+    )
     return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
 
 

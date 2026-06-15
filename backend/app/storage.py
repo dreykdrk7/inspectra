@@ -453,6 +453,32 @@ class JobStore:
             self._save_unlocked(record)
         return record
 
+    def create_active_dns_osint_job(
+        self,
+        result: dict,
+        *,
+        status: JobStatus,
+        error: str | None = None,
+        owner_id: str | None = None,
+    ) -> JobRecord:
+        now = utc_now()
+        record = JobRecord(
+            id=uuid4().hex,
+            owner_id=owner_id,
+            audit_type="active_dns_osint",
+            file_id=None,
+            target_url="[REDACTED_DOMAIN]",
+            target_domain=None,
+            status=status,
+            created_at=now,
+            updated_at=now,
+            result=result,
+            error=error,
+        )
+        with storage_lock(self.settings):
+            self._save_unlocked(record)
+        return record
+
     def _create_job(
         self,
         file_id: str | None,
@@ -573,7 +599,7 @@ class JobStore:
             target_url = _redact_active_summary_text(target_url)
         if record.audit_type in {"active_nmap_basic", "active_tls_basic"} and target_url:
             target_url = "[REDACTED_TARGET]"
-        if record.audit_type == "active_dns_inventory" and target_url:
+        if record.audit_type in {"active_dns_inventory", "active_dns_osint"} and target_url:
             target_url = "[REDACTED_DOMAIN]"
         return JobListItem(
             id=record.id,
@@ -1052,6 +1078,42 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["subdomain_queries_sent"] = execution.get("subdomain_queries_sent", record.result.get("subdomain_queries_sent", 0))
             summary["manual_validation_required"] = True
             summary["surface_interpretation"] = "DNS configuration review indicator"
+        if record.audit_type == "active_dns_osint":
+            sources = record.result.get("sources")
+            observed_names = record.result.get("observed_names")
+            execution = record.result.get("execution")
+            if not isinstance(sources, dict):
+                sources = {}
+            if not isinstance(observed_names, dict):
+                observed_names = {}
+            if not isinstance(execution, dict):
+                execution = {}
+            ct_source = sources.get("certificate_transparency")
+            passive_dns = sources.get("passive_dns")
+            if not isinstance(ct_source, dict):
+                ct_source = {}
+            if not isinstance(passive_dns, dict):
+                passive_dns = {}
+            summary["capability"] = record.result.get("capability", "active_dns_osint")
+            summary["profile"] = record.result.get("profile")
+            summary["result_status"] = record.result.get("result_status", record.result.get("status"))
+            summary["coverage_level"] = record.result.get("coverage_level")
+            summary["target_display"] = "[REDACTED_DOMAIN]"
+            summary["observed_names_count"] = observed_names.get("count", 0)
+            observed_count = observed_names.get("count", 0)
+            if not isinstance(observed_count, int) or observed_count < 0:
+                observed_count = 0
+            summary["observed_names_sample"] = ["[REDACTED_DNS_NAME]" for _ in range(min(observed_count, 5))]
+            summary["ct_source_status"] = ct_source.get("status", "not_attempted")
+            summary["ct_names_observed_count"] = ct_source.get("names_observed_count", 0)
+            summary["ct_names_retained_count"] = ct_source.get("names_retained_count", 0)
+            summary["ct_truncated"] = bool(ct_source.get("truncated", False))
+            summary["passive_dns_status"] = passive_dns.get("status", "not_attempted")
+            summary["manual_validation_required"] = True
+            summary["surface_interpretation"] = "DNS OSINT review indicator"
+            summary["external_requests_sent"] = 0
+            summary["ct_queries_sent"] = 0
+            summary["passive_dns_queries_sent"] = 0
         return summary
     if record.error:
         return {"error": record.error}

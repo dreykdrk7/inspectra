@@ -2,6 +2,13 @@
 
 Decision: `ACTIVE_DNS_OSINT_02_BACKEND_CONTRACT_GATE_ACCEPTED`
 
+Follow-up status: `docs/future/active-dns-osint-ct-bounded-backend-job-persistence.md`
+freezes `ACTIVE_DNS_OSINT_03_CT_BOUNDED_BACKEND_JOB_PERSISTENCE_PASSED`. The
+same endpoint can now create owner-scoped redacted `active_dns_osint` jobs from
+an injectable fakeable CT source adapter, while still performing no real CT,
+HTTP, DNS, passive-DNS, provider, crawling, subprocess, Docker, Nmap,
+archive/run-all, or runner behavior.
+
 This microphase adds the initial backend contract gate for future
 `active_dns_osint` without implementing any source runtime. The endpoint exists
 only to validate the request shape, authorization confirmations, source flags,

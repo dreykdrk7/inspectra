@@ -44,9 +44,11 @@ from app.active_dns_osint import (
     ACTIVE_DNS_OSINT_PROFILE,
     ActiveDnsOsintContract,
     ActiveDnsOsintPolicyError,
-    build_active_dns_osint_not_executed_result,
+    active_dns_osint_job_error,
+    active_dns_osint_job_status,
     normalize_active_dns_osint_domain,
     normalize_active_dns_osint_max_names,
+    run_active_dns_osint,
 )
 from app.active_tls_basic import (
     ACTIVE_TLS_BASIC_DEFAULT_TIMEOUT_SECONDS,
@@ -170,6 +172,7 @@ async def lifespan(app: FastAPI):
     app.state.active_nmap_basic_lifecycle_client = ActiveNmapBasicRouteActiveToolsClient()
     app.state.active_dns_inventory_resolver = None
     app.state.active_dns_inventory_axfr_transport = None
+    app.state.active_dns_osint_ct_source = None
     app.state.web_audits = WebAuditService(settings, file_store, job_store)
     app.state.domain_audits = DomainAuditService(settings, file_store, job_store)
     app.state.subdomain_inventory_audits = SubdomainInventoryAuditService(settings, file_store, job_store)
@@ -1263,20 +1266,27 @@ async def launch_active_dns_inventory(
     )
 
 
-@app.post("/active/network/dns-osint")
+@app.post("/active/network/dns-osint", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def launch_active_dns_osint(
     request: Request,
     payload: Any = Body(...),
-) -> dict[str, Any]:
+) -> JobRecord:
     if not request.app.state.settings.active_dns_osint_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="active_dns_osint is disabled in this environment.",
         )
 
-    current_owner_id_for_request(request)
+    owner_id = current_owner_id_for_request(request)
     contract = validate_active_dns_osint_contract(payload)
-    return build_active_dns_osint_not_executed_result(contract)
+    ct_source = getattr(request.app.state, "active_dns_osint_ct_source", None)
+    result = run_active_dns_osint(contract, ct_source=ct_source)
+    return request.app.state.jobs.create_active_dns_osint_job(
+        result,
+        status=active_dns_osint_job_status(result),
+        error=active_dns_osint_job_error(result),
+        owner_id=owner_id,
+    )
 
 
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
@@ -1348,6 +1358,7 @@ async def get_job(request: Request, job_id: str) -> JobRecord:
         "active_nmap_basic",
         "active_tls_basic",
         "active_dns_inventory",
+        "active_dns_osint",
     }:
         return job.model_copy(
             update={
