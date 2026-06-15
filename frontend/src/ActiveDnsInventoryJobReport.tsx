@@ -4,7 +4,8 @@ import {
   buildActiveDnsInventoryReport,
   type ActiveDnsInventoryRecordGroup,
   type ActiveDnsInventorySecurityIndicator,
-  type ActiveDnsInventorySubdomainSummary
+  type ActiveDnsInventorySubdomainSummary,
+  type ActiveDnsInventoryZoneTransferSummary
 } from "./activeDnsInventoryReport";
 import type { MetadataEntry } from "./pdfReport";
 import type { JobRecord, JobStatus } from "./types";
@@ -28,8 +29,8 @@ export function ActiveDnsInventoryJobReport({ job }: { job: JobRecord }) {
           <div>
             <h3>Active / DNS inventory report</h3>
             <p className="muted">
-              DNS configuration review indicator. Best-effort DNS inventory or partial inventory. Manual validation required. No complete-zone
-              claim is asserted.
+              DNS configuration review indicator. Best-effort DNS inventory or partial inventory unless authorized AXFR is accepted by an
+              authoritative server. Manual validation required.
             </p>
           </div>
           <div className="badge-row">
@@ -86,7 +87,7 @@ export function ActiveDnsInventoryJobReport({ job }: { job: JobRecord }) {
             <MetadataRow label="DNS queries sent" value={String(report.dnsQueriesSent)} />
             <MetadataRow label="Subdomain queries sent" value={String(report.subdomainQueriesSent)} />
             <MetadataRow label="Record types" value={report.recordTypes.length > 0 ? report.recordTypes.join(", ") : "Not available"} />
-            <MetadataRow label="AXFR" value="not attempted" />
+            <MetadataRow label="AXFR" value={report.zoneTransfer.status} />
             <MetadataRow label="Provider API" value="not attempted" />
             <MetadataRow label="CT/passive DNS" value="not attempted" />
           </dl>
@@ -106,6 +107,10 @@ export function ActiveDnsInventoryJobReport({ job }: { job: JobRecord }) {
           <SubdomainSummary subdomains={report.subdomains} />
         </ReportSection>
       </div>
+
+      <ReportSection title="Authorized Zone Transfer (AXFR)">
+        <ZoneTransferSummary zoneTransfer={report.zoneTransfer} />
+      </ReportSection>
 
       <ReportSection title="Limits">
         <MetadataList entries={report.limits} empty="No active_dns_inventory limits were returned." />
@@ -208,6 +213,32 @@ function SubdomainSummary({ subdomains }: { subdomains: ActiveDnsInventorySubdom
   );
 }
 
+function ZoneTransferSummary({ zoneTransfer }: { zoneTransfer: ActiveDnsInventoryZoneTransferSummary }) {
+  const complete = zoneTransfer.status === "zone_transfer_complete";
+  return (
+    <>
+      <dl className="summary-list">
+        <MetadataRow label="Status" value={zoneTransfer.status} />
+        <MetadataRow label="Attempted" value={String(zoneTransfer.attempted)} />
+        <MetadataRow label="Nameservers considered" value={String(zoneTransfer.nameserversConsidered)} />
+        <MetadataRow label="Nameservers attempted" value={String(zoneTransfer.nameserversAttempted)} />
+        <MetadataRow label="Records received" value={String(zoneTransfer.recordsReceivedCount)} />
+        <MetadataRow label="Records retained" value={String(zoneTransfer.recordsRetainedCount)} />
+        <MetadataRow label="Truncated" value={String(zoneTransfer.truncated)} />
+        <MetadataRow label="Reason" value={zoneTransfer.reasonCode ?? "not provided"} />
+      </dl>
+      {complete ? (
+        <div className="alert" role="status">
+          zone transfer accepted by authoritative server. high-risk configuration review indicator. Manual validation required.
+        </div>
+      ) : (
+        <p className="muted">{zoneTransferStatusMessage(zoneTransfer.status)}</p>
+      )}
+      {zoneTransfer.interpretation ? <p className="muted">{zoneTransfer.interpretation}</p> : null}
+    </>
+  );
+}
+
 function ReportSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="report-section">
@@ -295,10 +326,44 @@ function statusMessage(coverageLevel: string): string {
   if (coverageLevel === "best_effort_inventory") {
     return "active_dns_inventory produced a best-effort DNS inventory review indicator. Manual validation required.";
   }
+  if (coverageLevel === "zone_transfer_complete") {
+    return "active_dns_inventory recorded an authorized zone transfer accepted by an authoritative server as a high-risk DNS configuration review indicator. Manual validation required.";
+  }
   if (coverageLevel === "not_executed") {
     return "active_dns_inventory was not executed. This report shows only the controlled contract state.";
   }
   return "active_dns_inventory produced a partial inventory review indicator. Manual validation required.";
+}
+
+function zoneTransferStatusMessage(status: string): string {
+  if (status === "not_attempted") {
+    return "AXFR was not attempted.";
+  }
+  if (status === "authorization_required") {
+    return "AXFR was blocked because specific zone transfer authorization was not confirmed.";
+  }
+  if (status === "no_authoritative_nameservers") {
+    return "No authoritative nameservers were available for a bounded AXFR attempt.";
+  }
+  if (status === "refused") {
+    return "Authoritative nameserver refused AXFR. This remains a controlled partial inventory result.";
+  }
+  if (status === "unavailable") {
+    return "AXFR was unavailable. This remains a controlled partial inventory result.";
+  }
+  if (status === "timed_out") {
+    return "AXFR timed out within configured bounds. This remains a controlled partial inventory result.";
+  }
+  if (status === "malformed_response") {
+    return "AXFR response was malformed or incomplete. This remains a controlled partial inventory result.";
+  }
+  if (status === "record_limit_exceeded") {
+    return "AXFR record limit was exceeded and retained output was bounded.";
+  }
+  if (status === "zone_transfer_complete") {
+    return "zone transfer accepted by authoritative server. high-risk configuration review indicator. Manual validation required.";
+  }
+  return "AXFR returned a controlled state. Manual validation required.";
 }
 
 function formatDate(value: string): string {

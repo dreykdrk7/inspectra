@@ -40,6 +40,18 @@ export type ActiveDnsInventorySubdomainSummary = {
   sampleTruncated: boolean;
 };
 
+export type ActiveDnsInventoryZoneTransferSummary = {
+  attempted: boolean;
+  status: string;
+  nameserversConsidered: number;
+  nameserversAttempted: number;
+  recordsReceivedCount: number;
+  recordsRetainedCount: number;
+  truncated: boolean;
+  reasonCode: string | null;
+  interpretation: string | null;
+};
+
 export type ActiveDnsInventoryReport = {
   isActiveDnsInventory: boolean;
   status: string;
@@ -50,6 +62,7 @@ export type ActiveDnsInventoryReport = {
   recordGroups: ActiveDnsInventoryRecordGroup[];
   securityIndicators: Record<"spf" | "dmarc" | "caa" | "dkim", ActiveDnsInventorySecurityIndicator>;
   subdomains: ActiveDnsInventorySubdomainSummary;
+  zoneTransfer: ActiveDnsInventoryZoneTransferSummary;
   zoneTransferStatus: string;
   providerImportStatus: string;
   dnsQueriesSent: number;
@@ -67,10 +80,22 @@ const CONTROLLED_STATUS_LABELS: Record<string, string> = {
   best_effort_inventory: "best_effort_inventory",
   partial_inventory: "partial_inventory",
   not_executed: "not_executed",
+  zone_transfer_complete: "zone_transfer_complete",
   dns_inventory_error_controlled: "partial_inventory",
   failed: "partial_inventory",
   completed: "best_effort_inventory"
 };
+const ALLOWED_ZONE_TRANSFER_STATUSES = new Set([
+  "not_attempted",
+  "authorization_required",
+  "no_authoritative_nameservers",
+  "refused",
+  "unavailable",
+  "timed_out",
+  "malformed_response",
+  "record_limit_exceeded",
+  "zone_transfer_complete"
+]);
 
 export function buildActiveDnsInventoryReport(job: JobRecord): ActiveDnsInventoryReport {
   const redactedJob = redactActiveDnsInventoryValue(job) as JobRecord;
@@ -87,7 +112,7 @@ export function buildActiveDnsInventoryReport(job: JobRecord): ActiveDnsInventor
   const recordGroups = recordGroupsFromValue(result?.records);
   const securityIndicators = securityIndicatorsFromValue(result?.security_records);
   const subdomains = subdomainsFromValue(result?.subdomains);
-  const zoneTransfer = asRecord(result?.zone_transfer);
+  const zoneTransfer = zoneTransferFromValue(result?.zone_transfer);
   const providerImport = asRecord(result?.provider_import);
   const dnsQueriesSent = asNumber(result?.dns_queries_sent) ?? asNumber(execution?.dns_queries_sent) ?? 0;
   const subdomainQueriesSent = asNumber(result?.subdomain_queries_sent) ?? asNumber(execution?.subdomain_queries_sent) ?? 0;
@@ -108,7 +133,8 @@ export function buildActiveDnsInventoryReport(job: JobRecord): ActiveDnsInventor
     recordGroups,
     securityIndicators,
     subdomains,
-    zoneTransferStatus: asString(zoneTransfer?.status) ?? "not_attempted",
+    zoneTransfer,
+    zoneTransferStatus: zoneTransfer.status,
     providerImportStatus: asString(providerImport?.status) ?? "not_attempted",
     dnsQueriesSent,
     subdomainQueriesSent,
@@ -121,6 +147,8 @@ export function buildActiveDnsInventoryReport(job: JobRecord): ActiveDnsInventor
       { label: "Redacted record count", value: String(recordGroups.reduce((total, group) => total + group.count, 0)) },
       { label: "Bounded subdomain candidates", value: String(subdomains.candidatesChecked) },
       { label: "Bounded subdomain observations", value: String(subdomains.count) },
+      { label: "Zone transfer", value: zoneTransfer.status },
+      { label: "AXFR records retained", value: String(zoneTransfer.recordsRetainedCount) },
       { label: "DNS queries sent", value: String(dnsQueriesSent) },
       { label: "Subdomain queries sent", value: String(subdomainQueriesSent) }
     ],
@@ -190,10 +218,13 @@ export function redactActiveDnsInventoryText(value: string): string {
       "$1$2$3$4[REDACTED]"
     )
     .replace(
-      /(\b(?:authorization|cookie|set-cookie|session|password|passwd|pwd|secret|token|api_key|apikey|private_key|client_secret|credential|auth|provider_api_token|provider_account_id|provider_zone_id|raw_dns_packet|raw_resolver_log)\b\s*[:=]\s*)(['"]?)[^\s,'"}\]]+/gi,
+      /(\b(?:authorization|cookie|set-cookie|session|password|passwd|pwd|secret|token|api_key|apikey|private_key|client_secret|credential|auth|provider_api_token|provider_account_id|provider_zone_id|raw_dns_packet|raw_dns_message|dns_message|dns_packet|raw_resolver_log|raw_zone|zone_file|zone_transfer_payload)\b\s*[:=]\s*)(['"]?)[^\s,'"}\]]+/gi,
       "$1$2[REDACTED]"
     )
-    .replace(/\b(?:raw_dns_packet|raw_resolver_log|provider_api_token|provider_account_id|provider_zone_id)\b/gi, "[REDACTED]")
+    .replace(
+      /\b(?:raw_dns_packet|raw_dns_message|dns_message|dns_packet|raw_resolver_log|raw_zone|zone_file|zone_transfer_payload|provider_api_token|provider_account_id|provider_zone_id)\b/gi,
+      "[REDACTED]"
+    )
     .replace(/\bconfirmed\s+vulnerability\b/gi, "[REDACTED_CLAIM]")
     .replace(/\bexploitable\b/gi, "[REDACTED_CLAIM]")
     .replace(/\btarget\s+is\s+safe\b/gi, "[REDACTED_CLAIM]")
@@ -292,6 +323,22 @@ function subdomainsFromValue(value: unknown): ActiveDnsInventorySubdomainSummary
   };
 }
 
+function zoneTransferFromValue(value: unknown): ActiveDnsInventoryZoneTransferSummary {
+  const record = asRecord(value);
+  const status = safeZoneTransferStatus(asString(record?.status));
+  return {
+    attempted: record?.attempted === true,
+    status,
+    nameserversConsidered: safeCount(asNumber(record?.nameservers_considered)),
+    nameserversAttempted: safeCount(asNumber(record?.nameservers_attempted)),
+    recordsReceivedCount: safeCount(asNumber(record?.records_received_count)),
+    recordsRetainedCount: safeCount(asNumber(record?.records_retained_count)),
+    truncated: record?.truncated === true,
+    reasonCode: safeDnsText(asString(record?.reason_code)),
+    interpretation: safeDnsText(asString(record?.interpretation))
+  };
+}
+
 function errorsFromValue(value: unknown, jobError: unknown): string[] {
   const errors = [...asStringArray(value), ...(typeof jobError === "string" && jobError.trim() ? [jobError] : [])].map(redactActiveDnsInventoryText);
   return dedupeStrings(errors.map((item) => (item.includes("[REDACTED") ? "[REDACTED_ERROR]" : item)));
@@ -332,6 +379,18 @@ function safeRecordType(value: string | null): string {
   return ALLOWED_RECORD_TYPES.has(type) ? type : "UNKNOWN";
 }
 
+function safeZoneTransferStatus(value: string | null): string {
+  const status = value?.trim().toLowerCase() ?? "not_attempted";
+  return ALLOWED_ZONE_TRANSFER_STATUSES.has(status) ? status : "unavailable";
+}
+
+function safeCount(value: number | null): number {
+  if (value === null || value < 0) {
+    return 0;
+  }
+  return Math.floor(Math.min(value, 100000));
+}
+
 function normalizeStatus(value: string | null): string {
   if (!value) {
     return "partial_inventory";
@@ -342,7 +401,10 @@ function normalizeStatus(value: string | null): string {
 
 function normalizeCoverageLevel(value: string | null): string {
   const normalized = value?.trim().toLowerCase() ?? "partial_inventory";
-  return normalized === "best_effort_inventory" || normalized === "partial_inventory" || normalized === "not_executed"
+  return normalized === "best_effort_inventory" ||
+    normalized === "partial_inventory" ||
+    normalized === "not_executed" ||
+    normalized === "zone_transfer_complete"
     ? normalized
     : "partial_inventory";
 }
@@ -354,7 +416,18 @@ function isDomainKey(key: string): boolean {
 
 function isDnsNameKey(key: string): boolean {
   const normalized = normalizeKey(key);
-  return ["hostname", "host", "name", "normalized_domain", "owner_name", "qname"].includes(normalized);
+  return [
+    "authoritative_nameserver",
+    "authoritative_nameservers",
+    "hostname",
+    "host",
+    "name",
+    "nameserver",
+    "nameservers",
+    "normalized_domain",
+    "owner_name",
+    "qname"
+  ].includes(normalized);
 }
 
 function isDnsValueKey(key: string): boolean {
@@ -386,6 +459,8 @@ function isSensitiveDnsValueKey(key: string): boolean {
     "provider_token",
     "provider_zone_id",
     "raw_dns_packet",
+    "raw_dns_message",
+    "raw_zone",
     "raw_payload",
     "raw_resolver_log",
     "resolver_log",
@@ -396,6 +471,8 @@ function isSensitiveDnsValueKey(key: string): boolean {
     "target_file",
     "token",
     "tokens",
+    "zone_file",
+    "zone_transfer_payload",
     "wordlist",
     "zone_id"
   ].includes(normalized);
@@ -406,7 +483,14 @@ function redactedValueForKey(key: string): string {
   if (normalized === "command" || normalized === "shell_command") {
     return "[REDACTED_COMMAND]";
   }
-  if (normalized.includes("dns_packet") || normalized.includes("resolver_log")) {
+  if (
+    normalized.includes("dns_packet") ||
+    normalized.includes("dns_message") ||
+    normalized.includes("resolver_log") ||
+    normalized === "raw_zone" ||
+    normalized === "zone_file" ||
+    normalized === "zone_transfer_payload"
+  ) {
     return "[REDACTED_DNS_VALUE]";
   }
   if (normalized === "payload" || normalized === "raw_payload") {
@@ -423,7 +507,14 @@ function redactedKeyForKey(key: string): string {
   if (normalized === "command" || normalized === "shell_command") {
     return "redacted_command";
   }
-  if (normalized.includes("dns_packet") || normalized.includes("resolver_log")) {
+  if (
+    normalized.includes("dns_packet") ||
+    normalized.includes("dns_message") ||
+    normalized.includes("resolver_log") ||
+    normalized === "raw_zone" ||
+    normalized === "zone_file" ||
+    normalized === "zone_transfer_payload"
+  ) {
     return "redacted_dns_material";
   }
   if (normalized === "payload" || normalized === "raw_payload") {

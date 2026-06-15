@@ -26,11 +26,14 @@ describe("ActiveDnsInventoryPanel", () => {
     expect(panel.textContent).toContain("Local/private/owned");
     expect(panel.textContent).toContain("Authorized domain only");
     expect(panel.textContent).toContain("Best-effort inventory");
+    expect(panel.textContent).toContain("Authorized AXFR optional");
     expect(panel.textContent).toContain("DNS configuration review indicator");
     expect(panel.textContent).toContain("best-effort or partial inventory");
-    expect(panel.textContent).toContain("not complete-zone coverage");
+    expect(panel.textContent).toContain("authorized AXFR is accepted by an authoritative server");
     expect(panel.textContent).toContain("Zone transfer");
-    expect(panel.textContent).toContain("Not available in this phase");
+    expect(panel.textContent).toContain("Optional authorized AXFR");
+    expect(panel.textContent).toContain("high impact and sensitive");
+    expect(panel.textContent).toContain("not provider import");
     expect(panel.textContent).toContain("Provider import");
     expect(panel.textContent).toContain("Domain redacted");
     for (const recordType of ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"]) {
@@ -38,7 +41,8 @@ describe("ActiveDnsInventoryPanel", () => {
     }
     expect(screen.getByLabelText("Include SPF, DMARC, and CAA review indicators.")).toBeChecked();
     expect(screen.getByLabelText("Include bounded fixed-candidate subdomain summary.")).toBeChecked();
-    expect(screen.getByLabelText("Zone transfer is not available and will not be attempted.")).toBeDisabled();
+    expect(screen.getByLabelText("Attempt authorized zone transfer (AXFR).")).not.toBeChecked();
+    expect(screen.getByLabelText("I specifically confirm AXFR is authorized for this exact domain.")).toBeDisabled();
     expect(screen.getByRole("button", { name: /Create DNS inventory job/i })).toBeDisabled();
     expect(panel.querySelector('input[type="file"]')).toBeNull();
     expect(panel.querySelector("textarea")).toBeNull();
@@ -71,6 +75,13 @@ describe("ActiveDnsInventoryPanel", () => {
     expect(submit).toBeDisabled();
 
     fireEvent.click(screen.getByLabelText("I understand this capability sends bounded live DNS queries if backend policy accepts it."));
+    expect(submit).not.toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText("Attempt authorized zone transfer (AXFR)."));
+    expect(screen.getByText("Confirm specific AXFR authorization before submitting.")).toBeInTheDocument();
+    expect(submit).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText("I specifically confirm AXFR is authorized for this exact domain."));
     expect(submit).not.toBeDisabled();
 
     for (const recordType of ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"]) {
@@ -176,6 +187,90 @@ describe("ActiveDnsInventoryPanel", () => {
     expect(screen.getByText(/SPF present, DMARC present, CAA present/)).toBeInTheDocument();
     expect(screen.getByText("2 bounded redacted subdomain candidates observed.")).toBeInTheDocument();
     expect(onJobCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "job-active-dns-inventory-05" }));
+    expect(document.body.textContent ?? "").not.toContain("example.internal");
+  });
+
+  it("requires explicit AXFR authorization before sending zone transfer fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        if (String(input).endsWith("/active/network/dns-inventory")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-active-dns-inventory-axfr",
+                audit_type: "active_dns_inventory",
+                file_id: null,
+                target_url: "[REDACTED_DOMAIN]",
+                target_domain: null,
+                status: "completed",
+                created_at: "2026-06-14T00:00:00Z",
+                updated_at: "2026-06-14T00:00:00Z",
+                source_file_deleted_at: null,
+                result: {
+                  audit_type: "active_dns_inventory",
+                  capability: "active_dns_inventory",
+                  mode: "live_dns_inventory",
+                  profile: "dns_inventory_authorized",
+                  result_status: "partial_inventory",
+                  coverage_level: "partial_inventory",
+                  domain: "[REDACTED_DOMAIN]",
+                  zone_transfer: {
+                    attempted: true,
+                    status: "refused",
+                    nameservers_considered: 2,
+                    nameservers_attempted: 2,
+                    records_received_count: 0,
+                    records_retained_count: 0,
+                    truncated: false
+                  },
+                  provider_import: { attempted: false, status: "not_attempted" }
+                },
+                error: null
+              },
+              202
+            )
+          );
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+    render(<ActiveDnsInventoryPanel />);
+
+    fireEvent.change(screen.getByLabelText("Domain"), { target: { value: "example.internal" } });
+    fireEvent.click(screen.getByLabelText("I confirm I own or am authorized to query this domain."));
+    fireEvent.click(screen.getByLabelText("I confirm this domain is local, private, self-hosted, or owned scope."));
+    fireEvent.click(screen.getByLabelText("I understand this capability sends bounded live DNS queries if backend policy accepts it."));
+    fireEvent.click(screen.getByLabelText("Attempt authorized zone transfer (AXFR)."));
+
+    const submit = screen.getByRole("button", { name: /Create DNS inventory job/i });
+    expect(submit).toBeDisabled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByLabelText("I specifically confirm AXFR is authorized for this exact domain."));
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/active/network/dns-inventory",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    const request = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(request?.body))).toEqual({
+      mode: "live_dns_inventory",
+      profile: "dns_inventory_authorized",
+      domain: "example.internal",
+      record_types: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"],
+      include_security_records: true,
+      include_subdomain_discovery: true,
+      attempt_zone_transfer: true,
+      zone_transfer_authorized_confirmed: true,
+      authorization_confirmed: true,
+      local_private_or_owned_scope_confirmed: true,
+      live_dns_queries_confirmed: true
+    });
+    expect(await screen.findByText(/refused\. Manual validation required/i)).toBeInTheDocument();
     expect(document.body.textContent ?? "").not.toContain("example.internal");
   });
 

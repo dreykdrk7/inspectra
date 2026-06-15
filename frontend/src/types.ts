@@ -164,7 +164,8 @@ export type ActiveDnsInventoryRequest = {
   record_types: string[];
   include_security_records: boolean;
   include_subdomain_discovery: boolean;
-  attempt_zone_transfer: false;
+  attempt_zone_transfer: boolean;
+  zone_transfer_authorized_confirmed?: true;
   authorization_confirmed: true;
   local_private_or_owned_scope_confirmed: true;
   live_dns_queries_confirmed: true;

@@ -26,6 +26,8 @@ export function ActiveDnsInventoryPanel({ onJobCreated }: ActiveDnsInventoryPane
   const [selectedRecordTypes, setSelectedRecordTypes] = useState<string[]>([...ACTIVE_DNS_INVENTORY_RECORD_TYPES]);
   const [includeSecurityRecords, setIncludeSecurityRecords] = useState(true);
   const [includeSubdomainDiscovery, setIncludeSubdomainDiscovery] = useState(true);
+  const [attemptZoneTransfer, setAttemptZoneTransfer] = useState(false);
+  const [zoneTransferAuthorizedConfirmed, setZoneTransferAuthorizedConfirmed] = useState(false);
   const [authorizationConfirmed, setAuthorizationConfirmed] = useState(false);
   const [localPrivateOrOwnedScopeConfirmed, setLocalPrivateOrOwnedScopeConfirmed] = useState(false);
   const [liveDnsQueriesConfirmed, setLiveDnsQueriesConfirmed] = useState(false);
@@ -37,7 +39,8 @@ export function ActiveDnsInventoryPanel({ onJobCreated }: ActiveDnsInventoryPane
     selectedRecordTypes.length > 0 &&
     authorizationConfirmed &&
     localPrivateOrOwnedScopeConfirmed &&
-    liveDnsQueriesConfirmed;
+    liveDnsQueriesConfirmed &&
+    (!attemptZoneTransfer || zoneTransferAuthorizedConfirmed);
 
   async function submitActiveDnsInventory(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -52,11 +55,14 @@ export function ActiveDnsInventoryPanel({ onJobCreated }: ActiveDnsInventoryPane
       record_types: selectedRecordTypes,
       include_security_records: includeSecurityRecords,
       include_subdomain_discovery: includeSubdomainDiscovery,
-      attempt_zone_transfer: false,
+      attempt_zone_transfer: attemptZoneTransfer,
       authorization_confirmed: true,
       local_private_or_owned_scope_confirmed: true,
       live_dns_queries_confirmed: true
     };
+    if (attemptZoneTransfer && zoneTransferAuthorizedConfirmed) {
+      request.zone_transfer_authorized_confirmed = true;
+    }
 
     setRequestState({ loading: true, error: null, job: null });
     try {
@@ -96,6 +102,7 @@ export function ActiveDnsInventoryPanel({ onJobCreated }: ActiveDnsInventoryPane
         <span className="status-pill">Local/private/owned only</span>
         <span className="status-pill">Authorized domain only</span>
         <span className="status-pill">Best-effort inventory</span>
+        <span className="status-pill">Authorized AXFR optional</span>
       </div>
 
       <p className="muted">
@@ -103,8 +110,8 @@ export function ActiveDnsInventoryPanel({ onJobCreated }: ActiveDnsInventoryPane
       </p>
 
       <div className="query-warning" role="status">
-        DNS queries are live when backend policy accepts the request. Results are best-effort or partial inventory review indicators, not
-        complete-zone coverage.
+        DNS queries are live when backend policy accepts the request. Results are best-effort or partial inventory review indicators unless
+        authorized AXFR is accepted by an authoritative server.
       </div>
 
       <dl className="summary-list">
@@ -119,7 +126,10 @@ export function ActiveDnsInventoryPanel({ onJobCreated }: ActiveDnsInventoryPane
         <dt>Subdomain discovery</dt>
         <dd>Optional fixed candidate allowlist only: www, mail, smtp, imap, pop, api, app, admin, portal, dev, staging, test.</dd>
         <dt>Zone transfer</dt>
-        <dd>Not available in this phase and always sent as false.</dd>
+        <dd>
+          Optional authorized AXFR against authoritative nameservers only. Disabled by default and requires a separate confirmation for this
+          exact domain.
+        </dd>
         <dt>Provider import</dt>
         <dd>Not available in this phase.</dd>
         <dt>Stored display</dt>
@@ -182,9 +192,39 @@ export function ActiveDnsInventoryPanel({ onJobCreated }: ActiveDnsInventoryPane
           Include bounded fixed-candidate subdomain summary.
         </label>
         <label className="checkbox-row">
-          <input type="checkbox" checked={false} disabled readOnly />
-          Zone transfer is not available and will not be attempted.
+          <input
+            type="checkbox"
+            checked={attemptZoneTransfer}
+            onChange={(event) => {
+              const checked = event.target.checked;
+              setAttemptZoneTransfer(checked);
+              if (!checked) {
+                setZoneTransferAuthorizedConfirmed(false);
+              }
+              setRequestState(initialRequestState);
+            }}
+          />
+          Attempt authorized zone transfer (AXFR).
         </label>
+        <p className="muted">
+          AXFR is high impact and sensitive: use only for domains you own or are explicitly authorized to test. It asks authoritative
+          nameservers for the exact zone, is not provider import, and refused, timeout, or failed attempts do not guarantee coverage.
+        </p>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={zoneTransferAuthorizedConfirmed}
+            disabled={!attemptZoneTransfer}
+            onChange={(event) => {
+              setZoneTransferAuthorizedConfirmed(event.target.checked);
+              setRequestState(initialRequestState);
+            }}
+          />
+          I specifically confirm AXFR is authorized for this exact domain.
+        </label>
+        {attemptZoneTransfer && !zoneTransferAuthorizedConfirmed ? (
+          <p className="error-text">Confirm specific AXFR authorization before submitting.</p>
+        ) : null}
         <label className="checkbox-row">
           <input
             type="checkbox"
@@ -262,6 +302,7 @@ function ActiveDnsInventoryJobCreatedNotice({ job }: { job: JobRecord }) {
   const records = asRecord(result?.records);
   const securityRecords = asRecord(result?.security_records);
   const subdomains = asRecord(result?.subdomains);
+  const zoneTransfer = asRecord(result?.zone_transfer);
   const status = asString(result?.result_status) ?? asString(result?.status) ?? "partial_inventory";
   const coverageLevel = asString(result?.coverage_level) ?? asString(summary?.coverage_level) ?? status;
   const recordCount = records
@@ -271,6 +312,12 @@ function ActiveDnsInventoryJobCreatedNotice({ job }: { job: JobRecord }) {
   const dmarcPresent = asRecord(securityRecords?.dmarc)?.present === true;
   const caaPresent = asRecord(securityRecords?.caa)?.present === true;
   const subdomainCount = asNumber(subdomains?.count) ?? 0;
+  const zoneTransferStatus = asString(zoneTransfer?.status) ?? "not_attempted";
+  const nameserversConsidered = asNumber(zoneTransfer?.nameservers_considered) ?? 0;
+  const nameserversAttempted = asNumber(zoneTransfer?.nameservers_attempted) ?? 0;
+  const recordsReceivedCount = asNumber(zoneTransfer?.records_received_count) ?? 0;
+  const recordsRetainedCount = asNumber(zoneTransfer?.records_retained_count) ?? 0;
+  const zoneTransferTruncated = zoneTransfer?.truncated === true;
 
   return (
     <div className="query-warning" role="status">
@@ -292,7 +339,19 @@ function ActiveDnsInventoryJobCreatedNotice({ job }: { job: JobRecord }) {
         }.`}</dd>
         <dt>Subdomains</dt>
         <dd>{`${subdomainCount} bounded redacted subdomain candidates observed.`}</dd>
-        <dt>Zone transfer / provider import</dt>
+        <dt>Zone transfer</dt>
+        <dd>
+          {zoneTransferStatus === "zone_transfer_complete"
+            ? "zone transfer accepted by authoritative server / high-risk configuration review indicator. Manual validation required."
+            : `${zoneTransferStatus}. Manual validation required.`}
+        </dd>
+        <dt>AXFR counters</dt>
+        <dd>
+          {`NS ${nameserversAttempted}/${nameserversConsidered}, records ${recordsRetainedCount}/${recordsReceivedCount}, truncated ${String(
+            zoneTransferTruncated
+          )}.`}
+        </dd>
+        <dt>Provider import</dt>
         <dd>Not attempted. Manual validation required.</dd>
       </dl>
       <p className="muted">The job record was opened below when the dashboard integration is available.</p>
