@@ -10,9 +10,11 @@ no Nmap execution, no HTTP crawling, no archive/run-all behavior, no
 `tools/runner/main.py` behavior, no release, no tag, and no push state.
 
 Status note: this document remains the historical v0 closeout before the
-separate authorized AXFR backend extension. That later extension is documented
-in `docs/future/active-dns-inventory-authorized-axfr-backend.md` with decision
-`ACTIVE_DNS_INVENTORY_07_AUTHORIZED_AXFR_BACKEND_PASSED`.
+separate authorized AXFR backend and frontend extension. The expanded v0
+boundary with authorized AXFR is closed in
+`docs/future/active-dns-inventory-with-authorized-axfr-functional-closeout.md`
+with decision
+`ACTIVE_DNS_INVENTORY_11_FUNCTIONAL_CLOSEOUT_WITH_AXFR_ACCEPTED`.
 
 ## Reviewed Commits
 
@@ -58,8 +60,7 @@ domain policy, job creation, storage, report/export shaping, and redaction.
 
 The v0 closeout does not approve:
 
-- complete-zone coverage without a separately authorized AXFR or provider
-  import phase;
+- complete-zone coverage without a separately authorized AXFR phase;
 - AXFR runtime;
 - provider DNS/API import;
 - Certificate Transparency lookup;
@@ -127,7 +128,7 @@ The accepted UX is a separate `Active / DNS inventory` panel and
 - renders zone transfer and provider import as `not_attempted`;
 - keeps Raw JSON redaction-first;
 - distinguishes `best_effort_inventory` and `partial_inventory` from any
-  future complete-zone source.
+  future authorized AXFR complete-zone source.
 
 The UI must continue to avoid completed-scan, vulnerability, exploitability,
 target-safety, all-records-found, public-scanner, and complete-coverage copy.
@@ -165,13 +166,13 @@ Validation run during this closeout:
 Recommended next decision point:
 
 1. Stop for a technical pathing choice after this closeout.
-2. Choose one separately scoped path: authorized AXFR design, provider import
-   design, a new small Active tool, Nmap polish, DNS operational polish, or
-   release preparation.
+2. Choose one separately scoped path: authorized AXFR design, a new small
+   Active tool, Nmap polish, DNS operational polish, or release preparation.
 3. Keep archive/run-all out of Active DNS inventory until a separate design
    freezes owner scope, authorization, redaction, and abuse boundaries.
-4. Keep complete-zone states reserved for future authorized AXFR or provider
-   import sources.
+4. Keep complete-zone states in core Active DNS reserved for future authorized
+   AXFR. Provider import, if ever needed, belongs in a separate admin inventory
+   connector rather than the attacker-equivalent Active DNS path.
 
 ## Decision
 

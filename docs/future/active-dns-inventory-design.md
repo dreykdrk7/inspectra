@@ -11,18 +11,22 @@ execution, archive/run-all integration, `tools/runner/main.py` integration,
 release state, tag state, or push state.
 
 Implementation status update: `active_dns_inventory` v0 was later implemented
-and closed as a bounded functional minimum in
+and closed first as a bounded functional minimum in
 `docs/future/active-dns-inventory-v0-functional-closeout.md` with decision
-`ACTIVE_DNS_INVENTORY_06_FUNCTIONAL_REVIEW_AND_CLOSEOUT_ACCEPTED`. The closed
-v0 state kept the original one-domain, allowlisted-record, redaction-first,
-best-effort/partial-inventory boundaries. Authorized AXFR was later accepted as
-a separate backend-only extension in
-`docs/future/active-dns-inventory-authorized-axfr-backend.md` with decision
-`ACTIVE_DNS_INVENTORY_07_AUTHORIZED_AXFR_BACKEND_PASSED`. Provider import,
-Certificate Transparency, passive DNS, broad discovery, custom resolver
-override, public scanner behavior, and complete-zone claims outside explicit
-`zone_transfer_complete` still remain out of scope unless separately designed
-and accepted.
+`ACTIVE_DNS_INVENTORY_06_FUNCTIONAL_REVIEW_AND_CLOSEOUT_ACCEPTED`. Authorized
+AXFR was then added as a separate backend and frontend extension and closed in
+`docs/future/active-dns-inventory-with-authorized-axfr-functional-closeout.md`
+with decision
+`ACTIVE_DNS_INVENTORY_11_FUNCTIONAL_CLOSEOUT_WITH_AXFR_ACCEPTED`. The accepted
+expanded v0 direction is attacker-equivalent visibility: one domain,
+allowlisted public-network DNS observation, optional authorized AXFR,
+redaction-first reporting, and no privileged provider access in core Active
+DNS. Certificate Transparency or passive DNS may be considered only as
+separate public-OSINT phases. Provider DNS/API import is deprioritized and out
+of core Active DNS; if it ever exists, it must be a separate admin inventory
+connector rather than part of this attacker-equivalent path. Complete-zone
+coverage in core Active DNS is limited to `zone_transfer_complete` from
+authorized, bounded, terminal-SOA-validated AXFR.
 
 ## Objective
 
@@ -36,17 +40,17 @@ authorized to assess:
 - authoritative nameserver metadata;
 - bounded subdomain inventory from controlled sources;
 - optional future zone-transfer checking only when specifically authorized;
-- optional future provider-zone import when the operator supplies provider API
-  access in a separate phase.
+- no provider-zone import in core Active DNS; privileged provider inventory, if
+  ever needed, belongs in a separate admin inventory connector.
 
-The capability must distinguish clearly between a complete-zone result and a
-best-effort inventory. Best-effort output must never be presented as exhaustive
-coverage.
+The capability must distinguish clearly between `zone_transfer_complete` from
+authorized AXFR and best-effort inventory. Best-effort output must never be
+presented as exhaustive coverage.
 
 Results must be framed as DNS configuration review indicators requiring manual
 validation. The capability must not claim vulnerability status,
-exploitability, target safety, or complete coverage unless the result is backed
-by an explicitly authorized complete-zone source.
+exploitability, target safety, or complete coverage unless the result is
+`zone_transfer_complete` from authorized, bounded, terminal-SOA-validated AXFR.
 
 ## Activation Model
 
@@ -144,17 +148,20 @@ into new scan targets outside that exact authorized domain.
 Every result must include an explicit `coverage_level`. Allowed values:
 
 - `zone_transfer_complete`;
-- `provider_import_complete`;
 - `best_effort_inventory`;
 - `partial_inventory`;
 - `failed_controlled`.
 
-Complete-zone coverage may be reported only when one of these sources succeeds:
+Complete-zone coverage in core Active DNS may be reported only when this source
+succeeds:
 
 - explicitly authorized AXFR against an authoritative nameserver for the exact
-  domain; or
-- explicitly authorized provider-zone import through a future provider API
-  integration.
+  domain.
+
+Provider-zone import is no longer a core Active DNS complete-zone source. If it
+is ever pursued, it must be a separate admin inventory connector and not an
+attacker-equivalent Active DNS mode. A provider-specific connector may define
+its own non-core coverage wording separately.
 
 All other successful runtime modes must use `best_effort_inventory` or
 `partial_inventory`, depending on errors and truncation.
@@ -169,9 +176,9 @@ Future implementation should be split into small phases:
    operator-provided candidates within the authorized domain.
 3. `zone_transfer_check`: attempt AXFR only against authoritative nameservers
    for the exact domain and only with specific AXFR authorization.
-4. `provider_zone_import`: import records from a provider such as Cloudflare or
-   Route53 only in a separate phase with credential handling, provider-specific
-   redaction, and strict owner scope.
+4. `admin_inventory_connector`: if privileged provider import is ever needed,
+   design it outside core Active DNS with credential handling,
+   provider-specific redaction, and strict owner scope.
 
 ## Record Scope
 
@@ -228,7 +235,8 @@ Additional sources require separate design or explicit operator input:
 - Certificate Transparency or passive-DNS sources only in a separate phase with
   concrete source limits and rate limits;
 - a minimal fixed wordlist only in a separate phase with a low cap;
-- provider-zone import as the preferred path for complete-zone coverage.
+- provider-zone import only as a separate future admin inventory connector,
+  not as part of core Active DNS attacker-equivalent coverage.
 
 The v0 design rejects broad wordlists, wildcard discovery runtime, DKIM selector
 guessing, sibling-domain expansion, and recursive discovery loops.
@@ -236,26 +244,37 @@ guessing, sibling-domain expansion, and recursive discovery loops.
 ## AXFR / Zone Transfer
 
 AXFR was reserved as a future separate phase in the original design and is now
-accepted only for the backend path documented in
-`docs/future/active-dns-inventory-authorized-axfr-backend.md`. It must remain:
+accepted only for the specifically confirmed Active DNS Inventory path
+documented in
+`docs/future/active-dns-inventory-with-authorized-axfr-functional-closeout.md`.
+It must remain:
 
 - disabled by default;
 - attempted only against authoritative nameservers for the exact domain;
 - attempted only when `zone_transfer_authorized_confirmed` is true;
+- requested from the frontend only when the optional AXFR control is enabled
+  and the specific AXFR confirmation is checked;
 - bounded by timeout, response-size, and record-count limits;
 - owner-scoped and redaction-first before storage or rendering.
 
 If AXFR is refused or unavailable, the result uses controlled states such as
 `unavailable`, `timed_out`, or `refused`. If bounded authorized AXFR succeeds,
-the report may say "zone transfer accepted by authoritative server / high-risk
-configuration review indicator" and must treat the returned zone as sensitive
-operator data, not as an exploit result.
+the backend may set `zone_transfer_complete` only after terminal-SOA
+validation for the exact domain. The report may say "zone transfer accepted by
+authoritative server / high-risk configuration review indicator" and must
+treat the returned zone as sensitive operator data, not as an exploit result.
 
 ## Provider Zone Import
 
-Provider DNS/API import is a future separate phase. It may be the safest path to
-complete-zone coverage when the operator owns the zone and supplies provider
-access through a separately designed credential boundary.
+Provider DNS/API import is out of core Active DNS because it uses
+administrator-level provider privileges rather than attacker-equivalent public
+or network observation. It is not the recommended next path from the
+authorized-AXFR closeout.
+
+If provider import is ever implemented, it must be designed as a separate admin
+inventory connector with its own product surface, credential boundary, owner
+scope, redaction, tests, and review. It must not be presented as part of core
+Active DNS or as public-network OSINT coverage.
 
 The provider phase must define:
 
@@ -367,7 +386,7 @@ Report wording should use phrases such as:
 - "DNS configuration review indicator";
 - "best-effort DNS inventory";
 - "complete-zone source: authorized AXFR";
-- "complete-zone source: authorized provider import";
+- "provider import requires a separate admin inventory connector";
 - "manual validation required".
 
 Reports must not present best-effort results as complete coverage or present
@@ -396,7 +415,8 @@ Expected result display:
 - subdomain count and bounded sample;
 - SPF, DMARC, and CAA review indicators;
 - zone-transfer status if applicable;
-- provider-import status if applicable;
+- provider-import status only if a separate admin inventory connector ever
+  exists;
 - manual validation note;
 - redacted Raw JSON.
 
@@ -431,7 +451,8 @@ Required mitigations:
 - bounded subdomain candidates and retained results;
 - no broad wordlists;
 - no AXFR without specific confirmation;
-- no provider API without a separate phase;
+- no provider API in core Active DNS; provider import requires a separate admin
+  inventory connector;
 - owner-scoped jobs;
 - generic wrong-owner responses;
 - redaction before storage and rendering;
@@ -453,8 +474,8 @@ Future implementation should include tests for:
 - AXFR disabled by default;
 - AXFR requires specific confirmation;
 - AXFR refused maps to a controlled state;
-- complete-zone coverage only when fake AXFR or fake provider import returns an
-  accepted complete-zone payload;
+- complete-zone coverage in core Active DNS only when fake AXFR returns an
+  accepted, terminal-SOA-validated complete-zone payload;
 - bounded subdomain discovery with fixtures;
 - no raw domain, records, provider secrets, resolver payloads, or sensitive
   values in detail, list, Raw JSON, or exports;
@@ -476,13 +497,14 @@ A future implementation can be considered for acceptance only when:
 - it keeps subdomain discovery bounded and source-limited;
 - it reports `coverage_level` explicitly;
 - it labels best-effort and partial results without complete-coverage language;
-- it treats AXFR and provider import as separate explicitly authorized phases;
+- it treats AXFR as the only core Active DNS complete-zone source and keeps
+  provider import out of core unless separately designed as an admin connector;
 - it stores only allowlisted, redacted, bounded result fields;
 - it keeps backend authority over auth, owner scope, validation, storage,
   reporting, and redaction;
 - it keeps Passive archive flows separate;
 - it does not use shell commands, Nmap, Docker runtime, crawling, credential
-  validation, broad enumeration, provider APIs without a separate phase, or
+  validation, broad enumeration, provider APIs inside core Active DNS, or
   archive/run-all;
 - backend, frontend, report, Raw JSON, owner-scope, and source-boundary tests
   pass;
