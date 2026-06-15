@@ -14,8 +14,16 @@ fakeable CT source adapter. The source-specific real CT phase is accepted in
 `docs/future/active-dns-osint-real-ct-source-bounded.md` with decision
 `ACTIVE_DNS_OSINT_05_REAL_CT_SOURCE_BOUNDED_PASSED`; it selects only a bounded
 `crt.sh` source behind explicit CT-source opt-in and configuration. Passive
-DNS, provider API import, DNS queries, crawling, broad scraping, frontend,
-archive/run-all, and runner behavior remain out of scope.
+DNS, provider API import, DNS queries, crawling, broad scraping,
+archive/run-all, and runner behavior remain out of scope. The frontend product
+flow and frontend review are accepted in
+`docs/future/active-dns-osint-frontend-ct-osint-product-flow.md` and
+`docs/future/active-dns-osint-frontend-ct-osint-review.md` with decisions
+`ACTIVE_DNS_OSINT_07_FRONTEND_CT_OSINT_PRODUCT_FLOW_PASSED` and
+`ACTIVE_DNS_OSINT_08_FRONTEND_CT_OSINT_REVIEW_PASSED`. The CT v0 functional
+closeout is accepted in
+`docs/future/active-dns-osint-ct-v0-functional-closeout.md` with decision
+`ACTIVE_DNS_OSINT_09_FUNCTIONAL_CLOSEOUT_ACCEPTED`.
 
 This document freezes a docs-only design for a future `active_dns_osint`
 capability. It does not implement backend runtime, frontend runtime, runner

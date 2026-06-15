@@ -383,6 +383,8 @@ The Active DNS OSINT frontend product-flow decision is `ACTIVE_DNS_OSINT_07_FRON
 
 The Active DNS OSINT frontend product-flow review decision is `ACTIVE_DNS_OSINT_08_FRONTEND_CT_OSINT_REVIEW_PASSED`. It reviews `ea56384` and confirms that the frontend sends the exact backend contract, bounds `max_names`, requires all confirmations, keeps passive DNS disabled, performs no browser-side CT/provider/DNS source calls, renders source states as controlled `osint_best_effort` review indicators, and keeps report/Raw JSON output redaction-first.
 
+The Active DNS OSINT CT v0 functional closeout decision is `ACTIVE_DNS_OSINT_09_FUNCTIONAL_CLOSEOUT_ACCEPTED`. It freezes `active_dns_osint` as a bounded self-hosted/local/private capability with the core feature and CT source disabled by default, one explicit authorized domain, exact CT-bounded request contract, optional `crt.sh` source only through explicit configuration, at most one bounded source request per accepted job, owner-scoped `file_id: null` jobs, `[REDACTED_DOMAIN]` and `[REDACTED_DNS_NAME]` surfaces, `osint_best_effort` coverage, public-source observed-name review indicators, manual validation required, and no passive DNS, provider import, browser-side CT calls, observed-name auto-scan, archive/run-all, `tools/runner/main.py`, Nmap, Docker, or subprocess behavior.
+
 ## Components
 
 ### Backend
