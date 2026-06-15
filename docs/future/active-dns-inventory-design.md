@@ -22,11 +22,13 @@ expanded v0 direction is attacker-equivalent visibility: one domain,
 allowlisted public-network DNS observation, optional authorized AXFR,
 redaction-first reporting, and no privileged provider access in core Active
 DNS. Certificate Transparency or passive DNS may be considered only as
-separate public-OSINT phases. Provider DNS/API import is deprioritized and out
-of core Active DNS; if it ever exists, it must be a separate admin inventory
-connector rather than part of this attacker-equivalent path. Complete-zone
-coverage in core Active DNS is limited to `zone_transfer_complete` from
-authorized, bounded, terminal-SOA-validated AXFR.
+separate public-OSINT phases; the first such design is
+`docs/future/active-dns-osint-design.md` with decision
+`ACTIVE_DNS_OSINT_01_DESIGN_FROZEN`. Provider DNS/API import is deprioritized
+and out of core Active DNS; if it ever exists, it must be a separate admin
+inventory connector rather than part of this attacker-equivalent path.
+Complete-zone coverage in core Active DNS is limited to
+`zone_transfer_complete` from authorized, bounded, terminal-SOA-validated AXFR.
 
 ## Objective
 
@@ -232,8 +234,8 @@ Additional sources require separate design or explicit operator input:
 - operator-provided names;
 - names discovered from already-consulted CNAME, MX, or NS records, retained
   only as bounded context unless still inside the authorized domain;
-- Certificate Transparency or passive-DNS sources only in a separate phase with
-  concrete source limits and rate limits;
+- Certificate Transparency or passive-DNS sources only through the separate
+  `active_dns_osint` path with concrete source limits and rate limits;
 - a minimal fixed wordlist only in a separate phase with a low cap;
 - provider-zone import only as a separate future admin inventory connector,
   not as part of core Active DNS attacker-equivalent coverage.
