@@ -36,6 +36,18 @@ from app.active_dns_inventory import (
     normalize_active_dns_inventory_record_types,
     run_active_dns_inventory,
 )
+from app.active_dns_osint import (
+    ACTIVE_DNS_OSINT_DEFAULT_MAX_NAMES,
+    ACTIVE_DNS_OSINT_MAX_NAMES,
+    ACTIVE_DNS_OSINT_MIN_NAMES,
+    ACTIVE_DNS_OSINT_MODE,
+    ACTIVE_DNS_OSINT_PROFILE,
+    ActiveDnsOsintContract,
+    ActiveDnsOsintPolicyError,
+    build_active_dns_osint_not_executed_result,
+    normalize_active_dns_osint_domain,
+    normalize_active_dns_osint_max_names,
+)
 from app.active_tls_basic import (
     ACTIVE_TLS_BASIC_DEFAULT_TIMEOUT_SECONDS,
     ActiveTlsBasicRequest,
@@ -648,6 +660,110 @@ def validate_active_dns_inventory_contract(payload: Any) -> ActiveDnsInventoryCo
     )
 
 
+ACTIVE_DNS_OSINT_ALLOWED_FIELDS = frozenset(
+    {
+        "mode",
+        "profile",
+        "domain",
+        "include_certificate_transparency",
+        "include_passive_dns",
+        "max_names",
+        "authorization_confirmed",
+        "owned_or_authorized_domain_confirmed",
+        "public_osint_queries_confirmed",
+    }
+)
+ACTIVE_DNS_OSINT_CONFIRMATION_FIELDS = (
+    "authorization_confirmed",
+    "owned_or_authorized_domain_confirmed",
+    "public_osint_queries_confirmed",
+)
+ACTIVE_DNS_OSINT_CONTRACT_LIMITS = {
+    "max_domains": 1,
+    "min_names": ACTIVE_DNS_OSINT_MIN_NAMES,
+    "max_names": ACTIVE_DNS_OSINT_MAX_NAMES,
+    "default_max_names": ACTIVE_DNS_OSINT_DEFAULT_MAX_NAMES,
+    "external_requests_sent": 0,
+    "ct_queries_sent": 0,
+    "passive_dns_queries_sent": 0,
+}
+
+
+def validate_active_dns_osint_contract(payload: Any) -> ActiveDnsOsintContract:
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_osint request body must be a JSON object.",
+        )
+
+    fields = set(payload)
+    if fields - ACTIVE_DNS_OSINT_ALLOWED_FIELDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported active_dns_osint request field.",
+        )
+    if ACTIVE_DNS_OSINT_ALLOWED_FIELDS - fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_osint request is missing required fields.",
+        )
+
+    if payload.get("mode") != ACTIVE_DNS_OSINT_MODE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_osint mode must be live_dns_osint.",
+        )
+    if payload.get("profile") != ACTIVE_DNS_OSINT_PROFILE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_osint profile must be ct_subdomain_discovery_bounded.",
+        )
+
+    for field_name in ACTIVE_DNS_OSINT_CONFIRMATION_FIELDS:
+        if payload.get(field_name) is not True:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field_name} must be true.")
+
+    include_certificate_transparency = payload.get("include_certificate_transparency")
+    if not isinstance(include_certificate_transparency, bool):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_osint include_certificate_transparency must be boolean.",
+        )
+    if include_certificate_transparency is not True:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_osint include_certificate_transparency must be true for this contract gate.",
+        )
+
+    include_passive_dns = payload.get("include_passive_dns")
+    if not isinstance(include_passive_dns, bool):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_osint include_passive_dns must be boolean.",
+        )
+    if include_passive_dns is not False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="active_dns_osint passive DNS is not supported by this contract gate.",
+        )
+
+    try:
+        domain = normalize_active_dns_osint_domain(payload.get("domain"))
+        max_names = normalize_active_dns_osint_max_names(payload.get("max_names"))
+    except ActiveDnsOsintPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"active_dns_osint policy rejected the request: {exc.reason_code}.",
+        ) from exc
+
+    return ActiveDnsOsintContract(
+        domain=domain,
+        include_certificate_transparency=include_certificate_transparency,
+        include_passive_dns=include_passive_dns,
+        max_names=max_names,
+    )
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "inspectra-backend"}
@@ -1145,6 +1261,22 @@ async def launch_active_dns_inventory(
         error=active_dns_inventory_job_error(result),
         owner_id=owner_id,
     )
+
+
+@app.post("/active/network/dns-osint")
+async def launch_active_dns_osint(
+    request: Request,
+    payload: Any = Body(...),
+) -> dict[str, Any]:
+    if not request.app.state.settings.active_dns_osint_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="active_dns_osint is disabled in this environment.",
+        )
+
+    current_owner_id_for_request(request)
+    contract = validate_active_dns_osint_contract(payload)
+    return build_active_dns_osint_not_executed_result(contract)
 
 
 @app.post("/audits/web/basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
