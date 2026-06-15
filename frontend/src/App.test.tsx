@@ -536,6 +536,9 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Active / Network dry-run" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Authorized HTTP Header Probe" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Active / Nmap basic" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Active / TLS basic" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Active / DNS inventory" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Active / DNS OSINT" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Jobs" })).toBeInTheDocument();
     const demoNote = screen.getByRole("note", { name: "Local alpha demo fixture note" });
@@ -1038,6 +1041,157 @@ describe("App", () => {
         })
       );
     });
+  });
+
+  it("creates an Active DNS OSINT job, refreshes jobs, and renders redacted CT OSINT report", async () => {
+    const activeDnsOsintJob = {
+      id: "job-active-dns-osint-app",
+      audit_type: "active_dns_osint",
+      file_id: null,
+      target_url: "[REDACTED_DOMAIN]",
+      target_domain: null,
+      status: "completed",
+      created_at: "2026-06-15T10:00:00Z",
+      updated_at: "2026-06-15T10:01:00Z",
+      source_file_deleted_at: null,
+      result: {
+        audit_type: "active_dns_osint",
+        capability: "active_dns_osint",
+        mode: "live_dns_osint",
+        profile: "ct_subdomain_discovery_bounded",
+        status: "osint_best_effort",
+        result_status: "osint_best_effort",
+        coverage_level: "osint_best_effort",
+        domain: "[REDACTED_DOMAIN]",
+        sources: {
+          certificate_transparency: {
+            attempted: true,
+            status: "completed",
+            names_observed_count: 4,
+            names_retained_count: 2,
+            names_discarded_count: 2,
+            truncated: false
+          },
+          passive_dns: { attempted: false, status: "not_attempted" }
+        },
+        observed_names: {
+          count: 2,
+          max_names: 20,
+          sample: ["[REDACTED_DNS_NAME]", "[REDACTED_DNS_NAME]"],
+          truncated: false
+        },
+        summary: {
+          manual_validation_required: true,
+          result_interpretation: "DNS OSINT review indicator",
+          coverage_level: "osint_best_effort",
+          observed_names_count: 2,
+          ct_source_status: "completed",
+          passive_dns_status: "not_attempted"
+        },
+        execution: {
+          external_requests_sent: 1,
+          ct_queries_sent: 1,
+          passive_dns_queries_sent: 0,
+          dns_queries_sent: 0,
+          http_requests_sent: 0,
+          provider_api_used: false,
+          crawling_performed: false,
+          observed_name_auto_scan_performed: false
+        },
+        surface_caveats: ["Manual validation required.", "Observed names are not auto-scanned."]
+      },
+      error: null
+    };
+    let jobsCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/jobs")) {
+          jobsCalls += 1;
+          return Promise.resolve(
+            jsonResponse(
+              jobsCalls > 1
+                ? [
+                    {
+                      id: activeDnsOsintJob.id,
+                      audit_type: activeDnsOsintJob.audit_type,
+                      file_id: null,
+                      target_url: "[REDACTED_DOMAIN]",
+                      target_domain: null,
+                      status: "completed",
+                      created_at: activeDnsOsintJob.created_at,
+                      updated_at: activeDnsOsintJob.updated_at,
+                      source_file_deleted_at: null,
+                      summary: {
+                        capability: "active_dns_osint",
+                        coverage_level: "osint_best_effort",
+                        observed_names_count: 2,
+                        ct_source_status: "completed",
+                        passive_dns_status: "not_attempted"
+                      }
+                    }
+                  ]
+                : []
+            )
+          );
+        }
+        if (url.endsWith("/active/network/dns-osint")) {
+          return Promise.resolve(jsonResponse(activeDnsOsintJob, 202));
+        }
+        if (url.endsWith("/jobs/job-active-dns-osint-app")) {
+          return Promise.resolve(jsonResponse(activeDnsOsintJob));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+    const panel = await screen.findByLabelText("Active / DNS OSINT");
+    const scoped = within(panel);
+
+    fireEvent.change(scoped.getByLabelText("Domain"), { target: { value: " Example.Internal " } });
+    fireEvent.change(scoped.getByLabelText("Max observed names"), { target: { value: "20" } });
+    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to query this domain."));
+    fireEvent.click(scoped.getByLabelText("I confirm this is my domain or an explicitly authorized domain."));
+    fireEvent.click(scoped.getByLabelText("I understand this may send bounded public OSINT queries if backend policy accepts it."));
+    fireEvent.click(scoped.getByRole("button", { name: /Create DNS OSINT job/i }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/active/network/dns-osint",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    const request = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input).endsWith("/active/network/dns-osint"))?.[1] as
+      | RequestInit
+      | undefined;
+    expect(JSON.parse(String(request?.body))).toEqual({
+      mode: "live_dns_osint",
+      profile: "ct_subdomain_discovery_bounded",
+      domain: "example.internal",
+      include_certificate_transparency: true,
+      include_passive_dns: false,
+      max_names: 20,
+      authorization_confirmed: true,
+      owned_or_authorized_domain_confirmed: true,
+      public_osint_queries_confirmed: true
+    });
+    expect(await screen.findByRole("heading", { name: "Active / DNS OSINT report" })).toBeInTheDocument();
+    expect(screen.getAllByText("osint_best_effort").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("[REDACTED_DNS_NAME]").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("not_attempted").length).toBeGreaterThan(0);
+    await waitFor(() => expect(jobsCalls).toBeGreaterThan(1));
+    expect(view.container.textContent ?? "").not.toContain("example.internal");
   });
 
   it("starts a subdomain inventory audit from explicit candidates", async () => {

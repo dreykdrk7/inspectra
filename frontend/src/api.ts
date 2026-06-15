@@ -1,6 +1,7 @@
 import type {
   ActiveDryRunRequest,
   ActiveDnsInventoryRequest,
+  ActiveDnsOsintRequest,
   ActiveHttpHeaderProbeRequest,
   ActiveNmapBasicRequest,
   ActiveTlsBasicRequest,
@@ -350,6 +351,15 @@ export async function createActiveDnsInventory(request: ActiveDnsInventoryReques
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function createActiveDnsOsint(request: ActiveDnsOsintRequest): Promise<JobRecord> {
+  const response = await apiFetch('/active/network/dns-osint', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function listJobs(): Promise<JobListItem[]> {
   const response = await apiFetch('/jobs');
   return parseJsonResponse<JobListItem[]>(response);
@@ -406,6 +416,7 @@ export const api = {
   createActiveNmapBasic,
   createActiveTlsBasic,
   createActiveDnsInventory,
+  createActiveDnsOsint,
   listJobs,
   getJob,
   jobExportUrl,

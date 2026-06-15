@@ -38,6 +38,7 @@ export const AUDIT_TYPE_ORDER: AuditType[] = [
   "active_nmap_basic",
   "active_tls_basic",
   "active_dns_inventory",
+  "active_dns_osint",
   "django_config_basic",
   "docker_config_basic",
   "secrets_review_basic",
@@ -138,6 +139,13 @@ export const AUDIT_TYPE_CATALOG: Record<AuditType, AuditTypeMetadata> = {
     "active_network",
     "target",
     "Records authorized best-effort DNS configuration review indicators with redacted records."
+  ),
+  active_dns_osint: metadata(
+    "active_dns_osint",
+    "Active DNS OSINT",
+    "active_network",
+    "target",
+    "Records bounded public-source DNS OSINT review indicators with redacted observed-name samples."
   ),
   django_config_basic: metadata("django_config_basic", "Django config", "app_config", "archive", "Passive Django config review."),
   docker_config_basic: metadata("docker_config_basic", "Docker config", "containers_wiring", "archive", "Passive Docker config review."),

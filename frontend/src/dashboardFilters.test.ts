@@ -362,6 +362,25 @@ const jobs: JobListItem[] = [
       caa_present: true,
       subdomain_observed_count: 2
     }
+  },
+  {
+    id: "job-active-dns-osint-completed",
+    audit_type: "active_dns_osint",
+    file_id: null,
+    target_url: "[REDACTED_DOMAIN]",
+    target_domain: null,
+    status: "completed",
+    created_at: "2026-05-26T10:53:00Z",
+    updated_at: "2026-05-26T10:54:00Z",
+    source_file_deleted_at: null,
+    summary: {
+      capability: "active_dns_osint",
+      result_status: "osint_best_effort",
+      coverage_level: "osint_best_effort",
+      observed_names_count: 3,
+      ct_source_status: "completed",
+      passive_dns_status: "not_attempted"
+    }
   }
 ];
 
@@ -404,6 +423,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "active_nmap_basic", "")).toEqual([jobs[22]]);
     expect(filterJobs(jobs, "all", "active_tls_basic", "")).toEqual([jobs[23]]);
     expect(filterJobs(jobs, "all", "active_dns_inventory", "")).toEqual([jobs[24]]);
+    expect(filterJobs(jobs, "all", "active_dns_osint", "")).toEqual([jobs[25]]);
   });
 
   it("searches jobs case-insensitively by job id, file id, audit type, and status", () => {
@@ -432,7 +452,7 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "ACTIVE_HTTP_HEADER")).toEqual([jobs[21]]);
     expect(filterJobs(jobs, "all", "all", "ACTIVE_NMAP")).toEqual([jobs[22]]);
     expect(filterJobs(jobs, "all", "all", "ACTIVE_TLS")).toEqual([jobs[23]]);
-    expect(filterJobs(jobs, "all", "all", "ACTIVE_DNS")).toEqual([jobs[24]]);
+    expect(filterJobs(jobs, "all", "all", "ACTIVE_DNS")).toEqual([jobs[24], jobs[25]]);
   });
 
   it("searches jobs by human audit label and category", () => {
@@ -443,7 +463,8 @@ describe("dashboard filters", () => {
     expect(filterJobs(jobs, "all", "all", "Active Nmap basic")).toEqual([jobs[22]]);
     expect(filterJobs(jobs, "all", "all", "Active TLS basic")).toEqual([jobs[23]]);
     expect(filterJobs(jobs, "all", "all", "Active DNS inventory")).toEqual([jobs[24]]);
-    expect(filterJobs(jobs, "all", "all", "Active / Network")).toEqual([jobs[20], jobs[21], jobs[22], jobs[23], jobs[24]]);
+    expect(filterJobs(jobs, "all", "all", "Active DNS OSINT")).toEqual([jobs[25]]);
+    expect(filterJobs(jobs, "all", "all", "Active / Network")).toEqual([jobs[20], jobs[21], jobs[22], jobs[23], jobs[24], jobs[25]]);
     expect(filterJobs(jobs, "all", "all", "Infrastructure & deployment")).toEqual([jobs[12], jobs[13], jobs[14]]);
   });
 
@@ -454,8 +475,8 @@ describe("dashboard filters", () => {
       images: 1,
       manifests: 1,
       archives: 1,
-      totalJobs: 25,
-      completedJobs: 22,
+      totalJobs: 26,
+      completedJobs: 23,
       failedJobs: 1,
       activeJobs: 2
     });
@@ -504,6 +525,7 @@ describe("dashboard filters", () => {
     expect(auditTypeLabel("active_nmap_basic")).toBe("Active Nmap basic");
     expect(auditTypeLabel("active_tls_basic")).toBe("Active TLS basic");
     expect(auditTypeLabel("active_dns_inventory")).toBe("Active DNS inventory");
+    expect(auditTypeLabel("active_dns_osint")).toBe("Active DNS OSINT");
     expect(auditTypeCategoryLabel("redis_config_basic")).toBe("Data layer");
     expect(auditTypeCategoryLabel("sql_database_config_basic")).toBe("Data layer");
     expect(auditTypeCategoryLabel("active_network_dry_run")).toBe("Active / Network");
@@ -511,6 +533,7 @@ describe("dashboard filters", () => {
     expect(auditTypeCategoryLabel("active_nmap_basic")).toBe("Active / Network");
     expect(auditTypeCategoryLabel("active_tls_basic")).toBe("Active / Network");
     expect(auditTypeCategoryLabel("active_dns_inventory")).toBe("Active / Network");
+    expect(auditTypeCategoryLabel("active_dns_osint")).toBe("Active / Network");
     expect(getAuditTypeMetadata("active_http_header_probe")).toMatchObject({
       sourceFamily: "target",
       shortDescription: "Sends one authorized HTTP HEAD request and records redacted headers; no redirects or body read."
@@ -526,6 +549,10 @@ describe("dashboard filters", () => {
     expect(getAuditTypeMetadata("active_dns_inventory")).toMatchObject({
       sourceFamily: "target",
       shortDescription: "Records authorized best-effort DNS configuration review indicators with redacted records."
+    });
+    expect(getAuditTypeMetadata("active_dns_osint")).toMatchObject({
+      sourceFamily: "target",
+      shortDescription: "Records bounded public-source DNS OSINT review indicators with redacted observed-name samples."
     });
   });
 

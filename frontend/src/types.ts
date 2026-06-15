@@ -59,6 +59,7 @@ export type AuditType =
   | 'active_nmap_basic'
   | 'active_tls_basic'
   | 'active_dns_inventory'
+  | 'active_dns_osint'
   | 'django_config_basic'
   | 'docker_config_basic'
   | 'secrets_review_basic'
@@ -169,4 +170,16 @@ export type ActiveDnsInventoryRequest = {
   authorization_confirmed: true;
   local_private_or_owned_scope_confirmed: true;
   live_dns_queries_confirmed: true;
+};
+
+export type ActiveDnsOsintRequest = {
+  mode: 'live_dns_osint';
+  profile: 'ct_subdomain_discovery_bounded';
+  domain: string;
+  include_certificate_transparency: true;
+  include_passive_dns: false;
+  max_names: number;
+  authorization_confirmed: true;
+  owned_or_authorized_domain_confirmed: true;
+  public_osint_queries_confirmed: true;
 };

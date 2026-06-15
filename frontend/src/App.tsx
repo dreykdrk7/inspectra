@@ -20,6 +20,9 @@ import { redactActiveDryRunText } from "./activeDryRunReport";
 import { ActiveDnsInventoryJobReport } from "./ActiveDnsInventoryJobReport";
 import { ActiveDnsInventoryPanel } from "./ActiveDnsInventoryPanel";
 import { redactActiveDnsInventoryText } from "./activeDnsInventoryReport";
+import { ActiveDnsOsintJobReport } from "./ActiveDnsOsintJobReport";
+import { ActiveDnsOsintPanel } from "./ActiveDnsOsintPanel";
+import { redactActiveDnsOsintText } from "./activeDnsOsintReport";
 import { ActiveHttpHeaderProbeJobReport } from "./ActiveHttpHeaderProbeJobReport";
 import { redactActiveHttpHeaderProbeText } from "./activeHttpHeaderProbeReport";
 import { ActiveNmapBasicJobReport } from "./ActiveNmapBasicJobReport";
@@ -668,6 +671,11 @@ export function App() {
     await refreshJobs();
   }
 
+  async function handleActiveDnsOsintJobCreated(job: JobRecord) {
+    setSelectedJob(job);
+    await refreshJobs();
+  }
+
   async function deleteFile(fileId: string) {
     setActionError(null);
     try {
@@ -1098,6 +1106,7 @@ export function App() {
         <ActiveNmapBasicPanel health={health} onJobCreated={handleActiveNmapBasicJobCreated} />
         <ActiveTlsBasicPanel onJobCreated={handleActiveTlsBasicJobCreated} />
         <ActiveDnsInventoryPanel onJobCreated={handleActiveDnsInventoryJobCreated} />
+        <ActiveDnsOsintPanel onJobCreated={handleActiveDnsOsintJobCreated} />
       </section>
 
       <section className="content-grid">
@@ -1272,6 +1281,8 @@ export function App() {
               <ActiveTlsBasicJobReport job={selectedJob} />
             ) : isActiveDnsInventoryJob(selectedJob) ? (
               <ActiveDnsInventoryJobReport job={selectedJob} />
+            ) : isActiveDnsOsintJob(selectedJob) ? (
+              <ActiveDnsOsintJobReport job={selectedJob} />
             ) : selectedJob.audit_type === "pdf_basic" ? (
               <PdfJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "image_basic" ? (
@@ -1489,6 +1500,9 @@ function jobTargetDisplay(job: JobListItem): string {
   if (job.audit_type === "active_dns_inventory") {
     return redactActiveDnsInventoryText(target);
   }
+  if (job.audit_type === "active_dns_osint") {
+    return redactActiveDnsOsintText(target);
+  }
   return target;
 }
 
@@ -1502,6 +1516,10 @@ function isActiveTlsBasicJob(job: JobRecord): boolean {
 
 function isActiveDnsInventoryJob(job: JobRecord): boolean {
   return job.audit_type === "active_dns_inventory" || job.result?.capability === "active_dns_inventory";
+}
+
+function isActiveDnsOsintJob(job: JobRecord): boolean {
+  return job.audit_type === "active_dns_osint" || job.result?.capability === "active_dns_osint";
 }
 
 function acceptForKind(kind: FileRecord["kind"]): string {
@@ -1651,6 +1669,13 @@ function summarizeJob(job: JobListItem): string {
     const dmarc = job.summary.dmarc_present === true ? "DMARC present" : "DMARC absent";
     const caa = job.summary.caa_present === true ? "CAA present" : "CAA absent";
     return `${coverageLevel}, ${recordCount} redacted records, ${spf}, ${dmarc}, ${caa}, ${subdomainCount} bounded subdomains`;
+  }
+  if (job.audit_type === "active_dns_osint") {
+    const coverageLevel = typeof job.summary.coverage_level === "string" ? job.summary.coverage_level : "osint_best_effort";
+    const observedNamesCount = typeof job.summary.observed_names_count === "number" ? job.summary.observed_names_count : 0;
+    const ctSourceStatus = typeof job.summary.ct_source_status === "string" ? job.summary.ct_source_status : "not_attempted";
+    const passiveDnsStatus = typeof job.summary.passive_dns_status === "string" ? job.summary.passive_dns_status : "not_attempted";
+    return `${coverageLevel}, CT ${ctSourceStatus}, ${observedNamesCount} redacted observed names, passive DNS ${passiveDnsStatus}`;
   }
   if (job.audit_type === "django_config_basic") {
     const filesRead = typeof job.summary.files_read === "number" ? job.summary.files_read : 0;
