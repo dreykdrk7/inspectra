@@ -506,6 +506,8 @@ def _normalize_crtsh_source_url(raw_url: str) -> str | None:
         return None
     if url.host != ACTIVE_DNS_OSINT_CRTSH_ALLOWED_HOST:
         return None
+    if url.port is not None:
+        return None
     if url.username or url.password or url.query or url.fragment:
         return None
     if url.path not in {"", "/"}:

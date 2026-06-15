@@ -8884,6 +8884,33 @@ def test_active_dns_osint_ct_source_factory_is_disabled_or_blocked_without_valid
     assert blocked_source.query_certificate_transparency(domain="example.invalid", max_names=10).status == "blocked_by_policy"
 
 
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "http://crt.sh/",
+        "https://crt.sh:8443/",
+        "https://crt.sh/search",
+        "https://crt.sh/?q=example.invalid",
+        "https://crt.sh/#fragment",
+        "https://user:pass@crt.sh/",
+        "https://example.invalid/",
+    ],
+)
+def test_active_dns_osint_ct_source_factory_rejects_non_base_crtsh_urls(source_url):
+    source = build_active_dns_osint_ct_source(
+        enabled=True,
+        source_url=source_url,
+        timeout_seconds=1.0,
+        max_response_bytes=1024,
+        max_names_parsed=10,
+    )
+
+    assert isinstance(source, BlockedActiveDnsOsintCtSource)
+    result = source.query_certificate_transparency(domain="example.invalid", max_names=10)
+    assert result.status == "blocked_by_policy"
+    assert result.external_requests_sent == 0
+
+
 @pytest.mark.anyio
 async def test_active_dns_osint_real_ct_source_uses_single_bounded_fake_http_request(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_OSINT_ENABLED", "true")

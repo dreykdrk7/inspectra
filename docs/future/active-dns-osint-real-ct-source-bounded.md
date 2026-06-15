@@ -41,8 +41,9 @@ Chosen source:
 - Names may be newline-separated in `name_value`.
 
 The configured URL is accepted only when it is exactly an HTTPS `crt.sh` base
-URL with no credentials, custom path, query, or fragment. Other hosts, schemes,
-paths, credentials, query strings, or fragments are blocked before any request.
+URL with no credentials, custom port, custom path, query, or fragment. Other
+hosts, schemes, ports, paths, credentials, query strings, or fragments are
+blocked before any request.
 
 ## Runtime Limits
 
