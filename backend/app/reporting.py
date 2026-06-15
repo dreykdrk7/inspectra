@@ -1924,6 +1924,7 @@ def public_active_dns_inventory_result(result: dict[str, Any]) -> dict[str, Any]
             "subdomain_candidates": limits.get("subdomain_candidates"),
             "subdomain_record_types": limits.get("subdomain_record_types"),
             "max_records_per_type": limits.get("max_records_per_type"),
+            "max_txt_value_length": limits.get("max_txt_value_length"),
             "max_subdomain_sample": limits.get("max_subdomain_sample"),
             "zone_transfer_timeout_seconds": limits.get("zone_transfer_timeout_seconds"),
             "zone_transfer_max_nameservers": limits.get("zone_transfer_max_nameservers"),

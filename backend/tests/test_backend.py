@@ -8301,6 +8301,48 @@ async def test_active_dns_inventory_zone_transfer_timeout_is_partial_controlled(
 
 
 @pytest.mark.anyio
+async def test_active_dns_inventory_zone_transfer_missing_terminal_soa_is_partial(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    fake_resolver = make_active_dns_inventory_fake_resolver()
+    axfr_records = [
+        dns_record("example.com", "SOA", "mname=ns1.example.net;rname=hostmaster.example.com;serial=1"),
+        dns_record("example.com", "A", "192.0.2.10"),
+    ]
+    fake_axfr = FakeActiveDnsInventoryAxfrTransport(
+        ActiveDnsInventoryZoneTransferResult(
+            status="zone_transfer_complete",
+            records=tuple(axfr_records),
+            records_received_count=len(axfr_records),
+            records_retained_count=len(axfr_records),
+            bytes_received=256,
+        )
+    )
+    app.state.active_dns_inventory_resolver = fake_resolver
+    app.state.active_dns_inventory_axfr_transport = fake_axfr
+    payload = make_active_dns_inventory_payload(
+        include_subdomain_discovery=False,
+        attempt_zone_transfer=True,
+        zone_transfer_authorized_confirmed=True,
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/network/dns-inventory", json=payload)
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["error"] == "partial_inventory"
+    result = payload["result"]
+    assert result["coverage_level"] == "partial_inventory"
+    assert result["zone_transfer"]["status"] == "malformed_response"
+    assert result["zone_transfer"]["reason_code"] == "zone_transfer_missing_terminal_soa"
+    assert {"code": "zone_transfer_missing_terminal_soa", "record_type": "AXFR", "purpose": "authorized_zone_transfer"} in result["errors"]
+    assert "hostmaster.example.com" not in response.text
+    assert "192.0.2.10" not in response.text
+
+
+@pytest.mark.anyio
 async def test_active_dns_inventory_zone_transfer_success_is_complete_and_redacted(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
@@ -8356,6 +8398,7 @@ async def test_active_dns_inventory_zone_transfer_success_is_complete_and_redact
     assert result["zone_transfer"]["records_received_count"] == len(axfr_records)
     assert result["zone_transfer"]["records_retained_count"] == len(axfr_records)
     assert result["zone_transfer"]["truncated"] is False
+    assert result["limits"]["max_txt_value_length"] == 512
     assert result["records"]["A"]["count"] == 2
     assert result["records"]["MX"]["sample"][0]["priority"] == 10
     assert jobs_response.json()[0]["summary"]["coverage_level"] == "zone_transfer_complete"

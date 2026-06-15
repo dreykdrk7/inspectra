@@ -36,6 +36,7 @@ ACTIVE_DNS_INVENTORY_AXFR_TIMEOUT_SECONDS = 3.0
 ACTIVE_DNS_INVENTORY_AXFR_MAX_NAMESERVERS = 1
 ACTIVE_DNS_INVENTORY_AXFR_MAX_RECORDS = 100
 ACTIVE_DNS_INVENTORY_AXFR_MAX_BYTES = 65_536
+ACTIVE_DNS_INVENTORY_MAX_TXT_VALUE_LENGTH = 512
 
 _DNS_PORT = 53
 _DNS_CLASS_IN = 1
@@ -316,15 +317,16 @@ def run_active_dns_inventory(
         else:
             ns_result = safe_query(contract.domain, "NS", purpose="zone_transfer_authoritative_ns_lookup")
             authoritative_nameservers = [record.value for record in ns_result.records if record.record_type == "NS"]
+            candidate_nameservers = _select_authoritative_nameserver_candidates(authoritative_nameservers)
             zone_transfer_result = _run_authorized_zone_transfer(
                 contract.domain,
-                authoritative_nameservers,
+                candidate_nameservers,
                 zone_transfer_transport,
             )
             zone_transfer = _public_zone_transfer_summary(
                 zone_transfer_result,
                 nameservers_considered=len(authoritative_nameservers),
-                nameservers_attempted=min(len(authoritative_nameservers), ACTIVE_DNS_INVENTORY_AXFR_MAX_NAMESERVERS),
+                nameservers_attempted=len(candidate_nameservers),
             )
             if zone_transfer_result.status == "zone_transfer_complete":
                 root_records = _group_records_by_type(zone_transfer_result.records)
@@ -393,6 +395,7 @@ def run_active_dns_inventory(
             "subdomain_candidates": len(ACTIVE_DNS_INVENTORY_SUBDOMAIN_CANDIDATES),
             "subdomain_record_types": list(ACTIVE_DNS_INVENTORY_SUBDOMAIN_RECORD_TYPES),
             "max_records_per_type": ACTIVE_DNS_INVENTORY_MAX_RECORDS_PER_TYPE,
+            "max_txt_value_length": ACTIVE_DNS_INVENTORY_MAX_TXT_VALUE_LENGTH,
             "max_subdomain_sample": ACTIVE_DNS_INVENTORY_MAX_SUBDOMAIN_SAMPLE,
             "zone_transfer_timeout_seconds": ACTIVE_DNS_INVENTORY_AXFR_TIMEOUT_SECONDS,
             "zone_transfer_max_nameservers": ACTIVE_DNS_INVENTORY_AXFR_MAX_NAMESERVERS,
@@ -445,19 +448,14 @@ def _build_not_attempted_zone_transfer() -> dict[str, Any]:
 
 def _run_authorized_zone_transfer(
     domain: str,
-    authoritative_nameservers: list[str],
+    candidate_nameservers: list[str],
     transport: Any,
 ) -> ActiveDnsInventoryZoneTransferResult:
-    candidates = [
-        nameserver
-        for nameserver in authoritative_nameservers[:ACTIVE_DNS_INVENTORY_AXFR_MAX_NAMESERVERS]
-        if isinstance(nameserver, str) and nameserver.strip()
-    ]
-    if not candidates:
+    if not candidate_nameservers:
         return ActiveDnsInventoryZoneTransferResult(status="no_authoritative_nameservers")
 
     last_result = ActiveDnsInventoryZoneTransferResult(status="unavailable", reason_code="zone_transfer_unavailable")
-    for nameserver in candidates:
+    for nameserver in candidate_nameservers:
         try:
             result = _coerce_zone_transfer_result(transport.transfer(domain, nameserver))
         except TimeoutError:
@@ -471,9 +469,29 @@ def _run_authorized_zone_transfer(
         except Exception:
             result = ActiveDnsInventoryZoneTransferResult(status="unavailable", reason_code="zone_transfer_unavailable")
         if result.status == "zone_transfer_complete":
+            if not _zone_transfer_has_terminal_soa(list(result.records), domain):
+                result = ActiveDnsInventoryZoneTransferResult(
+                    status="malformed_response",
+                    records=result.records,
+                    reason_code="zone_transfer_missing_terminal_soa",
+                    truncated=result.truncated,
+                    records_received_count=result.records_received_count,
+                    records_retained_count=result.records_retained_count,
+                    bytes_received=result.bytes_received,
+                )
+                last_result = result
+                continue
             return result
         last_result = result
     return last_result
+
+
+def _select_authoritative_nameserver_candidates(authoritative_nameservers: list[str]) -> list[str]:
+    return [
+        nameserver.strip()
+        for nameserver in authoritative_nameservers[:ACTIVE_DNS_INVENTORY_AXFR_MAX_NAMESERVERS]
+        if isinstance(nameserver, str) and nameserver.strip()
+    ]
 
 
 def _coerce_zone_transfer_result(value: Any) -> ActiveDnsInventoryZoneTransferResult:
@@ -763,6 +781,16 @@ def _query_tcp_axfr(
 
     if not records:
         return ActiveDnsInventoryZoneTransferResult(status="unavailable", reason_code="zone_transfer_empty_response", bytes_received=bytes_received)
+    if not _zone_transfer_has_terminal_soa(records, domain):
+        return ActiveDnsInventoryZoneTransferResult(
+            status="malformed_response",
+            reason_code="zone_transfer_missing_terminal_soa",
+            records=tuple(records[:max_records]),
+            truncated=True,
+            records_received_count=len(records),
+            records_retained_count=min(len(records), max_records),
+            bytes_received=bytes_received,
+        )
     return ActiveDnsInventoryZoneTransferResult(
         status="zone_transfer_complete",
         records=tuple(records),
@@ -870,7 +898,7 @@ def _parse_dns_record(
                 cursor += 1
                 chunks.append(rdata[cursor : cursor + size].decode("utf-8", errors="replace"))
                 cursor += size
-            return ActiveDnsInventoryRecord(name=name, record_type=record_type, value="".join(chunks), ttl=ttl)
+            return ActiveDnsInventoryRecord(name=name, record_type=record_type, value="".join(chunks)[:ACTIVE_DNS_INVENTORY_MAX_TXT_VALUE_LENGTH], ttl=ttl)
         if record_type == "SOA":
             mname, cursor = _decode_dns_name(packet, rdata_offset)
             rname, cursor = _decode_dns_name(packet, cursor)
