@@ -5,6 +5,10 @@ from fastapi import BackgroundTasks, Body, FastAPI, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.active_http_basic_header_review import (
+    ActiveHttpBasicHeaderReviewContractError,
+    build_active_http_basic_header_review_response,
+)
 from app.active_tools_client import check_active_tools_health
 from app.active_nmap_lifecycle import (
     ActiveNmapBasicRouteActiveToolsClient,
@@ -1151,6 +1155,23 @@ async def launch_active_http_header_probe(
     job = request.app.state.jobs.create_active_http_header_probe_job(target_display, owner_id=current_owner_id_for_request(request))
     background_tasks.add_task(request.app.state.active_http_header_probes.run_active_http_header_probe_analysis, job.id, active_request)
     return job
+
+
+@app.post("/active/web/http-basic-header-review")
+async def launch_active_http_basic_header_review(
+    request: Request,
+    payload: Any = Body(...),
+) -> dict[str, Any]:
+    try:
+        return build_active_http_basic_header_review_response(
+            payload,
+            enabled=request.app.state.settings.active_http_basic_header_review_enabled,
+        )
+    except ActiveHttpBasicHeaderReviewContractError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=exc.message,
+        ) from exc
 
 
 @app.post("/active/network/nmap-basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
