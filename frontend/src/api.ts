@@ -2,6 +2,7 @@ import type {
   ActiveDryRunRequest,
   ActiveDnsInventoryRequest,
   ActiveDnsOsintRequest,
+  ActiveHttpBasicHeaderReviewRequest,
   ActiveHttpHeaderProbeRequest,
   ActiveNmapBasicRequest,
   ActiveTlsBasicRequest,
@@ -324,6 +325,15 @@ export async function createActiveHttpHeaderProbe(request: ActiveHttpHeaderProbe
   return parseJsonResponse<JobRecord>(response);
 }
 
+export async function createActiveHttpBasicHeaderReview(request: ActiveHttpBasicHeaderReviewRequest): Promise<JobRecord> {
+  const response = await apiFetch('/active/web/http-basic-header-review', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return parseJsonResponse<JobRecord>(response);
+}
+
 export async function createActiveNmapBasic(request: ActiveNmapBasicRequest): Promise<JobRecord> {
   const response = await apiFetch('/active/network/nmap-basic', {
     method: 'POST',
@@ -413,6 +423,7 @@ export const api = {
   launchSubdomainInventoryAudit,
   createActiveNetworkDryRun,
   createActiveHttpHeaderProbe,
+  createActiveHttpBasicHeaderReview,
   createActiveNmapBasic,
   createActiveTlsBasic,
   createActiveDnsInventory,

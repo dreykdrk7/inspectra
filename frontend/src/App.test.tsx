@@ -244,6 +244,26 @@ describe("App", () => {
             )
           );
         }
+        if (url.endsWith("/active/web/http-basic-header-review")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-active-http-basic-header-review-1",
+                audit_type: "active_http_basic_header_review",
+                file_id: null,
+                target_url: "[REDACTED_TARGET]",
+                target_domain: null,
+                status: "completed",
+                created_at: "2026-05-26T10:08:50Z",
+                updated_at: "2026-05-26T10:08:50Z",
+                source_file_deleted_at: null,
+                result: { capability: "active_http_basic_header_review", result_status: "not_executed" },
+                error: null
+              },
+              202
+            )
+          );
+        }
         if (url.endsWith("/audits/django-config/file-archive-1")) {
           return Promise.resolve(
             jsonResponse(
@@ -535,6 +555,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Subdomain Inventory" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Active / Network dry-run" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Authorized HTTP Header Probe" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Active / HTTP header review" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Active / Nmap basic" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Active / TLS basic" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Active / DNS inventory" })).toBeInTheDocument();
@@ -1472,6 +1493,187 @@ describe("App", () => {
         .mocked(globalThis.fetch)
         .mock.calls.filter(([input]) => String(input).endsWith("/jobs"))
     ).toHaveLength(1);
+  });
+
+  it("creates and opens an Active HTTP header review no-live job record", async () => {
+    const activeJob = {
+      id: "job-active-http-basic-header-review-app",
+      audit_type: "active_http_basic_header_review",
+      file_id: null,
+      target_url: "[REDACTED_TARGET]",
+      target_domain: null,
+      status: "completed",
+      created_at: "2026-06-19T10:00:00Z",
+      updated_at: "2026-06-19T10:00:00Z",
+      source_file_deleted_at: null,
+      result: {
+        audit_type: "active_http_basic_header_review",
+        capability: "active_http_basic_header_review",
+        mode: "live_http_basic_header_review",
+        profile: "http_headers_single_request",
+        status: "not_executed",
+        result_status: "not_executed",
+        lifecycle_state: "not_executed",
+        target: "https://authorized.example/?token=token_should_never_render",
+        raw_target: "https://authorized.example/private?token=token_should_never_render",
+        target_display: "[REDACTED_TARGET]",
+        method: "HEAD",
+        headers: [{ name: "Authorization", value: "Bearer token_should_never_render" }],
+        cookies: ["session_should_not_render=cookie_should_not_render"],
+        redirect_chain: ["redirect-location-should-not-render"],
+        response_body: "response_body_should_not_render",
+        exception: "raw_exception_should_not_render",
+        manual_validation_required: true,
+        review_wording: "HTTP header review indicator",
+        result_interpretation: "HTTP header review indicator",
+        job_status_meaning: "Completed job status means the no-live record was stored; no HTTP request was performed.",
+        execution: {
+          live_request_performed: false,
+          network_requests_sent: 0,
+          requests_sent: 0,
+          http_requests_sent: 0,
+          redirect_followed: false,
+          body_read: false,
+          job_created: true,
+          storage_persisted: true
+        },
+        summary: {
+          status: "not_executed",
+          manual_validation_required: true,
+          review_wording: "HTTP header review indicator",
+          result_interpretation: "HTTP header review indicator",
+          job_status_meaning: "Completed job status means the no-live record was stored; no HTTP request was performed.",
+          live_request_performed: false,
+          redirect_followed: false,
+          body_read: false,
+          network_requests_sent: 0,
+          requests_sent: 0,
+          http_requests_sent: 0,
+          job_created: true,
+          storage_persisted: true
+        },
+        limits: {
+          max_targets: 1,
+          method: "HEAD",
+          max_redirects: 0,
+          response_body_bytes: 0,
+          raw_target_persisted: false,
+          headers_persisted: false,
+          cookies_persisted: false,
+          response_body_persisted: false
+        },
+        surface_caveats: [
+          "No live HTTP request was performed",
+          "No redirect was followed",
+          "No response body was read",
+          "Manual validation required",
+          "HTTP header review indicator wording only"
+        ]
+      },
+      error: "raw_exception_should_not_render token_should_never_render"
+    };
+    let jobs = [] as unknown[];
+    let jobsCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
+        }
+        if (url.endsWith("/health")) {
+          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/files")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/active/web/http-basic-header-review")) {
+          jobs = [
+            {
+              ...activeJob,
+              result: undefined,
+              error: undefined,
+              summary: {
+                capability: "active_http_basic_header_review",
+                result_status: "not_executed",
+                target_display: "[REDACTED_TARGET]",
+                method: "HEAD",
+                requests_sent: 0,
+                live_request_performed: false,
+                redirect_followed: false,
+                body_read: false,
+                manual_validation_required: true,
+                review_wording: "HTTP header review indicator"
+              }
+            }
+          ];
+          return Promise.resolve(jsonResponse(activeJob, 202));
+        }
+        if (url.endsWith("/jobs")) {
+          jobsCalls += 1;
+          return Promise.resolve(jsonResponse(jobs));
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+
+    const view = render(<App />);
+    const heading = await screen.findByRole("heading", { name: "Active / HTTP header review" });
+    const panel = heading.closest("section");
+    expect(panel).not.toBeNull();
+    const scoped = within(panel as HTMLElement);
+
+    fireEvent.change(scoped.getByLabelText("URL target"), { target: { value: "https://authorized.example/" } });
+    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this URL."));
+    fireEvent.click(scoped.getByLabelText("I confirm I control this target."));
+    fireEvent.click(scoped.getByLabelText("I understand this contract is for a future live HTTP request, while this phase stores a no-live record and performs no HTTP request."));
+    fireEvent.click(scoped.getByRole("button", { name: /Create HTTP header review job/i }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/active/web/http-basic-header-review",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    const request = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find(([input]) => String(input).endsWith("/active/web/http-basic-header-review"))?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(request?.body))).toEqual({
+      mode: "live_http_basic_header_review",
+      profile: "http_headers_single_request",
+      target: "https://authorized.example/",
+      method: "HEAD",
+      authorization_confirmed: true,
+      target_control_confirmed: true,
+      delegated_permission_confirmed: false,
+      live_http_request_confirmed: true
+    });
+
+    expect(await scoped.findByText(/HTTP header review indicator job created/i)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Active / HTTP header review report" })).toBeInTheDocument();
+    await waitFor(() => expect(jobsCalls).toBeGreaterThan(1));
+    const rendered = view.container.textContent ?? "";
+    expect(rendered).toContain("HTTP header review");
+    expect(rendered).toContain("not_executed");
+    expect(rendered).toContain("HTTP header review indicator");
+    expect(rendered).toContain("Manual validation required");
+    expect(rendered).toContain("No live HTTP request was performed");
+    expect(rendered).toContain("No redirect was followed");
+    expect(rendered).toContain("No response body was read");
+    expect(rendered).toContain("[REDACTED_TARGET]");
+    expect(rendered).toContain('"requests_sent": 0');
+    expect(rendered).toContain('"live_request_performed": false');
+    for (const value of [
+      "authorized.example",
+      "token_should_never_render",
+      "session_should_not_render",
+      "cookie_should_not_render",
+      "redirect-location-should-not-render",
+      "response_body_should_not_render",
+      "raw_exception_should_not_render"
+    ]) {
+      expect(rendered).not.toContain(value);
+    }
   });
 
   it("renders the Active Nmap basic form without calling the API before confirmations", async () => {

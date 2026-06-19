@@ -35,6 +35,7 @@ export const AUDIT_TYPE_ORDER: AuditType[] = [
   "subdomain_inventory_basic",
   "active_network_dry_run",
   "active_http_header_probe",
+  "active_http_basic_header_review",
   "active_nmap_basic",
   "active_tls_basic",
   "active_dns_inventory",
@@ -118,6 +119,13 @@ export const AUDIT_TYPE_CATALOG: Record<AuditType, AuditTypeMetadata> = {
     "active_network",
     "target",
     "Sends one authorized HTTP HEAD request and records redacted headers; no redirects or body read."
+  ),
+  active_http_basic_header_review: metadata(
+    "active_http_basic_header_review",
+    "HTTP header review",
+    "active_network",
+    "target",
+    "Stores a no-live HTTP header review indicator record with redacted target display and zero sent requests."
   ),
   active_nmap_basic: metadata(
     "active_nmap_basic",

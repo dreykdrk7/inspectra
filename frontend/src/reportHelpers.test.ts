@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildActiveDryRunReport, redactActiveDryRunValue } from "./activeDryRunReport";
+import { buildActiveHttpBasicHeaderReviewReport, redactActiveHttpBasicHeaderReviewText } from "./activeHttpBasicHeaderReviewReport";
 import { buildActiveHttpHeaderProbeReport, redactActiveHttpHeaderProbeValue } from "./activeHttpHeaderProbeReport";
 import { buildArchiveAuditReport } from "./archiveReport";
 import { buildCiCdConfigAuditReport, redactCiCdConfigValue } from "./ciCdConfigReport";
@@ -432,6 +433,69 @@ describe("report helpers", () => {
       expect(redactedRaw).not.toContain(secret);
     }
     expect(serializedReport).toContain("REDACTED");
+  });
+
+  it("normalizes Active HTTP basic header review as a no-live allowlisted report", () => {
+    const report = buildActiveHttpBasicHeaderReviewReport({
+      ...baseJob,
+      audit_type: "active_http_basic_header_review",
+      file_id: null,
+      target_url: "https://authorized.example/?token=token_should_never_render",
+      error: "raw_exception_should_not_render token_should_never_render",
+      result: {
+        audit_type: "active_http_basic_header_review",
+        capability: "active_http_basic_header_review",
+        status: "not_executed",
+        result_status: "not_executed",
+        target: "https://authorized.example/",
+        raw_target: "https://authorized.example/private?token=token_should_never_render",
+        method: "HEAD",
+        headers: [{ name: "Authorization", value: "Bearer token_should_never_render" }],
+        cookies: ["session_should_not_render=cookie_should_not_render"],
+        redirect_chain: ["redirect-location-should-not-render"],
+        response_body: "response_body_should_not_render",
+        exception: "raw_exception_should_not_render",
+        execution: {
+          live_request_performed: true,
+          requests_sent: 99,
+          redirect_followed: true,
+          body_read: true,
+          job_created: true,
+          storage_persisted: true
+        },
+        summary: {
+          live_request_performed: true,
+          requests_sent: 99,
+          redirect_followed: true,
+          body_read: true,
+          job_created: true,
+          storage_persisted: true
+        }
+      }
+    });
+    const serializedReport = JSON.stringify(report);
+
+    expect(report.isActiveHttpBasicHeaderReview).toBe(true);
+    expect(report.status).toBe("not_executed");
+    expect(report.target).toBe("[REDACTED_TARGET]");
+    expect(report.method).toBe("HEAD");
+    expect(report.overview).toContainEqual({ label: "Requests sent", value: "0" });
+    expect(report.overview).toContainEqual({ label: "Live request performed", value: "false" });
+    expect(report.overview).toContainEqual({ label: "Redirect followed", value: "false" });
+    expect(report.overview).toContainEqual({ label: "Body read", value: "false" });
+    for (const secret of [
+      "authorized.example",
+      "token_should_never_render",
+      "Authorization: Bearer token_should_never_render",
+      "session_should_not_render",
+      "cookie_should_not_render",
+      "redirect-location-should-not-render",
+      "response_body_should_not_render",
+      "raw_exception_should_not_render"
+    ]) {
+      expect(serializedReport).not.toContain(secret);
+    }
+    expect(redactActiveHttpBasicHeaderReviewText("https://authorized.example/")).toBe("[REDACTED_TARGET]");
   });
 
   it("normalizes Django config detected files, signals, and redacted findings", () => {

@@ -56,6 +56,7 @@ export type AuditType =
   | 'subdomain_inventory_basic'
   | 'active_network_dry_run'
   | 'active_http_header_probe'
+  | 'active_http_basic_header_review'
   | 'active_nmap_basic'
   | 'active_tls_basic'
   | 'active_dns_inventory'
@@ -136,6 +137,17 @@ export type ActiveHttpHeaderProbeRequest = {
     retries: 0;
     concurrency: 1;
   };
+};
+
+export type ActiveHttpBasicHeaderReviewRequest = {
+  mode: 'live_http_basic_header_review';
+  profile: 'http_headers_single_request';
+  target: string;
+  method: 'HEAD';
+  authorization_confirmed: boolean;
+  target_control_confirmed: boolean;
+  delegated_permission_confirmed: boolean;
+  live_http_request_confirmed: boolean;
 };
 
 export type ActiveNmapBasicRequest = {

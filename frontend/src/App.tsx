@@ -25,6 +25,9 @@ import { ActiveDnsOsintPanel } from "./ActiveDnsOsintPanel";
 import { redactActiveDnsOsintText } from "./activeDnsOsintReport";
 import { ActiveHttpHeaderProbeJobReport } from "./ActiveHttpHeaderProbeJobReport";
 import { redactActiveHttpHeaderProbeText } from "./activeHttpHeaderProbeReport";
+import { ActiveHttpBasicHeaderReviewJobReport } from "./ActiveHttpBasicHeaderReviewJobReport";
+import { ActiveHttpBasicHeaderReviewPanel } from "./ActiveHttpBasicHeaderReviewPanel";
+import { redactActiveHttpBasicHeaderReviewText } from "./activeHttpBasicHeaderReviewReport";
 import { ActiveNmapBasicJobReport } from "./ActiveNmapBasicJobReport";
 import { ActiveNmapBasicPanel } from "./ActiveNmapBasicPanel";
 import { redactActiveNmapBasicText } from "./activeNmapBasicReport";
@@ -661,6 +664,11 @@ export function App() {
     await refreshJobs();
   }
 
+  async function handleActiveHttpBasicHeaderReviewJobCreated(job: JobRecord) {
+    setSelectedJob(job);
+    await refreshJobs();
+  }
+
   async function handleActiveTlsBasicJobCreated(job: JobRecord) {
     setSelectedJob(job);
     await refreshJobs();
@@ -1103,6 +1111,7 @@ export function App() {
           {activeHttpHeaderProbeState.error ? <p className="error-text">{activeHttpHeaderProbeState.error}</p> : null}
         </Panel>
 
+        <ActiveHttpBasicHeaderReviewPanel onJobCreated={handleActiveHttpBasicHeaderReviewJobCreated} />
         <ActiveNmapBasicPanel health={health} onJobCreated={handleActiveNmapBasicJobCreated} />
         <ActiveTlsBasicPanel onJobCreated={handleActiveTlsBasicJobCreated} />
         <ActiveDnsInventoryPanel onJobCreated={handleActiveDnsInventoryJobCreated} />
@@ -1283,6 +1292,8 @@ export function App() {
               <ActiveDnsInventoryJobReport job={selectedJob} />
             ) : isActiveDnsOsintJob(selectedJob) ? (
               <ActiveDnsOsintJobReport job={selectedJob} />
+            ) : isActiveHttpBasicHeaderReviewJob(selectedJob) ? (
+              <ActiveHttpBasicHeaderReviewJobReport job={selectedJob} />
             ) : selectedJob.audit_type === "pdf_basic" ? (
               <PdfJobReport job={selectedJob} file={selectedJobFile} />
             ) : selectedJob.audit_type === "image_basic" ? (
@@ -1491,6 +1502,9 @@ function jobTargetDisplay(job: JobListItem): string {
   if (job.audit_type === "active_http_header_probe") {
     return redactActiveHttpHeaderProbeText(target);
   }
+  if (job.audit_type === "active_http_basic_header_review") {
+    return redactActiveHttpBasicHeaderReviewText(target);
+  }
   if (job.audit_type === "active_nmap_basic") {
     return redactActiveNmapBasicText(target);
   }
@@ -1520,6 +1534,10 @@ function isActiveDnsInventoryJob(job: JobRecord): boolean {
 
 function isActiveDnsOsintJob(job: JobRecord): boolean {
   return job.audit_type === "active_dns_osint" || job.result?.capability === "active_dns_osint";
+}
+
+function isActiveHttpBasicHeaderReviewJob(job: JobRecord): boolean {
+  return job.audit_type === "active_http_basic_header_review" || job.result?.capability === "active_http_basic_header_review";
 }
 
 function acceptForKind(kind: FileRecord["kind"]): string {
@@ -1634,6 +1652,12 @@ function summarizeJob(job: JobListItem): string {
     const redirectsFollowed = typeof job.summary.redirects_followed === "number" ? job.summary.redirects_followed : 0;
     const bodyBytesRead = typeof job.summary.body_bytes_read === "number" ? job.summary.body_bytes_read : 0;
     return `${allowed === false || networkRequestsSent === 0 ? "blocked" : "HEAD sent"}, ${networkRequestsSent} request, ${redirectsFollowed} redirects, ${bodyBytesRead} body bytes`;
+  }
+  if (job.audit_type === "active_http_basic_header_review") {
+    const resultStatus = typeof job.summary.result_status === "string" ? job.summary.result_status : "not_executed";
+    const requestsSent = typeof job.summary.requests_sent === "number" ? job.summary.requests_sent : 0;
+    const liveRequestPerformed = job.summary.live_request_performed === true;
+    return `${resultStatus}, HTTP header review indicator, ${requestsSent} requests sent, live request performed ${String(liveRequestPerformed)}`;
   }
   if (job.audit_type === "active_nmap_basic") {
     const lifecycleState =
