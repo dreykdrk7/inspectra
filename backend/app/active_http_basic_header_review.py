@@ -56,6 +56,7 @@ _LIVE_RESULT_STATUSES = _PERSISTABLE_RESULT_STATUSES - {"not_executed"}
 _IPV4ISH_RE = re.compile(r"^[0-9.]+$")
 _IP_RANGE_RE = re.compile(r"^[0-9.]+-[0-9.]+$")
 _CONTROL_PLANE_HOSTS = {"metadata.google.internal"}
+_LOOPBACK_HOSTS = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
 _METADATA_IPS = {ipaddress.ip_address("169.254.169.254")}
 _SECURITY_HEADER_NAMES = {
     "strict-transport-security": "hsts_present",
@@ -240,8 +241,9 @@ def _resolve_target_guard(
         "blocked": False,
         "reason_code": None,
     }
-    if host in _CONTROL_PLANE_HOSTS:
-        guard.update({"blocked": True, "reason_code": "control_plane_host_blocked"})
+    blocked_hostname_reason = _blocked_hostname_reason(host)
+    if blocked_hostname_reason is not None:
+        guard.update({"blocked": True, "reason_code": blocked_hostname_reason})
         return guard
 
     try:
@@ -304,6 +306,15 @@ def _blocked_ip_reason(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -
         return "broadcast_blocked"
     if address.is_private:
         return "private_range_blocked"
+    return None
+
+
+def _blocked_hostname_reason(host: str) -> str | None:
+    normalized = host.lower().rstrip(".")
+    if normalized in _CONTROL_PLANE_HOSTS:
+        return "control_plane_host_blocked"
+    if normalized in _LOOPBACK_HOSTS:
+        return "loopback_host_blocked"
     return None
 
 
