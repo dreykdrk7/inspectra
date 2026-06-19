@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -11,6 +13,7 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY app /app/app
+COPY --from=active_runner . /app/active_runner
 
 RUN mkdir -p /app/data/uploads /app/data/results && chown -R appuser:appuser /app
 

@@ -4,6 +4,8 @@ services:
   backend:
     build:
       context: ./backend
+      additional_contexts:
+        active_runner: ./tools/active_runner
     container_name: inspectra-backend
     environment:
       INSPECTRA_CORS_ORIGINS: http://localhost:5173
@@ -52,12 +54,13 @@ services:
     volumes:
       - ./data:/app/data
     ports:
-      - "8000:8000"
+      - "${INSPECTRA_BACKEND_HOST_PORT:-8000}:8000"
     depends_on:
       audit-tools:
         condition: service_healthy
     networks:
       - inspectra_internal
+      - inspectra_host_access
     read_only: true
     tmpfs:
       - /tmp
@@ -155,12 +158,12 @@ services:
     environment:
       VITE_API_BASE_URL: http://localhost:8000
     ports:
-      - "5173:5173"
+      - "${INSPECTRA_FRONTEND_HOST_PORT:-5173}:5173"
     depends_on:
       backend:
         condition: service_healthy
     networks:
-      - inspectra_internal
+      - inspectra_host_access
     read_only: true
     tmpfs:
       - /tmp
@@ -172,4 +175,5 @@ services:
 networks:
   inspectra_internal:
     internal: true
+  inspectra_host_access:
   inspectra_web_egress:
