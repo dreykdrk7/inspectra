@@ -14,10 +14,10 @@ export function ActiveHttpBasicHeaderReviewJobReport({ job }: { job: JobRecord }
           <ShieldCheck size={18} aria-hidden="true" />
           Active / HTTP header review report
         </h3>
-        <span className="status-pill">No-live review record</span>
+        <span className="status-pill">{report.isLiveResult ? "Backend live HEAD result" : "No-live review record"}</span>
       </div>
       <p className="muted">
-        HTTP header review indicator. Manual validation required. This report shows the stored no-live record only.
+        HTTP header review indicator. Manual validation required. This report shows only redacted, allowlisted backend result fields.
       </p>
 
       <section className="report-section" aria-label="HTTP header review scope">
@@ -52,7 +52,9 @@ export function ActiveHttpBasicHeaderReviewJobReport({ job }: { job: JobRecord }
       </section>
 
       <div className="query-warning" role="status">
-        No live HTTP request was performed. Completed job status only means the no-live review record was stored.
+        {report.isLiveResult
+          ? "A backend-gated live HEAD attempt reached a controlled terminal state. Job status is not a target pass or security success."
+          : "No live HTTP request was performed. Completed job status only means the no-live review record was stored."}
       </div>
 
       <div className="report-grid">
@@ -67,13 +69,38 @@ export function ActiveHttpBasicHeaderReviewJobReport({ job }: { job: JobRecord }
         </section>
       </div>
 
-      <section className="report-section" aria-label="No-live caveats">
-        <h4>No-Live Caveats</h4>
+      <div className="report-grid">
+        <section className="report-section" aria-label="Response summary">
+          <h4>Response Summary</h4>
+          <MetadataList entries={report.response} empty="No response summary fields were returned." />
+        </section>
+
+        <section className="report-section" aria-label="Header presence indicators">
+          <h4>Header Presence Indicators</h4>
+          <MetadataList entries={report.headerIndicators} empty="No header indicators were returned." />
+        </section>
+      </div>
+
+      <section className="report-section" aria-label="HTTP header review caveats">
+        <h4>HTTP Header Review Caveats</h4>
         <ul className="warning-list">
           {report.caveats.map((caveat) => (
             <li key={caveat}>{caveat}</li>
           ))}
         </ul>
+      </section>
+
+      <section className="report-section" aria-label="Controlled errors">
+        <h4>Controlled Errors</h4>
+        {report.errors.length > 0 ? (
+          <ul className="warning-list">
+            {report.errors.map((error) => (
+              <li key={error}>{error}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted">No controlled error codes retained for this record.</p>
+        )}
       </section>
 
       <section className="report-section" aria-label="Reason codes">
@@ -91,7 +118,7 @@ export function ActiveHttpBasicHeaderReviewJobReport({ job }: { job: JobRecord }
 
       <section className="report-section" aria-label="Raw JSON">
         <h4>Raw JSON (redacted)</h4>
-        <p className="muted">Raw JSON is reconstructed from allowlisted no-live fields before display.</p>
+        <p className="muted">Raw JSON is reconstructed from allowlisted fields before display.</p>
         <pre className="raw-json">{report.rawJson}</pre>
       </section>
     </div>

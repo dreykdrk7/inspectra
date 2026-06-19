@@ -1660,7 +1660,13 @@ function summarizeJob(job: JobListItem): string {
     const liveRequestPerformed = job.summary.live_request_performed === true;
     const redirectFollowed = job.summary.redirect_followed === true;
     const bodyRead = job.summary.body_read === true;
-    return `${resultStatus}, ${method}, HTTP header review indicator, ${requestsSent} requests sent, live request performed ${String(liveRequestPerformed)}, redirect followed ${String(redirectFollowed)}, body read ${String(bodyRead)}, manual validation required`;
+    const lifecycle =
+      resultStatus === "not_executed"
+        ? "no-live record stored"
+        : resultStatus === "timed_out" || resultStatus === "request_failed" || resultStatus === "client_error_controlled"
+          ? "controlled live result"
+          : "live HEAD attempted";
+    return `${resultStatus}, ${lifecycle}, ${method}, HTTP header review indicator, ${requestsSent} requests sent, live request performed ${String(liveRequestPerformed)}, redirect followed ${String(redirectFollowed)}, body read ${String(bodyRead)}, manual validation required`;
   }
   if (job.audit_type === "active_nmap_basic") {
     const lifecycleState =

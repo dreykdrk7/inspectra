@@ -60,7 +60,7 @@ export function ActiveHttpBasicHeaderReviewPanel({ onJobCreated }: ActiveHttpBas
         setRequestState({
           loading: false,
           job: null,
-          error: "Active / HTTP header review was not accepted as a stored no-live job. Review bounds and confirmations."
+          error: "Active / HTTP header review was not accepted as a stored review job. Review bounds and confirmations."
         });
         return;
       }
@@ -90,24 +90,25 @@ export function ActiveHttpBasicHeaderReviewPanel({ onJobCreated }: ActiveHttpBas
           <ShieldCheck size={18} aria-hidden="true" />
           Active / HTTP header review
         </h2>
-        <span className="status-pill">No-live record</span>
+        <span className="status-pill">Backend-gated</span>
       </div>
 
       <div className="badge-row" aria-label="Active HTTP header review guardrails">
         <span className="status-pill">One authorized URL</span>
         <span className="status-pill">HEAD fixed</span>
-        <span className="status-pill">No HTTP request in this phase</span>
+        <span className="status-pill">Browser never contacts target</span>
+        <span className="status-pill">Backend live flag required</span>
         <span className="status-pill">Manual validation required</span>
       </div>
 
       <p className="muted">
-        This creates an Active / HTTP header review job record through the backend contract. The current phase stores a no-live review record
-        and no HTTP request is performed yet.
+        This creates an Active / HTTP header review job through the backend contract. By default the backend stores a no-live review
+        record; backend live mode requires operator configuration and all confirmations before at most one HEAD request is attempted.
       </p>
 
       <div className="query-warning" role="status">
-        Stored display is redaction-first: target is shown as [REDACTED_TARGET], result status is not_executed, requests_sent is 0, redirects
-        are not followed, and response body is not read.
+        The browser never contacts the target. Stored display is redaction-first: target is shown as [REDACTED_TARGET], redirects are not
+        followed, response body is not read, and manual validation is required.
       </div>
 
       <dl className="summary-list">
@@ -119,8 +120,8 @@ export function ActiveHttpBasicHeaderReviewPanel({ onJobCreated }: ActiveHttpBas
         <dd className="mono">HEAD</dd>
         <dt>Result wording</dt>
         <dd>HTTP header review indicator. Manual validation required.</dd>
-        <dt>Current execution</dt>
-        <dd>No live HTTP request was performed; no headers, cookies, redirects, or response body are stored.</dd>
+        <dt>Execution boundary</dt>
+        <dd>Default no-live storage, or backend-gated live HEAD with no browser target request, no redirects, and no response body read.</dd>
       </dl>
 
       <form className="web-audit-form" onSubmit={(event) => void submitActiveHttpBasicHeaderReview(event)}>
@@ -182,7 +183,7 @@ export function ActiveHttpBasicHeaderReviewPanel({ onJobCreated }: ActiveHttpBas
               setRequestState(initialRequestState);
             }}
           />
-          I understand this contract is for a future live HTTP request, while this phase stores a no-live record and performs no HTTP request.
+          I understand backend live mode, when enabled by operator config, may attempt at most one HEAD request; my browser will not contact the target.
         </label>
         <button type="submit" disabled={!canSubmit}>
           <Play size={16} aria-hidden="true" />
@@ -197,6 +198,8 @@ export function ActiveHttpBasicHeaderReviewPanel({ onJobCreated }: ActiveHttpBas
 
 function ActiveHttpBasicHeaderReviewJobCreatedNotice({ job }: { job: JobRecord }) {
   const report = buildActiveHttpBasicHeaderReviewReport(job);
+  const requestsSent = report.overview.find((entry) => entry.label === "Requests sent")?.value ?? "0";
+  const liveRequestPerformed = report.overview.find((entry) => entry.label === "Live request performed")?.value ?? "false";
   return (
     <div className="query-warning" role="status">
       <strong>HTTP header review indicator job created.</strong>
@@ -210,22 +213,28 @@ function ActiveHttpBasicHeaderReviewJobCreatedNotice({ job }: { job: JobRecord }
         <dt>Method</dt>
         <dd className="mono">{report.method}</dd>
         <dt>Requests sent</dt>
-        <dd>0</dd>
+        <dd>{requestsSent}</dd>
         <dt>Live request performed</dt>
-        <dd>false</dd>
+        <dd>{liveRequestPerformed}</dd>
         <dt>Validation</dt>
         <dd>Manual validation required.</dd>
       </dl>
-      <p className="muted">No live HTTP request was performed. The job record was opened below when the dashboard integration is available.</p>
+      <p className="muted">
+        {report.isLiveResult
+          ? "A backend-gated live HEAD result was stored with redacted review indicators. The browser did not contact the target."
+          : "A no-live review record was stored. The browser did not contact the target."}
+      </p>
     </div>
   );
 }
 
 function isAcceptedJobRecord(job: JobRecord): boolean {
+  const resultStatus = typeof job.result?.result_status === "string" ? job.result.result_status : "";
+  const acceptedStatuses = new Set(["not_executed", "observed", "completed_review", "timed_out", "request_failed", "client_error_controlled"]);
   return (
     typeof job.id === "string" &&
     job.audit_type === "active_http_basic_header_review" &&
-    job.status === "completed" &&
-    job.result?.result_status === "not_executed"
+    (job.status === "completed" || job.status === "failed") &&
+    acceptedStatuses.has(resultStatus)
   );
 }

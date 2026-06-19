@@ -1626,7 +1626,7 @@ describe("App", () => {
     fireEvent.change(scoped.getByLabelText("URL target"), { target: { value: "https://authorized.example/" } });
     fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this URL."));
     fireEvent.click(scoped.getByLabelText("I confirm I control this target."));
-    fireEvent.click(scoped.getByLabelText("I understand this contract is for a future live HTTP request, while this phase stores a no-live record and performs no HTTP request."));
+    fireEvent.click(scoped.getByLabelText("I understand backend live mode, when enabled by operator config, may attempt at most one HEAD request; my browser will not contact the target."));
     fireEvent.click(scoped.getByRole("button", { name: /Create HTTP header review job/i }));
 
     await waitFor(() => {
@@ -1656,7 +1656,7 @@ describe("App", () => {
     expect(rendered).toContain("HTTP header review");
     expect(rendered).toContain("not_executed");
     expect(rendered).toContain(
-      "not_executed, HEAD, HTTP header review indicator, 0 requests sent, live request performed false, redirect followed false, body read false, manual validation required"
+      "not_executed, no-live record stored, HEAD, HTTP header review indicator, 0 requests sent, live request performed false, redirect followed false, body read false, manual validation required"
     );
     expect(rendered).toContain("HTTP header review indicator");
     expect(rendered).toContain("Manual validation required");

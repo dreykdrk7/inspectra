@@ -592,7 +592,7 @@ describe("dashboard filters", () => {
     });
     expect(getAuditTypeMetadata("active_http_basic_header_review")).toMatchObject({
       sourceFamily: "target",
-      shortDescription: "Stores a no-live HTTP header review indicator record with redacted target display and zero sent requests."
+      shortDescription: "Displays no-live or backend-gated live HEAD HTTP header review indicators with redacted target display."
     });
   });
 

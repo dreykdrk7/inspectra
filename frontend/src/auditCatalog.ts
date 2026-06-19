@@ -125,7 +125,7 @@ export const AUDIT_TYPE_CATALOG: Record<AuditType, AuditTypeMetadata> = {
     "HTTP header review",
     "active_network",
     "target",
-    "Stores a no-live HTTP header review indicator record with redacted target display and zero sent requests."
+    "Displays no-live or backend-gated live HEAD HTTP header review indicators with redacted target display."
   ),
   active_nmap_basic: metadata(
     "active_nmap_basic",
