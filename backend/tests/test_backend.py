@@ -4648,7 +4648,7 @@ def make_active_http_header_probe_payload(target: str = "https://example.test/pa
 
 
 def make_active_http_basic_header_review_payload(
-    target: str = "https://example.test/?ok=value",
+    target: str = "https://example.test/",
     **overrides,
 ) -> dict:
     payload = {
@@ -10042,7 +10042,7 @@ async def test_active_http_basic_header_review_disabled_by_default_controlled_no
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
     payload = make_active_http_basic_header_review_payload(
-        "https://example.test/?token=token_should_never_render",
+        "https://example.test/",
     )
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -10076,7 +10076,7 @@ async def test_active_http_basic_header_review_enabled_creates_redacted_no_live_
     app.state.active_http_basic_header_review_head_transport = fake_transport
     transport = ASGITransport(app=app)
     payload = make_active_http_basic_header_review_payload(
-        "https://example.test/?token=token_should_never_render",
+        "https://example.test/",
     )
     wrong_owner_job = app.state.jobs.create_active_http_basic_header_review_job(
         {
@@ -10782,6 +10782,7 @@ async def test_active_http_basic_header_review_rejects_non_object_body_without_j
         ("https://one.example.test,https://two.example.test", "pasted_list_rejected"),
         ("https://user:pass@example.test/", "url_credentials_rejected"),
         ("https://example.test/#frag", "fragment_rejected"),
+        ("https://example.test/?token=token_should_never_render", "query_not_allowed"),
         ("https://example.test:8443/", "custom_port_rejected"),
         ("https://example.test/admin?token=token_should_never_render", "path_not_allowed"),
         ("https://example.test/" + ("a" * 2050), "url_too_long"),

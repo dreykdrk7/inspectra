@@ -67,6 +67,7 @@ const SAFE_CODES = new Set([
   "unsupported_scheme",
   "host_required",
   "url_credentials_rejected",
+  "query_not_allowed",
   "unsupported_host",
   "custom_port_rejected",
   "ip_range_rejected",

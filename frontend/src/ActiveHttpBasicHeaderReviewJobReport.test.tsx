@@ -351,13 +351,14 @@ describe("ActiveHttpBasicHeaderReviewJobReport", () => {
         capability: "active_http_basic_header_review",
         status: "not_executed",
         result_status: "not_executed",
-        reason_codes: ["not_live"]
+        reason_codes: ["query_not_allowed", "not_live"]
       }
     });
 
     expect(report.isActiveHttpBasicHeaderReview).toBe(true);
     expect(report.target).toBe("[REDACTED_TARGET]");
     expect(report.method).toBe("HEAD");
+    expect(report.reasonCodes).toEqual(["query_not_allowed", "controlled_no_live"]);
     expect(report.rawJson).not.toContain("authorized.example");
     expect(report.rawJson).not.toContain("token_should_never_render");
     expect(redactActiveHttpBasicHeaderReviewText("https://authorized.example/")).toBe("[REDACTED_TARGET]");

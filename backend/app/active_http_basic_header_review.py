@@ -799,6 +799,8 @@ def _target_policy_reason(target: str) -> str | None:
         if _IPV4ISH_RE.fullmatch(host) and re.fullmatch(r"/\d{1,2}", path):
             return "cidr_rejected"
         return "path_not_allowed"
+    if "?" in suffix:
+        return "query_not_allowed"
 
     return None
 
