@@ -244,6 +244,9 @@ ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS = [
     "Manual validation required",
     "HTTP header review indicator wording only",
 ]
+ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING = (
+    "Completed job status means the no-live record was stored; no HTTP request was performed."
+)
 ACTIVE_DNS_INVENTORY_ALLOWED_STATUSES = {"best_effort_inventory", "partial_inventory", "zone_transfer_complete", "not_executed"}
 ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS = ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS | {
     "account_id",
@@ -972,6 +975,7 @@ def build_active_http_basic_header_review_sections(result: dict[str, Any]) -> li
             [
                 ("Result wording", "HTTP header review indicator. Manual validation required."),
                 ("Live request", "No live HTTP request was performed."),
+                ("Job status meaning", ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING),
                 ("Redirect policy", "No redirect was followed."),
                 ("Response body", "No response body was read."),
                 ("Redaction boundary", "Target, URL parts, headers, cookies, and response body are not stored."),
@@ -1854,6 +1858,10 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
         data["method"] = result.get("method", "HEAD")
         data["manual_validation_required"] = True
         data["review_wording"] = review_summary.get("review_wording", "HTTP header review indicator")
+        data["job_status_meaning"] = review_summary.get(
+            "job_status_meaning",
+            ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING,
+        )
         data["surface_interpretation"] = review_summary.get("result_interpretation", "HTTP header review indicator")
         data["live_request_performed"] = execution.get("live_request_performed", False)
         data["redirect_followed"] = execution.get("redirect_followed", False)
@@ -2099,6 +2107,7 @@ def public_active_http_basic_header_review_result(result: dict[str, Any]) -> dic
         "manual_validation_required": True,
         "review_wording": "HTTP header review indicator",
         "result_interpretation": "HTTP header review indicator",
+        "job_status_meaning": ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING,
         "execution": {
             "live_request_performed": False,
             "network_requests_sent": 0,
@@ -2121,6 +2130,7 @@ def public_active_http_basic_header_review_result(result: dict[str, Any]) -> dic
             "manual_validation_required": True,
             "review_wording": "HTTP header review indicator",
             "result_interpretation": "HTTP header review indicator",
+            "job_status_meaning": ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING,
             "live_request_performed": False,
             "redirect_followed": False,
             "body_read": False,

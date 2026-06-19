@@ -4715,6 +4715,9 @@ def assert_active_http_basic_header_review_persisted_result(result: dict) -> Non
     assert result["manual_validation_required"] is True
     assert result["review_wording"] == "HTTP header review indicator"
     assert result["result_interpretation"] == "HTTP header review indicator"
+    assert result["job_status_meaning"] == (
+        "Completed job status means the no-live record was stored; no HTTP request was performed."
+    )
     assert result["execution"]["live_request_performed"] is False
     assert result["execution"]["redirect_followed"] is False
     assert result["execution"]["body_read"] is False
@@ -4731,6 +4734,9 @@ def assert_active_http_basic_header_review_persisted_result(result: dict) -> Non
     assert result["summary"]["manual_validation_required"] is True
     assert result["summary"]["review_wording"] == "HTTP header review indicator"
     assert result["summary"]["result_interpretation"] == "HTTP header review indicator"
+    assert result["summary"]["job_status_meaning"] == (
+        "Completed job status means the no-live record was stored; no HTTP request was performed."
+    )
     assert result["summary"]["live_request_performed"] is False
     assert result["summary"]["redirect_followed"] is False
     assert result["summary"]["body_read"] is False
@@ -10130,6 +10136,21 @@ async def test_active_http_basic_header_review_enabled_creates_redacted_no_live_
     assert list_payload[0]["summary"]["body_read"] is False
     assert list_payload[0]["summary"]["manual_validation_required"] is True
     assert list_payload[0]["summary"]["review_wording"] == "HTTP header review indicator"
+    assert list_payload[0]["summary"]["job_status_meaning"] == (
+        "Completed job status means the no-live record was stored; no HTTP request was performed."
+    )
+
+    created_disk_payload = (app.state.settings.jobs_dir / f"{job_id}.json").read_text(encoding="utf-8")
+    wrong_owner_disk_payload = (app.state.settings.jobs_dir / f"{wrong_owner_job.id}.json").read_text(encoding="utf-8")
+    disk_payload = created_disk_payload + "\n" + wrong_owner_disk_payload
+    assert "token_should_never_render" not in disk_payload
+    assert "example.test" not in disk_payload
+    assert '"raw_target":' not in disk_payload
+    assert "Authorization" not in disk_payload
+    assert "Bearer" not in disk_payload
+    assert '"response_body":' not in disk_payload
+    assert "exception" not in disk_payload
+    assert "[REDACTED_TARGET]" in disk_payload
 
     combined = json.dumps(
         {"create": created_job, "detail": detail_job, "list": list_payload},
@@ -10144,6 +10165,8 @@ async def test_active_http_basic_header_review_enabled_creates_redacted_no_live_
     assert "No response body was read" in combined
     assert "Manual validation required" in combined
     assert "HTTP header review indicator" in combined
+    assert "Completed job status means the no-live record was stored; no HTTP request was performed." in combined
+    assert "completed " + "HTTP request" not in combined
     assert "token_should_never_render" not in combined
     assert "example.test" not in combined
     assert "private" not in combined
@@ -10152,6 +10175,7 @@ async def test_active_http_basic_header_review_enabled_creates_redacted_no_live_
     assert "session" not in combined
     assert '"response_body":' not in combined
     assert "exception" not in combined
+    assert '"raw_target":' not in combined
 
 
 @pytest.mark.anyio

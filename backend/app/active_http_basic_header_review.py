@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import re
 from typing import Any
 
@@ -33,6 +32,7 @@ _ALLOWED_FIELDS = frozenset(
 )
 _REQUIRED_CONTRACT_FIELDS = frozenset({"mode", "profile", "target", "method"})
 _PUBLIC_REVIEW_LABEL = "HTTP header review indicator"
+_JOB_STATUS_MEANING = "Completed job status means the no-live record was stored; no HTTP request was performed."
 _IPV4ISH_RE = re.compile(r"^[0-9.]+$")
 _IP_RANGE_RE = re.compile(r"^[0-9.]+-[0-9.]+$")
 
@@ -84,7 +84,7 @@ def build_active_http_basic_header_review_persisted_result(result: dict[str, Any
     if not active_http_basic_header_review_is_persistable(result):
         raise ValueError("active_http_basic_header_review can only persist accepted no-live results.")
 
-    persisted = deepcopy(result)
+    persisted = _response("not_executed", _safe_reason_codes(result.get("reason_codes")))
     persisted["lifecycle_state"] = "not_executed"
     persisted["surface_caveats"] = list(ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS)
     _mark_persisted(persisted)
@@ -209,6 +209,18 @@ def _path_from_suffix(suffix: str) -> str:
     return suffix[:query_index]
 
 
+def _safe_reason_codes(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    safe_codes = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        if re.fullmatch(r"[a-z0-9_]{1,64}", item):
+            safe_codes.append(item)
+    return safe_codes[:8]
+
+
 def _response(status: str, reason_codes: list[str]) -> dict[str, Any]:
     execution = {
         "live_request_performed": False,
@@ -299,6 +311,8 @@ def _mark_persisted(result: dict[str, Any]) -> None:
     execution["http_requests_sent"] = 0
     summary["job_created"] = True
     summary["storage_persisted"] = True
+    result["job_status_meaning"] = _JOB_STATUS_MEANING
+    summary["job_status_meaning"] = _JOB_STATUS_MEANING
     summary["live_request_performed"] = False
     summary["redirect_followed"] = False
     summary["body_read"] = False

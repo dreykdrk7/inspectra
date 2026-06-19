@@ -13,6 +13,7 @@ from uuid import uuid4
 from fastapi import HTTPException, UploadFile, status
 from pydantic import ValidationError
 
+from app.active_http_basic_header_review import build_active_http_basic_header_review_persisted_result
 from app.config import DEFAULT_LOCAL_OPERATOR, Settings
 from app.models import JobListItem, JobRecord, JobStatus, StoredFile
 
@@ -381,6 +382,7 @@ class JobStore:
         owner_id: str | None = None,
     ) -> JobRecord:
         now = utc_now()
+        persisted_result = build_active_http_basic_header_review_persisted_result(result)
         record = JobRecord(
             id=uuid4().hex,
             owner_id=owner_id,
@@ -391,7 +393,7 @@ class JobStore:
             status=status,
             created_at=now,
             updated_at=now,
-            result=result,
+            result=persisted_result,
             error=error,
         )
         with storage_lock(self.settings):
@@ -995,6 +997,10 @@ def _job_summary(record: JobRecord) -> dict | None:
             summary["method"] = record.result.get("method", "HEAD")
             summary["manual_validation_required"] = True
             summary["review_wording"] = result_summary.get("review_wording", "HTTP header review indicator")
+            summary["job_status_meaning"] = result_summary.get(
+                "job_status_meaning",
+                "Completed job status means the no-live record was stored; no HTTP request was performed.",
+            )
             summary["surface_interpretation"] = result_summary.get(
                 "result_interpretation",
                 "HTTP header review indicator",
