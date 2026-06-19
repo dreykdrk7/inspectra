@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.active_http_basic_header_review import (
     ActiveHttpBasicHeaderReviewContractError,
+    active_http_basic_header_review_is_persistable,
     active_http_basic_header_review_job_status,
     build_active_http_basic_header_review_persisted_result,
     build_active_http_basic_header_review_response,
@@ -174,6 +175,8 @@ async def lifespan(app: FastAPI):
     app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
     app.state.active_network_dry_runs = ActiveNetworkDryRunService(settings, job_store)
     app.state.active_http_header_probes = ActiveHttpHeaderProbeService(settings, job_store)
+    app.state.active_http_basic_header_review_resolver = None
+    app.state.active_http_basic_header_review_head_transport = None
     app.state.active_nmap_basic_service = ActiveNmapBasicService(settings, job_store)
     app.state.active_tools_health_checker = check_active_tools_health
     app.state.active_nmap_basic_lifecycle_client = ActiveNmapBasicRouteActiveToolsClient()
@@ -1169,6 +1172,9 @@ async def launch_active_http_basic_header_review(
         result = build_active_http_basic_header_review_response(
             payload,
             enabled=request.app.state.settings.active_http_basic_header_review_enabled,
+            live_head_enabled=request.app.state.settings.active_http_basic_header_review_live_head_enabled,
+            resolver=getattr(request.app.state, "active_http_basic_header_review_resolver", None),
+            head_transport=getattr(request.app.state, "active_http_basic_header_review_head_transport", None),
         )
     except ActiveHttpBasicHeaderReviewContractError as exc:
         raise HTTPException(
@@ -1176,7 +1182,7 @@ async def launch_active_http_basic_header_review(
             detail=exc.message,
         ) from exc
 
-    if result.get("status") != "not_executed":
+    if not active_http_basic_header_review_is_persistable(result):
         return result
 
     persisted_result = build_active_http_basic_header_review_persisted_result(result)

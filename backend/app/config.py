@@ -55,6 +55,7 @@ DEFAULT_REDIS_CONFIG_MAX_TOTAL_BYTES = 2_097_152
 DEFAULT_ACTIVE_DRY_RUN_ENABLED = False
 DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED = False
 DEFAULT_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED = False
+DEFAULT_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED = False
 DEFAULT_ACTIVE_NMAP_BASIC_ENABLED = False
 DEFAULT_ACTIVE_TLS_BASIC_ENABLED = False
 DEFAULT_ACTIVE_DNS_INVENTORY_ENABLED = False
@@ -162,6 +163,7 @@ class Settings:
     active_dry_run_enabled: bool = DEFAULT_ACTIVE_DRY_RUN_ENABLED
     active_http_header_probe_enabled: bool = DEFAULT_ACTIVE_HTTP_HEADER_PROBE_ENABLED
     active_http_basic_header_review_enabled: bool = DEFAULT_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED
+    active_http_basic_header_review_live_head_enabled: bool = DEFAULT_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED
     active_nmap_basic_enabled: bool = DEFAULT_ACTIVE_NMAP_BASIC_ENABLED
     active_tls_basic_enabled: bool = DEFAULT_ACTIVE_TLS_BASIC_ENABLED
     active_dns_inventory_enabled: bool = DEFAULT_ACTIVE_DNS_INVENTORY_ENABLED
@@ -388,6 +390,10 @@ def load_settings() -> Settings:
         "INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED",
         DEFAULT_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED,
     )
+    active_http_basic_header_review_live_head_enabled = _bool_from_env(
+        "INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED",
+        DEFAULT_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED,
+    )
     active_nmap_basic_enabled = _bool_from_env(
         "INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED",
         DEFAULT_ACTIVE_NMAP_BASIC_ENABLED,
@@ -507,6 +513,7 @@ def load_settings() -> Settings:
         active_dry_run_enabled=active_dry_run_enabled,
         active_http_header_probe_enabled=active_http_header_probe_enabled,
         active_http_basic_header_review_enabled=active_http_basic_header_review_enabled,
+        active_http_basic_header_review_live_head_enabled=active_http_basic_header_review_live_head_enabled,
         active_nmap_basic_enabled=active_nmap_basic_enabled,
         active_tls_basic_enabled=active_tls_basic_enabled,
         active_dns_inventory_enabled=active_dns_inventory_enabled,

@@ -42,6 +42,7 @@ from app.config import (
     DEFAULT_ACTIVE_DNS_OSINT_ENABLED,
     DEFAULT_ACTIVE_DNS_INVENTORY_ENABLED,
     DEFAULT_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED,
+    DEFAULT_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED,
     DEFAULT_ACTIVE_NMAP_BASIC_ENABLED,
     DEFAULT_ACTIVE_TLS_BASIC_ENABLED,
     DEFAULT_ACTIVE_TOOLS_HEALTH_TIMEOUT_SECONDS,
@@ -475,6 +476,8 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.redis_config_audits = RedisConfigAuditService(settings, file_store, job_store)
     app.state.active_network_dry_runs = ActiveNetworkDryRunService(settings, job_store)
     app.state.active_http_header_probes = ActiveHttpHeaderProbeService(settings, job_store)
+    app.state.active_http_basic_header_review_resolver = None
+    app.state.active_http_basic_header_review_head_transport = None
     app.state.active_nmap_basic_service = ActiveNmapBasicService(settings, job_store)
     app.state.active_tools_health_checker = backend_main.check_active_tools_health
     app.state.active_nmap_basic_lifecycle_client = ActiveNmapBasicRouteNoLiveClient()
@@ -10179,6 +10182,305 @@ async def test_active_http_basic_header_review_enabled_creates_redacted_no_live_
 
 
 @pytest.mark.anyio
+async def test_active_http_basic_header_review_live_head_gate_uses_fake_transport_once(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    resolver_calls = []
+    transport_calls = []
+
+    def fake_resolver(host, port, timeout_seconds, max_answers):
+        resolver_calls.append((host, port, timeout_seconds, max_answers))
+        return ["93.184.216.34"]
+
+    def fake_transport(method, url, headers, timeout_seconds):
+        transport_calls.append((method, url, headers, timeout_seconds))
+        return active_http_basic_header_review_module.ActiveHttpBasicHeaderReviewHeadResponse(
+            status_code=302,
+            headers=[
+                ("Strict-Transport-Security", "max-age=63072000"),
+                ("Content-Security-Policy", "default-src 'self'"),
+                ("X-Content-Type-Options", "nosniff"),
+                ("X-Frame-Options", "DENY"),
+                ("Referrer-Policy", "no-referrer"),
+                ("Permissions-Policy", "geolocation=()"),
+                ("Server", "nginx token_should_never_render"),
+                ("Set-Cookie", "session=token_should_never_render; Secure; HttpOnly; SameSite=Lax"),
+                ("Location", "https://example.test/next?token=token_should_never_render"),
+                ("Authorization", "Bearer token_should_never_render"),
+            ],
+        )
+
+    app.state.active_http_basic_header_review_resolver = fake_resolver
+    app.state.active_http_basic_header_review_head_transport = fake_transport
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        create_response = await client.post(
+            "/active/web/http-basic-header-review",
+            json=make_active_http_basic_header_review_payload("https://example.test/"),
+        )
+        job_id = create_response.json()["id"]
+        detail_response = await client.get(f"/jobs/{job_id}")
+        jobs_response = await client.get("/jobs")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+
+    assert create_response.status_code == 202
+    assert resolver_calls == [("example.test", 443, 5.0, 8)]
+    assert len(transport_calls) == 1
+    method, url, headers, timeout_seconds = transport_calls[0]
+    assert method == "HEAD"
+    assert url == "https://example.test/"
+    assert headers == {"User-Agent": "Inspectra active-http-basic-header-review", "Accept": "*/*"}
+    assert timeout_seconds == 5.0
+    assert all(response.status_code == 200 for response in export_responses.values())
+
+    created_job = create_response.json()
+    detail_job = detail_response.json()
+    result = detail_job["result"]
+    assert created_job["status"] == "completed"
+    assert detail_job["target_url"] == "[REDACTED_TARGET]"
+    assert result["status"] == "observed"
+    assert result["result_status"] == "observed"
+    assert result["target"] == "[REDACTED_TARGET]"
+    assert result["headers"] == []
+    assert result["cookies"] == []
+    assert result["execution"]["requests_sent"] == 1
+    assert result["execution"]["network_requests_sent"] == 1
+    assert result["execution"]["http_requests_sent"] == 1
+    assert result["execution"]["live_request_performed"] is True
+    assert result["execution"]["redirect_followed"] is False
+    assert result["execution"]["body_read"] is False
+    assert result["response"] == {
+        "status_code": 302,
+        "status_class": "3xx",
+        "redirect_present": True,
+        "location_header_present": True,
+        "redirect_followed": False,
+        "body_read": False,
+        "body_bytes_read": 0,
+    }
+    indicators = result["header_indicators"]
+    assert indicators["hsts_present"] is True
+    assert indicators["csp_present"] is True
+    assert indicators["x_content_type_options_present"] is True
+    assert indicators["x_frame_options_present"] is True
+    assert indicators["referrer_policy_present"] is True
+    assert indicators["permissions_policy_present"] is True
+    assert indicators["server_header_present"] is True
+    assert indicators["server_header_value_redacted"] is True
+    assert indicators["set_cookie_present"] is True
+    assert indicators["set_cookie_count"] == 1
+    assert indicators["set_cookie_secure_attribute_present"] is True
+    assert indicators["set_cookie_httponly_attribute_present"] is True
+    assert indicators["set_cookie_samesite_attribute_present"] is True
+    assert indicators["location_header_present"] is True
+
+    list_summary = jobs_response.json()[0]["summary"]
+    assert list_summary["result_status"] == "observed"
+    assert list_summary["requests_sent"] == 1
+    assert list_summary["live_request_performed"] is True
+    assert list_summary["redirect_followed"] is False
+    assert list_summary["body_read"] is False
+
+    disk_payload = (app.state.settings.jobs_dir / f"{job_id}.json").read_text(encoding="utf-8")
+    combined = json.dumps({"create": created_job, "detail": detail_job, "list": jobs_response.json()}, sort_keys=True)
+    combined += "\n" + disk_payload
+    combined += "\n" + "\n".join(
+        export.text if report_format != "pdf" else export.content.decode("latin1", errors="ignore")
+        for report_format, export in export_responses.items()
+    )
+    assert "One authorized HTTP HEAD request was attempted" in combined
+    assert "Manual validation required" in combined
+    assert "HTTP header review indicator" in combined
+    assert "[REDACTED_TARGET]" in combined
+    for forbidden in (
+        "example.test",
+        "token_should_never_render",
+        "nginx token_should_never_render",
+        "session=token_should_never_render",
+        "Bearer token_should_never_render",
+        "https://example.test/next",
+        '"Location"',
+        '"Server"',
+        '"Set-Cookie"',
+        '"Authorization"',
+    ):
+        assert forbidden not in combined
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status_code", [405, 501])
+async def test_active_http_basic_header_review_live_head_has_no_get_fallback(monkeypatch, tmp_path, status_code):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport_calls = []
+
+    def fake_resolver(host, port, timeout_seconds, max_answers):
+        return ["93.184.216.34"]
+
+    def fake_transport(method, url, headers, timeout_seconds):
+        transport_calls.append(method)
+        return active_http_basic_header_review_module.ActiveHttpBasicHeaderReviewHeadResponse(
+            status_code=status_code,
+            headers=[],
+        )
+
+    app.state.active_http_basic_header_review_resolver = fake_resolver
+    app.state.active_http_basic_header_review_head_transport = fake_transport
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/active/web/http-basic-header-review",
+            json=make_active_http_basic_header_review_payload("https://example.test/"),
+        )
+        job_response = await client.get(f"/jobs/{response.json()['id']}")
+
+    assert response.status_code == 202
+    assert transport_calls == ["HEAD"]
+    assert job_response.json()["result"]["result_status"] == "observed"
+    assert job_response.json()["result"]["response"]["status_code"] == status_code
+    assert job_response.json()["result"]["execution"]["body_read"] is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("exc", "expected_status", "expected_code"),
+    [
+        (TimeoutError(), "timed_out", "request_timed_out"),
+        (OSError("token_should_never_render"), "request_failed", "controlled_network_error"),
+    ],
+)
+async def test_active_http_basic_header_review_live_head_timeout_and_error_are_controlled(
+    monkeypatch,
+    tmp_path,
+    exc,
+    expected_status,
+    expected_code,
+):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_resolver(host, port, timeout_seconds, max_answers):
+        return ["93.184.216.34"]
+
+    def fake_transport(method, url, headers, timeout_seconds):
+        calls.append(method)
+        raise exc
+
+    app.state.active_http_basic_header_review_resolver = fake_resolver
+    app.state.active_http_basic_header_review_head_transport = fake_transport
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/active/web/http-basic-header-review",
+            json=make_active_http_basic_header_review_payload("https://example.test/"),
+        )
+        job_id = response.json()["id"]
+        job_response = await client.get(f"/jobs/{job_id}")
+        export_response = await client.get(f"/jobs/{job_id}/export/markdown")
+
+    assert response.status_code == 202
+    assert calls == ["HEAD"]
+    job = job_response.json()
+    assert job["status"] == "failed"
+    result = job["result"]
+    assert result["result_status"] == expected_status
+    assert result["errors"] == [{"code": expected_code}]
+    assert result["execution"]["requests_sent"] == 1
+    assert result["execution"]["live_request_performed"] is True
+    assert result["execution"]["redirect_followed"] is False
+    assert result["execution"]["body_read"] is False
+    combined = json.dumps(job, sort_keys=True) + "\n" + export_response.text
+    assert "token_should_never_render" not in combined
+    assert "example.test" not in combined
+
+
+@pytest.mark.anyio
+async def test_active_http_basic_header_review_resolver_guard_blocks_before_transport(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    resolver_calls = []
+    transport_calls = []
+
+    def fake_resolver(host, port, timeout_seconds, max_answers):
+        resolver_calls.append((host, port, timeout_seconds, max_answers))
+        return ["127.0.0.1"]
+
+    def fake_transport(method, url, headers, timeout_seconds):
+        transport_calls.append(method)
+        return active_http_basic_header_review_module.ActiveHttpBasicHeaderReviewHeadResponse(200, [])
+
+    app.state.active_http_basic_header_review_resolver = fake_resolver
+    app.state.active_http_basic_header_review_head_transport = fake_transport
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/active/web/http-basic-header-review",
+            json=make_active_http_basic_header_review_payload("https://example.test/"),
+        )
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert_active_http_basic_header_review_controlled_response(body, "blocked_by_policy")
+    assert body["reason_codes"] == ["resolved_ip_blocked"]
+    assert resolver_calls == [("example.test", 443, 5.0, 8)]
+    assert transport_calls == []
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        make_active_http_basic_header_review_payload("https://example.test/", authorization_confirmed=False),
+        make_active_http_basic_header_review_payload("https://example.test/admin"),
+        {**make_active_http_basic_header_review_payload("https://example.test/"), "custom_headers": {"X-Test": "1"}},
+    ],
+)
+async def test_active_http_basic_header_review_live_head_pre_request_blocks_do_not_call_transport(
+    monkeypatch,
+    tmp_path,
+    payload,
+):
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_resolver(host, port, timeout_seconds, max_answers):
+        calls.append(("resolver", host))
+        return ["93.184.216.34"]
+
+    def fake_transport(method, url, headers, timeout_seconds):
+        calls.append(("transport", method))
+        return active_http_basic_header_review_module.ActiveHttpBasicHeaderReviewHeadResponse(200, [])
+
+    app.state.active_http_basic_header_review_resolver = fake_resolver
+    app.state.active_http_basic_header_review_head_transport = fake_transport
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/active/web/http-basic-header-review", json=payload)
+        jobs_response = await client.get("/jobs")
+
+    assert response.status_code in {200, 400}
+    assert calls == []
+    assert jobs_response.json() == []
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("overrides", "reason_code"),
     [
@@ -10297,7 +10599,7 @@ async def test_active_http_basic_header_review_target_policy_blocks_without_job(
     assert jobs_response.json() == []
 
 
-def test_active_http_basic_header_review_path_has_no_live_transport_references():
+def test_active_http_basic_header_review_live_transport_boundary_has_no_broad_runtime_paths():
     source = "\n".join(
         [
             inspect.getsource(active_http_basic_header_review_module),
@@ -10305,29 +10607,29 @@ def test_active_http_basic_header_review_path_has_no_live_transport_references()
         ]
     )
     forbidden_patterns = (
-        r"\bimport\s+httpx\b",
-        r"\bfrom\s+httpx\b",
         r"\bimport\s+requests\b",
         r"\bfrom\s+requests\b",
+        r"\bimport\s+httpx\b",
+        r"\bfrom\s+httpx\b",
         r"\bimport\s+aiohttp\b",
         r"\bfrom\s+aiohttp\b",
-        r"\bimport\s+urllib\b",
-        r"\bfrom\s+urllib\b",
-        r"\bimport\s+socket\b",
-        r"\bfrom\s+socket\b",
         r"\bimport\s+subprocess\b",
         r"\bfrom\s+subprocess\b",
-        r"\bhttpx\.",
         r"\brequests\.",
+        r"\bhttpx\.",
         r"\baiohttp\.",
-        r"\bsocket\.",
         r"\bsubprocess\.",
         r"\bdocker\.",
         r"\bnmap\.",
+        r"\btools/runner/main\.py\b",
     )
 
     for pattern in forbidden_patterns:
         assert re.search(pattern, source, flags=re.IGNORECASE) is None
+    assert 'connection.request(method, path, body=None, headers=headers)' in source
+    assert 'connection.getresponse()' in source
+    assert '".read("' not in source
+    assert '"GET"' not in source
 
 
 @pytest.mark.anyio
@@ -11683,13 +11985,17 @@ def test_active_http_basic_header_review_feature_flag_is_disabled_by_default_and
     settings = load_settings()
 
     assert DEFAULT_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED is False
+    assert DEFAULT_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED is False
     assert settings.active_http_basic_header_review_enabled is False
+    assert settings.active_http_basic_header_review_live_head_enabled is False
 
     monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED", "true")
 
     enabled_settings = load_settings()
 
     assert enabled_settings.active_http_basic_header_review_enabled is True
+    assert enabled_settings.active_http_basic_header_review_live_head_enabled is True
 
 
 def test_active_dns_inventory_feature_flag_is_disabled_by_default_and_configurable(monkeypatch, tmp_path):

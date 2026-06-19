@@ -236,7 +236,7 @@ ACTIVE_TLS_BASIC_CAVEATS = [
     "No target expansion performed",
     "No raw certificate PEM or DER stored",
 ]
-ACTIVE_HTTP_BASIC_HEADER_REVIEW_ALLOWED_STATUSES = {"not_executed"}
+ACTIVE_HTTP_BASIC_HEADER_REVIEW_ALLOWED_STATUSES = {"not_executed", "observed", "timed_out", "request_failed"}
 ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS = [
     "No live HTTP request was performed",
     "No redirect was followed",
@@ -244,8 +244,18 @@ ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS = [
     "Manual validation required",
     "HTTP header review indicator wording only",
 ]
+ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_CAVEATS = [
+    "One authorized HTTP HEAD request was attempted",
+    "No redirect was followed",
+    "No response body was read",
+    "Manual validation required",
+    "HTTP header review indicator wording only",
+]
 ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING = (
     "Completed job status means the no-live record was stored; no HTTP request was performed."
+)
+ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_JOB_STATUS_MEANING = (
+    "Job status means a bounded live HEAD attempt reached a controlled terminal state; manual validation required."
 )
 ACTIVE_DNS_INVENTORY_ALLOWED_STATUSES = {"best_effort_inventory", "partial_inventory", "zone_transfer_complete", "not_executed"}
 ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS = ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS | {
@@ -968,17 +978,27 @@ def build_active_http_basic_header_review_sections(result: dict[str, Any]) -> li
     summary = as_dict(public_result.get("summary"))
     execution = as_dict(public_result.get("execution"))
     limits = as_dict(public_result.get("limits"))
+    response = as_dict(public_result.get("response"))
+    header_indicators = as_dict(public_result.get("header_indicators"))
+    caveats = public_result.get("surface_caveats")
+    if not isinstance(caveats, list):
+        caveats = list(ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS)
+    live_request_text = (
+        "One authorized HTTP HEAD request was attempted."
+        if execution.get("live_request_performed")
+        else "No live HTTP request was performed."
+    )
     raw_json = json.dumps(public_result, indent=2, sort_keys=True)
     return [
         ReportSection(
             "Active HTTP Header Review Scope Notice",
             [
                 ("Result wording", "HTTP header review indicator. Manual validation required."),
-                ("Live request", "No live HTTP request was performed."),
-                ("Job status meaning", ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING),
+                ("Live request", live_request_text),
+                ("Job status meaning", stringify(public_result.get("job_status_meaning", ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING))),
                 ("Redirect policy", "No redirect was followed."),
                 ("Response body", "No response body was read."),
-                ("Redaction boundary", "Target, URL parts, headers, cookies, and response body are not stored."),
+                ("Redaction boundary", "Target, URL parts, raw headers, cookies, redirect locations, and response body are not stored."),
             ],
         ),
         ReportSection(
@@ -995,7 +1015,9 @@ def build_active_http_basic_header_review_sections(result: dict[str, Any]) -> li
             ],
         ),
         ReportSection("Execution Boundary", flatten_mapping(execution)),
-        ReportSection("Active HTTP Header Review Caveats", [(f"Caveat {index}", caveat) for index, caveat in enumerate(ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS, start=1)]),
+        ReportSection("Response Summary", flatten_mapping(response)),
+        ReportSection("Header Review Indicators", flatten_mapping(header_indicators)),
+        ReportSection("Active HTTP Header Review Caveats", [(f"Caveat {index}", stringify(caveat)) for index, caveat in enumerate(caveats, start=1)]),
         ReportSection("Limits", flatten_mapping(limits)),
         ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
     ]
@@ -2075,15 +2097,36 @@ def public_active_http_basic_header_review_result(result: dict[str, Any]) -> dic
     result_status = stringify(result.get("result_status") or result.get("status") or "not_executed")
     if result_status not in ACTIVE_HTTP_BASIC_HEADER_REVIEW_ALLOWED_STATUSES:
         result_status = "not_executed"
+    live = result_status in {"observed", "timed_out", "request_failed"}
     summary = as_dict(result.get("summary"))
     execution = as_dict(result.get("execution"))
     limits = as_dict(result.get("limits"))
+    response = as_dict(result.get("response"))
+    header_indicators = active_http_basic_header_review_public_header_indicators(result.get("header_indicators"))
+    resolver_guard = active_http_basic_header_review_public_resolver_guard(result.get("resolver_guard"))
     reason_codes = result.get("reason_codes")
     if not isinstance(reason_codes, list):
         reason_codes = []
     errors = result.get("errors")
     if not isinstance(errors, list):
         errors = []
+    requests_sent = 1 if live and active_http_basic_header_review_safe_int(execution.get("requests_sent"), default=1) > 0 else 0
+    status_code = active_http_basic_header_review_safe_status_code(response.get("status_code"))
+    if status_code is None:
+        status_code = active_http_basic_header_review_safe_status_code(summary.get("status_code"))
+    status_class = active_http_basic_header_review_status_class(status_code)
+    redirect_present = bool(response.get("redirect_present") or summary.get("redirect_present"))
+    location_header_present = bool(header_indicators.get("location_header_present") or response.get("location_header_present"))
+    job_status_meaning = (
+        ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_JOB_STATUS_MEANING
+        if live
+        else ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING
+    )
+    surface_caveats = (
+        list(ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_CAVEATS)
+        if live
+        else list(ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS)
+    )
 
     public_result = {
         "audit_type": "active_http_basic_header_review",
@@ -2093,7 +2136,7 @@ def public_active_http_basic_header_review_result(result: dict[str, Any]) -> dic
         "profile": "http_headers_single_request",
         "status": result_status,
         "result_status": result_status,
-        "lifecycle_state": "not_executed",
+        "lifecycle_state": result_status,
         "target": "[REDACTED_TARGET]",
         "target_display": "[REDACTED_TARGET]",
         "method": "HEAD",
@@ -2107,13 +2150,13 @@ def public_active_http_basic_header_review_result(result: dict[str, Any]) -> dic
         "manual_validation_required": True,
         "review_wording": "HTTP header review indicator",
         "result_interpretation": "HTTP header review indicator",
-        "job_status_meaning": ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING,
+        "job_status_meaning": job_status_meaning,
         "execution": {
-            "live_request_performed": False,
-            "network_requests_sent": 0,
-            "requests_sent": 0,
-            "http_requests_sent": 0,
-            "dns_queries_sent": 0,
+            "live_request_performed": live,
+            "network_requests_sent": requests_sent,
+            "requests_sent": requests_sent,
+            "http_requests_sent": requests_sent,
+            "dns_queries_sent": min(active_http_basic_header_review_safe_int(execution.get("dns_queries_sent"), default=0), 1),
             "tls_handshake_attempted": False,
             "nmap_executed": False,
             "subprocess_invoked": False,
@@ -2124,36 +2167,123 @@ def public_active_http_basic_header_review_result(result: dict[str, Any]) -> dic
             "job_created": bool(execution.get("job_created", True)),
             "storage_persisted": bool(execution.get("storage_persisted", True)),
         },
+        "resolver_guard": resolver_guard,
+        "response": {
+            "status_code": status_code,
+            "status_class": status_class,
+            "redirect_present": redirect_present,
+            "location_header_present": location_header_present,
+            "redirect_followed": False,
+            "body_read": False,
+            "body_bytes_read": 0,
+        },
+        "header_indicators": header_indicators,
         "summary": {
             "status": result_status,
             "reason_codes": [stringify(code) for code in reason_codes[:8]],
             "manual_validation_required": True,
             "review_wording": "HTTP header review indicator",
             "result_interpretation": "HTTP header review indicator",
-            "job_status_meaning": ACTIVE_HTTP_BASIC_HEADER_REVIEW_JOB_STATUS_MEANING,
-            "live_request_performed": False,
+            "job_status_meaning": job_status_meaning,
+            "live_request_performed": live,
             "redirect_followed": False,
             "body_read": False,
             "job_created": bool(summary.get("job_created", True)),
             "storage_persisted": bool(summary.get("storage_persisted", True)),
-            "network_requests_sent": 0,
-            "requests_sent": 0,
-            "http_requests_sent": 0,
+            "network_requests_sent": requests_sent,
+            "requests_sent": requests_sent,
+            "http_requests_sent": requests_sent,
+            "dns_queries_sent": min(active_http_basic_header_review_safe_int(execution.get("dns_queries_sent"), default=0), 1),
+            "status_code": status_code,
+            "status_class": status_class,
+            "redirect_present": redirect_present,
+            "location_header_present": location_header_present,
+            "headers_received_count": active_http_basic_header_review_safe_int(summary.get("headers_received_count"), default=0),
+            "headers_processed_count": active_http_basic_header_review_safe_int(summary.get("headers_processed_count"), default=0),
+            "redacted_headers_count": active_http_basic_header_review_safe_int(summary.get("redacted_headers_count"), default=0),
+            "truncated_headers_count": active_http_basic_header_review_safe_int(summary.get("truncated_headers_count"), default=0),
         },
         "limits": {
             "max_targets": 1,
             "max_url_length": limits.get("max_url_length", 2048),
             "method": "HEAD",
             "max_redirects": 0,
+            "timeout_seconds": limits.get("timeout_seconds", 5.0),
+            "max_response_header_bytes": limits.get("max_response_header_bytes", 32768),
+            "max_dns_answers": limits.get("max_dns_answers", 8),
             "response_body_bytes": 0,
             "raw_target_persisted": False,
             "headers_persisted": False,
             "cookies_persisted": False,
             "response_body_persisted": False,
         },
-        "surface_caveats": list(ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS),
+        "surface_caveats": surface_caveats,
     }
     return public_result
+
+
+def active_http_basic_header_review_public_header_indicators(value: Any) -> dict[str, Any]:
+    indicators = value if isinstance(value, dict) else {}
+    names = (
+        "hsts_present",
+        "csp_present",
+        "x_content_type_options_present",
+        "x_frame_options_present",
+        "referrer_policy_present",
+        "permissions_policy_present",
+        "server_header_present",
+        "server_header_value_redacted",
+        "set_cookie_present",
+        "set_cookie_count_truncated",
+        "set_cookie_secure_attribute_present",
+        "set_cookie_httponly_attribute_present",
+        "set_cookie_samesite_attribute_present",
+        "location_header_present",
+    )
+    public = {name: bool(indicators.get(name)) for name in names}
+    public["set_cookie_count"] = min(active_http_basic_header_review_safe_int(indicators.get("set_cookie_count"), default=0), 8)
+    return public
+
+
+def active_http_basic_header_review_public_resolver_guard(value: Any) -> dict[str, Any]:
+    guard = value if isinstance(value, dict) else {}
+    return {
+        "checked": bool(guard.get("checked")),
+        "resolved": bool(guard.get("resolved")),
+        "answers_count": min(active_http_basic_header_review_safe_int(guard.get("answers_count"), default=0), 8),
+        "blocked_answers_count": min(active_http_basic_header_review_safe_int(guard.get("blocked_answers_count"), default=0), 8),
+        "dns_queries_sent": min(active_http_basic_header_review_safe_int(guard.get("dns_queries_sent"), default=0), 1),
+        "blocked": bool(guard.get("blocked")),
+        "reason_code": active_http_basic_header_review_safe_code(guard.get("reason_code")),
+    }
+
+
+def active_http_basic_header_review_safe_code(value: Any) -> str | None:
+    if isinstance(value, str) and re.fullmatch(r"[a-z0-9_]{1,64}", value):
+        return value
+    return None
+
+
+def active_http_basic_header_review_safe_int(value: Any, *, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return max(value, 0)
+    return default
+
+
+def active_http_basic_header_review_safe_status_code(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if 100 <= value <= 599:
+        return value
+    return None
+
+
+def active_http_basic_header_review_status_class(status_code: int | None) -> str | None:
+    if status_code is None:
+        return None
+    return f"{status_code // 100}xx"
 
 
 def public_active_dns_osint_result(result: dict[str, Any]) -> dict[str, Any]:
