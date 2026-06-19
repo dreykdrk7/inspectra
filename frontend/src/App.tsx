@@ -1655,9 +1655,12 @@ function summarizeJob(job: JobListItem): string {
   }
   if (job.audit_type === "active_http_basic_header_review") {
     const resultStatus = typeof job.summary.result_status === "string" ? job.summary.result_status : "not_executed";
+    const method = typeof job.summary.method === "string" ? job.summary.method : "HEAD";
     const requestsSent = typeof job.summary.requests_sent === "number" ? job.summary.requests_sent : 0;
     const liveRequestPerformed = job.summary.live_request_performed === true;
-    return `${resultStatus}, HTTP header review indicator, ${requestsSent} requests sent, live request performed ${String(liveRequestPerformed)}`;
+    const redirectFollowed = job.summary.redirect_followed === true;
+    const bodyRead = job.summary.body_read === true;
+    return `${resultStatus}, ${method}, HTTP header review indicator, ${requestsSent} requests sent, live request performed ${String(liveRequestPerformed)}, redirect followed ${String(redirectFollowed)}, body read ${String(bodyRead)}, manual validation required`;
   }
   if (job.audit_type === "active_nmap_basic") {
     const lifecycleState =

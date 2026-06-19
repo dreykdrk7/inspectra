@@ -65,6 +65,11 @@ export function ActiveHttpBasicHeaderReviewPanel({ onJobCreated }: ActiveHttpBas
         return;
       }
       await onJobCreated?.(job);
+      setTarget("");
+      setAuthorizationConfirmed(false);
+      setTargetControlConfirmed(false);
+      setDelegatedPermissionConfirmed(false);
+      setLiveHttpRequestConfirmed(false);
       setRequestState({ loading: false, error: null, job });
     } catch (error) {
       const disabled = error instanceof ApiError && error.status === 403;

@@ -190,7 +190,83 @@ describe("ActiveHttpBasicHeaderReviewPanel", () => {
     expect(screen.getAllByText("HEAD").length).toBeGreaterThan(0);
     expect(screen.getByText("No live HTTP request was performed. The job record was opened below when the dashboard integration is available.")).toBeInTheDocument();
     expect(onJobCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "job-active-http-basic-header-review-05" }));
+    expect((screen.getByLabelText("URL target") as HTMLInputElement).value).toBe("");
+    expect(screen.getByRole("button", { name: /Create HTTP header review job/i })).toBeDisabled();
+    expect(
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.some(([input]) => String(input).includes("authorized.example"))
+    ).toBe(false);
     expect(document.body.textContent ?? "").not.toContain("authorized.example");
+  });
+
+  it("keeps HEAD hardcoded and supports the delegated-permission confirmation path", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        if (String(input).endsWith("/active/web/http-basic-header-review")) {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: "job-active-http-basic-header-review-delegated",
+                audit_type: "active_http_basic_header_review",
+                file_id: null,
+                target_url: "[REDACTED_TARGET]",
+                target_domain: null,
+                status: "completed",
+                created_at: "2026-06-19T10:00:00Z",
+                updated_at: "2026-06-19T10:00:00Z",
+                source_file_deleted_at: null,
+                result: {
+                  capability: "active_http_basic_header_review",
+                  status: "not_executed",
+                  result_status: "not_executed"
+                },
+                error: null
+              },
+              202
+            )
+          );
+        }
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      })
+    );
+    render(<ActiveHttpBasicHeaderReviewPanel />);
+
+    const method = screen.getByLabelText("Method") as HTMLInputElement;
+    fireEvent.change(method, { target: { value: "GET" } });
+
+    fireEvent.change(screen.getByLabelText("URL target"), { target: { value: "https://delegated.example/" } });
+    expect(method.value).toBe("HEAD");
+    fireEvent.click(screen.getByLabelText("I confirm I own or am authorized to test this URL."));
+    fireEvent.click(screen.getByLabelText("I confirm I have delegated permission for this target."));
+    fireEvent.click(screen.getByLabelText("I understand this contract is for a future live HTTP request, while this phase stores a no-live record and performs no HTTP request."));
+    fireEvent.click(screen.getByRole("button", { name: /Create HTTP header review job/i }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/active/web/http-basic-header-review",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+    const request = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find(([input]) => String(input).endsWith("/active/web/http-basic-header-review"))?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(request?.body))).toEqual({
+      mode: "live_http_basic_header_review",
+      profile: "http_headers_single_request",
+      target: "https://delegated.example/",
+      method: "HEAD",
+      authorization_confirmed: true,
+      target_control_confirmed: false,
+      delegated_permission_confirmed: true,
+      live_http_request_confirmed: true
+    });
+    expect(
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.some(([input]) => String(input).includes("delegated.example"))
+    ).toBe(false);
   });
 
   it("handles a controlled non-job response without reflecting the target", async () => {

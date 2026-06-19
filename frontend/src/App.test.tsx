@@ -1655,6 +1655,9 @@ describe("App", () => {
     const rendered = view.container.textContent ?? "";
     expect(rendered).toContain("HTTP header review");
     expect(rendered).toContain("not_executed");
+    expect(rendered).toContain(
+      "not_executed, HEAD, HTTP header review indicator, 0 requests sent, live request performed false, redirect followed false, body read false, manual validation required"
+    );
     expect(rendered).toContain("HTTP header review indicator");
     expect(rendered).toContain("Manual validation required");
     expect(rendered).toContain("No live HTTP request was performed");
@@ -1674,6 +1677,11 @@ describe("App", () => {
     ]) {
       expect(rendered).not.toContain(value);
     }
+    expect(
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.some(([input]) => String(input).includes("authorized.example"))
+    ).toBe(false);
   });
 
   it("renders the Active Nmap basic form without calling the API before confirmations", async () => {
