@@ -372,6 +372,32 @@ class JobStore:
     def create_active_http_header_probe_job(self, target_display: str, *, owner_id: str | None = None) -> JobRecord:
         return self._create_job(None, "active_http_header_probe", target_url=target_display, owner_id=owner_id)
 
+    def create_active_http_basic_header_review_job(
+        self,
+        result: dict,
+        *,
+        status: JobStatus,
+        error: str | None = None,
+        owner_id: str | None = None,
+    ) -> JobRecord:
+        now = utc_now()
+        record = JobRecord(
+            id=uuid4().hex,
+            owner_id=owner_id,
+            audit_type="active_http_basic_header_review",
+            file_id=None,
+            target_url="[REDACTED_TARGET]",
+            target_domain=None,
+            status=status,
+            created_at=now,
+            updated_at=now,
+            result=result,
+            error=error,
+        )
+        with storage_lock(self.settings):
+            self._save_unlocked(record)
+        return record
+
     def create_active_nmap_basic_job(self, target_display: str, *, owner_id: str | None = None) -> JobRecord:
         return self._create_job(None, "active_nmap_basic", target_url=target_display, owner_id=owner_id)
 
@@ -597,7 +623,7 @@ class JobStore:
         target_url = record.target_url
         if record.audit_type in {"active_network_dry_run", "active_http_header_probe"} and target_url:
             target_url = _redact_active_summary_text(target_url)
-        if record.audit_type in {"active_nmap_basic", "active_tls_basic"} and target_url:
+        if record.audit_type in {"active_http_basic_header_review", "active_nmap_basic", "active_tls_basic"} and target_url:
             target_url = "[REDACTED_TARGET]"
         if record.audit_type in {"active_dns_inventory", "active_dns_osint"} and target_url:
             target_url = "[REDACTED_DOMAIN]"
@@ -954,6 +980,32 @@ def _job_summary(record: JobRecord) -> dict | None:
                 if isinstance(reason, dict) and reason.get("code") is not None
             ]
             summary["policy_version"] = policy.get("policy_version")
+        if record.audit_type == "active_http_basic_header_review":
+            result_summary = record.result.get("summary")
+            execution = record.result.get("execution")
+            if not isinstance(result_summary, dict):
+                result_summary = {}
+            if not isinstance(execution, dict):
+                execution = {}
+            summary["capability"] = record.result.get("capability", "active_http_basic_header_review")
+            summary["profile"] = record.result.get("profile")
+            summary["result_status"] = record.result.get("result_status", record.result.get("status"))
+            summary["lifecycle_state"] = record.result.get("lifecycle_state", "not_executed")
+            summary["target_display"] = "[REDACTED_TARGET]"
+            summary["method"] = record.result.get("method", "HEAD")
+            summary["manual_validation_required"] = True
+            summary["review_wording"] = result_summary.get("review_wording", "HTTP header review indicator")
+            summary["surface_interpretation"] = result_summary.get(
+                "result_interpretation",
+                "HTTP header review indicator",
+            )
+            summary["live_request_performed"] = execution.get("live_request_performed", False)
+            summary["redirect_followed"] = execution.get("redirect_followed", False)
+            summary["body_read"] = execution.get("body_read", False)
+            summary["requests_sent"] = execution.get("requests_sent", 0)
+            summary["network_requests_sent"] = execution.get("network_requests_sent", 0)
+            summary["http_requests_sent"] = execution.get("http_requests_sent", 0)
+            summary["storage_persisted"] = execution.get("storage_persisted", True)
         if record.audit_type == "active_nmap_basic":
             limits = record.result.get("limits")
             execution = record.result.get("execution")

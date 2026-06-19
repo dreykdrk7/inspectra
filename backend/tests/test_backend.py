@@ -2,8 +2,10 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from http.cookies import SimpleCookie
 import io
+import inspect
 import json
 from pathlib import Path
+import re
 import sqlite3
 import tarfile
 import threading
@@ -81,6 +83,7 @@ from app.active_dns_osint import (
     DisabledActiveDnsOsintCtSource,
     build_active_dns_osint_ct_source,
 )
+from app import active_http_basic_header_review as active_http_basic_header_review_module
 from app.active_tls_basic import ActiveTlsBasicConnectionSnapshot
 from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
 from app.models import JobRecord
@@ -4691,6 +4694,60 @@ def assert_active_http_basic_header_review_controlled_response(body: dict, expec
     assert body["summary"]["http_requests_sent"] == 0
     assert body["summary"]["job_created"] is False
     assert body["summary"]["storage_persisted"] is False
+
+
+def assert_active_http_basic_header_review_persisted_result(result: dict) -> None:
+    assert result["audit_type"] == "active_http_basic_header_review"
+    assert result["capability"] == "active_http_basic_header_review"
+    assert result["job_type"] == "active_http_basic_header_review"
+    assert result["mode"] == "live_http_basic_header_review"
+    assert result["profile"] == "http_headers_single_request"
+    assert result["status"] == "not_executed"
+    assert result["result_status"] == "not_executed"
+    assert result["lifecycle_state"] == "not_executed"
+    assert result["target"] == "[REDACTED_TARGET]"
+    assert result["target_display"] == "[REDACTED_TARGET]"
+    assert result["method"] == "HEAD"
+    assert result["headers"] == []
+    assert result["cookies"] == []
+    assert result["redirect_chain"] == []
+    assert result["findings"] == []
+    assert result["manual_validation_required"] is True
+    assert result["review_wording"] == "HTTP header review indicator"
+    assert result["result_interpretation"] == "HTTP header review indicator"
+    assert result["execution"]["live_request_performed"] is False
+    assert result["execution"]["redirect_followed"] is False
+    assert result["execution"]["body_read"] is False
+    assert result["execution"]["network_requests_sent"] == 0
+    assert result["execution"]["requests_sent"] == 0
+    assert result["execution"]["http_requests_sent"] == 0
+    assert result["execution"]["dns_queries_sent"] == 0
+    assert result["execution"]["tls_handshake_attempted"] is False
+    assert result["execution"]["nmap_executed"] is False
+    assert result["execution"]["subprocess_invoked"] is False
+    assert result["execution"]["docker_invoked"] is False
+    assert result["execution"]["job_created"] is True
+    assert result["execution"]["storage_persisted"] is True
+    assert result["summary"]["manual_validation_required"] is True
+    assert result["summary"]["review_wording"] == "HTTP header review indicator"
+    assert result["summary"]["result_interpretation"] == "HTTP header review indicator"
+    assert result["summary"]["live_request_performed"] is False
+    assert result["summary"]["redirect_followed"] is False
+    assert result["summary"]["body_read"] is False
+    assert result["summary"]["requests_sent"] == 0
+    assert result["summary"]["http_requests_sent"] == 0
+    assert result["summary"]["job_created"] is True
+    assert result["summary"]["storage_persisted"] is True
+    assert result["limits"]["method"] == "HEAD"
+    assert result["limits"]["max_redirects"] == 0
+    assert result["limits"]["response_body_bytes"] == 0
+    assert result["limits"]["raw_target_persisted"] is False
+    assert result["limits"]["headers_persisted"] is False
+    assert result["limits"]["cookies_persisted"] is False
+    assert result["limits"]["response_body_persisted"] is False
+    assert "No live HTTP request was performed" in result["surface_caveats"]
+    assert "No redirect was followed" in result["surface_caveats"]
+    assert "No response body was read" in result["surface_caveats"]
 
 
 def make_active_nmap_basic_payload(**overrides) -> dict:
@@ -9993,29 +10050,108 @@ async def test_active_http_basic_header_review_disabled_by_default_controlled_no
 
 
 @pytest.mark.anyio
-async def test_active_http_basic_header_review_enabled_accepts_contract_without_execution(monkeypatch, tmp_path):
+async def test_active_http_basic_header_review_enabled_creates_redacted_no_live_job(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED", "true")
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
     payload = make_active_http_basic_header_review_payload(
         "https://example.test/?token=token_should_never_render",
     )
+    wrong_owner_job = app.state.jobs.create_active_http_basic_header_review_job(
+        {
+            "audit_type": "active_http_basic_header_review",
+            "capability": "active_http_basic_header_review",
+            "mode": "live_http_basic_header_review",
+            "profile": "http_headers_single_request",
+            "status": "not_executed",
+            "result_status": "not_executed",
+            "target": "https://other.example.test/?token=token_should_never_render",
+            "raw_target": "https://other.example.test/private?token=token_should_never_render",
+            "headers": [{"name": "Authorization", "value": "Bearer token_should_never_render"}],
+            "cookies": [{"name": "session", "value": "token_should_never_render"}],
+            "response_body": "token_should_never_render",
+            "exception": "token_should_never_render",
+            "method": "HEAD",
+            "summary": {"manual_validation_required": True},
+            "execution": {"live_request_performed": False, "requests_sent": 0},
+        },
+        status="completed",
+        owner_id="other-owner",
+    )
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post("/active/web/http-basic-header-review", json=payload)
+        job_id = response.json()["id"]
         jobs_response = await client.get("/jobs")
+        detail_response = await client.get(f"/jobs/{job_id}")
+        export_responses = {
+            report_format: await client.get(f"/jobs/{job_id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        }
+        wrong_owner_detail_response = await client.get(f"/jobs/{wrong_owner_job.id}")
+        wrong_owner_delete_response = await client.delete(f"/jobs/{wrong_owner_job.id}")
+        wrong_owner_export_responses = [
+            await client.get(f"/jobs/{wrong_owner_job.id}/export/{report_format}")
+            for report_format in ("markdown", "html", "xml", "pdf")
+        ]
 
-    assert response.status_code == 200
-    body = response.json()
-    assert_active_http_basic_header_review_controlled_response(body, "not_executed")
-    assert body["reason_codes"] == []
-    assert body["limits"]["max_targets"] == 1
-    assert body["limits"]["method"] == "HEAD"
-    assert body["limits"]["max_redirects"] == 0
-    assert body["limits"]["response_body_bytes"] == 0
-    assert "token_should_never_render" not in response.text
-    assert "example.test" not in response.text
-    assert jobs_response.json() == []
+    assert response.status_code == 202
+    assert detail_response.status_code == 200
+    assert all(export_response.status_code == 200 for export_response in export_responses.values())
+    assert wrong_owner_detail_response.status_code == 404
+    assert wrong_owner_detail_response.json()["detail"] == "Job not found."
+    assert wrong_owner_delete_response.status_code == 404
+    assert wrong_owner_delete_response.json()["detail"] == "Job not found."
+    assert all(response.status_code == 404 for response in wrong_owner_export_responses)
+
+    created_job = response.json()
+    detail_job = detail_response.json()
+    list_payload = jobs_response.json()
+    assert created_job["audit_type"] == "active_http_basic_header_review"
+    assert created_job["status"] == "completed"
+    assert created_job["file_id"] is None
+    assert created_job["target_url"] == "[REDACTED_TARGET]"
+    assert created_job["owner_id"] == DEFAULT_LOCAL_OPERATOR.id
+    assert_active_http_basic_header_review_persisted_result(created_job["result"])
+    assert detail_job["id"] == job_id
+    assert detail_job["target_url"] == "[REDACTED_TARGET]"
+    assert_active_http_basic_header_review_persisted_result(detail_job["result"])
+    assert len(list_payload) == 1
+    assert list_payload[0]["id"] == job_id
+    assert list_payload[0]["audit_type"] == "active_http_basic_header_review"
+    assert list_payload[0]["file_id"] is None
+    assert list_payload[0]["target_url"] == "[REDACTED_TARGET]"
+    assert list_payload[0]["summary"]["result_status"] == "not_executed"
+    assert list_payload[0]["summary"]["target_display"] == "[REDACTED_TARGET]"
+    assert list_payload[0]["summary"]["method"] == "HEAD"
+    assert list_payload[0]["summary"]["requests_sent"] == 0
+    assert list_payload[0]["summary"]["live_request_performed"] is False
+    assert list_payload[0]["summary"]["redirect_followed"] is False
+    assert list_payload[0]["summary"]["body_read"] is False
+    assert list_payload[0]["summary"]["manual_validation_required"] is True
+    assert list_payload[0]["summary"]["review_wording"] == "HTTP header review indicator"
+
+    combined = json.dumps(
+        {"create": created_job, "detail": detail_job, "list": list_payload},
+        sort_keys=True,
+    )
+    combined += "\n" + "\n".join(
+        export.text if report_format != "pdf" else export.content.decode("latin1", errors="ignore")
+        for report_format, export in export_responses.items()
+    )
+    assert "No live HTTP request was performed" in combined
+    assert "No redirect was followed" in combined
+    assert "No response body was read" in combined
+    assert "Manual validation required" in combined
+    assert "HTTP header review indicator" in combined
+    assert "token_should_never_render" not in combined
+    assert "example.test" not in combined
+    assert "private" not in combined
+    assert "Authorization" not in combined
+    assert "Bearer" not in combined
+    assert "session" not in combined
+    assert '"response_body":' not in combined
+    assert "exception" not in combined
 
 
 @pytest.mark.anyio
@@ -10135,6 +10271,39 @@ async def test_active_http_basic_header_review_target_policy_blocks_without_job(
     assert "token_should_never_render" not in response.text
     assert "example.test" not in response.text
     assert jobs_response.json() == []
+
+
+def test_active_http_basic_header_review_path_has_no_live_transport_references():
+    source = "\n".join(
+        [
+            inspect.getsource(active_http_basic_header_review_module),
+            inspect.getsource(backend_main.launch_active_http_basic_header_review),
+        ]
+    )
+    forbidden_patterns = (
+        r"\bimport\s+httpx\b",
+        r"\bfrom\s+httpx\b",
+        r"\bimport\s+requests\b",
+        r"\bfrom\s+requests\b",
+        r"\bimport\s+aiohttp\b",
+        r"\bfrom\s+aiohttp\b",
+        r"\bimport\s+urllib\b",
+        r"\bfrom\s+urllib\b",
+        r"\bimport\s+socket\b",
+        r"\bfrom\s+socket\b",
+        r"\bimport\s+subprocess\b",
+        r"\bfrom\s+subprocess\b",
+        r"\bhttpx\.",
+        r"\brequests\.",
+        r"\baiohttp\.",
+        r"\bsocket\.",
+        r"\bsubprocess\.",
+        r"\bdocker\.",
+        r"\bnmap\.",
+    )
+
+    for pattern in forbidden_patterns:
+        assert re.search(pattern, source, flags=re.IGNORECASE) is None
 
 
 @pytest.mark.anyio

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 from typing import Any
 
@@ -10,6 +11,13 @@ ACTIVE_HTTP_BASIC_HEADER_REVIEW_PROFILE = "http_headers_single_request"
 ACTIVE_HTTP_BASIC_HEADER_REVIEW_METHOD = "HEAD"
 ACTIVE_HTTP_BASIC_HEADER_REVIEW_REDACTED_TARGET = "[REDACTED_TARGET]"
 ACTIVE_HTTP_BASIC_HEADER_REVIEW_MAX_URL_LENGTH = 2048
+ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS = [
+    "No live HTTP request was performed",
+    "No redirect was followed",
+    "No response body was read",
+    "Manual validation required",
+    "HTTP header review indicator wording only",
+]
 
 _ALLOWED_FIELDS = frozenset(
     {
@@ -60,6 +68,27 @@ def build_active_http_basic_header_review_response(
         return _response("blocked_by_policy", [policy_reason])
 
     return _response("not_executed", [])
+
+
+def active_http_basic_header_review_is_persistable(result: dict[str, Any]) -> bool:
+    return result.get("status") == "not_executed" and result.get("result_status") == "not_executed"
+
+
+def active_http_basic_header_review_job_status(result: dict[str, Any]) -> str:
+    if not active_http_basic_header_review_is_persistable(result):
+        raise ValueError("active_http_basic_header_review can only persist accepted no-live results.")
+    return "completed"
+
+
+def build_active_http_basic_header_review_persisted_result(result: dict[str, Any]) -> dict[str, Any]:
+    if not active_http_basic_header_review_is_persistable(result):
+        raise ValueError("active_http_basic_header_review can only persist accepted no-live results.")
+
+    persisted = deepcopy(result)
+    persisted["lifecycle_state"] = "not_executed"
+    persisted["surface_caveats"] = list(ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS)
+    _mark_persisted(persisted)
+    return persisted
 
 
 def _validate_contract_shape(payload: dict[str, Any]) -> None:
@@ -184,6 +213,7 @@ def _response(status: str, reason_codes: list[str]) -> dict[str, Any]:
     execution = {
         "live_request_performed": False,
         "network_requests_sent": 0,
+        "requests_sent": 0,
         "http_requests_sent": 0,
         "dns_queries_sent": 0,
         "tls_handshake_attempted": False,
@@ -215,7 +245,9 @@ def _response(status: str, reason_codes: list[str]) -> dict[str, Any]:
         "errors": [{"code": code} for code in reason_codes],
         "warnings": [],
         "manual_validation_required": True,
+        "review_wording": _PUBLIC_REVIEW_LABEL,
         "result_interpretation": _PUBLIC_REVIEW_LABEL,
+        "lifecycle_state": status,
         "execution": execution,
         "limits": {
             "max_targets": 1,
@@ -223,11 +255,16 @@ def _response(status: str, reason_codes: list[str]) -> dict[str, Any]:
             "method": ACTIVE_HTTP_BASIC_HEADER_REVIEW_METHOD,
             "max_redirects": 0,
             "response_body_bytes": 0,
+            "raw_target_persisted": False,
+            "headers_persisted": False,
+            "cookies_persisted": False,
+            "response_body_persisted": False,
         },
         "summary": {
             "status": status,
             "reason_codes": reason_codes,
             "manual_validation_required": True,
+            "review_wording": _PUBLIC_REVIEW_LABEL,
             "result_interpretation": _PUBLIC_REVIEW_LABEL,
             "live_request_performed": False,
             "redirect_followed": False,
@@ -235,6 +272,36 @@ def _response(status: str, reason_codes: list[str]) -> dict[str, Any]:
             "job_created": False,
             "storage_persisted": False,
             "network_requests_sent": 0,
+            "requests_sent": 0,
             "http_requests_sent": 0,
         },
+        "surface_caveats": list(ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS),
     }
+
+
+def _mark_persisted(result: dict[str, Any]) -> None:
+    execution = result.get("execution")
+    if not isinstance(execution, dict):
+        execution = {}
+        result["execution"] = execution
+    summary = result.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+        result["summary"] = summary
+
+    execution["job_created"] = True
+    execution["storage_persisted"] = True
+    execution["live_request_performed"] = False
+    execution["redirect_followed"] = False
+    execution["body_read"] = False
+    execution["network_requests_sent"] = 0
+    execution["requests_sent"] = 0
+    execution["http_requests_sent"] = 0
+    summary["job_created"] = True
+    summary["storage_persisted"] = True
+    summary["live_request_performed"] = False
+    summary["redirect_followed"] = False
+    summary["body_read"] = False
+    summary["network_requests_sent"] = 0
+    summary["requests_sent"] = 0
+    summary["http_requests_sent"] = 0

@@ -236,6 +236,14 @@ ACTIVE_TLS_BASIC_CAVEATS = [
     "No target expansion performed",
     "No raw certificate PEM or DER stored",
 ]
+ACTIVE_HTTP_BASIC_HEADER_REVIEW_ALLOWED_STATUSES = {"not_executed"}
+ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS = [
+    "No live HTTP request was performed",
+    "No redirect was followed",
+    "No response body was read",
+    "Manual validation required",
+    "HTTP header review indicator wording only",
+]
 ACTIVE_DNS_INVENTORY_ALLOWED_STATUSES = {"best_effort_inventory", "partial_inventory", "zone_transfer_complete", "not_executed"}
 ACTIVE_DNS_INVENTORY_SENSITIVE_VALUE_KEYS = ACTIVE_NMAP_BASIC_SENSITIVE_VALUE_KEYS | {
     "account_id",
@@ -516,6 +524,8 @@ def build_report_sections(job: JobRecord) -> list[ReportSection]:
         sections.extend(build_active_network_dry_run_sections(result))
     elif job.audit_type == "active_http_header_probe":
         sections.extend(build_active_http_header_probe_sections(result))
+    elif job.audit_type == "active_http_basic_header_review":
+        sections.extend(build_active_http_basic_header_review_sections(result))
     elif job.audit_type == "active_nmap_basic":
         sections.extend(build_active_nmap_basic_sections(result))
     elif job.audit_type == "active_tls_basic":
@@ -946,6 +956,43 @@ def build_active_http_header_probe_sections(result: dict[str, Any]) -> list[Repo
         ReportSection("Limits", flatten_mapping(as_dict(public_result.get("limits")))),
         ReportSection("Audit Log", flatten_list(public_result.get("audit_log"))),
         ReportSection("Errors", flatten_list(public_result.get("errors"))),
+        ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
+    ]
+
+
+def build_active_http_basic_header_review_sections(result: dict[str, Any]) -> list[ReportSection]:
+    public_result = public_active_http_basic_header_review_result(result)
+    summary = as_dict(public_result.get("summary"))
+    execution = as_dict(public_result.get("execution"))
+    limits = as_dict(public_result.get("limits"))
+    raw_json = json.dumps(public_result, indent=2, sort_keys=True)
+    return [
+        ReportSection(
+            "Active HTTP Header Review Scope Notice",
+            [
+                ("Result wording", "HTTP header review indicator. Manual validation required."),
+                ("Live request", "No live HTTP request was performed."),
+                ("Redirect policy", "No redirect was followed."),
+                ("Response body", "No response body was read."),
+                ("Redaction boundary", "Target, URL parts, headers, cookies, and response body are not stored."),
+            ],
+        ),
+        ReportSection(
+            "Active HTTP Header Review Summary",
+            [
+                ("Capability", stringify(public_result.get("capability", "active_http_basic_header_review"))),
+                ("Profile", stringify(public_result.get("profile", "N/A"))),
+                ("Result status", stringify(public_result.get("result_status", public_result.get("status", "N/A")))),
+                ("Target", stringify(public_result.get("target", "[REDACTED_TARGET]"))),
+                ("Method", stringify(public_result.get("method", "HEAD"))),
+                ("Requests sent", stringify(summary.get("requests_sent", execution.get("requests_sent", 0)))),
+                ("Manual validation", stringify(summary.get("manual_validation_required", True))),
+                ("Interpretation", stringify(summary.get("result_interpretation", "HTTP header review indicator"))),
+            ],
+        ),
+        ReportSection("Execution Boundary", flatten_mapping(execution)),
+        ReportSection("Active HTTP Header Review Caveats", [(f"Caveat {index}", caveat) for index, caveat in enumerate(ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS, start=1)]),
+        ReportSection("Limits", flatten_mapping(limits)),
         ReportSection("Redacted Raw JSON", [("Result", raw_json)]),
     ]
 
@@ -1795,6 +1842,28 @@ def build_summary(job: JobRecord) -> dict[str, Any]:
             if isinstance(reason, dict) and reason.get("code") is not None
         ]
         data["policy_version"] = policy.get("policy_version", "N/A")
+    elif job.audit_type == "active_http_basic_header_review":
+        result = public_active_http_basic_header_review_result(result)
+        review_summary = as_dict(result.get("summary"))
+        execution = as_dict(result.get("execution"))
+        data["capability"] = result.get("capability", "active_http_basic_header_review")
+        data["profile"] = result.get("profile", "N/A")
+        data["result_status"] = result.get("result_status", result.get("status", "N/A"))
+        data["lifecycle_state"] = result.get("lifecycle_state", "not_executed")
+        data["target_display"] = "[REDACTED_TARGET]"
+        data["method"] = result.get("method", "HEAD")
+        data["manual_validation_required"] = True
+        data["review_wording"] = review_summary.get("review_wording", "HTTP header review indicator")
+        data["surface_interpretation"] = review_summary.get("result_interpretation", "HTTP header review indicator")
+        data["live_request_performed"] = execution.get("live_request_performed", False)
+        data["redirect_followed"] = execution.get("redirect_followed", False)
+        data["body_read"] = execution.get("body_read", False)
+        data["requests_sent"] = execution.get("requests_sent", 0)
+        data["network_requests_sent"] = execution.get("network_requests_sent", 0)
+        data["http_requests_sent"] = execution.get("http_requests_sent", 0)
+        data["headers_persisted"] = False
+        data["cookies_persisted"] = False
+        data["response_body_persisted"] = False
     elif job.audit_type == "active_nmap_basic":
         limits = as_dict(result.get("limits"))
         result_summary = as_dict(result.get("summary"))
@@ -1981,6 +2050,8 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
         return as_dict(redact_redis_config_value(result))
     if job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         return as_dict(redact_active_config_value(result))
+    if job.audit_type == "active_http_basic_header_review":
+        return public_active_http_basic_header_review_result(result)
     if job.audit_type == "active_nmap_basic":
         return public_active_nmap_basic_result(result)
     if job.audit_type == "active_tls_basic":
@@ -1990,6 +2061,89 @@ def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, A
     if job.audit_type == "active_dns_osint":
         return public_active_dns_osint_result(result)
     return result
+
+
+def public_active_http_basic_header_review_result(result: dict[str, Any]) -> dict[str, Any]:
+    result_status = stringify(result.get("result_status") or result.get("status") or "not_executed")
+    if result_status not in ACTIVE_HTTP_BASIC_HEADER_REVIEW_ALLOWED_STATUSES:
+        result_status = "not_executed"
+    summary = as_dict(result.get("summary"))
+    execution = as_dict(result.get("execution"))
+    limits = as_dict(result.get("limits"))
+    reason_codes = result.get("reason_codes")
+    if not isinstance(reason_codes, list):
+        reason_codes = []
+    errors = result.get("errors")
+    if not isinstance(errors, list):
+        errors = []
+
+    public_result = {
+        "audit_type": "active_http_basic_header_review",
+        "capability": "active_http_basic_header_review",
+        "job_type": "active_http_basic_header_review",
+        "mode": "live_http_basic_header_review",
+        "profile": "http_headers_single_request",
+        "status": result_status,
+        "result_status": result_status,
+        "lifecycle_state": "not_executed",
+        "target": "[REDACTED_TARGET]",
+        "target_display": "[REDACTED_TARGET]",
+        "method": "HEAD",
+        "headers": [],
+        "cookies": [],
+        "redirect_chain": [],
+        "findings": [],
+        "reason_codes": [stringify(code) for code in reason_codes[:8]],
+        "errors": [{"code": stringify(as_dict(error).get("code", "controlled_no_live"))} for error in errors[:8]],
+        "warnings": [],
+        "manual_validation_required": True,
+        "review_wording": "HTTP header review indicator",
+        "result_interpretation": "HTTP header review indicator",
+        "execution": {
+            "live_request_performed": False,
+            "network_requests_sent": 0,
+            "requests_sent": 0,
+            "http_requests_sent": 0,
+            "dns_queries_sent": 0,
+            "tls_handshake_attempted": False,
+            "nmap_executed": False,
+            "subprocess_invoked": False,
+            "docker_invoked": False,
+            "browser_side_request_performed": False,
+            "redirect_followed": False,
+            "body_read": False,
+            "job_created": bool(execution.get("job_created", True)),
+            "storage_persisted": bool(execution.get("storage_persisted", True)),
+        },
+        "summary": {
+            "status": result_status,
+            "reason_codes": [stringify(code) for code in reason_codes[:8]],
+            "manual_validation_required": True,
+            "review_wording": "HTTP header review indicator",
+            "result_interpretation": "HTTP header review indicator",
+            "live_request_performed": False,
+            "redirect_followed": False,
+            "body_read": False,
+            "job_created": bool(summary.get("job_created", True)),
+            "storage_persisted": bool(summary.get("storage_persisted", True)),
+            "network_requests_sent": 0,
+            "requests_sent": 0,
+            "http_requests_sent": 0,
+        },
+        "limits": {
+            "max_targets": 1,
+            "max_url_length": limits.get("max_url_length", 2048),
+            "method": "HEAD",
+            "max_redirects": 0,
+            "response_body_bytes": 0,
+            "raw_target_persisted": False,
+            "headers_persisted": False,
+            "cookies_persisted": False,
+            "response_body_persisted": False,
+        },
+        "surface_caveats": list(ACTIVE_HTTP_BASIC_HEADER_REVIEW_CAVEATS),
+    }
+    return public_result
 
 
 def public_active_dns_osint_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -2484,6 +2638,8 @@ def public_job_target_url(job: JobRecord) -> str:
         return ""
     if job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         return redact_active_secret_text(job.target_url)
+    if job.audit_type == "active_http_basic_header_review":
+        return "[REDACTED_TARGET]"
     if job.audit_type == "active_nmap_basic":
         return "[REDACTED_TARGET]"
     if job.audit_type == "active_tls_basic":
@@ -2526,6 +2682,8 @@ def public_job_error(job: JobRecord) -> str:
         return redact_redis_secret_text(job.error)
     if job.audit_type in {"active_network_dry_run", "active_http_header_probe"}:
         return redact_active_secret_text(job.error)
+    if job.audit_type == "active_http_basic_header_review":
+        return "active_http_basic_header_review controlled no-live error"
     if job.audit_type == "active_nmap_basic":
         return redact_active_nmap_basic_text(job.error, collect_active_nmap_basic_sensitive_tokens(job.result or {}))
     if job.audit_type == "active_tls_basic":

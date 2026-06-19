@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse
 
 from app.active_http_basic_header_review import (
     ActiveHttpBasicHeaderReviewContractError,
+    active_http_basic_header_review_job_status,
+    build_active_http_basic_header_review_persisted_result,
     build_active_http_basic_header_review_response,
 )
 from app.active_tools_client import check_active_tools_health
@@ -1160,10 +1162,11 @@ async def launch_active_http_header_probe(
 @app.post("/active/web/http-basic-header-review")
 async def launch_active_http_basic_header_review(
     request: Request,
+    response: Response,
     payload: Any = Body(...),
-) -> dict[str, Any]:
+) -> JobRecord | dict[str, Any]:
     try:
-        return build_active_http_basic_header_review_response(
+        result = build_active_http_basic_header_review_response(
             payload,
             enabled=request.app.state.settings.active_http_basic_header_review_enabled,
         )
@@ -1172,6 +1175,17 @@ async def launch_active_http_basic_header_review(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=exc.message,
         ) from exc
+
+    if result.get("status") != "not_executed":
+        return result
+
+    persisted_result = build_active_http_basic_header_review_persisted_result(result)
+    response.status_code = status.HTTP_202_ACCEPTED
+    return request.app.state.jobs.create_active_http_basic_header_review_job(
+        persisted_result,
+        status=active_http_basic_header_review_job_status(persisted_result),
+        owner_id=current_owner_id_for_request(request),
+    )
 
 
 @app.post("/active/network/nmap-basic", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
@@ -1383,6 +1397,7 @@ async def get_job(request: Request, job_id: str) -> JobRecord:
         "redis_config_basic",
         "active_network_dry_run",
         "active_http_header_probe",
+        "active_http_basic_header_review",
         "active_nmap_basic",
         "active_tls_basic",
         "active_dns_inventory",

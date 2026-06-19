@@ -28,6 +28,7 @@ AuditType = Literal[
     "redis_config_basic",
     "active_network_dry_run",
     "active_http_header_probe",
+    "active_http_basic_header_review",
     "active_nmap_basic",
     "active_tls_basic",
     "active_dns_inventory",
