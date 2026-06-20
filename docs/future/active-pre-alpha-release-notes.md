@@ -1,13 +1,12 @@
-# Inspectra Active Technical Alpha - Release Notes Draft
+# Inspectra Active Technical Alpha - Release Notes
 
-Decision: `ACTIVE_PRE_ALPHA_RELEASE_NOTES_03_ACCEPTED`
+Decision: `ACTIVE_PRE_ALPHA_RELEASE_NOTES_FINALIZE_07_ACCEPTED`
 
-Status: draft pre-release candidate notes. This document is not a tag, not a
-release, and not validation evidence. Validation placeholders remain pending.
-It does not run the app, run smoke checks, capture screenshots, use real
-targets, modify runtime behavior, change backend code, change frontend code,
-change tools code, change archive/run-all behavior, change
-`tools/runner/main.py`, publish anything, tag anything, or push.
+Status: release-candidate-ready notes for the Inspectra Active technical alpha.
+These notes are finalized for the next tag-planning step, but this phase did
+not publish a release, create a version marker, deploy, upload commits, run the
+app, run Docker, invoke Nmap, submit Active jobs, contact targets, or capture
+images.
 
 Inspectra Active technical alpha is positioned for local/private/self-hosted
 security review by an operator with explicit authorization for each submitted
@@ -127,24 +126,52 @@ intentionally redact raw targets, domains, names, values, headers, cookies, CT
 payload material, resolver context, exception text, credentials, tokens, and
 secrets. Redaction is intentional and manual validation is required.
 
-## Intentionally Not Included
+## Validation Evidence
 
-This draft does not present the alpha as including:
+Release-candidate validation:
+`docs/future/active-pre-alpha-rc-validation.md`
 
-- open-target internet service intake;
-- hosted multi-tenant target intake;
-- broad target discovery;
-- passive DNS sources or provider imports;
-- provider credentials or admin connectors;
-- archive/run-all Active orchestration;
-- `tools/runner/main.py` Active orchestration;
-- body reads, content traversal, browser script execution, or screenshot
-  capture;
-- version-to-vulnerability-database matching;
-- exploit checks;
-- automated remediation;
-- binary pass/fail target verdicts;
-- complete discovery or complete assessment claims.
+- Python compile: passed.
+- Focused Active backend slice: `352 passed, 338 deselected`.
+- Full backend suite: `774 passed`.
+- Full frontend suite: `196 tests across 28 files`.
+- Focused Active frontend slice: `154 tests across 13 files`.
+- Frontend production build: passed with the existing Vite large-chunk warning.
+- Docs and guardrail review: passed.
+
+Docker packaging validation:
+`docs/future/active-pre-alpha-docker-packaging-validation.md`
+
+- `docker compose config`: passed.
+- `docker compose build`: passed for backend, frontend, and audit-tools.
+- `docker compose up -d`: passed after packaging-only fixes.
+- Backend health: `{"status":"ok","service":"inspectra-backend"}`.
+- Frontend local check: `HTTP/1.1 200 OK`.
+- Active tools example config-only validation: passed.
+- Compose teardown completed and no Inspectra validation containers remained
+  running.
+
+Validation phases did not invoke Nmap, submit Active jobs, use real targets,
+capture images, deploy to a remote server, publish a release, create a version
+marker, or upload commits.
+
+## Docker Package Notes
+
+The root Compose package has been validated for local/private technical-alpha
+packaging.
+
+Packaging notes:
+
+- backend image includes the `active_runner` package needed by backend imports;
+- frontend image builds and serves static `dist/` output in Docker;
+- backend and frontend have host-access Compose networking for the documented
+  local ports;
+- default host ports remain `8000` and `5173`, with local override hooks for
+  occupied developer machines;
+- audit-tools remains on the internal runner path;
+- Active tools remains separate/example-only and is not part of normal root
+  Compose startup;
+- image tag naming and provenance move to the next release/tag phase.
 
 ## Known Limitations
 
@@ -157,18 +184,36 @@ This draft does not present the alpha as including:
 - Nmap deeper review is deferred.
 - Passive sources, provider imports, and connector-style administration are
   deferred.
+- Active tools remains separate/example-only for this alpha.
+- Image tag/provenance recording remains pending until the tag phase.
 
-## Validation Summary Placeholders
+## Dependency Audit Note
 
-These are placeholders only. This phase did not run validation.
+The uncached frontend Docker build reported npm audit warnings during install.
+This finalization phase did not run an audit command, change dependencies, or
+infer package names or severity beyond the existing packaging-validation log.
 
-- Backend full suite: pending.
-- Frontend full suite: pending.
-- Frontend production build: pending.
-- Docs review/link check: pending.
-- Guardrail wording search: pending.
-- Secret and real-target example review: pending.
-- Optional local smoke: not run; requires separate authorization.
+Recommended handling: track dependency audit triage as a separate
+release-readiness or post-alpha issue unless product decides it must block the
+alpha tag.
+
+## Intentionally Not Included
+
+This alpha does not present itself as including:
+
+- open-target internet service intake;
+- hosted multi-tenant target intake;
+- broad target discovery;
+- passive DNS sources or provider imports;
+- provider credentials or admin connectors;
+- archive/run-all Active orchestration;
+- `tools/runner/main.py` Active orchestration;
+- body reads, content traversal, browser script execution, or image capture;
+- automatic matching from observed versions to vulnerability databases;
+- exploit checks;
+- automated remediation;
+- binary pass/fail target verdicts;
+- complete discovery or complete assessment claims.
 
 ## Upgrade And Deployment Note
 
@@ -179,33 +224,27 @@ domain, or URL.
 
 Do not place real secrets, API keys, provider credentials, cookies, tokens, or
 private target examples in configuration snippets, screenshots, release notes,
-or shared issue comments. This draft does not add migration instructions or
-invent a new deployment process.
+or shared issue comments. These release notes do not add migration
+instructions or invent a new deployment process.
 
 ## Suggested Next Step
 
 Recommended next phase:
 
 ```text
-ACTIVE_PRE_ALPHA_RC_VALIDATION_04
+ACTIVE_PRE_ALPHA_RELEASE_TAG_08
 ```
 
-Scope: run the actual release-candidate validation checklist and replace the
-pending validation placeholders with evidence in a separate validation record.
+Scope: run final clean-state checks, record the exact commit hash, create the
+alpha tag, and prepare the release from these finalized notes.
 
-Acceptable alternative:
+Keep VPS deploy/smoke as a separate later phase unless the operator explicitly
+chooses a combined tag-and-deploy path.
 
-```text
-ACTIVE_PRE_ALPHA_LOCAL_SMOKE_PLAN_04
-```
-
-Scope: docs-only smoke plan for owned lab targets and local fixtures before
-any app execution phase.
-
-Do not choose a new Active runtime feature yet.
+Do not choose a new Active runtime feature before alpha publication.
 
 ## Decision
 
 ```text
-ACTIVE_PRE_ALPHA_RELEASE_NOTES_03_ACCEPTED
+ACTIVE_PRE_ALPHA_RELEASE_NOTES_FINALIZE_07_ACCEPTED
 ```
