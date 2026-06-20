@@ -219,7 +219,10 @@ function FindingCard({ finding }: { finding: ProjectArchiveFinding }) {
     <article className="tool-card">
       <div className="tool-card-header">
         <strong>{finding.title}</strong>
-        <span className={`finding-badge ${finding.level}`}>{finding.level}</span>
+        <div className="badge-row">
+          <span className="status-pill">{finding.categoryLabel}</span>
+          <span className={`finding-badge ${finding.level}`}>{finding.level}</span>
+        </div>
       </div>
       {finding.description ? <p>{finding.description}</p> : null}
       {finding.evidence ? <p className="mono evidence-line">{finding.evidence}</p> : null}

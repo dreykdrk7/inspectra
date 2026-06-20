@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from xml.etree import ElementTree
 
 from app.models import JobRecord
+from app.project_archive_findings import categorize_project_archive_result
 from app.web_security import redact_text_urls, redact_url_query
 
 SENSITIVE_RESPONSE_HEADERS = {"set-cookie", "authorization", "proxy-authorization", "x-api-key", "x-auth-token"}
@@ -627,7 +628,7 @@ def build_project_archive_sections(result: dict[str, Any]) -> list[ReportSection
         ReportSection("Supported Manifests", flatten_list(result.get("supported_manifests"))),
         ReportSection("Unsupported Manifests", flatten_list(result.get("unsupported_manifests"))),
         ReportSection("Parsed Manifests", flatten_list(result.get("parsed_manifests"))),
-        ReportSection("Findings", flatten_list(result.get("findings"))),
+        ReportSection("Findings", flatten_project_archive_findings(result.get("findings"))),
     ]
 
 
@@ -1602,6 +1603,29 @@ def flatten_redis_findings(value: Any) -> list[tuple[str, str]]:
     return rows
 
 
+def flatten_project_archive_findings(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("ID", "id"),
+        ("Title", "title"),
+        ("Level", "level"),
+        ("Category", "category"),
+        ("Category label", "category_label"),
+        ("Description", "description"),
+        ("Evidence", "evidence"),
+        ("Recommendation", "recommendation"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Finding {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"Finding {index}", record, preferred_keys)
+    return rows
+
+
 def append_preferred_rows(
     rows: list[tuple[str, str]],
     prefix: str,
@@ -2052,6 +2076,8 @@ def redact_web_value(value: Any) -> Any:
 
 
 def public_result_for_job(job: JobRecord, result: dict[str, Any]) -> dict[str, Any]:
+    if job.audit_type == "project_archive_basic":
+        return categorize_project_archive_result(result)
     if job.audit_type == "web_basic":
         return as_dict(redact_web_value(result))
     if job.audit_type == "django_config_basic":

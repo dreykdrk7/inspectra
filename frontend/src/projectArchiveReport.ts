@@ -5,9 +5,50 @@ export type ProjectArchiveFinding = {
   id: string;
   title: string;
   level: string;
+  category: string;
+  categoryLabel: string;
   description: string;
   evidence: string;
   recommendation: string;
+};
+
+type ProjectArchiveFindingMetadata = {
+  category: string;
+  categoryLabel: string;
+};
+
+const UNCATEGORIZED_PROJECT_ARCHIVE_FINDING = {
+  category: "uncategorized_review_indicator",
+  categoryLabel: "Uncategorized review indicator"
+} satisfies ProjectArchiveFindingMetadata;
+
+const PROJECT_ARCHIVE_FINDING_METADATA: Record<string, ProjectArchiveFindingMetadata> = {
+  dependency_not_exactly_pinned: { category: "dependency_hygiene", categoryLabel: "Dependency hygiene" },
+  requirements_dependency_not_exactly_pinned: { category: "dependency_hygiene", categoryLabel: "Dependency hygiene" },
+  dependency_broad_range: { category: "dependency_hygiene", categoryLabel: "Dependency hygiene" },
+  requirements_option_present: { category: "dependency_hygiene", categoryLabel: "Dependency hygiene" },
+  dependency_external_or_local_source: { category: "dependency_source_review", categoryLabel: "Dependency source review" },
+  requirements_custom_index: { category: "dependency_source_review", categoryLabel: "Dependency source review" },
+  requirements_editable_install: { category: "dependency_source_review", categoryLabel: "Dependency source review" },
+  package_scripts_present: { category: "package_script_review", categoryLabel: "Package script review" },
+  package_sensitive_lifecycle_script: { category: "package_script_review", categoryLabel: "Package script review" },
+  project_archive_multiple_ecosystems: { category: "ecosystem_inventory", categoryLabel: "Ecosystem inventory" },
+  project_archive_manifest_parse_error: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
+  project_archive_manifest_read_error: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
+  project_archive_manifest_decode_error: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
+  project_archive_manifest_too_large: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
+  project_archive_too_many_supported_manifests: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
+  project_archive_total_manifest_bytes_limit: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
+  project_archive_entry_name_too_long: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
+  project_archive_entry_limit_reached: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
+  project_archive_path_traversal: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
+  project_archive_absolute_path: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
+  project_archive_manifest_not_regular_file: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
+  project_archive_zip_entry_limit_preflight: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
+  project_archive_zip_central_directory_too_large: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
+  project_archive_zip64_metadata_requires_review: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
+  project_archive_multidisk_zip_unsupported: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
+  project_archive_zip_metadata_preflight_unavailable: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" }
 };
 
 export type ProjectArchiveManifest = {
@@ -136,15 +177,23 @@ function findingsFromValue(value: unknown): ProjectArchiveFinding[] {
   }
   return value.map((item) => {
     const record = asRecord(item);
+    const id = asString(record?.id) ?? "finding";
+    const metadata = projectArchiveFindingMetadata(id);
     return {
-      id: asString(record?.id) ?? "finding",
+      id,
       title: asString(record?.title) ?? "Informational finding",
       level: asString(record?.level) ?? asString(record?.severity) ?? "info",
+      category: metadata.category,
+      categoryLabel: metadata.categoryLabel,
       description: asString(record?.description) ?? "",
       evidence: asString(record?.evidence) ?? "",
       recommendation: asString(record?.recommendation) ?? ""
     };
   });
+}
+
+function projectArchiveFindingMetadata(findingId: string): ProjectArchiveFindingMetadata {
+  return PROJECT_ARCHIVE_FINDING_METADATA[findingId] ?? UNCATEGORIZED_PROJECT_ARCHIVE_FINDING;
 }
 
 function entriesFromRecord(record: Record<string, unknown> | null): MetadataEntry[] {

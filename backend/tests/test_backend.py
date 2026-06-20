@@ -88,6 +88,7 @@ from app import active_http_basic_header_review as active_http_basic_header_revi
 from app.active_tls_basic import ActiveTlsBasicConnectionSnapshot
 from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
 from app.models import JobRecord
+from app.project_archive_findings import categorize_project_archive_result, project_archive_finding_metadata
 from app.reporting import markdown_block_value, markdown_inline_value
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
 from app.services import (
@@ -13357,9 +13358,25 @@ async def test_export_project_archive_job_all_formats(monkeypatch, tmp_path):
         assert response.headers["content-type"].startswith(content_type)
         assert response.headers["content-disposition"] == f'attachment; filename="inspectra-job-{job.id}.{extension}"'
     assert "project_archive_basic" in responses["markdown"].text
+    assert "Finding 1 Category" in responses["markdown"].text
+    assert "package_script_review" in responses["markdown"].text
+    assert "Finding 1 Category label" in responses["markdown"].text
+    assert "Package script review" in responses["markdown"].text
+    assert "Finding 1 Level" in responses["markdown"].text
+    assert "medium" in responses["markdown"].text
+    assert "Finding 1 Evidence" in responses["markdown"].text
+    assert "package.json: postinstall: node setup.js" in responses["markdown"].text
+    assert "Finding 1 Recommendation" in responses["markdown"].text
+    assert "Confirm the script is expected." in responses["markdown"].text
     assert "Project Archive Metrics" in responses["html"].text
-    assert ElementTree.fromstring(responses["xml"].text).findtext("./job/auditType") == "project_archive_basic"
+    assert "Package script review" in responses["html"].text
+    xml_root = ElementTree.fromstring(responses["xml"].text)
+    assert xml_root.findtext("./job/auditType") == "project_archive_basic"
+    assert xml_root.findtext("./findings/item/category") == "package_script_review"
+    assert xml_root.findtext("./findings/item/category_label") == "Package script review"
     assert responses["pdf"].content.startswith(b"%PDF")
+    pdf_text = responses["pdf"].content.decode("latin-1")
+    assert "Package script review" in pdf_text
 
 
 @pytest.mark.anyio
@@ -16339,6 +16356,66 @@ def test_sbom_helpers_omit_purl_for_ambiguous_pyproject_sources():
         assert component.dependency_source_type == source_type
         assert "purl" not in cyclonedx_component
         assert find_cyclonedx_property(cyclonedx_component, "inspectra:purl_omitted_reason")
+
+
+def test_project_archive_finding_metadata_maps_known_and_unknown_ids():
+    dependency_metadata = project_archive_finding_metadata("requirements_dependency_not_exactly_pinned")
+    assert dependency_metadata.category == "dependency_hygiene"
+    assert dependency_metadata.category_label == "Dependency hygiene"
+
+    script_metadata = project_archive_finding_metadata("package_sensitive_lifecycle_script")
+    assert script_metadata.category == "package_script_review"
+    assert script_metadata.category_label == "Package script review"
+
+    unknown_metadata = project_archive_finding_metadata("future_project_archive_signal")
+    assert unknown_metadata.category == "uncategorized_review_indicator"
+    assert unknown_metadata.category_label == "Uncategorized review indicator"
+
+
+def test_categorize_project_archive_result_preserves_fields_and_adds_fallbacks():
+    result = categorize_project_archive_result(
+        {
+            "findings": [
+                {
+                    "id": "dependency_external_or_local_source",
+                    "title": "Dependency references URL, VCS, or local source",
+                    "level": "medium",
+                    "description": "Review the source before installing.",
+                    "evidence": "package.json: local-lib file:../local-lib",
+                    "recommendation": "Confirm the referenced source is expected.",
+                },
+                {
+                    "id": "future_project_archive_signal",
+                    "title": "Future signal",
+                    "level": "info",
+                    "evidence": "example",
+                    "recommendation": "Review manually.",
+                },
+            ],
+            "parsed_manifests": [
+                {
+                    "path": "requirements.txt",
+                    "findings": [
+                        {
+                            "id": "requirements_dependency_not_exactly_pinned",
+                            "title": "Dependency is not exactly pinned",
+                            "level": "low",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert result["findings"][0]["category"] == "dependency_source_review"
+    assert result["findings"][0]["category_label"] == "Dependency source review"
+    assert result["findings"][0]["evidence"] == "package.json: local-lib file:../local-lib"
+    assert result["findings"][0]["recommendation"] == "Confirm the referenced source is expected."
+    assert result["findings"][0]["level"] == "medium"
+    assert result["findings"][1]["category"] == "uncategorized_review_indicator"
+    assert result["findings"][1]["category_label"] == "Uncategorized review indicator"
+    assert result["parsed_manifests"][0]["findings"][0]["category"] == "dependency_hygiene"
+    assert result["parsed_manifests"][0]["findings"][0]["category_label"] == "Dependency hygiene"
 
 
 def test_sbom_helpers_normalize_pyproject_from_project_archive():

@@ -149,7 +149,10 @@ describe("report helpers", () => {
             errors: []
           }
         ],
-        findings: [{ id: "package_sensitive_lifecycle_script", title: "Lifecycle script", level: "medium" }]
+        findings: [
+          { id: "package_sensitive_lifecycle_script", title: "Lifecycle script", level: "medium" },
+          { id: "future_project_archive_signal", title: "Future signal", level: "info" }
+        ]
       }
     });
 
@@ -158,7 +161,21 @@ describe("report helpers", () => {
     expect(report.unsupportedManifests[0]).toMatchObject({ path: "package-lock.json" });
     expect(report.parsedManifests[0].project).toContainEqual({ label: "name", value: "demo" });
     expect(report.parsedManifests[0].dependencies[0].dependencies[0]).toMatchObject({ name: "react" });
-    expect(report.findings[0]).toMatchObject({ id: "package_sensitive_lifecycle_script" });
+    expect(report.parsedManifests[0].findings[0]).toMatchObject({
+      id: "package_sensitive_lifecycle_script",
+      category: "package_script_review",
+      categoryLabel: "Package script review"
+    });
+    expect(report.findings[0]).toMatchObject({
+      id: "package_sensitive_lifecycle_script",
+      category: "package_script_review",
+      categoryLabel: "Package script review"
+    });
+    expect(report.findings[1]).toMatchObject({
+      id: "future_project_archive_signal",
+      category: "uncategorized_review_indicator",
+      categoryLabel: "Uncategorized review indicator"
+    });
   });
 
   it("normalizes web audit headers, cookies, and findings", () => {

@@ -11,6 +11,7 @@ from active_runner.nmap_basic.parser import parse_active_nmap_basic_xml
 from active_runner.nmap_basic.result import build_active_nmap_basic_result_payload
 from app.config import Settings
 from app.active_nmap_handoff import ActiveNmapBasicHandoffPlan, ActiveNmapBasicHandoffUnit
+from app.project_archive_findings import categorize_project_archive_result
 from app.reporting import (
     redact_active_config_value,
     redact_active_secret_text,
@@ -198,7 +199,7 @@ class ProjectArchiveAuditService:
             self.jobs.update(job_id, status="failed", error=f"Tool runner request failed: {exc}")
             return
 
-        self.jobs.update(job_id, status="completed", result=response.json())
+        self.jobs.update(job_id, status="completed", result=categorize_project_archive_result(response.json()))
 
 
 class DjangoConfigAuditService:
