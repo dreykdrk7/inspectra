@@ -201,6 +201,50 @@ describe("report helpers", () => {
     ]);
   });
 
+  it("preserves backend project archive metadata and keeps ambiguous dependency ecosystems neutral", () => {
+    const report = buildProjectArchiveAuditReport({
+      ...baseJob,
+      audit_type: "project_archive_basic",
+      result: {
+        archive_type: "zip",
+        findings: [
+          {
+            id: "future_project_archive_signal",
+            title: "Future signal",
+            level: "info",
+            category: "future_review_indicator",
+            category_label: "Future review indicator",
+            ecosystem: "generic_project_metadata"
+          },
+          {
+            id: "dependency_not_exactly_pinned",
+            title: "Dependency is not exactly pinned",
+            level: "info"
+          }
+        ]
+      }
+    });
+
+    expect(report.findings[0]).toMatchObject({
+      id: "future_project_archive_signal",
+      category: "future_review_indicator",
+      categoryLabel: "Future review indicator",
+      ecosystem: "generic_project_metadata",
+      ecosystemLabel: "Generic project metadata"
+    });
+    expect(report.findings[1]).toMatchObject({
+      id: "dependency_not_exactly_pinned",
+      category: "dependency_hygiene",
+      categoryLabel: "Dependency hygiene",
+      ecosystem: "unknown_ecosystem",
+      ecosystemLabel: "Unknown ecosystem"
+    });
+    expect(report.ecosystemSummary).toEqual([
+      { ecosystem: "generic_project_metadata", ecosystemLabel: "Generic project metadata", findingsCount: 1 },
+      { ecosystem: "unknown_ecosystem", ecosystemLabel: "Unknown ecosystem", findingsCount: 1 }
+    ]);
+  });
+
   it("normalizes web audit headers, cookies, and findings", () => {
     const report = buildWebAuditReport({
       ...baseJob,

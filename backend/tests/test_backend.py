@@ -16382,6 +16382,12 @@ def test_project_archive_finding_metadata_maps_known_and_unknown_ids():
     assert contextual_dependency_metadata.ecosystem == "node_package"
     assert contextual_dependency_metadata.ecosystem_label == "Node / package.json"
 
+    ambiguous_dependency_metadata = project_archive_finding_metadata("dependency_not_exactly_pinned")
+    assert ambiguous_dependency_metadata.category == "dependency_hygiene"
+    assert ambiguous_dependency_metadata.category_label == "Dependency hygiene"
+    assert ambiguous_dependency_metadata.ecosystem == "unknown_ecosystem"
+    assert ambiguous_dependency_metadata.ecosystem_label == "Unknown ecosystem"
+
     script_metadata = project_archive_finding_metadata("package_sensitive_lifecycle_script")
     assert script_metadata.category == "package_script_review"
     assert script_metadata.category_label == "Package script review"

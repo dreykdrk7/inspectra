@@ -75,6 +75,10 @@ describe("ProjectArchiveJobReport", () => {
     expect(screen.getByText("Package script review")).toBeInTheDocument();
     expect(screen.getByText("Dependency hygiene")).toBeInTheDocument();
     expect(screen.getByText("Uncategorized review indicator")).toBeInTheDocument();
+    expect(screen.getByText("Lifecycle script should be reviewed")).toBeInTheDocument();
+    expect(screen.getByText("Dependency is not exactly pinned")).toBeInTheDocument();
+    expect(screen.getByText("Future project archive signal")).toBeInTheDocument();
+    expect(screen.getAllByText("1 findings").length).toBeGreaterThanOrEqual(3);
     expect(screen.getByText("medium")).toBeInTheDocument();
     expect(screen.getByText("package.json: postinstall: node setup.js")).toBeInTheDocument();
     expect(screen.getByText("Confirm the script is expected.")).toBeInTheDocument();

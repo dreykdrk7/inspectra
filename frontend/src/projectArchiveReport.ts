@@ -34,6 +34,16 @@ const UNCATEGORIZED_PROJECT_ARCHIVE_FINDING = {
   ecosystemLabel: "Unknown ecosystem"
 } satisfies ProjectArchiveFindingMetadata;
 
+const PROJECT_ARCHIVE_ECOSYSTEM_LABELS: Record<string, string> = {
+  python_requirements: "Python / requirements",
+  node_package: "Node / package.json",
+  docker_compose: "Docker / Compose",
+  ci_cd: "CI/CD",
+  framework_config: "Framework/config",
+  generic_project_metadata: "Generic project metadata",
+  unknown_ecosystem: "Unknown ecosystem"
+};
+
 const PROJECT_ARCHIVE_FINDING_METADATA: Record<string, ProjectArchiveFindingMetadata> = {
   dependency_not_exactly_pinned: {
     category: "dependency_hygiene",
@@ -207,14 +217,20 @@ function findingsFromValue(value: unknown, context?: { path?: string | null; man
       path: context?.path,
       manifestType: context?.manifestType
     });
+    const category = asString(record?.category) ?? metadata.category;
+    const ecosystem = asString(record?.ecosystem) ?? metadata.ecosystem;
     return {
       id,
       title: asString(record?.title) ?? "Informational finding",
       level: asString(record?.level) ?? asString(record?.severity) ?? "info",
-      category: metadata.category,
-      categoryLabel: metadata.categoryLabel,
-      ecosystem: asString(record?.ecosystem) ?? metadata.ecosystem,
-      ecosystemLabel: asString(record?.ecosystem_label) ?? asString(record?.ecosystemLabel) ?? metadata.ecosystemLabel,
+      category,
+      categoryLabel: asString(record?.category_label) ?? asString(record?.categoryLabel) ?? metadata.categoryLabel,
+      ecosystem,
+      ecosystemLabel:
+        asString(record?.ecosystem_label) ??
+        asString(record?.ecosystemLabel) ??
+        PROJECT_ARCHIVE_ECOSYSTEM_LABELS[ecosystem] ??
+        metadata.ecosystemLabel,
       description: asString(record?.description) ?? "",
       evidence: asString(record?.evidence) ?? "",
       recommendation: asString(record?.recommendation) ?? ""
@@ -288,37 +304,52 @@ function inferProjectArchiveEcosystem(context: {
     return null;
   }
   if (["package.json", "package-lock.json", "package_json", "package-lock"].some((marker) => normalized.includes(marker))) {
-    return { id: "node_package", label: "Node / package.json" };
+    return { id: "node_package", label: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.node_package };
   }
   if (["requirements.txt", "requirements_txt", "pyproject.toml", "pyproject_toml"].some((marker) => normalized.includes(marker))) {
-    return { id: "python_requirements", label: "Python / requirements" };
+    return { id: "python_requirements", label: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.python_requirements };
   }
   if (["docker-compose.yml", "docker-compose.yaml", "compose.yaml", "compose.yml"].some((marker) => normalized.includes(marker))) {
-    return { id: "docker_compose", label: "Docker / Compose" };
+    return { id: "docker_compose", label: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.docker_compose };
   }
   if ([".github/workflows/", ".gitlab-ci.yml", "circleci/config.yml", "jenkinsfile"].some((marker) => normalized.includes(marker))) {
-    return { id: "ci_cd", label: "CI/CD" };
+    return { id: "ci_cd", label: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.ci_cd };
   }
   if (["vite.config.", "next.config.", "nuxt.config.", "django", "settings.py"].some((marker) => normalized.includes(marker))) {
-    return { id: "framework_config", label: "Framework/config" };
+    return { id: "framework_config", label: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.framework_config };
   }
   return null;
 }
 
 function pythonRequirementsMetadata(category: string, categoryLabel: string): ProjectArchiveFindingMetadata {
-  return { category, categoryLabel, ecosystem: "python_requirements", ecosystemLabel: "Python / requirements" };
+  return {
+    category,
+    categoryLabel,
+    ecosystem: "python_requirements",
+    ecosystemLabel: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.python_requirements
+  };
 }
 
 function nodePackageMetadata(category: string, categoryLabel: string): ProjectArchiveFindingMetadata {
-  return { category, categoryLabel, ecosystem: "node_package", ecosystemLabel: "Node / package.json" };
+  return {
+    category,
+    categoryLabel,
+    ecosystem: "node_package",
+    ecosystemLabel: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.node_package
+  };
 }
 
 function genericProjectMetadata(category: string, categoryLabel: string): ProjectArchiveFindingMetadata {
-  return { category, categoryLabel, ecosystem: "generic_project_metadata", ecosystemLabel: "Generic project metadata" };
+  return {
+    category,
+    categoryLabel,
+    ecosystem: "generic_project_metadata",
+    ecosystemLabel: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.generic_project_metadata
+  };
 }
 
 function unknownEcosystemMetadata(category: string, categoryLabel: string): ProjectArchiveFindingMetadata {
-  return { category, categoryLabel, ecosystem: "unknown_ecosystem", ecosystemLabel: "Unknown ecosystem" };
+  return { category, categoryLabel, ecosystem: "unknown_ecosystem", ecosystemLabel: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.unknown_ecosystem };
 }
 
 function compareEcosystemSummary(a: ProjectArchiveEcosystemSummary, b: ProjectArchiveEcosystemSummary): number {
