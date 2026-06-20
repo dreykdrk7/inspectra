@@ -13362,6 +13362,11 @@ async def test_export_project_archive_job_all_formats(monkeypatch, tmp_path):
     assert "package_script_review" in responses["markdown"].text
     assert "Finding 1 Category label" in responses["markdown"].text
     assert "Package script review" in responses["markdown"].text
+    assert "Finding 1 Ecosystem" in responses["markdown"].text
+    assert "node_package" in responses["markdown"].text
+    assert "Finding 1 Ecosystem label" in responses["markdown"].text
+    assert "Node / package.json" in responses["markdown"].text
+    assert "Ecosystem Summary" in responses["markdown"].text
     assert "Finding 1 Level" in responses["markdown"].text
     assert "medium" in responses["markdown"].text
     assert "Finding 1 Evidence" in responses["markdown"].text
@@ -13370,13 +13375,17 @@ async def test_export_project_archive_job_all_formats(monkeypatch, tmp_path):
     assert "Confirm the script is expected." in responses["markdown"].text
     assert "Project Archive Metrics" in responses["html"].text
     assert "Package script review" in responses["html"].text
+    assert "Node / package.json" in responses["html"].text
     xml_root = ElementTree.fromstring(responses["xml"].text)
     assert xml_root.findtext("./job/auditType") == "project_archive_basic"
     assert xml_root.findtext("./findings/item/category") == "package_script_review"
     assert xml_root.findtext("./findings/item/category_label") == "Package script review"
+    assert xml_root.findtext("./findings/item/ecosystem") == "node_package"
+    assert xml_root.findtext("./findings/item/ecosystem_label") == "Node / package.json"
     assert responses["pdf"].content.startswith(b"%PDF")
     pdf_text = responses["pdf"].content.decode("latin-1")
     assert "Package script review" in pdf_text
+    assert "Node / package.json" in pdf_text
 
 
 @pytest.mark.anyio
@@ -16362,14 +16371,28 @@ def test_project_archive_finding_metadata_maps_known_and_unknown_ids():
     dependency_metadata = project_archive_finding_metadata("requirements_dependency_not_exactly_pinned")
     assert dependency_metadata.category == "dependency_hygiene"
     assert dependency_metadata.category_label == "Dependency hygiene"
+    assert dependency_metadata.ecosystem == "python_requirements"
+    assert dependency_metadata.ecosystem_label == "Python / requirements"
+
+    contextual_dependency_metadata = project_archive_finding_metadata(
+        "dependency_not_exactly_pinned",
+        evidence="package.json: dependencies: react ^18.3.1",
+    )
+    assert contextual_dependency_metadata.category == "dependency_hygiene"
+    assert contextual_dependency_metadata.ecosystem == "node_package"
+    assert contextual_dependency_metadata.ecosystem_label == "Node / package.json"
 
     script_metadata = project_archive_finding_metadata("package_sensitive_lifecycle_script")
     assert script_metadata.category == "package_script_review"
     assert script_metadata.category_label == "Package script review"
+    assert script_metadata.ecosystem == "node_package"
+    assert script_metadata.ecosystem_label == "Node / package.json"
 
     unknown_metadata = project_archive_finding_metadata("future_project_archive_signal")
     assert unknown_metadata.category == "uncategorized_review_indicator"
     assert unknown_metadata.category_label == "Uncategorized review indicator"
+    assert unknown_metadata.ecosystem == "unknown_ecosystem"
+    assert unknown_metadata.ecosystem_label == "Unknown ecosystem"
 
 
 def test_categorize_project_archive_result_preserves_fields_and_adds_fallbacks():
@@ -16409,13 +16432,23 @@ def test_categorize_project_archive_result_preserves_fields_and_adds_fallbacks()
 
     assert result["findings"][0]["category"] == "dependency_source_review"
     assert result["findings"][0]["category_label"] == "Dependency source review"
+    assert result["findings"][0]["ecosystem"] == "node_package"
+    assert result["findings"][0]["ecosystem_label"] == "Node / package.json"
     assert result["findings"][0]["evidence"] == "package.json: local-lib file:../local-lib"
     assert result["findings"][0]["recommendation"] == "Confirm the referenced source is expected."
     assert result["findings"][0]["level"] == "medium"
     assert result["findings"][1]["category"] == "uncategorized_review_indicator"
     assert result["findings"][1]["category_label"] == "Uncategorized review indicator"
+    assert result["findings"][1]["ecosystem"] == "unknown_ecosystem"
+    assert result["findings"][1]["ecosystem_label"] == "Unknown ecosystem"
     assert result["parsed_manifests"][0]["findings"][0]["category"] == "dependency_hygiene"
     assert result["parsed_manifests"][0]["findings"][0]["category_label"] == "Dependency hygiene"
+    assert result["parsed_manifests"][0]["findings"][0]["ecosystem"] == "python_requirements"
+    assert result["parsed_manifests"][0]["findings"][0]["ecosystem_label"] == "Python / requirements"
+    assert result["ecosystem_summary"] == [
+        {"ecosystem": "node_package", "ecosystem_label": "Node / package.json", "findings_count": 1},
+        {"ecosystem": "unknown_ecosystem", "ecosystem_label": "Unknown ecosystem", "findings_count": 1},
+    ]
 
 
 def test_sbom_helpers_normalize_pyproject_from_project_archive():

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import {
   buildProjectArchiveAuditReport,
+  type ProjectArchiveEcosystemSummary,
   type ParsedProjectManifest,
   type ProjectArchiveFinding,
   type ProjectArchiveManifest
@@ -68,6 +69,10 @@ export function ProjectArchiveJobReport({ job, file }: { job: JobRecord; file?: 
         </ReportSection>
       </div>
 
+      <ReportSection title="Ecosystem Summary">
+        <EcosystemSummaryList entries={report.ecosystemSummary} />
+      </ReportSection>
+
       <ReportSection title="Supported Manifests">
         <ManifestList manifests={report.supportedManifests} empty="No supported manifests detected." />
       </ReportSection>
@@ -92,9 +97,19 @@ export function ProjectArchiveJobReport({ job, file }: { job: JobRecord; file?: 
         {report.findings.length === 0 ? (
           <p className="empty-state">No informational findings reported.</p>
         ) : (
-          <div className="finding-list">
-            {report.findings.map((finding, index) => (
-              <FindingCard key={`${finding.id}-${index}`} finding={finding} />
+          <div className="dependency-groups">
+            {groupFindingsByEcosystem(report.findings).map((group) => (
+              <div className="finding-group" key={group.ecosystem}>
+                <div className="tool-card-header">
+                  <h4>{group.ecosystemLabel}</h4>
+                  <span className="tool-badge not_run">{group.findings.length} findings</span>
+                </div>
+                <div className="finding-list">
+                  {group.findings.map((finding, index) => (
+                    <FindingCard key={`${finding.id}-${index}`} finding={finding} />
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         )}
@@ -115,6 +130,19 @@ export function ProjectArchiveJobReport({ job, file }: { job: JobRecord; file?: 
 
       <RawJson job={job} />
     </div>
+  );
+}
+
+function EcosystemSummaryList({ entries }: { entries: ProjectArchiveEcosystemSummary[] }) {
+  if (entries.length === 0) {
+    return <p className="empty-state">No ecosystem finding summary returned.</p>;
+  }
+  return (
+    <dl className="summary-list">
+      {entries.map((entry) => (
+        <MetadataRow key={entry.ecosystem} label={entry.ecosystemLabel} value={`${entry.findingsCount} findings`} />
+      ))}
+    </dl>
   );
 }
 
@@ -220,6 +248,7 @@ function FindingCard({ finding }: { finding: ProjectArchiveFinding }) {
       <div className="tool-card-header">
         <strong>{finding.title}</strong>
         <div className="badge-row">
+          <span className="status-pill">{finding.ecosystemLabel}</span>
           <span className="status-pill">{finding.categoryLabel}</span>
           <span className={`finding-badge ${finding.level}`}>{finding.level}</span>
         </div>
@@ -229,6 +258,28 @@ function FindingCard({ finding }: { finding: ProjectArchiveFinding }) {
       {finding.recommendation ? <p className="muted">{finding.recommendation}</p> : null}
     </article>
   );
+}
+
+function groupFindingsByEcosystem(findings: ProjectArchiveFinding[]) {
+  const groups = new Map<string, { ecosystem: string; ecosystemLabel: string; findings: ProjectArchiveFinding[] }>();
+  findings.forEach((finding) => {
+    const group = groups.get(finding.ecosystem) ?? {
+      ecosystem: finding.ecosystem,
+      ecosystemLabel: finding.ecosystemLabel,
+      findings: []
+    };
+    group.findings.push(finding);
+    groups.set(finding.ecosystem, group);
+  });
+  return Array.from(groups.values()).sort((a, b) => {
+    if (a.ecosystem === "unknown_ecosystem" && b.ecosystem !== "unknown_ecosystem") {
+      return 1;
+    }
+    if (a.ecosystem !== "unknown_ecosystem" && b.ecosystem === "unknown_ecosystem") {
+      return -1;
+    }
+    return a.ecosystemLabel.localeCompare(b.ecosystemLabel);
+  });
 }
 
 function MetadataRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {

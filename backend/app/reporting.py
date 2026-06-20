@@ -628,6 +628,7 @@ def build_project_archive_sections(result: dict[str, Any]) -> list[ReportSection
         ReportSection("Supported Manifests", flatten_list(result.get("supported_manifests"))),
         ReportSection("Unsupported Manifests", flatten_list(result.get("unsupported_manifests"))),
         ReportSection("Parsed Manifests", flatten_list(result.get("parsed_manifests"))),
+        ReportSection("Ecosystem Summary", flatten_project_archive_ecosystem_summary(result.get("ecosystem_summary"))),
         ReportSection("Findings", flatten_project_archive_findings(result.get("findings"))),
     ]
 
@@ -1613,6 +1614,8 @@ def flatten_project_archive_findings(value: Any) -> list[tuple[str, str]]:
         ("Level", "level"),
         ("Category", "category"),
         ("Category label", "category_label"),
+        ("Ecosystem", "ecosystem"),
+        ("Ecosystem label", "ecosystem_label"),
         ("Description", "description"),
         ("Evidence", "evidence"),
         ("Recommendation", "recommendation"),
@@ -1623,6 +1626,24 @@ def flatten_project_archive_findings(value: Any) -> list[tuple[str, str]]:
             rows.append((f"Finding {index}", stringify(item)))
             continue
         append_preferred_rows(rows, f"Finding {index}", record, preferred_keys)
+    return rows
+
+
+def flatten_project_archive_ecosystem_summary(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("Ecosystem", "ecosystem"),
+        ("Ecosystem label", "ecosystem_label"),
+        ("Findings", "findings_count"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Ecosystem {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"Ecosystem {index}", record, preferred_keys)
     return rows
 
 

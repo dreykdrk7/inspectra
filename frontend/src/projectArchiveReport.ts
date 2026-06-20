@@ -7,6 +7,8 @@ export type ProjectArchiveFinding = {
   level: string;
   category: string;
   categoryLabel: string;
+  ecosystem: string;
+  ecosystemLabel: string;
   description: string;
   evidence: string;
   recommendation: string;
@@ -15,40 +17,55 @@ export type ProjectArchiveFinding = {
 type ProjectArchiveFindingMetadata = {
   category: string;
   categoryLabel: string;
+  ecosystem: string;
+  ecosystemLabel: string;
+};
+
+export type ProjectArchiveEcosystemSummary = {
+  ecosystem: string;
+  ecosystemLabel: string;
+  findingsCount: number;
 };
 
 const UNCATEGORIZED_PROJECT_ARCHIVE_FINDING = {
   category: "uncategorized_review_indicator",
-  categoryLabel: "Uncategorized review indicator"
+  categoryLabel: "Uncategorized review indicator",
+  ecosystem: "unknown_ecosystem",
+  ecosystemLabel: "Unknown ecosystem"
 } satisfies ProjectArchiveFindingMetadata;
 
 const PROJECT_ARCHIVE_FINDING_METADATA: Record<string, ProjectArchiveFindingMetadata> = {
-  dependency_not_exactly_pinned: { category: "dependency_hygiene", categoryLabel: "Dependency hygiene" },
-  requirements_dependency_not_exactly_pinned: { category: "dependency_hygiene", categoryLabel: "Dependency hygiene" },
-  dependency_broad_range: { category: "dependency_hygiene", categoryLabel: "Dependency hygiene" },
-  requirements_option_present: { category: "dependency_hygiene", categoryLabel: "Dependency hygiene" },
-  dependency_external_or_local_source: { category: "dependency_source_review", categoryLabel: "Dependency source review" },
-  requirements_custom_index: { category: "dependency_source_review", categoryLabel: "Dependency source review" },
-  requirements_editable_install: { category: "dependency_source_review", categoryLabel: "Dependency source review" },
-  package_scripts_present: { category: "package_script_review", categoryLabel: "Package script review" },
-  package_sensitive_lifecycle_script: { category: "package_script_review", categoryLabel: "Package script review" },
-  project_archive_multiple_ecosystems: { category: "ecosystem_inventory", categoryLabel: "Ecosystem inventory" },
-  project_archive_manifest_parse_error: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
-  project_archive_manifest_read_error: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
-  project_archive_manifest_decode_error: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
-  project_archive_manifest_too_large: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
-  project_archive_too_many_supported_manifests: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
-  project_archive_total_manifest_bytes_limit: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
-  project_archive_entry_name_too_long: { category: "manifest_parse_limits", categoryLabel: "Manifest parsing and limits" },
-  project_archive_entry_limit_reached: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
-  project_archive_path_traversal: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
-  project_archive_absolute_path: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
-  project_archive_manifest_not_regular_file: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
-  project_archive_zip_entry_limit_preflight: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
-  project_archive_zip_central_directory_too_large: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
-  project_archive_zip64_metadata_requires_review: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
-  project_archive_multidisk_zip_unsupported: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" },
-  project_archive_zip_metadata_preflight_unavailable: { category: "archive_safety_metadata", categoryLabel: "Archive safety metadata" }
+  dependency_not_exactly_pinned: {
+    category: "dependency_hygiene",
+    categoryLabel: "Dependency hygiene",
+    ecosystem: "unknown_ecosystem",
+    ecosystemLabel: "Unknown ecosystem"
+  },
+  requirements_dependency_not_exactly_pinned: pythonRequirementsMetadata("dependency_hygiene", "Dependency hygiene"),
+  dependency_broad_range: unknownEcosystemMetadata("dependency_hygiene", "Dependency hygiene"),
+  requirements_option_present: pythonRequirementsMetadata("dependency_hygiene", "Dependency hygiene"),
+  dependency_external_or_local_source: unknownEcosystemMetadata("dependency_source_review", "Dependency source review"),
+  requirements_custom_index: pythonRequirementsMetadata("dependency_source_review", "Dependency source review"),
+  requirements_editable_install: pythonRequirementsMetadata("dependency_source_review", "Dependency source review"),
+  package_scripts_present: nodePackageMetadata("package_script_review", "Package script review"),
+  package_sensitive_lifecycle_script: nodePackageMetadata("package_script_review", "Package script review"),
+  project_archive_multiple_ecosystems: genericProjectMetadata("ecosystem_inventory", "Ecosystem inventory"),
+  project_archive_manifest_parse_error: unknownEcosystemMetadata("manifest_parse_limits", "Manifest parsing and limits"),
+  project_archive_manifest_read_error: unknownEcosystemMetadata("manifest_parse_limits", "Manifest parsing and limits"),
+  project_archive_manifest_decode_error: unknownEcosystemMetadata("manifest_parse_limits", "Manifest parsing and limits"),
+  project_archive_manifest_too_large: unknownEcosystemMetadata("manifest_parse_limits", "Manifest parsing and limits"),
+  project_archive_too_many_supported_manifests: unknownEcosystemMetadata("manifest_parse_limits", "Manifest parsing and limits"),
+  project_archive_total_manifest_bytes_limit: unknownEcosystemMetadata("manifest_parse_limits", "Manifest parsing and limits"),
+  project_archive_entry_name_too_long: genericProjectMetadata("manifest_parse_limits", "Manifest parsing and limits"),
+  project_archive_entry_limit_reached: genericProjectMetadata("archive_safety_metadata", "Archive safety metadata"),
+  project_archive_path_traversal: genericProjectMetadata("archive_safety_metadata", "Archive safety metadata"),
+  project_archive_absolute_path: genericProjectMetadata("archive_safety_metadata", "Archive safety metadata"),
+  project_archive_manifest_not_regular_file: genericProjectMetadata("archive_safety_metadata", "Archive safety metadata"),
+  project_archive_zip_entry_limit_preflight: genericProjectMetadata("archive_safety_metadata", "Archive safety metadata"),
+  project_archive_zip_central_directory_too_large: genericProjectMetadata("archive_safety_metadata", "Archive safety metadata"),
+  project_archive_zip64_metadata_requires_review: genericProjectMetadata("archive_safety_metadata", "Archive safety metadata"),
+  project_archive_multidisk_zip_unsupported: genericProjectMetadata("archive_safety_metadata", "Archive safety metadata"),
+  project_archive_zip_metadata_preflight_unavailable: genericProjectMetadata("archive_safety_metadata", "Archive safety metadata")
 };
 
 export type ProjectArchiveManifest = {
@@ -85,6 +102,7 @@ export type ProjectArchiveAuditReport = {
   supportedManifests: ProjectArchiveManifest[];
   unsupportedManifests: ProjectArchiveManifest[];
   parsedManifests: ParsedProjectManifest[];
+  ecosystemSummary: ProjectArchiveEcosystemSummary[];
   findings: ProjectArchiveFinding[];
   errors: string[];
 };
@@ -92,6 +110,8 @@ export type ProjectArchiveAuditReport = {
 export function buildProjectArchiveAuditReport(job: JobRecord, file?: FileRecord): ProjectArchiveAuditReport {
   const result = asRecord(job.result);
   const fileIdentification = asRecord(result?.file_identification);
+
+  const findings = findingsFromValue(result?.findings);
 
   return {
     isProjectArchiveAudit: job.audit_type === "project_archive_basic",
@@ -108,7 +128,8 @@ export function buildProjectArchiveAuditReport(job: JobRecord, file?: FileRecord
     supportedManifests: manifestsFromValue(result?.supported_manifests),
     unsupportedManifests: manifestsFromValue(result?.unsupported_manifests),
     parsedManifests: parsedManifestsFromValue(result?.parsed_manifests),
-    findings: findingsFromValue(result?.findings),
+    ecosystemSummary: ecosystemSummaryFromValue(result?.ecosystem_summary, findings),
+    findings,
     errors: asStringArray(result?.errors)
   };
 }
@@ -143,7 +164,10 @@ function parsedManifestsFromValue(value: unknown): ParsedProjectManifest[] {
       project: entriesFromRecord(asRecord(parsed?.project)),
       dependencies: dependencyGroupsFromRecord(asRecord(parsed?.dependencies)),
       scripts: entriesFromRecord(asRecord(parsed?.scripts)),
-      findings: findingsFromValue(record?.findings),
+      findings: findingsFromValue(record?.findings, {
+        path: asString(record?.path),
+        manifestType: asString(record?.manifest_type)
+      }),
       errors: asStringArray(record?.errors)
     };
   });
@@ -171,20 +195,26 @@ function dependencyFromValue(value: unknown): { name: string; specifier: string;
   };
 }
 
-function findingsFromValue(value: unknown): ProjectArchiveFinding[] {
+function findingsFromValue(value: unknown, context?: { path?: string | null; manifestType?: string | null }): ProjectArchiveFinding[] {
   if (!Array.isArray(value)) {
     return [];
   }
   return value.map((item) => {
     const record = asRecord(item);
     const id = asString(record?.id) ?? "finding";
-    const metadata = projectArchiveFindingMetadata(id);
+    const metadata = projectArchiveFindingMetadata(id, {
+      evidence: asString(record?.evidence),
+      path: context?.path,
+      manifestType: context?.manifestType
+    });
     return {
       id,
       title: asString(record?.title) ?? "Informational finding",
       level: asString(record?.level) ?? asString(record?.severity) ?? "info",
       category: metadata.category,
       categoryLabel: metadata.categoryLabel,
+      ecosystem: asString(record?.ecosystem) ?? metadata.ecosystem,
+      ecosystemLabel: asString(record?.ecosystem_label) ?? asString(record?.ecosystemLabel) ?? metadata.ecosystemLabel,
       description: asString(record?.description) ?? "",
       evidence: asString(record?.evidence) ?? "",
       recommendation: asString(record?.recommendation) ?? ""
@@ -192,8 +222,113 @@ function findingsFromValue(value: unknown): ProjectArchiveFinding[] {
   });
 }
 
-function projectArchiveFindingMetadata(findingId: string): ProjectArchiveFindingMetadata {
-  return PROJECT_ARCHIVE_FINDING_METADATA[findingId] ?? UNCATEGORIZED_PROJECT_ARCHIVE_FINDING;
+function projectArchiveFindingMetadata(
+  findingId: string,
+  context: { evidence?: string | null; path?: string | null; manifestType?: string | null } = {}
+): ProjectArchiveFindingMetadata {
+  const metadata = PROJECT_ARCHIVE_FINDING_METADATA[findingId] ?? UNCATEGORIZED_PROJECT_ARCHIVE_FINDING;
+  if (!CONTEXTUAL_ECOSYSTEM_FINDING_IDS.has(findingId)) {
+    return metadata;
+  }
+  const ecosystem = inferProjectArchiveEcosystem(context);
+  return ecosystem ? { ...metadata, ecosystem: ecosystem.id, ecosystemLabel: ecosystem.label } : metadata;
+}
+
+function ecosystemSummaryFromValue(value: unknown, findings: ProjectArchiveFinding[]): ProjectArchiveEcosystemSummary[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        const record = asRecord(item);
+        if (!record) {
+          return null;
+        }
+        return {
+          ecosystem: asString(record.ecosystem) ?? "unknown_ecosystem",
+          ecosystemLabel: asString(record.ecosystem_label) ?? asString(record.ecosystemLabel) ?? "Unknown ecosystem",
+          findingsCount: asNumber(record.findings_count) ?? asNumber(record.findingsCount) ?? 0
+        };
+      })
+      .filter((item): item is ProjectArchiveEcosystemSummary => item !== null);
+  }
+
+  const groups = new Map<string, ProjectArchiveEcosystemSummary>();
+  findings.forEach((finding) => {
+    const group = groups.get(finding.ecosystem) ?? {
+      ecosystem: finding.ecosystem,
+      ecosystemLabel: finding.ecosystemLabel,
+      findingsCount: 0
+    };
+    group.findingsCount += 1;
+    groups.set(finding.ecosystem, group);
+  });
+  return Array.from(groups.values()).sort(compareEcosystemSummary);
+}
+
+const CONTEXTUAL_ECOSYSTEM_FINDING_IDS = new Set([
+  "dependency_not_exactly_pinned",
+  "dependency_broad_range",
+  "dependency_external_or_local_source",
+  "project_archive_manifest_parse_error",
+  "project_archive_manifest_read_error",
+  "project_archive_manifest_decode_error",
+  "project_archive_manifest_too_large"
+]);
+
+function inferProjectArchiveEcosystem(context: {
+  evidence?: string | null;
+  path?: string | null;
+  manifestType?: string | null;
+}): { id: string; label: string } | null {
+  const normalized = [context.path, context.manifestType, context.evidence]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(" ")
+    .replace(/\\/g, "/")
+    .toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (["package.json", "package-lock.json", "package_json", "package-lock"].some((marker) => normalized.includes(marker))) {
+    return { id: "node_package", label: "Node / package.json" };
+  }
+  if (["requirements.txt", "requirements_txt", "pyproject.toml", "pyproject_toml"].some((marker) => normalized.includes(marker))) {
+    return { id: "python_requirements", label: "Python / requirements" };
+  }
+  if (["docker-compose.yml", "docker-compose.yaml", "compose.yaml", "compose.yml"].some((marker) => normalized.includes(marker))) {
+    return { id: "docker_compose", label: "Docker / Compose" };
+  }
+  if ([".github/workflows/", ".gitlab-ci.yml", "circleci/config.yml", "jenkinsfile"].some((marker) => normalized.includes(marker))) {
+    return { id: "ci_cd", label: "CI/CD" };
+  }
+  if (["vite.config.", "next.config.", "nuxt.config.", "django", "settings.py"].some((marker) => normalized.includes(marker))) {
+    return { id: "framework_config", label: "Framework/config" };
+  }
+  return null;
+}
+
+function pythonRequirementsMetadata(category: string, categoryLabel: string): ProjectArchiveFindingMetadata {
+  return { category, categoryLabel, ecosystem: "python_requirements", ecosystemLabel: "Python / requirements" };
+}
+
+function nodePackageMetadata(category: string, categoryLabel: string): ProjectArchiveFindingMetadata {
+  return { category, categoryLabel, ecosystem: "node_package", ecosystemLabel: "Node / package.json" };
+}
+
+function genericProjectMetadata(category: string, categoryLabel: string): ProjectArchiveFindingMetadata {
+  return { category, categoryLabel, ecosystem: "generic_project_metadata", ecosystemLabel: "Generic project metadata" };
+}
+
+function unknownEcosystemMetadata(category: string, categoryLabel: string): ProjectArchiveFindingMetadata {
+  return { category, categoryLabel, ecosystem: "unknown_ecosystem", ecosystemLabel: "Unknown ecosystem" };
+}
+
+function compareEcosystemSummary(a: ProjectArchiveEcosystemSummary, b: ProjectArchiveEcosystemSummary): number {
+  if (a.ecosystem === "unknown_ecosystem" && b.ecosystem !== "unknown_ecosystem") {
+    return 1;
+  }
+  if (a.ecosystem !== "unknown_ecosystem" && b.ecosystem === "unknown_ecosystem") {
+    return -1;
+  }
+  return a.ecosystemLabel.localeCompare(b.ecosystemLabel);
 }
 
 function entriesFromRecord(record: Record<string, unknown> | null): MetadataEntry[] {

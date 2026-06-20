@@ -45,6 +45,14 @@ describe("ProjectArchiveJobReport", () => {
                 recommendation: "Confirm the script is expected."
               },
               {
+                id: "requirements_dependency_not_exactly_pinned",
+                title: "Dependency is not exactly pinned",
+                level: "low",
+                description: "Review repeatability.",
+                evidence: "requirements.txt: line 1: fastapi>=0.110",
+                recommendation: "Consider exact pins where deterministic installs matter."
+              },
+              {
                 id: "future_project_archive_signal",
                 title: "Future project archive signal",
                 level: "info",
@@ -60,7 +68,12 @@ describe("ProjectArchiveJobReport", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Informational Findings" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ecosystem Summary" })).toBeInTheDocument();
+    expect(screen.getAllByText("Node / package.json").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Python / requirements").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Unknown ecosystem").length).toBeGreaterThan(0);
     expect(screen.getByText("Package script review")).toBeInTheDocument();
+    expect(screen.getByText("Dependency hygiene")).toBeInTheDocument();
     expect(screen.getByText("Uncategorized review indicator")).toBeInTheDocument();
     expect(screen.getByText("medium")).toBeInTheDocument();
     expect(screen.getByText("package.json: postinstall: node setup.js")).toBeInTheDocument();

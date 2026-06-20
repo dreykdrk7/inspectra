@@ -151,6 +151,11 @@ describe("report helpers", () => {
         ],
         findings: [
           { id: "package_sensitive_lifecycle_script", title: "Lifecycle script", level: "medium" },
+          {
+            id: "requirements_dependency_not_exactly_pinned",
+            title: "Dependency is not exactly pinned",
+            level: "low"
+          },
           { id: "future_project_archive_signal", title: "Future signal", level: "info" }
         ]
       }
@@ -164,18 +169,36 @@ describe("report helpers", () => {
     expect(report.parsedManifests[0].findings[0]).toMatchObject({
       id: "package_sensitive_lifecycle_script",
       category: "package_script_review",
-      categoryLabel: "Package script review"
+      categoryLabel: "Package script review",
+      ecosystem: "node_package",
+      ecosystemLabel: "Node / package.json"
     });
     expect(report.findings[0]).toMatchObject({
       id: "package_sensitive_lifecycle_script",
       category: "package_script_review",
-      categoryLabel: "Package script review"
+      categoryLabel: "Package script review",
+      ecosystem: "node_package",
+      ecosystemLabel: "Node / package.json"
     });
     expect(report.findings[1]).toMatchObject({
+      id: "requirements_dependency_not_exactly_pinned",
+      category: "dependency_hygiene",
+      categoryLabel: "Dependency hygiene",
+      ecosystem: "python_requirements",
+      ecosystemLabel: "Python / requirements"
+    });
+    expect(report.findings[2]).toMatchObject({
       id: "future_project_archive_signal",
       category: "uncategorized_review_indicator",
-      categoryLabel: "Uncategorized review indicator"
+      categoryLabel: "Uncategorized review indicator",
+      ecosystem: "unknown_ecosystem",
+      ecosystemLabel: "Unknown ecosystem"
     });
+    expect(report.ecosystemSummary).toEqual([
+      { ecosystem: "node_package", ecosystemLabel: "Node / package.json", findingsCount: 1 },
+      { ecosystem: "python_requirements", ecosystemLabel: "Python / requirements", findingsCount: 1 },
+      { ecosystem: "unknown_ecosystem", ecosystemLabel: "Unknown ecosystem", findingsCount: 1 }
+    ]);
   });
 
   it("normalizes web audit headers, cookies, and findings", () => {
