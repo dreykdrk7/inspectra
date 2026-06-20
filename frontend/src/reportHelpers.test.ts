@@ -322,6 +322,82 @@ describe("report helpers", () => {
     ]);
   });
 
+  it("preserves backend-provided project archive dependency pinning summaries", () => {
+    const report = buildProjectArchiveAuditReport({
+      ...baseJob,
+      audit_type: "project_archive_basic",
+      result: {
+        archive_type: "zip",
+        findings: [
+          {
+            id: "requirements_dependency_not_exactly_pinned",
+            title: "Dependency is not exactly pinned",
+            level: "low",
+            evidence: "requirements.txt: line 1: fastapi>=0.110"
+          }
+        ],
+        dependency_pinning_summary: [
+          {
+            ecosystem: "python_requirements",
+            ecosystem_label: "Python / requirements",
+            category: "dependency_hygiene",
+            category_label: "Dependency hygiene",
+            theme: "not_exactly_pinned",
+            theme_label: "Dependency not exactly pinned",
+            finding_ids: ["requirements_dependency_not_exactly_pinned"],
+            findings_count: 1,
+            manifest_count: 1,
+            manifest_paths: ["requirements.txt"],
+            summary: "Backend supplied dependency pinning summary."
+          }
+        ]
+      }
+    });
+
+    expect(report.dependencyPinningSummary).toEqual([
+      {
+        ecosystem: "python_requirements",
+        ecosystemLabel: "Python / requirements",
+        category: "dependency_hygiene",
+        categoryLabel: "Dependency hygiene",
+        theme: "not_exactly_pinned",
+        themeLabel: "Dependency not exactly pinned",
+        findingIds: ["requirements_dependency_not_exactly_pinned"],
+        findingsCount: 1,
+        manifestCount: 1,
+        manifestPaths: ["requirements.txt"],
+        summary: "Backend supplied dependency pinning summary."
+      }
+    ]);
+  });
+
+  it("does not summarize project archive package scripts or dependency source review findings as pinning", () => {
+    const report = buildProjectArchiveAuditReport({
+      ...baseJob,
+      audit_type: "project_archive_basic",
+      result: {
+        archive_type: "zip",
+        findings: [
+          {
+            id: "package_sensitive_lifecycle_script",
+            title: "Lifecycle script",
+            level: "medium",
+            evidence: "package.json: postinstall: node setup.js"
+          },
+          {
+            id: "dependency_external_or_local_source",
+            title: "Dependency references URL, VCS, or local source",
+            level: "medium",
+            evidence: "package.json: local-lib file:../local-lib"
+          }
+        ]
+      }
+    });
+
+    expect(report.dependencyPinningSummary).toEqual([]);
+    expect(report.findings).toHaveLength(2);
+  });
+
   it("normalizes web audit headers, cookies, and findings", () => {
     const report = buildWebAuditReport({
       ...baseJob,

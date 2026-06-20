@@ -452,8 +452,9 @@ def render_xml_report(job: JobRecord) -> str:
     append_value(root, "summary", public_result.get("summary", build_summary(job)))
     append_value(root, "hashes", public_result.get("hashes", {}))
     append_value(root, "findings", public_result.get("findings", []))
-    if "dependency_pinning_summary" in public_result:
-        append_value(root, "dependencyPinningSummary", public_result.get("dependency_pinning_summary", []))
+    dependency_pinning_summary = public_result.get("dependency_pinning_summary", [])
+    if isinstance(dependency_pinning_summary, list) and dependency_pinning_summary:
+        append_value(root, "dependencyPinningSummary", dependency_pinning_summary)
     append_value(root, "toolResults", public_result.get("tool_outputs", {}))
     append_value(root, "errors", collect_errors(job))
     append_value(root, "sections", {section.title: dict(section.items) for section in build_report_sections(job)})
@@ -620,7 +621,7 @@ def build_archive_sections(result: dict[str, Any]) -> list[ReportSection]:
 
 
 def build_project_archive_sections(result: dict[str, Any]) -> list[ReportSection]:
-    return [
+    sections = [
         ReportSection(
             "Project Archive Identification",
             flatten_mapping(as_dict(result.get("file_identification"))) + [("Archive type", stringify(result.get("archive_type")))],
@@ -631,9 +632,12 @@ def build_project_archive_sections(result: dict[str, Any]) -> list[ReportSection
         ReportSection("Unsupported Manifests", flatten_list(result.get("unsupported_manifests"))),
         ReportSection("Parsed Manifests", flatten_list(result.get("parsed_manifests"))),
         ReportSection("Ecosystem Summary", flatten_project_archive_ecosystem_summary(result.get("ecosystem_summary"))),
-        ReportSection("Dependency Pinning Summary", flatten_project_archive_dependency_pinning_summary(result.get("dependency_pinning_summary"))),
-        ReportSection("Findings", flatten_project_archive_findings(result.get("findings"))),
     ]
+    dependency_pinning_summary = flatten_project_archive_dependency_pinning_summary(result.get("dependency_pinning_summary"))
+    if dependency_pinning_summary:
+        sections.append(ReportSection("Dependency Pinning Summary", dependency_pinning_summary))
+    sections.append(ReportSection("Findings", flatten_project_archive_findings(result.get("findings"))))
+    return sections
 
 
 def build_web_sections(result: dict[str, Any]) -> list[ReportSection]:

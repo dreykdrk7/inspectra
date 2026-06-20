@@ -13396,6 +13396,34 @@ async def test_export_project_archive_job_all_formats(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_export_project_archive_job_omits_dependency_pinning_summary_when_absent(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = save_project_archive_no_pinning_export_fixture_job()
+    expected = {
+        "markdown": ("text/markdown", "md"),
+        "html": ("text/html", "html"),
+        "xml": ("application/xml", "xml"),
+        "pdf": ("application/pdf", "pdf"),
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = {
+            report_format: await client.get(f"/jobs/{job.id}/export/{report_format}")
+            for report_format in expected
+        }
+
+    for report_format, response in responses.items():
+        content_type, _extension = expected[report_format]
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(content_type)
+    assert "Dependency Pinning Summary" not in responses["markdown"].text
+    assert "Dependency Pinning Summary" not in responses["html"].text
+    assert ElementTree.fromstring(responses["xml"].text).find("./dependencyPinningSummary") is None
+    assert b"Dependency Pinning Summary" not in responses["pdf"].content
+
+
+@pytest.mark.anyio
 async def test_export_web_job_all_formats(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     job = save_web_export_fixture_job()
@@ -16477,6 +16505,13 @@ def test_project_archive_dependency_pinning_summary_groups_by_ecosystem_and_mani
                     "recommendation": "Use exact pins where deterministic installs matter.",
                 },
                 {
+                    "id": "requirements_dependency_not_exactly_pinned",
+                    "title": "Dependency is not exactly pinned",
+                    "level": "low",
+                    "evidence": "requirements.txt: line 2: uvicorn>=0.29",
+                    "recommendation": "Use exact pins where deterministic installs matter.",
+                },
+                {
                     "id": "dependency_not_exactly_pinned",
                     "title": "Dependency is not exactly pinned",
                     "level": "info",
@@ -16522,7 +16557,7 @@ def test_project_archive_dependency_pinning_summary_groups_by_ecosystem_and_mani
     assert summaries[("node_package", "not_exactly_pinned")]["manifest_paths"] == ["package.json"]
     assert summaries[("node_package", "broad_range")]["findings_count"] == 1
     assert summaries[("node_package", "broad_range")]["manifest_paths"] == ["package.json"]
-    assert summaries[("python_requirements", "not_exactly_pinned")]["findings_count"] == 2
+    assert summaries[("python_requirements", "not_exactly_pinned")]["findings_count"] == 3
     assert summaries[("python_requirements", "not_exactly_pinned")]["manifest_paths"] == [
         "requirements.txt",
         "services/api/pyproject.toml",
@@ -16918,6 +16953,59 @@ def save_project_archive_export_fixture_job() -> JobRecord:
                     "evidence": "package.json: dependencies: react ^18.3.1",
                     "recommendation": "Use exact pins or lockfiles where deterministic builds matter.",
                 }
+            ],
+            "errors": [],
+        },
+    )
+    app.state.jobs.save(job)
+    return job
+
+
+def save_project_archive_no_pinning_export_fixture_job() -> JobRecord:
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="d" * 32,
+        audit_type="project_archive_basic",
+        file_id="4" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "project_archive_basic",
+            "archive_type": "zip",
+            "completed_at": now.isoformat(),
+            "hashes": {"sha256": "def456"},
+            "file_identification": {"size_bytes": 2048, "original_filename": "project-no-pinning.zip"},
+            "summary": {
+                "total_entries_seen": 3,
+                "supported_manifests_found": 1,
+                "supported_manifests_parsed": 1,
+                "unsupported_manifests_detected": 0,
+                "total_dependencies": 1,
+                "dependency_groups": ["dependencies"],
+                "findings_count": 2,
+                "truncated": False,
+            },
+            "supported_manifests": [{"path": "package.json", "manifest_type": "package_json", "status": "parsed"}],
+            "unsupported_manifests": [],
+            "parsed_manifests": [],
+            "findings": [
+                {
+                    "id": "package_sensitive_lifecycle_script",
+                    "title": "Lifecycle script should be reviewed",
+                    "level": "medium",
+                    "description": "Review before running package manager commands.",
+                    "evidence": "package.json: postinstall: node setup.js",
+                    "recommendation": "Confirm the script is expected.",
+                },
+                {
+                    "id": "dependency_external_or_local_source",
+                    "title": "Dependency references URL, VCS, or local source",
+                    "level": "medium",
+                    "description": "Review the source before installing.",
+                    "evidence": "package.json: local-lib file:../local-lib",
+                    "recommendation": "Confirm the referenced source is expected.",
+                },
             ],
             "errors": [],
         },
