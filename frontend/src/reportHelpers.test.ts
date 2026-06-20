@@ -154,7 +154,8 @@ describe("report helpers", () => {
           {
             id: "requirements_dependency_not_exactly_pinned",
             title: "Dependency is not exactly pinned",
-            level: "low"
+            level: "low",
+            evidence: "requirements.txt: line 1: fastapi>=0.110"
           },
           { id: "future_project_archive_signal", title: "Future signal", level: "info" }
         ]
@@ -199,6 +200,21 @@ describe("report helpers", () => {
       { ecosystem: "python_requirements", ecosystemLabel: "Python / requirements", findingsCount: 1 },
       { ecosystem: "unknown_ecosystem", ecosystemLabel: "Unknown ecosystem", findingsCount: 1 }
     ]);
+    expect(report.dependencyPinningSummary).toEqual([
+      {
+        ecosystem: "python_requirements",
+        ecosystemLabel: "Python / requirements",
+        category: "dependency_hygiene",
+        categoryLabel: "Dependency hygiene",
+        theme: "not_exactly_pinned",
+        themeLabel: "Dependency not exactly pinned",
+        findingIds: ["requirements_dependency_not_exactly_pinned"],
+        findingsCount: 1,
+        manifestCount: 1,
+        manifestPaths: ["requirements.txt"],
+        summary: "Python / requirements: 1 dependency pinning review indicator across 1 manifest."
+      }
+    ]);
   });
 
   it("preserves backend project archive metadata and keeps ambiguous dependency ecosystems neutral", () => {
@@ -242,6 +258,67 @@ describe("report helpers", () => {
     expect(report.ecosystemSummary).toEqual([
       { ecosystem: "generic_project_metadata", ecosystemLabel: "Generic project metadata", findingsCount: 1 },
       { ecosystem: "unknown_ecosystem", ecosystemLabel: "Unknown ecosystem", findingsCount: 1 }
+    ]);
+    expect(report.dependencyPinningSummary).toEqual([
+      {
+        ecosystem: "unknown_ecosystem",
+        ecosystemLabel: "Unknown ecosystem",
+        category: "dependency_hygiene",
+        categoryLabel: "Dependency hygiene",
+        theme: "not_exactly_pinned",
+        themeLabel: "Dependency not exactly pinned",
+        findingIds: ["dependency_not_exactly_pinned"],
+        findingsCount: 1,
+        manifestCount: 0,
+        manifestPaths: [],
+        summary: "Unknown ecosystem: 1 dependency pinning review indicator with no manifest path identified."
+      }
+    ]);
+  });
+
+  it("derives project archive dependency summaries from parsed findings when top-level findings are absent", () => {
+    const report = buildProjectArchiveAuditReport({
+      ...baseJob,
+      audit_type: "project_archive_basic",
+      result: {
+        archive_type: "zip",
+        parsed_manifests: [
+          {
+            path: "package.json",
+            manifest_type: "package_json",
+            findings: [
+              {
+                id: "dependency_broad_range",
+                title: "Dependency uses a very broad range",
+                level: "low",
+                evidence: "dependencies: lodash latest"
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(report.findings).toEqual([]);
+    expect(report.parsedManifests[0].findings[0]).toMatchObject({
+      id: "dependency_broad_range",
+      ecosystem: "node_package",
+      ecosystemLabel: "Node / package.json"
+    });
+    expect(report.dependencyPinningSummary).toEqual([
+      {
+        ecosystem: "node_package",
+        ecosystemLabel: "Node / package.json",
+        category: "dependency_hygiene",
+        categoryLabel: "Dependency hygiene",
+        theme: "broad_range",
+        themeLabel: "Dependency broad range",
+        findingIds: ["dependency_broad_range"],
+        findingsCount: 1,
+        manifestCount: 1,
+        manifestPaths: ["package.json"],
+        summary: "Node / package.json: 1 dependency broad range review indicator across 1 manifest."
+      }
     ]);
   });
 

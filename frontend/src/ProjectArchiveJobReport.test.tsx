@@ -69,6 +69,10 @@ describe("ProjectArchiveJobReport", () => {
 
     expect(screen.getByRole("heading", { name: "Informational Findings" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ecosystem Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dependency Pinning Summary" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Python / requirements: 1 dependency pinning review indicator across 1 manifest.")
+    ).toBeInTheDocument();
     expect(screen.getAllByText("Node / package.json").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Python / requirements").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Unknown ecosystem").length).toBeGreaterThan(0);

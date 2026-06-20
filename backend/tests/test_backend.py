@@ -13367,6 +13367,8 @@ async def test_export_project_archive_job_all_formats(monkeypatch, tmp_path):
     assert "Finding 1 Ecosystem label" in responses["markdown"].text
     assert "Node / package.json" in responses["markdown"].text
     assert "Ecosystem Summary" in responses["markdown"].text
+    assert "Dependency Pinning Summary" in responses["markdown"].text
+    assert "Node / package.json: 1 dependency pinning review indicator across 1 manifest." in responses["markdown"].text
     assert "Finding 1 Level" in responses["markdown"].text
     assert "medium" in responses["markdown"].text
     assert "Finding 1 Evidence" in responses["markdown"].text
@@ -13376,16 +13378,21 @@ async def test_export_project_archive_job_all_formats(monkeypatch, tmp_path):
     assert "Project Archive Metrics" in responses["html"].text
     assert "Package script review" in responses["html"].text
     assert "Node / package.json" in responses["html"].text
+    assert "Dependency Pinning Summary" in responses["html"].text
     xml_root = ElementTree.fromstring(responses["xml"].text)
     assert xml_root.findtext("./job/auditType") == "project_archive_basic"
     assert xml_root.findtext("./findings/item/category") == "package_script_review"
     assert xml_root.findtext("./findings/item/category_label") == "Package script review"
     assert xml_root.findtext("./findings/item/ecosystem") == "node_package"
     assert xml_root.findtext("./findings/item/ecosystem_label") == "Node / package.json"
+    assert xml_root.findtext("./dependencyPinningSummary/item/summary") == (
+        "Node / package.json: 1 dependency pinning review indicator across 1 manifest."
+    )
     assert responses["pdf"].content.startswith(b"%PDF")
     pdf_text = responses["pdf"].content.decode("latin-1")
     assert "Package script review" in pdf_text
     assert "Node / package.json" in pdf_text
+    assert "dependency pinning review indicator" in pdf_text
 
 
 @pytest.mark.anyio
@@ -16455,6 +16462,114 @@ def test_categorize_project_archive_result_preserves_fields_and_adds_fallbacks()
         {"ecosystem": "node_package", "ecosystem_label": "Node / package.json", "findings_count": 1},
         {"ecosystem": "unknown_ecosystem", "ecosystem_label": "Unknown ecosystem", "findings_count": 1},
     ]
+    assert result["dependency_pinning_summary"] == []
+
+
+def test_project_archive_dependency_pinning_summary_groups_by_ecosystem_and_manifest():
+    result = categorize_project_archive_result(
+        {
+            "findings": [
+                {
+                    "id": "requirements_dependency_not_exactly_pinned",
+                    "title": "Dependency is not exactly pinned",
+                    "level": "low",
+                    "evidence": "requirements.txt: line 1: fastapi>=0.110",
+                    "recommendation": "Use exact pins where deterministic installs matter.",
+                },
+                {
+                    "id": "dependency_not_exactly_pinned",
+                    "title": "Dependency is not exactly pinned",
+                    "level": "info",
+                    "evidence": "services/api/pyproject.toml: dependencies: requests >=2",
+                    "recommendation": "Use exact pins where deterministic installs matter.",
+                },
+                {
+                    "id": "dependency_not_exactly_pinned",
+                    "title": "Dependency is not exactly pinned",
+                    "level": "info",
+                    "evidence": "package.json: dependencies: react ^18.3.1",
+                    "recommendation": "Use exact pins where deterministic installs matter.",
+                },
+                {
+                    "id": "dependency_broad_range",
+                    "title": "Dependency uses a very broad range",
+                    "level": "low",
+                    "evidence": "package.json: dependencies: lodash latest",
+                    "recommendation": "Prefer a deliberate version range or lockfile.",
+                },
+                {
+                    "id": "dependency_external_or_local_source",
+                    "title": "Dependency references URL, VCS, or local source",
+                    "level": "medium",
+                    "evidence": "package.json: local-lib file:../local-lib",
+                    "recommendation": "Confirm the referenced source is expected.",
+                },
+                {
+                    "id": "future_project_archive_signal",
+                    "title": "Future signal",
+                    "level": "info",
+                    "evidence": "example",
+                    "recommendation": "Review manually.",
+                },
+            ]
+        }
+    )
+
+    summaries = {
+        (item["ecosystem"], item["theme"]): item for item in result["dependency_pinning_summary"]
+    }
+    assert summaries[("node_package", "not_exactly_pinned")]["findings_count"] == 1
+    assert summaries[("node_package", "not_exactly_pinned")]["manifest_paths"] == ["package.json"]
+    assert summaries[("node_package", "broad_range")]["findings_count"] == 1
+    assert summaries[("node_package", "broad_range")]["manifest_paths"] == ["package.json"]
+    assert summaries[("python_requirements", "not_exactly_pinned")]["findings_count"] == 2
+    assert summaries[("python_requirements", "not_exactly_pinned")]["manifest_paths"] == [
+        "requirements.txt",
+        "services/api/pyproject.toml",
+    ]
+    assert "dependency_source_review" not in {
+        item["category"] for item in result["dependency_pinning_summary"]
+    }
+    assert result["findings"][0]["level"] == "low"
+    assert result["findings"][0]["evidence"] == "requirements.txt: line 1: fastapi>=0.110"
+    assert result["findings"][0]["recommendation"] == "Use exact pins where deterministic installs matter."
+
+
+def test_project_archive_dependency_pinning_summary_uses_parsed_findings_when_top_level_absent():
+    result = categorize_project_archive_result(
+        {
+            "parsed_manifests": [
+                {
+                    "path": "package.json",
+                    "manifest_type": "package_json",
+                    "findings": [
+                        {
+                            "id": "dependency_broad_range",
+                            "title": "Dependency uses a very broad range",
+                            "level": "low",
+                            "evidence": "dependencies: lodash latest",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert result["dependency_pinning_summary"] == [
+        {
+            "ecosystem": "node_package",
+            "ecosystem_label": "Node / package.json",
+            "category": "dependency_hygiene",
+            "category_label": "Dependency hygiene",
+            "theme": "broad_range",
+            "theme_label": "Dependency broad range",
+            "finding_ids": ["dependency_broad_range"],
+            "findings_count": 1,
+            "manifest_count": 1,
+            "manifest_paths": ["package.json"],
+            "summary": "Node / package.json: 1 dependency broad range review indicator across 1 manifest.",
+        }
+    ]
 
 
 def test_sbom_helpers_normalize_pyproject_from_project_archive():
@@ -16766,7 +16881,7 @@ def save_project_archive_export_fixture_job() -> JobRecord:
                 "unsupported_manifests_detected": 1,
                 "total_dependencies": 1,
                 "dependency_groups": ["dependencies"],
-                "findings_count": 1,
+                "findings_count": 2,
                 "truncated": False,
             },
             "supported_manifests": [{"path": "package.json", "manifest_type": "package_json", "status": "parsed"}],
@@ -16794,6 +16909,14 @@ def save_project_archive_export_fixture_job() -> JobRecord:
                     "description": "Review before running package manager commands.",
                     "evidence": "package.json: postinstall: node setup.js",
                     "recommendation": "Confirm the script is expected.",
+                },
+                {
+                    "id": "dependency_not_exactly_pinned",
+                    "title": "Dependency is not exactly pinned",
+                    "level": "info",
+                    "description": "Review dependency repeatability.",
+                    "evidence": "package.json: dependencies: react ^18.3.1",
+                    "recommendation": "Use exact pins or lockfiles where deterministic builds matter.",
                 }
             ],
             "errors": [],

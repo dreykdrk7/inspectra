@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import {
   buildProjectArchiveAuditReport,
+  type ProjectArchiveDependencyPinningSummary,
   type ProjectArchiveEcosystemSummary,
   type ParsedProjectManifest,
   type ProjectArchiveFinding,
@@ -73,6 +74,10 @@ export function ProjectArchiveJobReport({ job, file }: { job: JobRecord; file?: 
         <EcosystemSummaryList entries={report.ecosystemSummary} />
       </ReportSection>
 
+      <ReportSection title="Dependency Pinning Summary">
+        <DependencyPinningSummaryList entries={report.dependencyPinningSummary} />
+      </ReportSection>
+
       <ReportSection title="Supported Manifests">
         <ManifestList manifests={report.supportedManifests} empty="No supported manifests detected." />
       </ReportSection>
@@ -129,6 +134,23 @@ export function ProjectArchiveJobReport({ job, file }: { job: JobRecord; file?: 
       </ReportSection>
 
       <RawJson job={job} />
+    </div>
+  );
+}
+
+function DependencyPinningSummaryList({ entries }: { entries: ProjectArchiveDependencyPinningSummary[] }) {
+  if (entries.length === 0) {
+    return <p className="empty-state">No dependency pinning summary returned.</p>;
+  }
+  return (
+    <div className="dependency-list">
+      {entries.map((entry) => (
+        <div className="dependency-row" key={`${entry.ecosystem}-${entry.theme}`}>
+          <strong>{entry.ecosystemLabel}</strong>
+          <span>{entry.summary}</span>
+          <span className="muted">{entry.manifestPaths.length > 0 ? entry.manifestPaths.join(", ") : entry.themeLabel}</span>
+        </div>
+      ))}
     </div>
   );
 }

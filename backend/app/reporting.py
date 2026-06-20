@@ -452,6 +452,8 @@ def render_xml_report(job: JobRecord) -> str:
     append_value(root, "summary", public_result.get("summary", build_summary(job)))
     append_value(root, "hashes", public_result.get("hashes", {}))
     append_value(root, "findings", public_result.get("findings", []))
+    if "dependency_pinning_summary" in public_result:
+        append_value(root, "dependencyPinningSummary", public_result.get("dependency_pinning_summary", []))
     append_value(root, "toolResults", public_result.get("tool_outputs", {}))
     append_value(root, "errors", collect_errors(job))
     append_value(root, "sections", {section.title: dict(section.items) for section in build_report_sections(job)})
@@ -629,6 +631,7 @@ def build_project_archive_sections(result: dict[str, Any]) -> list[ReportSection
         ReportSection("Unsupported Manifests", flatten_list(result.get("unsupported_manifests"))),
         ReportSection("Parsed Manifests", flatten_list(result.get("parsed_manifests"))),
         ReportSection("Ecosystem Summary", flatten_project_archive_ecosystem_summary(result.get("ecosystem_summary"))),
+        ReportSection("Dependency Pinning Summary", flatten_project_archive_dependency_pinning_summary(result.get("dependency_pinning_summary"))),
         ReportSection("Findings", flatten_project_archive_findings(result.get("findings"))),
     ]
 
@@ -1644,6 +1647,29 @@ def flatten_project_archive_ecosystem_summary(value: Any) -> list[tuple[str, str
             rows.append((f"Ecosystem {index}", stringify(item)))
             continue
         append_preferred_rows(rows, f"Ecosystem {index}", record, preferred_keys)
+    return rows
+
+
+def flatten_project_archive_dependency_pinning_summary(value: Any) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[tuple[str, str]] = []
+    preferred_keys = (
+        ("Ecosystem", "ecosystem"),
+        ("Ecosystem label", "ecosystem_label"),
+        ("Theme", "theme"),
+        ("Theme label", "theme_label"),
+        ("Findings", "findings_count"),
+        ("Manifests", "manifest_count"),
+        ("Manifest paths", "manifest_paths"),
+        ("Summary", "summary"),
+    )
+    for index, item in enumerate(value, start=1):
+        record = as_dict(item)
+        if not record:
+            rows.append((f"Dependency pinning summary {index}", stringify(item)))
+            continue
+        append_preferred_rows(rows, f"Dependency pinning summary {index}", record, preferred_keys)
     return rows
 
 

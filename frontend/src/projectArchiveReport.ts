@@ -9,6 +9,7 @@ export type ProjectArchiveFinding = {
   categoryLabel: string;
   ecosystem: string;
   ecosystemLabel: string;
+  manifestPath: string | null;
   description: string;
   evidence: string;
   recommendation: string;
@@ -27,6 +28,20 @@ export type ProjectArchiveEcosystemSummary = {
   findingsCount: number;
 };
 
+export type ProjectArchiveDependencyPinningSummary = {
+  ecosystem: string;
+  ecosystemLabel: string;
+  category: string;
+  categoryLabel: string;
+  theme: string;
+  themeLabel: string;
+  findingIds: string[];
+  findingsCount: number;
+  manifestCount: number;
+  manifestPaths: string[];
+  summary: string;
+};
+
 const UNCATEGORIZED_PROJECT_ARCHIVE_FINDING = {
   category: "uncategorized_review_indicator",
   categoryLabel: "Uncategorized review indicator",
@@ -42,6 +57,12 @@ const PROJECT_ARCHIVE_ECOSYSTEM_LABELS: Record<string, string> = {
   framework_config: "Framework/config",
   generic_project_metadata: "Generic project metadata",
   unknown_ecosystem: "Unknown ecosystem"
+};
+
+const DEPENDENCY_PINNING_THEME_BY_ID: Record<string, { theme: string; themeLabel: string }> = {
+  dependency_not_exactly_pinned: { theme: "not_exactly_pinned", themeLabel: "Dependency not exactly pinned" },
+  requirements_dependency_not_exactly_pinned: { theme: "not_exactly_pinned", themeLabel: "Dependency not exactly pinned" },
+  dependency_broad_range: { theme: "broad_range", themeLabel: "Dependency broad range" }
 };
 
 const PROJECT_ARCHIVE_FINDING_METADATA: Record<string, ProjectArchiveFindingMetadata> = {
@@ -113,6 +134,7 @@ export type ProjectArchiveAuditReport = {
   unsupportedManifests: ProjectArchiveManifest[];
   parsedManifests: ParsedProjectManifest[];
   ecosystemSummary: ProjectArchiveEcosystemSummary[];
+  dependencyPinningSummary: ProjectArchiveDependencyPinningSummary[];
   findings: ProjectArchiveFinding[];
   errors: string[];
 };
@@ -122,6 +144,8 @@ export function buildProjectArchiveAuditReport(job: JobRecord, file?: FileRecord
   const fileIdentification = asRecord(result?.file_identification);
 
   const findings = findingsFromValue(result?.findings);
+  const parsedManifests = parsedManifestsFromValue(result?.parsed_manifests);
+  const summaryFindings = findings.length > 0 ? findings : parsedManifests.flatMap((manifest) => manifest.findings);
 
   return {
     isProjectArchiveAudit: job.audit_type === "project_archive_basic",
@@ -137,8 +161,9 @@ export function buildProjectArchiveAuditReport(job: JobRecord, file?: FileRecord
     limits: entriesFromRecord(asRecord(result?.limits)),
     supportedManifests: manifestsFromValue(result?.supported_manifests),
     unsupportedManifests: manifestsFromValue(result?.unsupported_manifests),
-    parsedManifests: parsedManifestsFromValue(result?.parsed_manifests),
-    ecosystemSummary: ecosystemSummaryFromValue(result?.ecosystem_summary, findings),
+    parsedManifests,
+    ecosystemSummary: ecosystemSummaryFromValue(result?.ecosystem_summary, summaryFindings),
+    dependencyPinningSummary: dependencyPinningSummaryFromValue(result?.dependency_pinning_summary, summaryFindings),
     findings,
     errors: asStringArray(result?.errors)
   };
@@ -219,6 +244,7 @@ function findingsFromValue(value: unknown, context?: { path?: string | null; man
     });
     const category = asString(record?.category) ?? metadata.category;
     const ecosystem = asString(record?.ecosystem) ?? metadata.ecosystem;
+    const evidence = asString(record?.evidence) ?? "";
     return {
       id,
       title: asString(record?.title) ?? "Informational finding",
@@ -231,8 +257,9 @@ function findingsFromValue(value: unknown, context?: { path?: string | null; man
         asString(record?.ecosystemLabel) ??
         PROJECT_ARCHIVE_ECOSYSTEM_LABELS[ecosystem] ??
         metadata.ecosystemLabel,
+      manifestPath: projectArchiveManifestPathFromValue(asString(record?.manifest_path) ?? context?.path ?? evidence),
       description: asString(record?.description) ?? "",
-      evidence: asString(record?.evidence) ?? "",
+      evidence,
       recommendation: asString(record?.recommendation) ?? ""
     };
   });
@@ -278,6 +305,89 @@ function ecosystemSummaryFromValue(value: unknown, findings: ProjectArchiveFindi
     groups.set(finding.ecosystem, group);
   });
   return Array.from(groups.values()).sort(compareEcosystemSummary);
+}
+
+function dependencyPinningSummaryFromValue(
+  value: unknown,
+  findings: ProjectArchiveFinding[]
+): ProjectArchiveDependencyPinningSummary[] {
+  if (Array.isArray(value)) {
+    return value.map(dependencyPinningSummaryFromRecord).filter((item): item is ProjectArchiveDependencyPinningSummary => item !== null);
+  }
+  return deriveDependencyPinningSummary(findings);
+}
+
+function dependencyPinningSummaryFromRecord(value: unknown): ProjectArchiveDependencyPinningSummary | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  const ecosystem = asString(record.ecosystem) ?? "unknown_ecosystem";
+  const ecosystemLabel = asString(record.ecosystem_label) ?? asString(record.ecosystemLabel) ?? PROJECT_ARCHIVE_ECOSYSTEM_LABELS[ecosystem] ?? "Unknown ecosystem";
+  const theme = asString(record.theme) ?? "not_exactly_pinned";
+  const themeLabel = asString(record.theme_label) ?? asString(record.themeLabel) ?? "Dependency not exactly pinned";
+  const findingsCount = asNumber(record.findings_count) ?? asNumber(record.findingsCount) ?? 0;
+  const manifestPaths = asStringArray(record.manifest_paths).sort();
+  const summary: ProjectArchiveDependencyPinningSummary = {
+    ecosystem,
+    ecosystemLabel,
+    category: asString(record.category) ?? "dependency_hygiene",
+    categoryLabel: asString(record.category_label) ?? asString(record.categoryLabel) ?? "Dependency hygiene",
+    theme,
+    themeLabel,
+    findingIds: asStringArray(record.finding_ids).sort(),
+    findingsCount,
+    manifestCount: asNumber(record.manifest_count) ?? asNumber(record.manifestCount) ?? manifestPaths.length,
+    manifestPaths,
+    summary: asString(record.summary) ?? dependencyPinningSummarySentence(ecosystemLabel, theme, findingsCount, manifestPaths.length)
+  };
+  return summary;
+}
+
+function deriveDependencyPinningSummary(findings: ProjectArchiveFinding[]): ProjectArchiveDependencyPinningSummary[] {
+  const groups = new Map<string, ProjectArchiveDependencyPinningSummary>();
+  findings.forEach((finding) => {
+    const theme = DEPENDENCY_PINNING_THEME_BY_ID[finding.id];
+    if (!theme || finding.category !== "dependency_hygiene") {
+      return;
+    }
+    const key = `${finding.ecosystem}:${theme.theme}`;
+    const group = groups.get(key) ?? {
+      ecosystem: finding.ecosystem,
+      ecosystemLabel: finding.ecosystemLabel,
+      category: "dependency_hygiene",
+      categoryLabel: "Dependency hygiene",
+      theme: theme.theme,
+      themeLabel: theme.themeLabel,
+      findingIds: [],
+      findingsCount: 0,
+      manifestCount: 0,
+      manifestPaths: [],
+      summary: ""
+    };
+    group.findingsCount += 1;
+    if (!group.findingIds.includes(finding.id)) {
+      group.findingIds.push(finding.id);
+    }
+    const manifestPath = projectArchiveManifestPathForFinding(finding);
+    if (manifestPath && !group.manifestPaths.includes(manifestPath)) {
+      group.manifestPaths.push(manifestPath);
+    }
+    groups.set(key, group);
+  });
+
+  return Array.from(groups.values())
+    .map((group) => {
+      const manifestPaths = [...group.manifestPaths].sort();
+      return {
+        ...group,
+        findingIds: [...group.findingIds].sort(),
+        manifestCount: manifestPaths.length,
+        manifestPaths,
+        summary: dependencyPinningSummarySentence(group.ecosystemLabel, group.theme, group.findingsCount, manifestPaths.length)
+      };
+    })
+    .sort(compareDependencyPinningSummary);
 }
 
 const CONTEXTUAL_ECOSYSTEM_FINDING_IDS = new Set([
@@ -360,6 +470,45 @@ function compareEcosystemSummary(a: ProjectArchiveEcosystemSummary, b: ProjectAr
     return -1;
   }
   return a.ecosystemLabel.localeCompare(b.ecosystemLabel);
+}
+
+function compareDependencyPinningSummary(a: ProjectArchiveDependencyPinningSummary, b: ProjectArchiveDependencyPinningSummary): number {
+  if (a.ecosystem === "unknown_ecosystem" && b.ecosystem !== "unknown_ecosystem") {
+    return 1;
+  }
+  if (a.ecosystem !== "unknown_ecosystem" && b.ecosystem === "unknown_ecosystem") {
+    return -1;
+  }
+  return a.ecosystemLabel.localeCompare(b.ecosystemLabel) || a.themeLabel.localeCompare(b.themeLabel);
+}
+
+function dependencyPinningSummarySentence(
+  ecosystemLabel: string,
+  theme: string,
+  findingsCount: number,
+  manifestCount: number
+): string {
+  const descriptor = theme === "broad_range" ? "dependency broad range" : "dependency pinning";
+  const indicator = findingsCount === 1 ? "review indicator" : "review indicators";
+  const manifestPhrase =
+    manifestCount > 0
+      ? ` across ${manifestCount} ${manifestCount === 1 ? "manifest" : "manifests"}`
+      : " with no manifest path identified";
+  return `${ecosystemLabel}: ${findingsCount} ${descriptor} ${indicator}${manifestPhrase}.`;
+}
+
+function projectArchiveManifestPathForFinding(finding: ProjectArchiveFinding): string | null {
+  return finding.manifestPath ?? projectArchiveManifestPathFromValue(finding.evidence);
+}
+
+function projectArchiveManifestPathFromValue(value: string): string | null {
+  const candidate = value.split(":", 1)[0]?.trim() ?? "";
+  return isProjectArchiveManifestPath(candidate) ? candidate : null;
+}
+
+function isProjectArchiveManifestPath(value: string): boolean {
+  const normalized = value.replace(/\\/g, "/").toLowerCase();
+  return ["package.json", "package-lock.json", "requirements.txt", "pyproject.toml"].some((suffix) => normalized.endsWith(suffix));
 }
 
 function entriesFromRecord(record: Record<string, unknown> | null): MetadataEntry[] {
