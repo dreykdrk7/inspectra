@@ -1,0 +1,52 @@
+name: inspectra-manifest-fixture
+
+services:
+  backend:
+    build:
+      context: ./backend
+    environment:
+      INSPECTRA_DATA_DIR: /app/data
+      INSPECTRA_MAX_UPLOAD_BYTES: "20971520"
+    depends_on:
+      audit-tools:
+        condition: service_started
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  audit-tools:
+    build:
+      context: ./tools
+    environment:
+      INSPECTRA_ARCHIVE_MAX_ENTRIES: "5000"
+      INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS: "25"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_started
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  inspectra_internal:
+    internal: true
+
