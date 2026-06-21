@@ -19,14 +19,34 @@ MAX_FILE_BYTES = 32_768
 MAX_ZIP_MEMBERS = 512
 
 SAFE_SYNTHETIC_PREFIXES = (
-    ("safe_synthetic/tests/", "synthetic_test_fixture_marker", "synthetic_test_path"),
-    ("safe_synthetic/redaction/", "redaction_example_marker", "redaction_fixture_path"),
-    ("safe_synthetic/docs/", "documentation_example_marker", "docs_fixture_path"),
-    ("safe_synthetic/demo/", "generated_demo_fixture_marker", "generated_demo_path"),
-    ("tests/fixtures/sanitizer/safe_synthetic/tests/", "synthetic_test_fixture_marker", "synthetic_test_path"),
-    ("tests/fixtures/sanitizer/safe_synthetic/redaction/", "redaction_example_marker", "redaction_fixture_path"),
-    ("tests/fixtures/sanitizer/safe_synthetic/docs/", "documentation_example_marker", "docs_fixture_path"),
-    ("tests/fixtures/sanitizer/safe_synthetic/demo/", "generated_demo_fixture_marker", "generated_demo_path"),
+    ("safe_synthetic/tests/", "synthetic_test_fixture_marker", "synthetic_test_path", frozenset({"token_like_value"})),
+    ("safe_synthetic/redaction/", "redaction_example_marker", "redaction_fixture_path", frozenset({"redaction_placeholder"})),
+    ("safe_synthetic/docs/", "documentation_example_marker", "docs_fixture_path", frozenset({"docs_placeholder"})),
+    ("safe_synthetic/demo/", "generated_demo_fixture_marker", "generated_demo_path", frozenset({"token_like_value"})),
+    (
+        "tests/fixtures/sanitizer/safe_synthetic/tests/",
+        "synthetic_test_fixture_marker",
+        "synthetic_test_path",
+        frozenset({"token_like_value"}),
+    ),
+    (
+        "tests/fixtures/sanitizer/safe_synthetic/redaction/",
+        "redaction_example_marker",
+        "redaction_fixture_path",
+        frozenset({"redaction_placeholder"}),
+    ),
+    (
+        "tests/fixtures/sanitizer/safe_synthetic/docs/",
+        "documentation_example_marker",
+        "docs_fixture_path",
+        frozenset({"docs_placeholder"}),
+    ),
+    (
+        "tests/fixtures/sanitizer/safe_synthetic/demo/",
+        "generated_demo_fixture_marker",
+        "generated_demo_path",
+        frozenset({"token_like_value"}),
+    ),
 )
 MANIFEST_ONLY_PREFIXES = ("manifest_only_safe_snapshot/", "tests/fixtures/sanitizer/manifest_only_safe_snapshot/")
 UNSAFE_COUNTEREXAMPLE_PREFIXES = ("unsafe_counterexamples/", "tests/fixtures/sanitizer/unsafe_counterexamples/")
@@ -119,12 +139,10 @@ def _classification_for(path: str, marker_category: str) -> tuple[str, str, str]
             return "blocked_private_material", "block", f"blocked_{marker_category}"
         return "real_or_unknown_sensitive_marker", "block", "unsafe_counterexample"
 
-    for prefix, classification, reason_code in SAFE_SYNTHETIC_PREFIXES:
+    for prefix, classification, reason_code, allowed_categories in SAFE_SYNTHETIC_PREFIXES:
         if path.startswith(prefix):
-            if classification == "documentation_example_marker" and marker_category != "docs_placeholder":
-                return "real_or_unknown_sensitive_marker", "block", "docs_fixture_without_docs_placeholder"
-            if classification == "redaction_example_marker" and marker_category != "redaction_placeholder":
-                return "real_or_unknown_sensitive_marker", "block", "redaction_fixture_without_redaction_placeholder"
+            if marker_category not in allowed_categories:
+                return "real_or_unknown_sensitive_marker", "block", "synthetic_path_category_mismatch"
             return classification, "allow_synthetic_fixture", reason_code
 
     if marker_category == "env_file":
@@ -173,7 +191,10 @@ def _safe_zip_member_path(raw_path: str) -> str | None:
 
 
 def _normalize_path(raw_path: str) -> str:
-    return raw_path.replace("\\", "/").lstrip("./")
+    value = raw_path.replace("\\", "/")
+    while value.startswith("./"):
+        value = value[2:]
+    return value
 
 
 def _starts_with_any(path: str, prefixes: tuple[str, ...]) -> bool:
