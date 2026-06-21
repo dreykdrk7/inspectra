@@ -1,0 +1,5 @@
+Purpose: safe synthetic test fixture.
+Expected class: synthetic_test_fixture_marker.
+
+The marker below is intentionally fake and bracketed for classification tests:
+[FAKE_TOKEN_FOR_SANITIZER_FIXTURE]

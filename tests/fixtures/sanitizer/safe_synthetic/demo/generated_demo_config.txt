@@ -1,0 +1,6 @@
+Purpose: generated demo fixture.
+Expected class: generated_demo_fixture_marker.
+Generator label: synthetic-sanitizer-demo-fixture.
+
+demo_setting = enabled
+demo_api_key = [DEMO_FAKE_API_KEY_PLACEHOLDER]

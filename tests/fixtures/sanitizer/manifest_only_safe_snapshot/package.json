@@ -1,0 +1,9 @@
+{
+  "name": "synthetic-manifest-snapshot",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Safe manifest-only fixture for sanitizer classification planning.",
+  "dependencies": {
+    "example-local-lib": "0.0.0"
+  }
+}

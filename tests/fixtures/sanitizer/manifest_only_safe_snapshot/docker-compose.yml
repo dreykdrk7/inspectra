@@ -1,0 +1,5 @@
+services:
+  synthetic-service:
+    image: local/synthetic-fixture-service:0.0.0
+    environment:
+      FIXTURE_MODE: "manifest-only"

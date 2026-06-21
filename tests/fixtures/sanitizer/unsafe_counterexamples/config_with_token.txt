@@ -1,0 +1,4 @@
+Purpose: blocked config-token fixture.
+Expected class: real_or_unknown_sensitive_marker.
+
+service_token = [BLOCKED_FAKE_CONFIG_TOKEN_PLACEHOLDER]

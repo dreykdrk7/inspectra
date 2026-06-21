@@ -1,0 +1,6 @@
+Purpose: blocked record-shape fixture.
+Expected class: blocked_private_material.
+
+This file is synthetic and contains no actual person or organization records.
+example_subject = Synthetic Example
+example_reference = [BLOCKED_FAKE_RECORD_REFERENCE]
