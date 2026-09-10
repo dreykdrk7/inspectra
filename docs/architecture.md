@@ -2,11 +2,117 @@
 
 ## Goal
 
-Inspectra starts as a small open-source defensive audit API for authorized local files and controlled baseline web checks. It is local-first and self-hosted-first, intended for people and teams to run on their own machine or server rather than as a commercial SaaS, subscription platform, enterprise multi-tenant service, or scan-as-a-service product. The MVP keeps the backend simple and delegates passive analysis to a dedicated Docker container where external tools, local parsers, or bounded HTTP clients run away from the host.
+Inspectra `0.3.0-beta.1` is a local, unpublished candidate for an open-source
+defensive audit platform. It is local-first and self-hosted-first, intended for
+people and private teams to run on their own machine or server rather than as a
+commercial SaaS or scan-as-a-service product. FastAPI owns authorization,
+contracts, orchestration and persistence; React provides the product surface;
+isolated runners perform bounded passive or explicitly authorized Active work.
+The supported topology remains single-host/single-worker. Capability status is
+canonical in `docs/feature-matrix.md`.
 
-## Passive Technical Alpha
+## Current product architecture
 
-The passive technical alpha is closed for new module expansion. The current suite has enough breadth for alpha validation across local uploads, file metadata analysis, archive inspection, project-archive manifest parsing, archive-only passive config reviews, and the bounded authorized web/DNS/subdomain flows.
+The passive technical alpha is closed for new module expansion. The current suite has enough breadth for alpha validation across local uploads, file metadata analysis, archive inspection, project-archive manifest parsing, archive-only passive config reviews, and the bounded authorized web/DNS/subdomain flows. Product evolution starts with an archive-backed project record that is owner-scoped, stores an immutable source SHA-256 and linked first `project_archive_basic` job, and accepts neither server filesystem paths nor repository credentials. The persisted digest remains internal for integrity and reproducibility: project-facing responses and history replace source filenames/content digests with a derived `snapshot-…` presentation reference. Project reports now have a minimal aggregate default with no source reference and a separately confirmed, permission-gated technical profile that may use the derived reference but never the source filename or digest. The explicit owner-scoped **Files** view remains the place to manage original upload metadata. Its operational contract is in `docs/product-projects.md`.
+
+Each newly persisted job additionally captures a typed immutable execution profile: contract/ruleset version, profile name, upload-admission limit, backend concurrency, and global/per-owner in-flight admission limits. It is intentionally a minimal reproducibility record rather than raw configuration or a worker attestation; it excludes paths, environment data, URLs, credentials and source data. Admission counts persisted `queued`, `running` and `cancelling` records under the storage lock, so terminal work releases capacity without a separate reservation. Existing records remain legacy/unprofiled, and project comparison refuses a changed or one-sided profile while labelling two legacy profiles as an explicit uncertainty. Project jobs that were persisted but never started are revalidated and requeued on startup in the supported single-backend-process deployment. Started/cancelling work is never presented as resumed; it loses partial output and receives an explicit restart/shutdown cause. This local durable queue is not a distributed worker lease, multi-process coordinator or binary attestation.
+
+`project_archive_basic` is also declared through a backend-owned passive profile
+catalog (`2026-09-09.2`). The public preflight exposes its closed rule families,
+manifest-driven stack applicability (npm, PyPI, Go, Rust, PHP, JVM and .NET), exclusions and effective immutable
+execution contract without accepting a profile, path or source selector. The
+only current project profile is the safe default: no project execution and no
+network. New/deep profiles must receive a new closed identifier and ruleset
+version; comparison remains exact across the persisted execution profile.
+
+Ruleset `2026-09-09.2` folds the existing bounded sensitive-data detector into
+the isolated `project_archive_basic` worker. It reopens the archive under the
+same CPU/memory/process boundary, considers at most 100 supported candidates,
+512 KiB per candidate and 2 MiB total, skips real environment files without
+reading them, and merges only redacted findings plus aggregate coverage. Safe
+relative locations and line numbers flow into normalized findings; absolute,
+traversing, URL-like or control-character paths remain withheld.
+
+The same isolated worker runs the pre-existing Docker, Compose, Kubernetes and
+Terraform passive readers as separately bounded subreviews. Each is capped at
+100 candidate files, 512 KiB per file and 2 MiB total, retains only primitive
+coverage counters, fixed limits, controlled errors and redacted findings, and
+cannot invoke build tools, services, clusters, module/provider resolution or
+plans. Their status degrades independently while the global worker CPU, memory,
+result-size, file-descriptor and process ceilings remain authoritative.
+
+Project metadata can additionally retain an owner-scoped, versioned saved baseline that points only to a completed, profiled analysis of the same project. It does not mutate result data; comparison chooses it by default in the product UI, reports when it was used, and continues to surface coverage limitations. Clearing the policy or deleting its analysis advances the policy version and writes a minimal audit event, so retention cannot leave a dangling baseline. Reports disclose policy presence/version rather than a second analysis identifier.
+
+Project metadata also carries a bounded, versioned responsibility history that
+is distinct from finding lifecycle assignments. The current member reference
+is accepted only while that account is active in the owner workspace and does
+not grant authorization. The project index schema projects a domain-separated
+HMAC of the reference for exact revocation impact lookup; authoritative JSON is
+revalidated before any reconciliation. Membership revocation is serialized
+against assignment, invalidates sessions first, clears matching project
+responsibility to an explicit attention state and then reconciles Active-asset
+responsibility. User-facing portfolio/remediation/report projections resolve a
+username only after validating current workspace membership.
+
+Explicit project deletion is an organization-scoped, recoverable cascade rather
+than a recursive filesystem operation. Under the shared storage lock it first
+refuses active work or pending snapshot admission, then writes a content-free
+journal whose marker hides the project and blocks new jobs/snapshots across
+processes. Vulnerability snapshots, finding decisions, snapshot-admission
+journals, execution workspaces and terminal jobs/results are removed before the
+authoritative project metadata. Startup resumes an interrupted journal and
+readiness fails closed until it is gone. The uploaded source remains an
+independent owner-scoped object, the public-advisory cache remains shared and
+digest-keyed, reports remain on demand, and the bounded audit event remains
+subject to its own retention. This boundary is not cryptographic erasure and
+cannot remove browser downloads, filesystem snapshots or operator backups.
+
+Durable local recovery is an operator-only offline workflow rather than an HTTP
+surface. The versioned directory bundle copies only the allowlisted persistent
+tree and the explicitly located SQLite auth state, rejects active or partial
+operations and validates owner/organization cross-references before and after
+copy. Restore targets a new directory, migrates only the supported auth schema,
+revokes sessions/login attempts/invitations, validates before atomic publish and
+never overlays the active tree. The bundle contains source and credential-derived
+material, so external encrypted storage remains mandatory; checksums provide
+integrity detection, not encryption or authenticity. See
+`docs/backup-restore.md`.
+
+The data-lifecycle contract `2026-09-10.7` classifies exactly twenty-five logical
+classes across project data, public intelligence, identity/operations and
+external copies. Each declaration records storage form, sensitivity, retention
+relationship, deletion triggers, backup disposition and restore behavior; the
+API exposes policy values only, never stored paths, project/package identities
+or item counts. Inventories and normalized public-intelligence snapshots follow
+their owning analysis, triage follows its project, ephemeral workspaces and
+recovery journals stay outside backups, and report downloads/backup bundles
+remain outside automatic application purge. Team invitations have an independent
+bounded terminal-state window; membership deprovisioning revokes only sessions
+in the affected organization and pseudonymizes an account once no active
+membership remains. Durable remediation-plan snapshots
+are the explicit exception among reports: owner-scoped, bounded, backed up and
+automatically expired after seven days. See `docs/data-retention.md`.
+The additional opt-in adoption-metrics class is deployment-wide and keeps only
+daily closed counters/duration buckets for 90 days; it has no external
+transport or tenant/user/project/request identity.
+Six Active-specific classes separate target/decision metadata, authorization
+revisions, verification records, bounded execution evidence, change approvals
+and target-free weekly review receipts; their explicit cascade is recoverable
+and anonymizes retained audit links. Weekly receipts bind the organization,
+report contract, period and retained-state cutoff to the raw snapshot digest
+using a domain-separated HMAC; only that HMAC and a closed outcome persist. A bounded Active
+batch stores only a target-free replay receipt after atomic publication; its
+write-ahead journal is recovered before reads, backup refuses pending journals,
+restore validates every receipt-to-asset owner boundary, and deleting any batch
+member invalidates the whole replay receipt. Hashed automation
+credentials remain independently classified: no more than two may
+remain active per project during rotation, usage timestamps are hour buckets,
+and inactive metadata expires independently from the audit trail.
+Its source-metadata subcontract additionally classifies filename, content
+digest, internal file ID and derived presentation reference exactly once; only
+the permission-gated technical report may include the derived reference. The
+default minimal report excludes it, and future integration projections must
+declare their own bounded disclosure contract.
 
 The common archive-based config flow is:
 
@@ -19,7 +125,7 @@ The common archive-based config flow is:
 7. Render Markdown, HTML, XML, and PDF exports from stored job JSON.
 8. Render frontend report sections and redacted raw JSON.
 
-Redaction is layered: runner output, backend storage/reporting, public API payloads for sensitive modules, exports, frontend reports, and frontend raw JSON all apply defensive redaction for legacy or malformed payloads. Findings remain heuristic review indicators rather than confirmed vulnerabilities, live reachability checks, exploitability claims, breach claims, or proof of compromise.
+Redaction is layered: runner output, backend storage/reporting, public API payloads for sensitive modules, exports, frontend reports, and frontend raw JSON all apply defensive redaction for legacy or malformed payloads. Request-validation failures deliberately return a generic stable `422` detail rather than echoing rejected input, so malformed payloads do not replay secrets or private metadata to the browser. Findings remain heuristic review indicators rather than confirmed vulnerabilities, live reachability checks, exploitability claims, breach claims, or proof of compromise.
 
 The trusted local Passive Alpha closeout/release-candidate decision is `PASSIVE_ALPHA_TRUSTED_LOCAL_RELEASE_CANDIDATE_ACCEPTED`. It accepts the current passive/local documentation package while keeping production, external-user, multi-tenant, Nmap, broader Active, and new analyzer work out of scope until separately re-scoped.
 
@@ -44,6 +150,17 @@ The Passive Alpha open-source/self-hosted framing decision is `PASSIVE_ALPHA_OPE
 The Passive Alpha auth-boundary runtime plan decision is `PASSIVE_ALPHA_AUTH_BOUNDARY_RUNTIME_PLAN_ACCEPTED`. It defines `trusted_local_no_auth`, `self_hosted_single_admin`, `private_team_lightweight_users`, and `public_community_limited_instance`; recommends `self_hosted_single_admin` with `single_user_auth` as the first runtime shape; and keeps billing, SaaS tenants, enterprise RBAC, Nmap, new Active behavior, and runtime changes out of scope.
 
 The Passive Alpha owner model and storage migration plan decision is `PASSIVE_ALPHA_OWNER_MODEL_STORAGE_MIGRATION_PLAN_ACCEPTED`. It defines owner principles and a P0 minimum model for uploads, file metadata, jobs, results, reports, exports, SBOMs, Raw JSON, delete/reset operations, target histories, and target-based jobs with `file_id: null`; recommends mapping trusted local legacy data to a default local/admin operator for self-hosted single-admin use; and keeps `owner_id` implementation, migrations, schema changes, API guards, billing, SaaS tenants, Nmap, new Active behavior, and runtime changes out of scope.
+
+`PROD-012` has started the next identity boundary without rewriting product
+storage: `private_team_lightweight_users` provisions a SQLite-backed bootstrap
+workspace, permits administrators to create further isolated workspaces,
+persists members and three roles, creates hashed one-use invitations, binds
+sessions to workspace/role and treats the workspace ID as the existing owner
+boundary. Switching verifies membership and rotates session/CSRF. Reader
+mutations and non-administrator membership changes fail closed; role changes or
+revocation invalidate sessions. This is deliberately not SaaS readiness. The
+threat model, migration bridge and remaining historical/audit gaps are in
+`docs/team-workspaces.md`.
 
 The Passive Alpha deny-anonymous API guards plan decision is `PASSIVE_ALPHA_DENY_ANONYMOUS_API_GUARDS_PLAN_ACCEPTED`. It defines future guards for upload, file list/detail/delete, audit creation, target-based baseline and Active jobs, job list/detail/results, reports, Markdown/HTML/XML/PDF exports, SBOM exports, Raw JSON, delete/reset, and admin/config surfaces. It keeps health, static frontend, login, onboarding, and docs/static assets public only when they expose no sensitive data, preserves `trusted_local_no_auth` for localhost/dev/local trusted use, and keeps auth implementation, owner checks, API guards, billing, SaaS tenants, Nmap, new Active behavior, and runtime changes out of scope.
 
@@ -138,6 +255,28 @@ The Passive Alpha GitHub release publication decision is `PASSIVE_ALPHA_GITHUB_R
 The Passive Alpha post-release technical pause decision is `PASSIVE_ALPHA_POST_RELEASE_TECHNICAL_PAUSE_RECORDED`. It records the published state, accepted security/deployment/product/operational debt, and next pathing recommendations after `v0.1.0-alpha.1`; it does not add runtime behavior, new tag/release state, production/public/community readiness, SaaS/billing behavior, Docker/Nmap/probes, CVE matching, or broader Active behavior.
 
 ## Active/Network Design
+
+Asset-bound Active execution reuses the durable `JobStore`: admission persists
+an immutable authorization/execution binding before dispatch, and workers claim
+`queued` records with a storage-locked compare-and-set. Cancellation, retry and
+startup recovery use closed states and retain no reconstructed target. Only
+never-started queued work is resumed automatically; interrupted `running` or
+`cancelling` work is closed safely to prevent duplicate traffic. Client
+idempotency material is stored only as SHA-256 and is excluded from API,
+reporting and product-audit projections. The complete lifecycle and UI contract
+is documented in `docs/active-operations.md`.
+
+Active portfolio reads use a bounded keyset contract rather than transferring
+the full registry to the browser. Server-side filters and the continuation
+boundary are organization-scoped; an HMAC-authenticated cursor binds owner,
+filters, recency cutoff and stable reverse `updated_at`/ID order. The signing
+key is process-local and intentionally rotates on restart, matching the current
+single-backend-process deployment and making cursors navigation state rather
+than durable data. The client discards stale responses after filter changes and
+caps one rendered view at 96 cards, requiring narrower server-side filters for
+larger result sets. The file-backed implementation still scans and parses the
+owner directory for each page. This bounds responses and DOM work, not storage
+I/O; indexed persistence remains a separate scaling concern.
 
 Active/Nmap/network work is not part of the Passive Technical Alpha. The current post-alpha decision keeps Active separated from passive audits: a no-network dry-run skeleton exists under `tools/active_runner/`, the backend exposes an opt-in no-network dry-run endpoint, the frontend exposes a dry-run-only planning panel, and the first limited live HTTP header probe is isolated behind its own opt-in feature flag. There is still no Nmap runtime, port scanning, crawling, broad live scanning, or network traffic in the Active dry-run flow.
 
@@ -451,9 +590,10 @@ Markdown output keeps report structure static and treats filenames, metadata, de
   - Normalize declared dependencies from stored job JSON into a small component model.
   - Preserve declared requirement ranges and source manifest paths.
   - Classify dependency sources as registry, URL, VCS, local, editable, workspace, alias, or unknown.
-  - Generate CycloneDX JSON and SPDX JSON without package-manager execution, dependency resolution, registry access, CVE lookup, or license inference.
+  - Generate CycloneDX JSON and SPDX JSON without package-manager execution, dependency resolution, registry access, CVE lookup, or dependency-license inference.
+  - Preserve only narrowly normalized root-project SPDX declarations from supported manifests; explicitly mark dependency licenses unknown and deduplicate exact repeated dependency declarations without merging distinct sources or versions.
 
-SBOM output intentionally reflects only dependencies declared in analyzed manifests. It does not claim installed versions unless the manifest declares an exact pin Inspectra can identify locally. Package URLs are generated only for dependencies that can be represented conservatively as npm or PyPI registry packages. URL, VCS, local path, editable, workspace, and alias dependencies keep the original declaration and include an Inspectra omission reason instead of an inferred `purl`.
+SBOM output intentionally reflects only dependencies declared in analyzed manifests. It does not claim installed versions unless the manifest declares an exact pin Inspectra can identify locally. Package URLs are generated only for dependencies that can be represented conservatively as npm or PyPI registry packages. URL, VCS, local path, editable, workspace, and alias dependencies keep the original declaration and include an Inspectra omission reason instead of an inferred `purl`. The separate declared-license review compares only an exact retained root expression against the immutable operator deny list captured on the job; it makes no legal compatibility, obligation, exception, or dependency-license assertion.
 
 ### Audit Tools Container
 
@@ -470,7 +610,7 @@ The tool runner is reachable by the backend on the internal Compose network. For
 
 Each external command has an `INSPECTRA_TOOL_TIMEOUT_SECONDS` timeout, defaulting to 10 seconds. A timed-out tool is recorded in that tool's output and in the result summary instead of failing the entire job by itself.
 
-Manifest analysis uses Python parsing inside the tool runner instead of package managers. It reads `package.json`, `requirements.txt`, or `pyproject.toml` as local text and never runs npm, pip, Poetry, pnpm, yarn, project scripts, dependency installation, or network lookups.
+Manifest analysis uses Python parsing inside the tool runner instead of package managers. It reads `package.json`, `requirements.txt`, `pyproject.toml`, or the bounded dependency subset of `Pipfile` as local text and never runs npm, pip, Pipenv, Poetry, pnpm, yarn, project scripts, dependency installation, or network lookups. The versioned requirements parser joins only backslash continuations, counts supported SHA-256/384/512 options attached to exact registry pins and emits an aggregate integrity state; it never retains digest values, URL/VCS/local sources or option values, and does not equate pinning with integrity. Its `Pipfile.lock` parser accepts only format 6, discards hashes/source/index/URL/marker metadata, preserves only exact direct versions and groups, and treats the result as local-only unless a separate provenance contract is introduced.
 
 Archive analysis uses Python standard library parsers (`zipfile` and `tarfile`) inside the tool runner. It reads archive metadata, estimates sizes, records entries up to configured limits, detects manifest filenames and extraction-risk indicators, and does not extract archives broadly to the filesystem, follow symlinks, execute content, install dependencies, resolve internal manifests, or call the internet.
 
@@ -502,7 +642,7 @@ SQL DB config analysis is an archive-based passive workflow. The backend accepts
 
 Redis config analysis is an archive-based passive workflow. The backend accepts only `kind: "archive"` source files and creates `redis_config_basic` jobs. The runner reuses the archive safety model, detects Redis and Sentinel config candidates, records real `.env`, `.env.*`, `.envrc`, ACL, RDB, AOF, appendonly, dump, and backup files as sensitive files present without reading their content, and reads only bounded UTF-8 text from reviewable config candidates. It records Redis include directives as context without resolving them. It does not execute Redis or Sentinel; run `redis-server`, `redis-cli`, `redis-sentinel`, `redis-benchmark`, or similar tools; open sockets; connect to Redis/Sentinel; validate credentials; resolve includes; read host absolute paths; read sensitive adjacent file contents; query CVEs/advisories; extract the project broadly; follow symlinks or hardlinks; or call the internet. Findings are heuristic review indicators for bind/protected-mode exposure, `requirepass`/`masterauth` posture, ACL references, TLS posture, persistence and backup posture, replication/Sentinel settings, dangerous command renames, module loading, runtime/logging/resource signals, include directives, sensitive files present, and secret-like Redis values. Redis passwords, Sentinel auth values, Redis URLs with credentials, ACL-like values, private key blocks, errors, and exports are redacted before storage and again in reporting for compatibility with legacy or malformed job payloads.
 
-Web baseline analysis uses Python standard library HTTP/TLS primitives. It accepts only absolute `http` and `https` URLs, rejects embedded URL credentials, requires authorization confirmation at the backend, follows a bounded number of redirects, validates every redirect target, limits bytes read per response, and checks the final origin's `robots.txt` and common `security.txt` locations. Anti-SSRF validation resolves hostnames before connecting and blocks localhost, private ranges, link-local addresses, multicast/reserved addresses, and cloud metadata targets by default. `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true` permits private/loopback targets for labs, while metadata, link-local, multicast, and reserved targets remain blocked. `INSPECTRA_WEB_ALLOWED_PORTS` limits explicit and implicit target ports, defaulting to `80,443`; Inspectra never probes alternate ports. DNS is validated before each request and redirect, but DNS rebinding or resolver time-of-check/time-of-use races are still better controlled with network-level egress policy. The runner does not execute JavaScript, render HTML, crawl links, fuzz, brute-force, scan ports, query CVEs, or call third-party APIs.
+Web baseline analysis uses Python standard library HTTP/TLS primitives. It accepts only absolute `http` and `https` URLs, rejects embedded URL credentials, requires authorization confirmation at the backend, follows a bounded number of redirects, validates every redirect target, limits bytes read per response, and checks the final origin's `robots.txt` and common `security.txt` locations. Anti-SSRF validation resolves hostnames once for each HTTP, auxiliary-resource, or TLS connection and blocks localhost, private ranges, link-local addresses, multicast/reserved addresses, and cloud metadata targets by default. The connection is pinned to one of those accepted IPs while the original hostname is retained for HTTP `Host` and HTTPS SNI, preventing a later resolver lookup from changing the connected address. `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true` permits private/loopback targets for labs, while metadata, link-local, multicast, and reserved targets remain blocked. `INSPECTRA_WEB_ALLOWED_PORTS` limits explicit and implicit target ports, defaulting to `80,443`; Inspectra never probes alternate ports. Network-level egress policy remains a separate defense-in-depth control. The runner does not execute JavaScript, render HTML, crawl links, fuzz, brute-force, scan ports, query CVEs, or call third-party APIs.
 
 Web results redact cookie values and sensitive response headers before they are stored. Cookie metadata such as name, Secure, HttpOnly, SameSite, Domain, Path, Max-Age, Expires, and value length can be retained for reporting without keeping session tokens. The backend passes the full submitted URL to the web runner only in memory for the authorized request, while job records store a display URL with common sensitive query parameters redacted. The runner applies the same query redaction to target URLs, redirects, findings, errors, and resource URLs before returning JSON. Reporting applies redaction again for compatibility with older jobs that may contain raw URLs.
 
@@ -514,9 +654,94 @@ Subdomain inventory analysis reuses the same DNS client but only for candidates 
 
 - Uploaded files: `data/uploads`
 - Job/result JSON: `data/results/jobs`
+- Project JSON: `data/results/projects`
+- Passive project action state: `data/results/project_action_inbox`
+- Rebuildable private indexes: `data/results/*.sqlite3`
 - Storage lock file: `data/.locks/storage.lock`
 
-The `data/` directory is bind-mounted into containers. Uploads and results are ignored by Git except for `.gitkeep` placeholders. JSON persistence uses atomic temp-file replacement and an exclusive file lock for write and read-modify-write operations such as job updates and source-file deletion marking. The backend keeps the lock scoped to local disk operations only; background audit services do not hold it while calling the `audit-tools` runner. This is sufficient for the local MVP, while SQLite remains the preferred future step before multi-user or high-volume use.
+The `data/` directory is bind-mounted only into the backend. Neither passive
+runner can enumerate or read it. Uploads and results are ignored by Git except
+for `.gitkeep` placeholders. JSON persistence uses atomic temp-file replacement
+and an exclusive file lock for write and read-modify-write operations such as
+job updates and source-file deletion marking. The backend keeps the lock scoped
+to local disk operations only; background audit services do not hold it while
+calling a runner. Authoritative business records remain atomic JSON. Bounded
+high-volume reads use rebuildable SQLite projections and always validate each
+selected row against its owner and source JSON before returning or mutating it.
+The project reference index schema v2 also backs `POST /projects/search` using
+only opaque IDs, owner, update time and integrity/reference digests; it never
+stores project names, filenames, findings or source content. Its authenticated
+cursor is body-only and becomes invalid after any project-directory revision or
+backend restart. SQLite projections are accelerators, not authorization or a
+replacement for the source of truth.
+
+Project portfolio priority uses the separate
+`project_portfolio_priority_index.sqlite3` schema v2 for up to 20,000 projects
+per organization. It stores opaque project/owner IDs, authoritative record and
+fact digests, closed counters/states, timestamps, a name ordinal and
+organization-domain HMAC lookup tokens. It never stores project names, paths,
+components, evidence, finding text or source metadata. SQL performs filtering,
+sorting, aggregation and bounded paging; each selected row is rebuilt from
+authoritative project/job/PVI/lifecycle state and digest-checked before return.
+By default a process-local HMAC key forces rebuild after restart. An operator
+may inject the same canonical 32-byte secret into separate backend processes as
+`INSPECTRA_PORTFOLIO_INDEX_HMAC_KEY`; this makes lookup tokens interoperable,
+but does not turn the local job queue into a distributed lease or declare the
+whole deployment multiworker-safe. The secret is excluded from dataclass repr,
+storage and backup; only a domain-separated marker is retained. A mismatched
+configured key anywhere in the shared index fails closed before rebuild, which
+prevents old and new workers from rewriting each other's tokens. Rotation is an
+offline operation: stop every backend process, verify/discard only the derived
+`project_portfolio_priority_index.sqlite3` plus SQLite companions, inject the
+new key and let one process rebuild before bringing peers back. Source changes,
+time-dependent priority boundaries, incomplete prefix topology, semantic row
+tampering or schema drift trigger rebuild or fail closed. Readiness and backup
+validate the private file and exact schema. Remediation and trend aggregation
+retain their independent 5,000-project guards.
+
+The passive project action inbox is a bounded organization-scoped read model
+derived from the portfolio. It stores no display names or evidence: only opaque
+project/analysis/action IDs, closed reason/priority/destination values,
+timestamps and SHA-256-derived per-user read markers. Reads reconcile current
+signals; atomic replacement preserves the previous valid file on interruption.
+Project deletion purges matching events before its recoverable marker is
+removed. Backup validates each retained event against the authoritative project
+and tenant. An explicit privileged rebuild discards read markers and recreates
+current events; therefore the portfolio, not the inbox, remains the risk source
+of truth.
+
+Organization trends use `project_risk_trend_index.sqlite3` schema v2. Its
+tenant partitions materialize only opaque job IDs for bounded validation,
+domain-separated project references, timestamps, record/profile digests,
+closed source/ecosystem dimensions, transition counters, duration samples and
+exception review dates. Names, paths, content hashes, component identities,
+finding text/IDs, evidence, comments, actors and provider payloads are excluded.
+The projection is capped at 250,000 analyses per tenant and 256 MiB. A closed
+refresh table stores only owner, opaque desired/built revisions, state,
+timestamps, a bounded attempt count and a controlled failure code. HTTP reads
+enqueue/coalesce owner work and never rebuild synchronously. One process-local
+semaphore plus a durable SQLite claim serializes publication; the full owner
+partition is replaced in one transaction, so readers see either the previous
+explicitly stale snapshot or the completed replacement. Interrupted claims are
+requeued at startup. One mutation during a build causes at most one immediate
+second pass; continuing churn stays queued. This is owner-level rebuild, not a
+distributed lease or row-level incremental correctness claim.
+
+Source revision changes and detected corruption queue work; warm reads use SQL
+aggregates and revalidate at most eight authoritative job digests. A separate
+private source clock records only SHA-256-derived owner keys, monotonic
+generations, one random epoch and a content-free digest of the relevant source
+directory metadata. Project/job/PVI/lifecycle/remediation writers and the
+recoverable deletion marker update it under the common cross-process storage
+lock. A covered foreign mutation changes only that owner's revision. Missing,
+corrupt, crashed, legacy or manual writes cannot be attributed safely: reads
+use a global fallback revision, readiness fails, and startup recovery rotates
+the epoch so every partition rebuilds lazily. The clock never becomes source of
+truth and its failure never rolls back an authoritative write. Readiness checks
+both SQLite stores, while backup validates their closed schemas and ownership
+topology. This trends index does not remove its own
+5,000-project aggregate guard; portfolio priority has a separate 20,000-project
+projection.
 
 ## Request Flow
 
@@ -524,8 +749,15 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 2. The backend validates file magic bytes, manifest name/content, or archive name/signature, stores it in `data/uploads`, and records metadata.
 3. A user starts file analysis with `POST /audits/pdf/{file_id}`, `POST /audits/image/{file_id}`, `POST /audits/manifest/{file_id}`, `POST /audits/archive/{file_id}`, `POST /audits/project-archive/{file_id}`, `POST /audits/django-config/{file_id}`, `POST /audits/docker-config/{file_id}`, `POST /audits/secrets-review/{file_id}`, `POST /audits/node-package-config/{file_id}`, `POST /audits/ci-cd-config/{file_id}`, `POST /audits/k8s-config/{file_id}`, `POST /audits/terraform-config/{file_id}`, `POST /audits/nginx-config/{file_id}`, `POST /audits/compose-config/{file_id}`, `POST /audits/database-config/{file_id}`, `POST /audits/sql-database-config/{file_id}`, or `POST /audits/redis-config/{file_id}`. Web, domain, and subdomain inventory jobs are already created by `POST /audits/web/basic`, `POST /audits/domain/basic`, or `POST /audits/subdomains/basic` and store `target_url` or `target_domain` instead of `file_id`.
 4. The backend creates a queued job and schedules background execution.
-5. The backend calls `audit-tools` over the internal Compose network.
-6. The tool runner performs passive analysis inside its container. For `manifest_basic`, it parses local text and returns normalized dependencies and informational findings. For `archive_basic`, it inspects archive metadata and returns structure, size, manifest-presence, extraction-risk, and informational findings without broad extraction. For `project_archive_basic`, it scans archive metadata, reads only bounded supported manifest files in memory, and returns internal dependency summaries plus informational findings. For `django_config_basic`, it reads only bounded Django-related config/deployment text from archives, redacts secret-like evidence, and returns heuristic configuration findings. For `docker_config_basic`, it reads only bounded Dockerfile/Compose text from archives, redacts secret-like evidence, and returns heuristic Docker configuration findings. For `secrets_review_basic`, it records real env files without reading them, reads only bounded candidate text, redacts evidence before storage, and returns heuristic secret-exposure indicators. For `node_package_config_basic`, it records real env files without reading them, reads only bounded Node package/config text, redacts package-manager credentials before storage, and returns heuristic package configuration indicators. For `ci_cd_config_basic`, it records real env files without reading them, reads only bounded CI/CD config text, redacts CI secret-like evidence before storage, and returns heuristic workflow configuration indicators. For `k8s_config_basic`, it records real env files without reading them, reads only bounded Kubernetes manifest/Helm/Kustomize context text, redacts Kubernetes secret-like evidence before storage, and returns heuristic manifest configuration indicators. For `terraform_config_basic`, it detects Terraform state files without reading them, reads only bounded Terraform/OpenTofu/Terragrunt config text, redacts IaC secret-like evidence before storage, and returns heuristic infrastructure configuration indicators. For `nginx_config_basic`, it reads only bounded Nginx/reverse-proxy config text, detects but does not resolve includes, redacts secret-like proxy/header/variable evidence before storage, and returns heuristic web-edge configuration indicators. For `compose_config_basic`, it detects real env files without reading them, reads only bounded Docker Compose config text, records env/secret file references without resolving them, redacts Compose secret-like evidence before storage, and returns heuristic service-wiring configuration indicators. For `database_config_basic`, it detects sensitive env/client credential/dump/backup files without reading them, reads only bounded PostgreSQL/MySQL/MariaDB config text, records includes without resolving them, redacts database secret-like evidence before storage, and returns heuristic database configuration indicators. For `sql_database_config_basic`, it detects sensitive env/client credential/dump/backup/data files without reading them, reads only bounded PostgreSQL/MySQL/MariaDB config text, records includes without resolving them, redacts SQL database secret-like evidence before storage, and returns heuristic SQL database configuration indicators. For `redis_config_basic`, it detects sensitive env/ACL/RDB/AOF/appendonly/dump/backup files without reading them, reads only bounded Redis/Sentinel config text, records includes without resolving them, redacts Redis secret-like evidence before storage, and returns heuristic Redis/Sentinel configuration indicators. For `web_basic`, it makes bounded HTTP/HTTPS requests to the authorized URL and same-origin `robots.txt`/`security.txt` paths, returning headers, cookies, TLS summary, redirects, and configuration findings. For `domain_basic`, it makes bounded DNS queries for the authorized domain and returns DNS, email-security, `www`, findings, and errors. For `subdomain_inventory_basic`, it resolves only explicit candidates and bounded wildcard probes, returning candidate status, DNS answers, heuristic findings, and errors.
+5. For file work, the backend verifies and transports exactly one source to
+   the no-egress `audit-tools` service. For web/DNS work, it calls the separate
+   `network-tools` service; both destinations are fixed and HTTP clients ignore
+   proxy environment variables.
+6. `audit-tools` starts one ephemeral subprocess with the retained resource
+   contract and cleans its dedicated tmpfs. The selected analyzer then performs
+   the same passive parsing described below. `network-tools` has no file
+   capability or data mount and executes only the bounded network analyzers.
+   For `manifest_basic`, the file worker parses local text and returns normalized dependencies and informational findings. For `archive_basic`, it inspects archive metadata and returns structure, size, manifest-presence, extraction-risk, and informational findings without broad extraction. For `project_archive_basic`, it scans archive metadata, reads only bounded supported manifest files in memory, and returns internal dependency summaries plus informational findings. For `django_config_basic`, it reads only bounded Django-related config/deployment text from archives, redacts secret-like evidence, and returns heuristic configuration findings. For `docker_config_basic`, it reads only bounded Dockerfile/Compose text from archives, redacts secret-like evidence, and returns heuristic Docker configuration findings. For `secrets_review_basic`, it records real env files without reading them, reads only bounded candidate text, redacts evidence before storage, and returns heuristic secret-exposure indicators. For `node_package_config_basic`, it records real env files without reading them, reads only bounded Node package/config text, redacts package-manager credentials before storage, and returns heuristic package configuration indicators. For `ci_cd_config_basic`, it records real env files without reading them, reads only bounded CI/CD config text, redacts CI secret-like evidence before storage, and returns heuristic workflow configuration indicators. For `k8s_config_basic`, it records real env files without reading them, reads only bounded Kubernetes manifest/Helm/Kustomize context text, redacts Kubernetes secret-like evidence before storage, and returns heuristic manifest configuration indicators. For `terraform_config_basic`, it detects Terraform state files without reading them, reads only bounded Terraform/OpenTofu/Terragrunt config text, redacts IaC secret-like evidence before storage, and returns heuristic infrastructure configuration indicators. For `nginx_config_basic`, it reads only bounded Nginx/reverse-proxy config text, detects but does not resolve includes, redacts secret-like proxy/header/variable evidence before storage, and returns heuristic web-edge configuration indicators. For `compose_config_basic`, it detects real env files without reading them, reads only bounded Docker Compose config text, records env/secret file references without resolving them, redacts Compose secret-like evidence before storage, and returns heuristic service-wiring configuration indicators. For `database_config_basic`, it detects sensitive env/client credential/dump/backup files without reading them, reads only bounded PostgreSQL/MySQL/MariaDB config text, records includes without resolving them, redacts database secret-like evidence before storage, and returns heuristic database configuration indicators. For `sql_database_config_basic`, it detects sensitive env/client credential/dump/backup/data files without reading them, reads only bounded PostgreSQL/MySQL/MariaDB config text, records includes without resolving them, redacts SQL database secret-like evidence before storage, and returns heuristic SQL database configuration indicators. For `redis_config_basic`, it detects sensitive env/ACL/RDB/AOF/appendonly/dump/backup files without reading them, reads only bounded Redis/Sentinel config text, records includes without resolving them, redacts Redis secret-like evidence before storage, and returns heuristic Redis/Sentinel configuration indicators. For `web_basic`, the network runner makes bounded HTTP/HTTPS requests to the authorized URL and same-origin `robots.txt`/`security.txt` paths, returning headers, cookies, TLS summary, redirects, and configuration findings. For `domain_basic`, it makes bounded DNS queries for the authorized domain and returns DNS, email-security, `www`, findings, and errors. For `subdomain_inventory_basic`, it resolves only explicit candidates and bounded wildcard probes, returning candidate status, DNS answers, heuristic findings, and errors.
 7. The backend stores the final job state and result JSON.
 8. A user reads the job with `GET /jobs/{job_id}` from the API or the UI.
 9. A user exports a report with `GET /jobs/{job_id}/export/{format}`. The backend renders the report from the stored job JSON.
@@ -533,7 +765,11 @@ The `data/` directory is bind-mounted into containers. Uploads and results are i
 
 ## API Surface
 
-- `GET /health`: backend healthcheck.
+- `GET /health`: process liveness only; it deliberately does not claim storage
+  or runner availability.
+- `GET /ready`: aggregate readiness for a private storage sentinel, both fixed
+  internal runners, global admission capacity and pending recovery/orphan
+  cleanup. It returns no hosts, paths, values, owners, counts or raw errors.
 - `POST /files/pdf`: upload and register a PDF.
 - `POST /files/image`: upload and register a JPEG, PNG, or WebP image.
 - `POST /files/manifest`: upload and register `package.json`, `requirements.txt`, or `pyproject.toml`.
@@ -582,15 +818,42 @@ The browser UI consumes these same endpoints. The backend enables CORS only for 
 
 - Audit binaries are installed only in the `audit-tools` image.
 - The Docker socket is not mounted into the backend.
-- The backend reaches the tool runner on an internal Compose network; the tool runner also has outbound network access for the bounded `web_basic`, `domain_basic`, and `subdomain_inventory_basic` audits.
-- The tool runner mount of `data/` is read-only.
+- The backend reaches two fixed-role runners on the internal Compose network. `audit-tools` accepts only file analyses and has no egress network or data-volume mount; `network-tools` accepts only the bounded `web_basic`, `domain_basic`, and `subdomain_inventory_basic` audits and is the sole passive runner attached to the egress network.
+- Registered Active executions cross a third fixed-role service, `active-tools`, on a dedicated Active egress network. DNS inventory, bounded CT lookup, one-request HTTP header review, TLS basic and Nmap have fixed internal routes/profiles and independent default-off runner gates. The backend derives targets from the owner-scoped registry, follows no runner redirects, caps standard calls at eight seconds/256 KiB/four concurrent requests and cancels an in-flight internal request on authorization revocation; it has no direct-network fallback for this product path.
+- Active capability readiness is also fail-closed across both gates. The
+  organization summary performs only a targetless `GET /health` against the
+  configured internal runner, with no redirects, at most two seconds and
+  4 KiB. It requires the exact `active-tools` service identity and a complete,
+  internally consistent five-capability map with target input forbidden. The
+  public result contains only `disabled`, `ready`, `degraded` or `unavailable`
+  plus closed reason codes; runner URLs, hosts, paths and targets are omitted.
+  A health failure leaves the asset registry readable but prevents the browser
+  from admitting an execution.
+- For every file analysis, the backend reads at most the retained, verified source size, checks SHA-256, and sends only file identity, safe analyzer limits, size, digest and base64 source bytes. Owner, project, stored filename, host path and workspace path never cross the runner contract.
 - Containers drop Linux capabilities and set `no-new-privileges`.
-- Containers use read-only root filesystems with `/tmp` as tmpfs.
+- Containers use read-only root filesystems. The file runner has a dedicated 64 MiB tmpfs at `/var/lib/inspectra-workers`; the network runner and backend retain bounded `/tmp` tmpfs mounts.
 - File and job identifiers are constrained to generated UUID hex values before filesystem paths are built.
 - File records include `kind` so audit endpoints can reject mismatched file types. Older records without `kind` are treated as PDFs by default.
 - Upload size is limited by `INSPECTRA_MAX_UPLOAD_BYTES`, defaulting to 20 MB.
+- Original uploads and terminal job records have independent 30-day retention defaults. Startup and administrator-requested maintenance remove expired sources only within the active owner/organization boundary unless a queued/running/cancelling job needs them, and mark related jobs/projects as source-deleted. Terminal result expiry removes completed/failed/cancelled jobs only after deleting their normalized public-vulnerability snapshot history and clearing saved baselines. Expired public-provider cache data is shared but identity-free; product activity is purged per organization. `GET /privacy/retention` exposes configured values without paths or stored-data facts, and `POST /privacy/retention/run` accepts no selectors. Either retention setting can be `0` only in an intentionally unmanaged trusted-local deployment; the private TLS profile rejects disabled retention. `docs/data-retention.md` records the lack of an internal scheduler, project/triage deletion, app-level encryption and backup control.
 - Archive inspection is bounded by `INSPECTRA_ARCHIVE_MAX_ENTRIES`, `INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES`, `INSPECTRA_ARCHIVE_MAX_ENTRY_NAME_LENGTH`, `INSPECTRA_ARCHIVE_MAX_LISTED_ENTRIES`, and `INSPECTRA_ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES`.
 - Project archive manifest parsing is bounded by `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS`, `INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES`, `INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES`, and `INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES`.
+- Project analyses first copy the retained source to `data/workspaces/<opaque-job-id>/source.archive` and verify its recorded size and SHA-256. The backend then transports that one source under contract; it never gives the runner a path or shared volume. Backend startup marks unfinished local jobs failed with `application_restart` and removes orphan workspaces; success, controlled failure and owner cancellation also remove the backend copy.
+- Adding a project snapshot is serialized by the storage lock and recorded first in `data/runtime/project_snapshot_admissions/`. The private `2026-09-09.1` record contains an operation ID, hashed client idempotency key, owner/project/file/hash bindings, a server-derived closed source channel and preassigned snapshot/job IDs; it contains no source path, filename, code or raw key. Archive, SBOM, interactive Git/CLI and automation-token CI routes fix the channel without accepting a user selector. A compatible retry returns the same snapshot/job and cannot relabel the first channel. Startup completes a pending operation before queued-job recovery; legacy `2026-09-06.1` journals remain recoverable and commit-attributed records expose `unknown_git_or_ci` rather than guessed provenance. An incompatible key collision fails closed. `INSPECTRA_PROJECT_MAX_SOURCE_SNAPSHOTS` caps immutable history without deleting it.
+- After a commit-bound project analysis completes, trusted CI may attach one optional Go relationship artifact through the fixed `/dependency-graphs/go` route. The CLI and backend validate contract `2026-09-10.1`, exact commit/source digest, canonical bounded shape and agreement with one same-root parsed `go.mod`/`go.sum`. Attachment is owner/project/analysis scoped, immutable except for an identical replay, and forbidden after public-intelligence evidence exists. The backend persists corroborated inventory plus an aggregate receipt only; raw nodes, IDs, roots and edges remain request-local. This path executes no Go command and grants no public-origin attestation.
+- Cargo evidence uses a separate fixed `/dependency-graphs/cargo` boundary and contract `2026-09-10.2`. It has the same immutable commit/source/owner/project/analysis binding, replay and pre-intelligence ordering, while its ecosystem validator additionally requires one same-root `Cargo.toml`/`Cargo.lock`, official-registry exact identities and closed target/feature dimensions. Only relationship scope and aggregate feature/target counts survive; feature names, target/node IDs, roots and edges are discarded. Sequential Go and Cargo attachments preserve the other ecosystem's validated projection. Inspectra never executes Cargo and the graph cannot grant registry provenance.
+- Gradle evidence uses fixed route `/dependency-graphs/gradle` and contract `2026-09-10.4`. It accepts only exact locked Maven coordinates, canonical edges and the closed scopes `compile`, `runtime` and `test`, bound to one commit/snapshot and same-root Gradle marker/lock. Only direct/transitive scope, scope count and an aggregate receipt persist. Inspectra never evaluates DSL or runs Gradle/Maven; CI-reported relationships never grant Maven Central provenance.
+- NuGet evidence uses fixed route `/dependency-graphs/nuget` and contract `2026-09-10.5`. It accepts exact locked package identities and canonical per-target roots/edges under at most 32 consecutive opaque target ordinals (`t0`…`t31`), bound to one commit/snapshot and one same-root `.csproj`/`packages.lock.json` v1 pair. Target count, identity and reachability divergence fail closed. Only direct/transitive scope, target-variant count and an aggregate receipt persist; TFM, topology and NuGet.org provenance do not.
+- NuGet package versions cross inventory/PVI under semantics contract `2026-09-10.1`: a pure bounded normalizer implements the documented NuGetVersion one-to-four-part identity, revision/build normalization and case-insensitive prerelease comparison. The runner canonicalizes before persistence, graph validators require that canonical form, and OSV queries/ranges/fixes reuse it. Unsupported values remain non-correlatable; no .NET/NuGet process is loaded.
+- `audit-tools` serializes source-bearing work to one request at a time and starts a fresh subprocess for each analysis. The source is mode `0400` in a mode `0700` opaque directory on the dedicated tmpfs. The child receives an allowlisted environment, a request-local temporary directory, read-only container root, no external network, and enforced limits: 55 s wall time, 45 s CPU per process, 384 MiB address space, 32 MiB file size, 64 open files, 32 processes, 20 MiB source and 4 MiB result. Timeout or cancellation kills the process group; a `finally` cleanup removes all request bytes. Startup/next-request cleanup is idempotent. Container limits of 1 CPU, 512 MiB and 128 PIDs remain a second boundary.
+- Backend liveness remains the dependency-free `/health`. Compose readiness
+  uses `/ready`, whose runner requests are concurrent, fixed to the two internal
+  `/health` endpoints, ignore proxy environment, reject redirects, accept at
+  most 4 KiB of the exact health JSON and share a configurable deadline of at
+  most five seconds. Storage is tested with a mode-`0600` sentinel that is
+  fsynced and removed. Any failure is exposed/logged only as an aggregate code.
+- The versioned execution profile (`2026-09-06.3`) and each successful file result retain the non-sensitive worker contract. The profile never retains URLs, paths, environment values or source content. A result with an incompatible project or worker contract fails closed.
+- This is process/resource and network isolation inside a dedicated container, not a separate cgroup or VM per job. `PROD-012` remains required before claiming multiempresa isolation, and hostile native-library escape resistance still depends on the pinned container runtime, kernel and host controls.
 - Django config archive analysis is bounded by `INSPECTRA_DJANGO_CONFIG_MAX_FILES`, `INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES`, `INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES`, archive entry limits, and ZIP central directory metadata limits.
 - Docker config archive analysis is bounded by `INSPECTRA_DOCKER_CONFIG_MAX_FILES`, `INSPECTRA_DOCKER_CONFIG_MAX_FILE_BYTES`, `INSPECTRA_DOCKER_CONFIG_MAX_TOTAL_BYTES`, archive entry limits, and ZIP central directory metadata limits.
 - Secrets review archive analysis is bounded by `INSPECTRA_SECRETS_REVIEW_MAX_FILES`, `INSPECTRA_SECRETS_REVIEW_MAX_FILE_BYTES`, `INSPECTRA_SECRETS_REVIEW_MAX_TOTAL_BYTES`, archive entry limits, and ZIP central directory metadata limits.
@@ -605,9 +868,45 @@ The browser UI consumes these same endpoints. The backend enables CORS only for 
 - Redis config archive analysis is bounded by `INSPECTRA_REDIS_CONFIG_MAX_FILES`, `INSPECTRA_REDIS_CONFIG_MAX_FILE_BYTES`, `INSPECTRA_REDIS_CONFIG_MAX_TOTAL_BYTES`, archive entry limits, and ZIP central directory metadata limits.
 - Web auditing is bounded by `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, and `INSPECTRA_WEB_ALLOWED_PORTS`. Private targets require `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS=true`; metadata/link-local/multicast/reserved targets remain blocked.
 - Subdomain inventory is bounded by `INSPECTRA_SUBDOMAIN_MAX_CANDIDATES`, `INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS`, `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS`, and the global deadline `INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS`.
-- Development CORS is explicit and defaults to `http://localhost:5173`, not a wildcard.
+- Development CORS is explicit and defaults to `http://localhost:5173`, not a wildcard. `INSPECTRA_CORS_ORIGINS` accepts only absolute HTTP(S) origins without paths, credentials, queries or fragments; origin configuration is normalized and rejects `*`.
+- Credentialed CORS permits only the frontend methods (`GET`, `POST`, `PUT`, `DELETE`) and its required request headers (`Content-Type`, `X-CSRF-Token`, `X-Inspectra-Active-Approval`). The last header carries only an opaque one-use approval ID and is required to apply an exact reviewed Active mutation from the browser. `PUT` is required by the optimistic project-responsibility contract; arbitrary methods remain unsupported. Operators can only restrict these lists through `INSPECTRA_CORS_ALLOWED_METHODS` and `INSPECTRA_CORS_ALLOWED_HEADERS`; they cannot expand them. The only custom response header exposed to browser JavaScript is `X-Inspectra-Snapshot-SHA256`, required to bind a confirmed weekly Active download to its preflight; no target or report content is copied into that header. Audit jobs share a per-process semaphore configured by `INSPECTRA_AUDIT_MAX_CONCURRENCY` (default `4`, maximum `16`).
 
 These are sensible MVP guardrails, not a substitute for a hardened sandbox.
+
+Active evidence export is a pure, on-demand projection over the owner-scoped
+asset and its bounded retained jobs. It never copies stored result dictionaries
+into the artifact: `active_posture.build_active_evidence_snapshot` admits only
+closed normalized signals, and the TAR builder then emits six fixed regular
+entries with canonical metadata, manifest hashes and a 4 MiB total ceiling. The
+same parser validates the in-memory artifact before serving it and is available
+as a non-extracting offline verifier. No evidence bundle is retained server-side
+or signed; browser/download retention and custody remain operator responsibilities.
+
+General product-audit export is an administrator-only, on-demand projection
+bound to a five-minute preflight and an exact SHA-256 snapshot. It emits at
+most 1,000 events/1 MiB, pseudonymizes event/actor/resource identifiers and
+omits organization, correlation, metadata and customer content. Inspectra
+does not retain the generated JSON/CSV; the response digest is an integrity
+binding, not a signature or custody chain.
+
+The authoritative product-action files have a separate organization-scoped
+integrity ledger (`2026-09-10.1`). Each entry binds the exact event digest to
+the previous chain digest; a private head binds sequence, count and the retained
+prefix anchor. Audit reads/exports/writes verify the chain, retention advances
+only a leading-prefix anchor, and authorized anonymization starts a generation
+linked to the old head. Backup validates the same relationship. The chain is
+unkeyed and locally anchored, so it detects accidental/selective alteration but
+does not claim protection from an actor able to rewrite the entire store.
+
+Active operational audit export is another on-demand projection, but over the
+organization's append-only product-action store. It accepts only fixed periods,
+an optional owner-checked asset boundary and JSON/CSV formats. The projection
+caps selection at 1,000 events and the response at 1 MiB, replaces event/actor/
+resource identities with domain-separated organization-bound pseudonyms and
+passes through only closed action/result/resource fields plus valid immutable
+authorization revision coordinates. It never copies arbitrary metadata,
+correlation IDs, targets or result evidence into the response. The frontend
+requires an explicit preflight and does not offer an empty download.
 
 ## Extensibility
 
@@ -626,3 +925,31 @@ Possible next modules:
 - Optional richer manifest ecosystem support while keeping parsing offline.
 - Future docs-first modules such as `mongodb_config_basic`, `apache_config_basic`, or another narrowly scoped passive configuration review.
 - Job history filters and result-specific views in the frontend.
+## Isolated Active control verification
+
+Public DNS TXT and HTTP well-known control checks do not open network transports
+from the privileged backend. After validating the owner-scoped challenge, the
+backend derives one exact destination from the registered asset and calls the
+fixed internal `active-tools` verification route. The isolated runner performs
+the bounded lookup/request only when its separate gate is enabled and returns a
+boolean plus a closed reason code; it never returns the target, token, response
+body, DNS answers or headers. The backend client disables proxy-environment use,
+redirects and unbounded responses. Revocation is observed locally and through
+the persisted verification record so another backend worker can cancel and
+discard an in-flight result.
+Recurring Active policies are persisted as an owner-scoped, target-free
+aggregate. A disabled-by-default scheduler admits only fixed 7/14/30-day
+cadences inside closed weekly IANA-timezone windows and revalidates the exact
+authorization revision, verification and isolated-runner readiness before
+creating the same durable Active job contract used by manual execution.
+Contract `2026-09-08.2` persists bounded exponential retry state and explicit
+DST behavior. CAS mutation plus the durable job claim handles competing
+schedulers; revocation/expiry suspends schedules and missed runs collapse
+rather than fan out. Legacy policies without a persisted authorization expiry
+load suspended until explicitly rebound.
+
+- Composer transitive scope can be refined only by a closed, commit- and
+  snapshot-bound CI graph (`2026-09-10.3`). The API rejects ambiguous roots,
+  custom repositories and identities absent from retained lock evidence; raw
+  nodes, roots and edges are not persisted. This relationship layer is strictly
+  separate from Packagist/public-identity attestation.

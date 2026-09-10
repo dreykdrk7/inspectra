@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Scan complete history with Gitleaks CLI
+        run: |
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/repo:ro" \
+            --workdir /repo \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git --config /repo/.gitleaks.toml --gitleaks-ignore-path /repo/.gitleaksignore --redact=100 --exit-code 1 --log-opts="--all" /repo
+      - name: Prove that the secret-detection rules are active
+        run: make verify-secret-scanner
+
+  python:
+    name: Python tests and dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Check synchronized backlogs
+        run: make check-backlogs PYTHON=python
+      - name: Run reproducible Python checks
+        run: make test-python audit-python PYTHON=python
+
+  frontend:
+    name: Frontend tests, build and dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Run reproducible frontend checks
+        run: make test-frontend build-frontend audit-frontend
+
+  compose:
+    name: Compose configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Validate local Compose configuration
+        run: make validate-compose
+      - name: Validate private Compose configuration
+        env:
+          INSPECTRA_PUBLIC_HOST: inspectra.example.test
+          INSPECTRA_TLS_EMAIL: security@example.test
+          INSPECTRA_ADMIN_PASSWORD_HASH: pbkdf2_sha256$600000$1234567890abcdef$0000000000000000000000000000000000000000000000000000000000000000
+        run: make validate-compose-private

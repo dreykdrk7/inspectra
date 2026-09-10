@@ -1,0 +1,22 @@
+title = "Inspectra secret-scanning policy"
+
+# A custom configuration replaces Gitleaks' built-in rules unless they are
+# explicitly extended. Keep this enabled: the allowlist below only narrows the
+# paths of known synthetic fixtures.
+[extend]
+useDefault = true
+
+# Fixtures below are deliberately unsafe synthetic inputs used to prove that
+# the sanitizer/redaction code detects them. This allowlist is path-specific:
+# it must never be expanded to real source, configuration, or deployment data.
+[allowlist]
+description = "Synthetic secret fixtures used by sanitizer tests"
+paths = [
+  '''^tests/fixtures/demo/passive-alpha/sources/demo-archive-app-config/[.]env$''',
+  '''^tests/fixtures/demo/passive-alpha/sources/demo-archive-container-infra/[.]env$''',
+  '''^tests/fixtures/demo/passive-alpha/sources/demo-archive-container-infra/terraform/main[.]tf$''',
+  '''^tests/fixtures/demo/passive-alpha/sources/demo-archive-data-layer/[.]env$''',
+  '''^tests/fixtures/demo/passive-alpha/sources/demo-archive-redaction-negative/private[.]key$''',
+  '''^tests/fixtures/sanitizer/unsafe_counterexamples/[.]env$''',
+  '''^tests/fixtures/sanitizer/unsafe_counterexamples/private[.]key$''',
+]
