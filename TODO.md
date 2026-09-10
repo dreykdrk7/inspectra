@@ -3803,8 +3803,9 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 - **Dependencias:** `PROD-239` completada.
 - **Evidencia:** 2026-09-10: `tools/backlog_consistency.py` analiza en solo
   lectura tablas resumen, fichas por encabezado y filas detalladas, compara
-  todos los `PROD-XXX` entre documentos y exige que `SEC-012`, `PROD-129`,
-  `PROD-130` y `PROD-167` continúen bloqueadas. La primera ejecución real
+  todos los `PROD-XXX` entre documentos. En su cierre inicial protegía también
+  `PROD-129`; la consolidación autorizada retiró solo esa tarea y mantiene
+  bloqueadas `SEC-012`, `PROD-130` y `PROD-167`. La primera ejecución real
   encontró siete contradicciones: se respaldaron como completadas
   `PROD-063/124/243`, se mantuvieron pendientes `PROD-007/021/222` y se trasladó
   a `PROD-124` la evidencia de identidad que estaba erróneamente en `PROD-021`.
