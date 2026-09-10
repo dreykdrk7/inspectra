@@ -1,0 +1,4 @@
+title = "Inspectra CLI full Gitleaks policy"
+
+[extend]
+useDefault = true
