@@ -200,7 +200,7 @@ integración con esos proveedores.
 | PROD-127 | P0 | completada | Compatibilidad estricta con respuestas resumidas de OSV |
 | PROD-128 | P0 | completada | Presentación móvil e indicadores semánticos de inteligencia |
 | PROD-129 | P1 | completada | Preparar un corte local coherente y revisable |
-| PROD-130 | P1 | bloqueada | Validar CI remoto y cerrar la puerta de release |
+| PROD-130 | P1 | en progreso | Validar CI remoto y cerrar la puerta de release |
 | PROD-131 | P1 | completada | CLI: snapshot Git seguro, preflight y dry-run |
 | PROD-132 | P1 | completada | CLI: subida, seguimiento y resultado end-to-end |
 | PROD-133 | P1 | completada | Tokens de automatización con alcance y revocación |
@@ -3856,7 +3856,7 @@ las pruebas indicadas y se sincronicen ambos backlogs.
 ### PROD-130 — Validar CI remoto y cerrar la puerta de release
 
 - **Prioridad:** P1
-- **Estado:** bloqueada
+- **Estado:** en progreso
 - **Necesidad de usuario y valor aportado:** empresas y mantenedores necesitan
   evidencia independiente de que el commit candidato supera las mismas puertas
   en CI y de que su cadena de acciones no depende de referencias mutables.
@@ -3879,15 +3879,21 @@ las pruebas indicadas y se sincronicen ambos backlogs.
 - **Estrategia de pruebas:** revisión de permisos y SHAs, validadores estáticos,
   ejecución remota sobre el commit candidato y comparación con la matriz local;
   ninguna consulta real a proveedores forma parte de la suite ordinaria.
-- **Evidencia de validación al completarse:** en progreso; la identidad inicial
-  quedó verificada y los metadatos privados detectados se redactaron antes del
-  intento remoto. GitHub Push Protection rechazó el push sin crear la rama
-  remota porque dos canarios sintéticos con forma Stripe/Slack permanecen en el
-  commit local inédito `61533ec`. El árbol actual los construye solo en memoria
-  y mantiene 12/12 casos de redacción verdes. No se usó el bypass y un commit
-  posterior no elimina el blob histórico; se requiere autorización explícita
-  para reescribir exclusivamente la serie local inédita antes de reintentar.
-  No hubo PR, tag, release, publicación ni despliegue; `SEC-012` sigue bloqueada.
+- **Evidencia de validación al completarse:** en progreso; con autorización
+  explícita se reescribió exclusivamente la serie local inédita, sin bypass ni
+  force-push. La rama remota y el PR borrador #1 apuntan al commit exacto
+  `3d912d2e8196c5185b8e378fd3e04ca692b99a01`. El primer CI remoto dejó verdes
+  Compose, Gitleaks (historial y canario) y Python; frontend instaló sin
+  vulnerabilidades y ejecutó las 420 pruebas, pero cuatro esperas asíncronas de
+  `App.test.tsx` fallaron bajo carga antes de permitir build/audit. El caso se
+  reprodujo con Node 22/Vitest 4.1.11 y cuatro CPU (419/420): el DOM ya mostraba
+  la sesión autenticada, pero una transición secundaria superó el segundo
+  implícito. Cuatro aserciones de transición usan ahora un presupuesto local de
+  5 s, sin relajar el resto de la suite; dos repeticiones completas pasaron
+  420/420, build 302,7/322 KiB y `npm audit` cero vulnerabilidades. Pendiente
+  repetir todas las puertas en CI; no se promoverá una ejecución parcial. No
+  hubo tag, release, publicación ni despliegue; `SEC-012` sigue bloqueada hasta
+  disponer de evidencia remota completa.
 
 ## Ciclo 6 — Expansión funcional para desarrolladores y empresas
 

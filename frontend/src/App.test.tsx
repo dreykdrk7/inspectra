@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, toErrorMessage } from "./App";
 import { ApiError } from "./api";
 
+// App exercises several independently loaded panels. Keep transition assertions
+// tolerant of CI worker contention without relaxing the timeout for every test.
+const APP_TRANSITION_TIMEOUT = { timeout: 5_000 } as const;
+
 function jsonResponse(payload: unknown, status = 200, headers: HeadersInit = {}): Response {
   const responseHeaders = new Headers(headers);
   responseHeaders.set("content-type", "application/json");
@@ -1354,7 +1358,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Acme security" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Acme security" }, APP_TRANSITION_TIMEOUT)).toBeInTheDocument();
     expect(screen.getByText("Acme security · administrator")).toBeInTheDocument();
     expect(screen.getByText("Projects, analyses and exports use this workspace as their isolation boundary. Roles never bypass authorization, redaction or analysis limits.")).toBeInTheDocument();
   });
@@ -1732,7 +1736,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "General Summary" }, { timeout: 3000 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "General Summary" }, APP_TRANSITION_TIMEOUT)).toBeInTheDocument();
     expect(screen.getByText("PDF basic is completed. Its result is now selected below.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "4. Review result" })).toHaveAttribute("aria-current", "step");
     expect(document.activeElement).toHaveAttribute("id", "results");
@@ -1974,7 +1978,7 @@ describe("App", () => {
     expect(rendered).toContain("[REDACTED]");
 
     fireEvent.click(screen.getByTitle("View job"));
-    expect(await screen.findByRole("heading", { name: "Active network dry-run" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Active network dry-run" }, APP_TRANSITION_TIMEOUT)).toBeInTheDocument();
     rendered = view.container.textContent ?? "";
     expect(rendered).toContain("url_credentials_rejected");
     expect(rendered).toContain("network requests");
@@ -2109,7 +2113,7 @@ describe("App", () => {
     expect(rendered).toContain("[REDACTED]");
 
     fireEvent.click(screen.getByTitle("View job"));
-    expect(await screen.findByRole("heading", { name: "Authorized HTTP header probe" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Authorized HTTP header probe" }, APP_TRANSITION_TIMEOUT)).toBeInTheDocument();
     rendered = view.container.textContent ?? "";
     expect(rendered).toContain("One authorized HTTP HEAD request was sent.");
     expect(rendered).toContain("Response body was not read.");
