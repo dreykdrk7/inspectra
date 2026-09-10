@@ -1,4 +1,16 @@
 node_modules
 dist
 .vite
+.git
+.gitignore
+.dockerignore
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+coverage/
 *.log
+*.test.*

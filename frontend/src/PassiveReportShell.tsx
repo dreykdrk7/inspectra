@@ -110,6 +110,12 @@ function statusMessage(status: JobStatus, findingsCount?: number, isSparse = fal
   if (status === "running") {
     return isSparse ? `${RUNNING_COPY} Some result fields are unavailable; showing available redacted data.` : RUNNING_COPY;
   }
+  if (status === "cancelling") {
+    return "Cancellation is in progress. Results remain unavailable until the execution workspace is removed.";
+  }
+  if (status === "cancelled") {
+    return "The job was cancelled and its execution workspace was removed. No partial result is presented.";
+  }
   if (status === "failed") {
     return "The job failed in a controlled state. Review errors below; uploaded content was not executed.";
   }

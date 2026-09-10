@@ -10,6 +10,8 @@ export type ProjectArchiveFinding = {
   ecosystem: string;
   ecosystemLabel: string;
   manifestPath: string | null;
+  line: number | null;
+  confidence: string | null;
   description: string;
   evidence: string;
   recommendation: string;
@@ -42,6 +44,19 @@ export type ProjectArchiveDependencyPinningSummary = {
   summary: string;
 };
 
+export type ProjectArchiveLicenseDeclaration = {
+  manifestPath: string;
+  status: "declared" | "unknown" | "unknown_unrecognized_withheld" | "not_permitted";
+  expression: string | null;
+};
+
+export type ProjectArchiveLicenseReview = {
+  contractVersion: string | null;
+  policyMode: string;
+  declarations: ProjectArchiveLicenseDeclaration[];
+  limitations: string[];
+};
+
 const UNCATEGORIZED_PROJECT_ARCHIVE_FINDING = {
   category: "uncategorized_review_indicator",
   categoryLabel: "Uncategorized review indicator",
@@ -56,6 +71,8 @@ const PROJECT_ARCHIVE_ECOSYSTEM_LABELS: Record<string, string> = {
   ci_cd: "CI/CD",
   framework_config: "Framework/config",
   generic_project_metadata: "Generic project metadata",
+  kubernetes: "Kubernetes",
+  infrastructure_as_code: "Infrastructure as code",
   unknown_ecosystem: "Unknown ecosystem"
 };
 
@@ -75,6 +92,7 @@ const PROJECT_ARCHIVE_FINDING_METADATA: Record<string, ProjectArchiveFindingMeta
   requirements_dependency_not_exactly_pinned: pythonRequirementsMetadata("dependency_hygiene", "Dependency hygiene"),
   dependency_broad_range: unknownEcosystemMetadata("dependency_hygiene", "Dependency hygiene"),
   requirements_option_present: pythonRequirementsMetadata("dependency_hygiene", "Dependency hygiene"),
+  requirements_exact_pins_missing_hashes: pythonRequirementsMetadata("dependency_integrity", "Dependency integrity"),
   dependency_external_or_local_source: unknownEcosystemMetadata("dependency_source_review", "Dependency source review"),
   requirements_custom_index: pythonRequirementsMetadata("dependency_source_review", "Dependency source review"),
   requirements_editable_install: pythonRequirementsMetadata("dependency_source_review", "Dependency source review"),
@@ -112,6 +130,7 @@ export type ParsedProjectManifest = {
   manifestType: string;
   sizeBytes: number | null;
   project: MetadataEntry[];
+  integrity: MetadataEntry[];
   dependencies: Array<{ name: string; dependencies: Array<{ name: string; specifier: string; source: string | null }> }>;
   scripts: MetadataEntry[];
   findings: ProjectArchiveFinding[];
@@ -135,6 +154,7 @@ export type ProjectArchiveAuditReport = {
   parsedManifests: ParsedProjectManifest[];
   ecosystemSummary: ProjectArchiveEcosystemSummary[];
   dependencyPinningSummary: ProjectArchiveDependencyPinningSummary[];
+  licenseReview: ProjectArchiveLicenseReview | null;
   findings: ProjectArchiveFinding[];
   errors: string[];
 };
@@ -164,8 +184,37 @@ export function buildProjectArchiveAuditReport(job: JobRecord, file?: FileRecord
     parsedManifests,
     ecosystemSummary: ecosystemSummaryFromValue(result?.ecosystem_summary, summaryFindings),
     dependencyPinningSummary: dependencyPinningSummaryFromValue(result?.dependency_pinning_summary, summaryFindings),
+    licenseReview: licenseReviewFromValue(result?.license_review),
     findings,
     errors: asStringArray(result?.errors)
+  };
+}
+
+function licenseReviewFromValue(value: unknown): ProjectArchiveLicenseReview | null {
+  const review = asRecord(value);
+  if (!review) {
+    return null;
+  }
+  const declarations = Array.isArray(review.declarations)
+    ? review.declarations.flatMap((value): ProjectArchiveLicenseDeclaration[] => {
+        const declaration = asRecord(value);
+        const manifestPath = safeProjectRelativePath(asString(declaration?.manifest_path));
+        const status = asString(declaration?.status);
+        if (!manifestPath || !["declared", "unknown", "unknown_unrecognized_withheld", "not_permitted"].includes(status ?? "")) {
+          return [];
+        }
+        return [{
+          manifestPath,
+          status: status as ProjectArchiveLicenseDeclaration["status"],
+          expression: asString(declaration?.expression)
+        }];
+      })
+    : [];
+  return {
+    contractVersion: asString(review.contract_version),
+    policyMode: asString(review.policy_mode) ?? "inventory_only",
+    declarations,
+    limitations: asStringArray(review.limitations)
   };
 }
 
@@ -197,6 +246,7 @@ function parsedManifestsFromValue(value: unknown): ParsedProjectManifest[] {
       manifestType: asString(record?.manifest_type) ?? "manifest",
       sizeBytes: asNumber(record?.size_bytes),
       project: entriesFromRecord(asRecord(parsed?.project)),
+      integrity: entriesFromRecord(asRecord(parsed?.integrity_summary)),
       dependencies: dependencyGroupsFromRecord(asRecord(parsed?.dependencies)),
       scripts: entriesFromRecord(asRecord(parsed?.scripts)),
       findings: findingsFromValue(record?.findings, {
@@ -257,7 +307,11 @@ function findingsFromValue(value: unknown, context?: { path?: string | null; man
         asString(record?.ecosystemLabel) ??
         PROJECT_ARCHIVE_ECOSYSTEM_LABELS[ecosystem] ??
         metadata.ecosystemLabel,
-      manifestPath: projectArchiveManifestPathFromValue(asString(record?.manifest_path) ?? context?.path ?? evidence),
+      manifestPath:
+        safeProjectRelativePath(asString(record?.file_path)) ??
+        projectArchiveManifestPathFromValue(asString(record?.manifest_path) ?? context?.path ?? evidence),
+      line: asNumber(record?.line) ?? asNumber(record?.line_number),
+      confidence: asString(record?.confidence),
       description: asString(record?.description) ?? "",
       evidence,
       recommendation: asString(record?.recommendation) ?? ""
@@ -416,7 +470,7 @@ function inferProjectArchiveEcosystem(context: {
   if (["package.json", "package-lock.json", "package_json", "package-lock"].some((marker) => normalized.includes(marker))) {
     return { id: "node_package", label: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.node_package };
   }
-  if (["requirements.txt", "requirements_txt", "pyproject.toml", "pyproject_toml"].some((marker) => normalized.includes(marker))) {
+  if (["requirements.txt", "requirements_txt", "pyproject.toml", "pyproject_toml", "pipfile", "pipfile_lock"].some((marker) => normalized.includes(marker))) {
     return { id: "python_requirements", label: PROJECT_ARCHIVE_ECOSYSTEM_LABELS.python_requirements };
   }
   if (["docker-compose.yml", "docker-compose.yaml", "compose.yaml", "compose.yml"].some((marker) => normalized.includes(marker))) {
@@ -506,9 +560,24 @@ function projectArchiveManifestPathFromValue(value: string): string | null {
   return isProjectArchiveManifestPath(candidate) ? candidate : null;
 }
 
+function safeProjectRelativePath(value: string | null): string | null {
+  if (!value) return null;
+  const normalized = value.trim().replace(/\\/g, "/");
+  if (
+    !normalized ||
+    normalized.startsWith("/") ||
+    /^[A-Za-z][A-Za-z0-9+.-]*:/.test(normalized) ||
+    /[\u0000-\u001f]/.test(normalized) ||
+    normalized.split("/").some((part) => !part || part === "." || part === "..")
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
 function isProjectArchiveManifestPath(value: string): boolean {
   const normalized = value.replace(/\\/g, "/").toLowerCase();
-  return ["package.json", "package-lock.json", "requirements.txt", "pyproject.toml"].some((suffix) => normalized.endsWith(suffix));
+  return ["package.json", "package-lock.json", "requirements.txt", "pyproject.toml", "pipfile", "pipfile.lock"].some((suffix) => normalized.endsWith(suffix));
 }
 
 function entriesFromRecord(record: Record<string, unknown> | null): MetadataEntry[] {

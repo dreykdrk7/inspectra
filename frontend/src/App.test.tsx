@@ -1,7 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import axe from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { App } from "./App";
+import { App, toErrorMessage } from "./App";
+import { ApiError } from "./api";
 
 function jsonResponse(payload: unknown, status = 200, headers: HeadersInit = {}): Response {
   const responseHeaders = new Headers(headers);
@@ -10,6 +12,21 @@ function jsonResponse(payload: unknown, status = 200, headers: HeadersInit = {})
     status,
     headers: responseHeaders
   });
+}
+
+function jobListResponse(url: string, items: unknown[]): Response {
+  return jsonResponse(
+    url.endsWith("/jobs/search")
+      ? {
+          contract_version: "2026-09-08.1",
+          items,
+          returned_count: items.length,
+          total_count: items.length,
+          has_more: false,
+          next_cursor: null,
+        }
+      : items,
+  );
 }
 
 const trustedLocalAuthStatus = {
@@ -45,21 +62,436 @@ const selfHostedAuthenticatedStatus = {
   csrf_token: "csrf-token-123"
 };
 
+const privateTeamLoginStatus = {
+  ...selfHostedLoginStatus,
+  auth_mode: "private_team_lightweight_users",
+};
+
+const privateTeamAuthenticatedStatus = {
+  ...privateTeamLoginStatus,
+  authenticated: true,
+  operator_id: "team-admin",
+  username: "admin",
+  organization_id: "local-admin",
+  organization_name: "Acme security",
+  role: "administrator",
+  csrf_token: "team-csrf-token",
+};
+
+const projectArchivePreflight = {
+  contract_version: "2026-09-06.2",
+  status: "available",
+  accepted_archive_formats: [".zip", ".tar", ".tar.gz", ".tgz"],
+  upload_limit_bytes: 20 * 1024 * 1024,
+  supported_manifests: [
+    { name: "package.json", ecosystem: "npm", coverage: "dependency declarations" },
+    { name: "requirements.txt", ecosystem: "PyPI", coverage: "dependency declarations" },
+  ],
+  exact_resolution: [
+    { name: "package-lock.json", ecosystem: "npm", coverage: "exact registry versions only when roots match" },
+    { name: "pnpm-lock.yaml", ecosystem: "npm", coverage: "exact local versions only when roots match; never public-advisory egress" },
+    { name: "yarn.lock (Classic v1)", ecosystem: "npm", coverage: "exact local versions only when selector matches; Berry remains detected but not resolved; never public-advisory egress" },
+  ],
+  detected_not_resolved: ["poetry.lock", "Pipfile.lock"],
+  limitations: ["The preview does not open, upload, hash, or inspect a selected archive."],
+  boundaries: ["Inspectra does not execute project code or install dependencies."],
+};
+
+const retentionPolicy = {
+  contract_version: "2026-09-10.6",
+  cleanup_scope: "active_organization_plus_shared_public_cache",
+  cleanup_runs_at_startup: true,
+  manual_cleanup_allowed: true,
+  application_encryption_at_rest: "operator_managed",
+  backups: "offline_bundle_operator_encrypted_not_automatically_purged",
+  data_classification_complete: true,
+  backup_contract_version: "2026-09-06.1",
+  source_metadata_contract_version: "2026-09-06.1",
+  source_metadata: [
+    { key: "original_filename", label: "Original source filename", retained_in: ["source_upload"], sensitivity: "private_source_label", project_view_disclosure: "withheld", report_disclosure: "withheld", integration_disclosure: "withheld", retention_relation: "follows_each_parent_record", description: "Available only in file management." },
+    { key: "content_sha256", label: "Source content SHA-256", retained_in: ["analysis_record"], sensitivity: "correlatable_content_digest", project_view_disclosure: "withheld", report_disclosure: "withheld", integration_disclosure: "withheld", retention_relation: "follows_each_parent_record", description: "Retained server-side." },
+    { key: "source_file_id", label: "Internal source identifier", retained_in: ["project_record"], sensitivity: "opaque_internal_identifier", project_view_disclosure: "withheld", report_disclosure: "withheld", integration_disclosure: "withheld", retention_relation: "follows_each_parent_record", description: "Used for authorized Files actions." },
+    { key: "source_reference", label: "Safe source reference", retained_in: ["derived_projection"], sensitivity: "safe_presentation_reference", project_view_disclosure: "shown", report_disclosure: "shown", integration_disclosure: "shown", retention_relation: "derived_not_stored", description: "Used in project views and reports." },
+  ],
+  classes: [
+    {
+      key: "source_uploads",
+      label: "Uploaded source archives",
+      category: "project_data",
+      scope: "organization",
+      storage: "durable_upload_store",
+      sensitivity: "project_content",
+      retention_mode: "bounded",
+      retention_days: 30,
+      freshness_seconds: null,
+      retention_seconds: null,
+      automatic_cleanup: true,
+      manual_cleanup: true,
+      follows_class: null,
+      deletion_triggers: ["retention_expiry", "explicit_source_deletion"],
+      backup_disposition: "included_sensitive",
+      restore_behavior: "restored",
+      description: "Expired source bytes are removed unless an active analysis still needs them.",
+    },
+  ],
+};
+
+let projectCreated = false;
+let projectLatestJobStatus: "queued" | "running" | "cancelling" | "cancelled" | "completed" | "failed" = "queued";
+let paginatedJobHistory = false;
+let paginatedProjectHistory = false;
+
+function projectSummaryFixture() {
+  return {
+    project: {
+      source_metadata_contract_version: "2026-09-06.1",
+      source_name_disclosure: "withheld_use_files_view",
+      source_digest_disclosure: "retained_server_side",
+      id: "project-archive-1",
+      name: "django",
+      source_reference: "snapshot-0123456789abcdef",
+      source_file_deleted_at: null,
+      latest_job_id: "job-project-1",
+      analysis_count: 1,
+      created_at: "2026-05-26T10:06:00Z",
+      updated_at: "2026-05-26T10:06:00Z"
+    },
+    latest_job: {
+      id: "job-project-1",
+      project_id: "project-archive-1",
+      source_reference: "snapshot-0123456789abcdef",
+      audit_type: "project_archive_basic",
+      target_url: null,
+      target_domain: null,
+      status: projectLatestJobStatus,
+      created_at: "2026-05-26T10:06:00Z",
+      updated_at: "2026-05-26T10:06:00Z",
+      source_file_deleted_at: null,
+      summary: null
+    }
+  };
+}
+
+function secondProjectSummaryFixture() {
+  return {
+    ...projectSummaryFixture(),
+    project: {
+      ...projectSummaryFixture().project,
+      id: "22222222222222222222222222222222",
+      name: "second-project",
+    },
+    latest_job: null,
+  };
+}
+
 function headerValue(init: RequestInit | undefined, name: string): string | null {
   return new Headers(init?.headers).get(name);
 }
 
 describe("App", () => {
   beforeEach(() => {
+    projectCreated = false;
+    projectLatestJobStatus = "queued";
+    paginatedJobHistory = false;
+    paginatedProjectHistory = false;
     vi.stubGlobal(
       "fetch",
-      vi.fn((input: RequestInfo | URL) => {
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.endsWith("/auth/status")) {
           return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
         }
         if (url.endsWith("/health")) {
           return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        }
+        if (url.endsWith("/project-analysis-preflight")) {
+          return Promise.resolve(jsonResponse(projectArchivePreflight));
+        }
+        if (url.endsWith("/privacy/retention")) {
+          return Promise.resolve(jsonResponse(retentionPolicy));
+        }
+        if (url.endsWith("/projects/portfolio/search")) {
+          return Promise.resolve(jsonResponse({
+            contract_version: "2026-09-09.1",
+            snapshot_at: "2026-09-09T10:00:00Z",
+            items: [],
+            returned_count: 0,
+            total_count: 0,
+            has_more: false,
+            next_cursor: null,
+            summary: {
+              total_projects: 0,
+              filtered_projects: 0,
+              urgent_projects: 0,
+              high_priority_projects: 0,
+              projects_with_kev: 0,
+              projects_without_baseline: 0,
+              projects_with_partial_data: 0,
+              stale_or_failed_intelligence: 0,
+              pending_actions: 0,
+            },
+            priority_model: "closed_signals_no_opaque_score",
+            portfolio_complete: true,
+            limitations: [],
+          }));
+        }
+        if (url.includes("/projects/actions?")) {
+          return Promise.resolve(jsonResponse({
+            contract_version: "2026-09-10.1",
+            items: [],
+            total: 0,
+            unread: 0,
+            source_complete: true,
+            retained_limit: 2000,
+            state_revision: 0,
+            privacy: "closed_reasons_opaque_ids_no_evidence_or_free_text",
+          }));
+        }
+        if (url.endsWith("/remediation/views")) {
+          return Promise.resolve(jsonResponse({
+            contract_version: "2026-09-09.1",
+            items: [],
+            default_view_id: null,
+            owned_count: 0,
+            organization_count: 0,
+            privacy: "closed_filters_only_no_search_cursor_or_resource_ids",
+          }));
+        }
+        if (url.endsWith("/remediation/plans")) {
+          return Promise.resolve(jsonResponse({
+            contract_version: "2026-09-09.1",
+            items: [],
+            max_retained_jobs: 100,
+            artifact_ttl_days: 7,
+          }));
+        }
+        if (url.endsWith("/remediation/search")) {
+          return Promise.resolve(jsonResponse({
+            contract_version: "2026-09-09.1",
+            snapshot_at: "2026-09-09T10:00:00Z",
+            items: [],
+            returned_count: 0,
+            total_count: 0,
+            has_more: false,
+            next_cursor: null,
+            summary: {
+              total_groups: 0,
+              filtered_groups: 0,
+              urgent_groups: 0,
+              high_groups: 0,
+              projects_affected: 0,
+              known_exploited_groups: 0,
+              conflicting_groups: 0,
+              awaiting_reanalysis: 0,
+            },
+            resolution_policy: "comparable_reanalysis_required",
+            portfolio_complete: true,
+            limitations: [],
+          }));
+        }
+        if (url.endsWith("/projects/trends")) {
+          return Promise.resolve(jsonResponse({
+            contract_version: "2026-09-10.2",
+            materialization: {
+              state: "ready", data_state: "current", refresh_in_progress: false,
+              retryable: false, requested_at: "2026-09-09T09:59:00Z",
+              started_at: null, completed_at: "2026-09-09T10:00:00Z",
+              failure_code: null, retry_after_seconds: null,
+            },
+            trend: {
+              contract_version: "2026-09-10.1",
+              generated_at: "2026-09-09T10:00:00Z",
+              period_starts_at: "2026-06-11T10:00:00Z",
+              period_ends_at: "2026-09-09T10:00:00Z",
+              bucket_days: 7,
+              summary: {
+              projects_in_scope: 0, projects_analyzed_in_period: 0, projects_without_recent_analysis: 0,
+              retained_completed_analyses: 0, completed_analyses_in_period: 0,
+              comparable_local_transitions: 0, comparable_public_transitions: 0,
+              excluded_transitions: 0, pending_actions: 0, overdue_exceptions: 0,
+              current_known_exploited_findings: 0, current_critical_or_high_findings: 0,
+              },
+              changes: { local_new: 0, local_persistent: 0, local_resolved: 0, public_new: 0, public_persistent: 0, public_resolved: 0, critical_or_high_new: 0 },
+              buckets: [], ecosystems: [], source_types: [],
+              time_to_first_review: { cohort: "first_retained_observation_in_period", sample_count: 0, median_hours: null, p90_hours: null },
+              time_to_verified_resolution: { cohort: "first_retained_observation_in_period", sample_count: 0, median_hours: null, p90_hours: null },
+              priority_projects: [], exclusions: [],
+              denominators: { projects: 0, retained_completed_analyses: 0, analyses_in_period: 0, local_comparable_transitions: 0, public_comparable_transitions: 0, first_review_samples: 0, verified_resolution_samples: 0 },
+              limitations: [],
+            },
+          }));
+        }
+        if (url.endsWith("/projects/search")) {
+          if (paginatedProjectHistory) {
+            const request = JSON.parse(String(init?.body || "{}")) as { cursor?: string };
+            const first = projectSummaryFixture();
+            const second = secondProjectSummaryFixture();
+            const items = request.cursor ? [second] : [first];
+            return Promise.resolve(jsonResponse({
+              contract_version: "2026-09-09.1",
+              items,
+              returned_count: 1,
+              total_count: 2,
+              has_more: !request.cursor,
+              next_cursor: request.cursor ? null : "opaque.project.cursor",
+            }));
+          }
+          const items = projectCreated ? [projectSummaryFixture()] : [];
+          return Promise.resolve(jsonResponse({
+            contract_version: "2026-09-09.1",
+            items,
+            returned_count: items.length,
+            total_count: items.length,
+            has_more: false,
+            next_cursor: null,
+          }));
+        }
+        if (url.endsWith("/projects")) {
+          if ((init?.method || "GET").toUpperCase() === "POST") {
+            projectCreated = true;
+            return Promise.resolve(
+              jsonResponse(
+                {
+                  project: {
+                    source_metadata_contract_version: "2026-09-06.1",
+                    source_name_disclosure: "withheld_use_files_view",
+                    source_digest_disclosure: "retained_server_side",
+                    id: "project-archive-1",
+                    name: "django",
+                    source_reference: "snapshot-0123456789abcdef",
+                    source_file_deleted_at: null,
+                    latest_job_id: "job-project-1",
+                    analysis_count: 1,
+                    created_at: "2026-05-26T10:06:00Z",
+                    updated_at: "2026-05-26T10:06:00Z"
+                  },
+                  job: {
+                    id: "job-project-1",
+                    project_id: "project-archive-1",
+                    source_reference: "snapshot-0123456789abcdef",
+                    audit_type: "project_archive_basic",
+                    target_url: null,
+                    target_domain: null,
+                    status: projectLatestJobStatus,
+                    created_at: "2026-05-26T10:06:00Z",
+                    updated_at: "2026-05-26T10:06:00Z",
+                    source_file_deleted_at: null,
+                    result: null,
+                    error: null
+                  }
+                },
+                201
+              )
+            );
+          }
+          if (projectCreated) {
+            return Promise.resolve(jsonResponse([projectSummaryFixture()]));
+          }
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url.endsWith("/projects/22222222222222222222222222222222")) {
+          return Promise.resolve(jsonResponse(secondProjectSummaryFixture()));
+        }
+        if (url.startsWith("http://localhost:8000/projects/project-archive-1/findings")) {
+          return Promise.resolve(
+            jsonResponse({
+              project: {
+                source_metadata_contract_version: "2026-09-06.1",
+                source_name_disclosure: "withheld_use_files_view",
+                source_digest_disclosure: "retained_server_side",
+                id: "project-archive-1",
+                name: "django",
+                source_reference: "snapshot-0123456789abcdef",
+                source_file_deleted_at: null,
+                latest_job_id: "job-project-1",
+                analysis_count: 1,
+                created_at: "2026-05-26T10:06:00Z",
+                updated_at: "2026-05-26T10:06:00Z"
+              },
+              analysis: {
+                id: "job-project-1",
+                project_id: "project-archive-1",
+                source_reference: "snapshot-0123456789abcdef",
+                analysis_profile: "project_archive_basic",
+                audit_type: "project_archive_basic",
+                target_url: null,
+                target_domain: null,
+                status: "completed",
+                created_at: "2026-05-26T10:06:00Z",
+                updated_at: "2026-05-26T10:06:00Z",
+                source_file_deleted_at: null,
+                summary: null
+              },
+              state: "ready",
+              summary: {
+                total: 1,
+                by_severity: { critical: 0, high: 0, medium: 1, low: 0, info: 0 },
+                by_category: { dependency_hygiene: 1 }
+              },
+              result_truncated: false,
+              findings: [
+                {
+                  id: "project-finding-1",
+                  rule_id: "dependency_not_exactly_pinned",
+                  source_audit_type: "project_archive_basic",
+                  title: "Dependency is not exactly pinned",
+                  category: "dependency_hygiene",
+                  severity: "medium",
+                  confidence: "medium",
+                  description: "Version coverage is broad.",
+                  evidence: "requirements.txt: package>=1",
+                  location: { path: "requirements.txt", line: null },
+                  recommendation: "Use a reviewed exact version.",
+                  references: []
+                }
+              ]
+            })
+          );
+        }
+        if (url.endsWith("/projects/project-archive-1/analyses")) {
+          if ((init?.method || "GET").toUpperCase() === "POST") {
+            projectLatestJobStatus = "queued";
+            return Promise.resolve(
+              jsonResponse(
+                {
+                  id: "job-project-rerun-1",
+                  project_id: "project-archive-1",
+                  source_reference: "snapshot-0123456789abcdef",
+                  analysis_profile: "project_archive_basic",
+                  audit_type: "project_archive_basic",
+                  file_id: "file-archive-1",
+                  target_url: null,
+                  target_domain: null,
+                  status: "queued",
+                  created_at: "2026-05-26T10:10:00Z",
+                  updated_at: "2026-05-26T10:10:00Z",
+                  source_file_deleted_at: null,
+                  result: null,
+                  error: null
+                },
+                202
+              )
+            );
+          }
+          return Promise.resolve(
+            jsonResponse([
+              {
+                id: "job-project-1",
+                project_id: "project-archive-1",
+                source_reference: "snapshot-0123456789abcdef",
+                analysis_profile: "project_archive_basic",
+                audit_type: "project_archive_basic",
+                file_id: "file-archive-1",
+                target_url: null,
+                target_domain: null,
+                status: projectLatestJobStatus,
+                created_at: "2026-05-26T10:06:00Z",
+                updated_at: "2026-05-26T10:06:00Z",
+                source_file_deleted_at: null,
+                summary: null
+              }
+            ])
+          );
         }
         if (url.endsWith("/files")) {
           return Promise.resolve(
@@ -86,6 +518,7 @@ describe("App", () => {
               },
               {
                 id: "file-archive-1",
+                source_reference: "snapshot-0123456789abcdef",
                 kind: "archive",
                 original_filename: "django.zip",
                 stored_filename: "file-archive-1.zip",
@@ -504,9 +937,52 @@ describe("App", () => {
             )
           );
         }
-        if (url.endsWith("/jobs")) {
+        if (url.endsWith("/jobs/search") && paginatedJobHistory) {
+          const request = JSON.parse(String(init?.body || "{}")) as { cursor?: string };
+          const indexes = request.cursor ? [50] : Array.from({ length: 50 }, (_value, index) => index);
+          const items = indexes.map((index) => ({
+            id: `job-page-${index}`,
+            audit_type: "pdf_basic",
+            file_id: null,
+            target_url: null,
+            target_domain: null,
+            status: "completed",
+            created_at: `2026-05-26T10:${String(index).padStart(2, "0")}:00Z`,
+            updated_at: `2026-05-26T10:${String(index).padStart(2, "0")}:00Z`,
+            source_file_deleted_at: null,
+            summary: null,
+          }));
+          return Promise.resolve(jsonResponse({
+            contract_version: "2026-09-08.1",
+            items,
+            returned_count: items.length,
+            total_count: 51,
+            has_more: !request.cursor,
+            next_cursor: request.cursor ? null : "opaque.cursor",
+          }));
+        }
+        if ((url.endsWith("/jobs") || url.endsWith("/jobs/search")) && projectCreated) {
           return Promise.resolve(
-            jsonResponse([
+            jobListResponse(url, [
+              {
+                id: "job-project-1",
+                project_id: "project-archive-1",
+                audit_type: "project_archive_basic",
+                file_id: "file-archive-1",
+                target_url: null,
+                target_domain: null,
+                status: projectLatestJobStatus,
+                created_at: "2026-05-26T10:06:00Z",
+                updated_at: "2026-05-26T10:06:00Z",
+                source_file_deleted_at: null,
+                summary: null
+              }
+            ])
+          );
+        }
+        if (url.endsWith("/jobs") || url.endsWith("/jobs/search")) {
+          return Promise.resolve(
+            jobListResponse(url, [
               {
                 id: "job-pdf-1",
                 audit_type: "pdf_basic",
@@ -541,7 +1017,16 @@ describe("App", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("keeps controlled API errors and replaces unexpected client errors with a recoverable message", () => {
+    expect(toErrorMessage(new ApiError("Invalid credentials.", 401))).toBe("Invalid credentials.");
+    expect(toErrorMessage(new Error("raw client stack detail"))).toBe(
+      "Unable to complete the request. Refresh the page and try again."
+    );
   });
 
   it("renders the main dashboard sections with mocked API data", async () => {
@@ -553,22 +1038,22 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Web Audit" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Domain Baseline" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Subdomain Inventory" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Active / Network dry-run" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Authorized HTTP Header Probe" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Active / HTTP header review" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Active / Nmap basic" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Active / TLS basic" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Active / DNS inventory" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Active / DNS OSINT" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Active operations" }, { timeout: 5_000 })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Active / Network dry-run" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Files" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Jobs" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Workspace administration and data controls"));
+    expect(await screen.findByRole("heading", { name: "Data lifecycle" })).toBeInTheDocument();
     const demoNote = screen.getByRole("note", { name: "Local alpha demo fixture note" });
-    expect(demoNote.textContent).toContain("Local alpha demo");
+    expect(demoNote.textContent).toContain("Optional local demo");
     expect(demoNote.textContent).toContain("synthetic fixtures");
     expect(demoNote.textContent).toContain("tests/fixtures/demo/passive-alpha/");
     expect(demoNote.textContent).toContain("Do not upload real secrets or production archives");
+    expect(demoNote.textContent).toContain("never reads or uploads a fixture automatically");
+    expect(demoNote.textContent).toContain("delete the uploaded fixture from Files");
+    expect(demoNote.textContent).toContain("not a CVE or exploitability claim");
     expect(demoNote.textContent).toContain("[REDACTED]");
-    expect(demoNote.textContent).toContain("does not sanitize the original uploaded file");
+    expect(demoNote.textContent).toContain("original upload unchanged");
     expect(demoNote.textContent).not.toContain("Run all recommended passive checks");
     for (const phrase of [
       "compromised",
@@ -592,8 +1077,210 @@ describe("App", () => {
     expect(screen.getAllByText("File basics").length).toBeGreaterThan(0);
 
     await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(16);
     });
+    const requestedUrls = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => String(input));
+    expect(requestedUrls).toEqual(expect.arrayContaining([
+      expect.stringMatching(/\/active\/assets\/search$/),
+      expect.stringMatching(/\/active\/operations\/summary$/),
+      expect.stringMatching(/\/active\/operations\/weekly-review-receipts$/),
+      expect.stringMatching(/\/active\/verification\/configuration$/),
+      expect.stringMatching(/\/jobs\/search$/),
+      expect.stringMatching(/\/remediation\/search$/),
+      expect.stringMatching(/\/remediation\/views$/),
+      expect.stringMatching(/\/remediation\/plans$/),
+      expect.stringMatching(/\/projects\/actions\?/),
+    ]));
+  });
+
+  it("keeps free-target Active flows out of the application shell", async () => {
+    render(<App />);
+
+    await screen.findByText("inspectra-backend");
+    expect(await screen.findByRole("heading", { name: "Active operations" })).toBeInTheDocument();
+    expect(screen.getByText(/Live Active checks are no longer started from free-form targets here/)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Authorized HTTP Header Probe" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Authorized HTTP HEAD target URL")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Active Nmap basic target")).not.toBeInTheDocument();
+  });
+
+  it("loads bounded job history pages without putting the cursor in the URL", async () => {
+    paginatedJobHistory = true;
+    render(<App />);
+
+    expect(await screen.findByText("Showing 50 of 51 jobs. Filters and search apply to loaded jobs; load more to expand the history.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more jobs" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Load more jobs" })).not.toBeInTheDocument();
+    });
+    expect(screen.getAllByTitle("View job")).toHaveLength(51);
+    await waitFor(() => {
+      expect(screen.getByRole("region", { name: "Jobs table. Scroll horizontally to view all fields." })).toHaveFocus();
+    });
+    const historyCalls = vi.mocked(globalThis.fetch).mock.calls.filter(([input]) => String(input).endsWith("/jobs/search"));
+    expect(historyCalls).toHaveLength(2);
+    expect(String(historyCalls[1][0])).not.toContain("opaque.cursor");
+    expect(JSON.parse(String(historyCalls[1][1]?.body))).toMatchObject({ cursor: "opaque.cursor", page_size: 50 });
+  });
+
+  it("loads bounded project pages without putting the cursor in the URL", async () => {
+    paginatedProjectHistory = true;
+    render(<App />);
+
+    expect(await screen.findByText("Showing 1 of 2 projects.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more projects" }));
+
+    expect(await screen.findByText("Showing 2 of 2 projects.")).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "Projects table. Scroll horizontally to view all fields." }))
+        .getByText("second-project")
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load more projects" })).not.toBeInTheDocument();
+    const projectCalls = vi.mocked(globalThis.fetch).mock.calls.filter(([input]) => String(input).endsWith("/projects/search"));
+    expect(projectCalls).toHaveLength(2);
+    expect(String(projectCalls[1][0])).not.toContain("opaque.project.cursor");
+    expect(JSON.parse(String(projectCalls[1][1]?.body))).toMatchObject({ cursor: "opaque.project.cursor", page_size: 50 });
+  });
+
+  it("restores a deep project link without loading intervening pages", async () => {
+    paginatedProjectHistory = true;
+    window.history.replaceState({}, "", "/#project=22222222222222222222222222222222");
+    render(<App />);
+
+    expect(
+      await screen.findByRole(
+        "heading",
+        { name: "Project workspace: second-project" },
+        { timeout: 5_000 },
+      )
+    ).toBeInTheDocument();
+    const projectCalls = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => String(input));
+    expect(projectCalls.filter((url) => url.endsWith("/projects/search"))).toHaveLength(1);
+    expect(projectCalls).toContain("http://localhost:8000/projects/22222222222222222222222222222222");
+  });
+
+  it("does not send a non-canonical project fragment to the backend", async () => {
+    paginatedProjectHistory = true;
+    window.history.replaceState({}, "", "/#project=private%2Fcustomer%3Ftoken%3Dcanary");
+    render(<App />);
+
+    await screen.findByText("Showing 1 of 2 projects.");
+    await waitFor(() => expect(window.location.hash).toBe(""));
+    const requested = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => String(input));
+    expect(requested.some((url) => url.includes("private") || url.includes("canary"))).toBe(false);
+  });
+
+  it("gives essential fields accessible names and exposes selected filter states", async () => {
+    render(<App />);
+
+    await screen.findByText("inspectra-backend");
+    expect(screen.getByLabelText("File to upload")).toHaveAttribute("type", "file");
+    expect(screen.getByLabelText("URL to audit")).toHaveAttribute("type", "url");
+    expect(screen.getByLabelText("Domain to audit")).toBeInTheDocument();
+    expect(screen.getByLabelText("Root domain")).toBeInTheDocument();
+    expect(screen.getByLabelText("Explicit subdomain candidates")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Search authorized asset")).toHaveAttribute("type", "search");
+    expect(screen.queryByLabelText("Dry-run target URL")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Authorized HTTP HEAD target URL")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Search files")).toHaveAttribute("type", "search");
+    expect(screen.getByLabelText("Search jobs")).toHaveAttribute("type", "search");
+
+    const uploadType = within(screen.getByLabelText("Upload type"));
+    expect(uploadType.getByRole("button", { name: "PDF" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(uploadType.getByRole("button", { name: "Archive" }));
+    expect(uploadType.getByRole("button", { name: "PDF" })).toHaveAttribute("aria-pressed", "false");
+    expect(uploadType.getByRole("button", { name: "Archive" })).toHaveAttribute("aria-pressed", "true");
+
+    const fileKindFilter = within(screen.getByLabelText("File kind filter"));
+    expect(fileKindFilter.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "View PDF basic job" })).toHaveAccessibleName("View PDF basic job");
+  });
+
+  it("guides a new user into the authorized archive-backed project flow", async () => {
+    render(<App />);
+
+    await screen.findByText("inspectra-backend");
+    expect(screen.getByRole("heading", { name: "Start a professional security review" })).toBeInTheDocument();
+    expect(screen.getByText(/does not execute project code, install dependencies, clone repositories/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Project onboarding paths")).toHaveTextContent("Local repository");
+    expect(screen.getByLabelText("Project onboarding paths")).toHaveTextContent("Continuous delivery");
+    expect(screen.getByLabelText("Project onboarding paths")).toHaveTextContent("Repository-free");
+    expect(screen.getByRole("button", { name: "Open CI setup" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Prepare archive" }));
+
+    await waitFor(() => {
+      expect(within(screen.getByLabelText("Upload type")).getByRole("button", { name: "Archive" })).toHaveAttribute("aria-pressed", "true");
+    });
+    expect(screen.getByRole("heading", { name: "Upload project archive" })).toBeInTheDocument();
+    expect(screen.getByText(/Project source: upload an authorized ZIP or TAR snapshot/i)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Coverage preview" })).toBeInTheDocument();
+    expect(screen.getByText("20 MiB")).toBeInTheDocument();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://localhost:8000/project-analysis-preflight",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    const upload = screen.getByLabelText("File to upload");
+    expect(upload).toHaveAttribute("aria-describedby", "project-upload-boundary");
+    expect(upload).toHaveFocus();
+  });
+
+  it("moves focus into the private SBOM preflight from the repository-free path", async () => {
+    render(<App />);
+
+    await screen.findByText("inspectra-backend");
+    fireEvent.click(screen.getByRole("button", { name: "Preflight SBOM" }));
+
+    const sbomFile = screen.getByLabelText("SBOM JSON");
+    await waitFor(() => expect(sbomFile).toHaveFocus());
+    expect(screen.getByRole("heading", { name: "Import an immutable SBOM" })).toBeInTheDocument();
+    expect(screen.getByText(/private, no-egress preflight/i)).toBeInTheDocument();
+  });
+
+  it("continues a recent archive project into its CI setup without exposing CI for first-time users", async () => {
+    projectCreated = true;
+    projectLatestJobStatus = "completed";
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /django Archive/i })).toBeInTheDocument();
+    const ciButton = screen.getByRole("button", { name: "Open CI setup" });
+    expect(ciButton).toBeEnabled();
+    fireEvent.click(ciButton);
+
+    expect(await screen.findByRole("heading", { name: "Project workspace: django" })).toBeInTheDocument();
+    const ciSetup = await screen.findByRole("region", { name: "Connect this project to CI" });
+    await waitFor(() => expect(ciSetup).toHaveFocus());
+    expect(window.location.hash).toContain("project=project-archive-1");
+  });
+
+  it("makes dense file and job tables keyboard-reachable with a responsive scroll hint", async () => {
+    render(<App />);
+
+    await screen.findByText("inspectra-backend");
+    const filesTable = screen.getByRole("region", { name: "Files table. Scroll horizontally to view all fields." });
+    const jobsTable = screen.getByRole("region", { name: "Jobs table. Scroll horizontally to view all fields." });
+
+    expect(filesTable).toHaveAttribute("tabindex", "0");
+    expect(jobsTable).toHaveAttribute("tabindex", "0");
+    expect(within(filesTable).getByRole("table", { name: "Files" })).toBeInTheDocument();
+    expect(within(jobsTable).getByRole("table", { name: "Jobs" })).toBeInTheDocument();
+    expect(within(filesTable).getByText("Scroll horizontally to view all file fields.")).toHaveAttribute("aria-hidden", "true");
+    expect(within(jobsTable).getByText("Scroll horizontally to view all job fields.")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("has no critical accessibility violations in the initial dashboard", async () => {
+    const view = render(<App />);
+
+    await screen.findByText("inspectra-backend");
+    const results = await axe.run(view.container, {
+      rules: {
+        "color-contrast": { enabled: false }
+      }
+    });
+    const criticalViolations = results.violations.filter((violation) => violation.impact === "critical");
+
+    expect(criticalViolations).toEqual([]);
   });
 
   it("shows the self-hosted login gate when auth is required and unauthenticated", async () => {
@@ -621,6 +1308,55 @@ describe("App", () => {
     expect(rendered).not.toContain("bypass");
     expect(rendered).not.toContain("csrf-token-123");
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input).endsWith("/files"))).toBe(false);
+  });
+
+  it("shows team username and invitation activation without loading private data", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) return Promise.resolve(jsonResponse(privateTeamLoginStatus));
+        if (url.endsWith("/health")) return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Sign in to your private team workspace. Access is limited by membership and role.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Username")).toHaveAttribute("autocomplete", "username");
+    expect(screen.getByLabelText("Password")).toHaveAttribute("autocomplete", "current-password");
+    expect(await screen.findByRole("button", { name: "I have a one-time invitation" })).toBeInTheDocument();
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input).endsWith("/files"))).toBe(false);
+  });
+
+  it("loads the scoped team workspace after authenticated status", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) return Promise.resolve(jsonResponse(privateTeamAuthenticatedStatus));
+        if (url.endsWith("/organization/members")) {
+          return Promise.resolve(jsonResponse([{ user_id: "team-admin", username: "admin", role: "administrator", joined_at: "2026-09-06T10:00:00Z" }]));
+        }
+        if (url.endsWith("/organizations")) {
+          return Promise.resolve(jsonResponse([{ id: "local-admin", name: "Acme security", role: "administrator", created_at: "2026-09-06T10:00:00Z" }]));
+        }
+        if (url.endsWith("/organization")) {
+          return Promise.resolve(jsonResponse({ id: "local-admin", name: "Acme security", current_user_id: "team-admin", current_username: "admin", current_role: "administrator" }));
+        }
+        if (url.endsWith("/health")) return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        if (url.endsWith("/project-analysis-preflight")) return Promise.resolve(jsonResponse(projectArchivePreflight));
+        if (url.endsWith("/files") || url.endsWith("/projects") || url.endsWith("/jobs")) return Promise.resolve(jsonResponse([]));
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Acme security" })).toBeInTheDocument();
+    expect(screen.getByText("Acme security · administrator")).toBeInTheDocument();
+    expect(screen.getByText("Projects, analyses and exports use this workspace as their isolation boundary. Roles never bypass authorization, redaction or analysis limits.")).toBeInTheDocument();
   });
 
   it("shows controlled unavailable auth state without configuration guidance", async () => {
@@ -681,6 +1417,8 @@ describe("App", () => {
     expect(await screen.findByText("Signed in as local-admin")).toBeInTheDocument();
     expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Upload File" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Workspace administration and data controls"));
+    expect(await screen.findByRole("heading", { name: "Product activity" })).toBeInTheDocument();
     const rendered = view.container.textContent ?? "";
     expect(rendered).not.toContain("correct-admin-password");
     expect(rendered).not.toContain("csrf-token-123");
@@ -794,8 +1532,8 @@ describe("App", () => {
       expect(headerValue(filesGetCall?.[1] as RequestInit | undefined, "X-CSRF-Token")).toBeNull();
     });
     fireEvent.click(screen.getAllByRole("button", { name: "Manifest" })[0]);
-    const input = view.container.querySelector('input[type="file"]');
-    fireEvent.change(input as HTMLInputElement, {
+    const input = screen.getByLabelText("File to upload");
+    fireEvent.change(input, {
       target: {
         files: [new File(['{"name":"demo","version":"1.0.0"}'], "package.json", { type: "application/json" })]
       }
@@ -941,9 +1679,8 @@ describe("App", () => {
 
     expect(await scoped.findByText("Upload a file or archive to start a passive review.")).toBeInTheDocument();
     fireEvent.click(scoped.getAllByRole("button", { name: "Manifest" })[0]);
-    const input = view.container.querySelector('input[type="file"]');
-    expect(input).not.toBeNull();
-    fireEvent.change(input as HTMLInputElement, {
+    const input = scoped.getByLabelText("File to upload");
+    fireEvent.change(input, {
       target: {
         files: [new File(['{"name":"demo","version":"1.0.0"}'], "package.json", { type: "application/json" })]
       }
@@ -990,13 +1727,34 @@ describe("App", () => {
     expect(spdxLink).toHaveAttribute("href", "http://localhost:8000/jobs/job-manifest-1/sbom/spdx-json");
   });
 
+  it("restores a selected job from the URL and marks the result step as current", async () => {
+    window.history.replaceState({}, "", "/#job=job-pdf-1");
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "General Summary" }, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByText("PDF basic is completed. Its result is now selected below.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "4. Review result" })).toHaveAttribute("aria-current", "step");
+    expect(document.activeElement).toHaveAttribute("id", "results");
+    expect(window.location.hash).toBe("#job=job-pdf-1");
+  });
+
+  it("clears an unavailable job link and gives a recoverable next step", async () => {
+    window.history.replaceState({}, "", "/#job=missing-job");
+
+    render(<App />);
+
+    expect(await screen.findByText("The job selected in the link is no longer available. Choose another job from the list.")).toBeInTheDocument();
+    expect(window.location.hash).toBe("");
+  });
+
   it("starts a web audit from the URL form", async () => {
     render(<App />);
 
     const inputs = await screen.findAllByPlaceholderText("https://example.com");
     const input = inputs[inputs.length - 1];
     fireEvent.change(input, { target: { value: "https://example.test/" } });
-    const checkboxes = screen.getAllByLabelText("Confirmo que tengo autorización para auditar este objetivo");
+    const checkboxes = screen.getAllByLabelText("I confirm I am authorized to audit this target.");
     fireEvent.click(checkboxes[checkboxes.length - 1]);
     const buttons = screen.getAllByRole("button", { name: /Analyze URL/i });
     fireEvent.click(buttons[buttons.length - 1]);
@@ -1010,6 +1768,9 @@ describe("App", () => {
         })
       );
     });
+    expect(await screen.findByText("Web basic is queued. Its result is now selected below.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "4. Review result" })).toHaveAttribute("aria-current", "step");
+    expect(window.location.hash).toBe("#job=job-web-1");
   });
 
   it("warns when the web audit URL contains sensitive query parameters", async () => {
@@ -1019,7 +1780,7 @@ describe("App", () => {
     const input = inputs[inputs.length - 1];
     fireEvent.change(input, { target: { value: "https://example.test/callback?token=supersecret&page=1" } });
 
-    expect(screen.getByText(/Se detectan posibles parametros sensibles/i)).toBeInTheDocument();
+    expect(screen.getByText(/Possible sensitive parameters will be redacted/i)).toBeInTheDocument();
     expect(screen.getByText("token")).toBeInTheDocument();
   });
 
@@ -1048,7 +1809,7 @@ describe("App", () => {
     const inputs = await screen.findAllByPlaceholderText("example.com");
     const input = inputs[inputs.length - 2];
     fireEvent.change(input, { target: { value: "example.com" } });
-    const checkboxes = screen.getAllByLabelText("Confirmo que tengo autorización para auditar este dominio");
+    const checkboxes = screen.getAllByLabelText("I confirm I am authorized to audit this domain.");
     fireEvent.click(checkboxes[checkboxes.length - 1]);
     const buttons = screen.getAllByRole("button", { name: /Analyze domain/i });
     fireEvent.click(buttons[buttons.length - 1]);
@@ -1064,157 +1825,6 @@ describe("App", () => {
     });
   });
 
-  it("creates an Active DNS OSINT job, refreshes jobs, and renders redacted CT OSINT report", async () => {
-    const activeDnsOsintJob = {
-      id: "job-active-dns-osint-app",
-      audit_type: "active_dns_osint",
-      file_id: null,
-      target_url: "[REDACTED_DOMAIN]",
-      target_domain: null,
-      status: "completed",
-      created_at: "2026-06-15T10:00:00Z",
-      updated_at: "2026-06-15T10:01:00Z",
-      source_file_deleted_at: null,
-      result: {
-        audit_type: "active_dns_osint",
-        capability: "active_dns_osint",
-        mode: "live_dns_osint",
-        profile: "ct_subdomain_discovery_bounded",
-        status: "osint_best_effort",
-        result_status: "osint_best_effort",
-        coverage_level: "osint_best_effort",
-        domain: "[REDACTED_DOMAIN]",
-        sources: {
-          certificate_transparency: {
-            attempted: true,
-            status: "completed",
-            names_observed_count: 4,
-            names_retained_count: 2,
-            names_discarded_count: 2,
-            truncated: false
-          },
-          passive_dns: { attempted: false, status: "not_attempted" }
-        },
-        observed_names: {
-          count: 2,
-          max_names: 20,
-          sample: ["[REDACTED_DNS_NAME]", "[REDACTED_DNS_NAME]"],
-          truncated: false
-        },
-        summary: {
-          manual_validation_required: true,
-          result_interpretation: "DNS OSINT review indicator",
-          coverage_level: "osint_best_effort",
-          observed_names_count: 2,
-          ct_source_status: "completed",
-          passive_dns_status: "not_attempted"
-        },
-        execution: {
-          external_requests_sent: 1,
-          ct_queries_sent: 1,
-          passive_dns_queries_sent: 0,
-          dns_queries_sent: 0,
-          http_requests_sent: 0,
-          provider_api_used: false,
-          crawling_performed: false,
-          observed_name_auto_scan_performed: false
-        },
-        surface_caveats: ["Manual validation required.", "Observed names are not auto-scanned."]
-      },
-      error: null
-    };
-    let jobsCalls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.endsWith("/auth/status")) {
-          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
-        }
-        if (url.endsWith("/health")) {
-          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
-        }
-        if (url.endsWith("/files")) {
-          return Promise.resolve(jsonResponse([]));
-        }
-        if (url.endsWith("/jobs")) {
-          jobsCalls += 1;
-          return Promise.resolve(
-            jsonResponse(
-              jobsCalls > 1
-                ? [
-                    {
-                      id: activeDnsOsintJob.id,
-                      audit_type: activeDnsOsintJob.audit_type,
-                      file_id: null,
-                      target_url: "[REDACTED_DOMAIN]",
-                      target_domain: null,
-                      status: "completed",
-                      created_at: activeDnsOsintJob.created_at,
-                      updated_at: activeDnsOsintJob.updated_at,
-                      source_file_deleted_at: null,
-                      summary: {
-                        capability: "active_dns_osint",
-                        coverage_level: "osint_best_effort",
-                        observed_names_count: 2,
-                        ct_source_status: "completed",
-                        passive_dns_status: "not_attempted"
-                      }
-                    }
-                  ]
-                : []
-            )
-          );
-        }
-        if (url.endsWith("/active/network/dns-osint")) {
-          return Promise.resolve(jsonResponse(activeDnsOsintJob, 202));
-        }
-        if (url.endsWith("/jobs/job-active-dns-osint-app")) {
-          return Promise.resolve(jsonResponse(activeDnsOsintJob));
-        }
-        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
-      })
-    );
-
-    const view = render(<App />);
-    const panel = await screen.findByLabelText("Active / DNS OSINT");
-    const scoped = within(panel);
-
-    fireEvent.change(scoped.getByLabelText("Domain"), { target: { value: " Example.Internal " } });
-    fireEvent.change(scoped.getByLabelText("Max observed names"), { target: { value: "20" } });
-    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to query this domain."));
-    fireEvent.click(scoped.getByLabelText("I confirm this is my domain or an explicitly authorized domain."));
-    fireEvent.click(scoped.getByLabelText("I understand this may send bounded public OSINT queries if backend policy accepts it."));
-    fireEvent.click(scoped.getByRole("button", { name: /Create DNS OSINT job/i }));
-
-    await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "http://localhost:8000/active/network/dns-osint",
-        expect.objectContaining({ method: "POST" })
-      );
-    });
-    const request = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input).endsWith("/active/network/dns-osint"))?.[1] as
-      | RequestInit
-      | undefined;
-    expect(JSON.parse(String(request?.body))).toEqual({
-      mode: "live_dns_osint",
-      profile: "ct_subdomain_discovery_bounded",
-      domain: "example.internal",
-      include_certificate_transparency: true,
-      include_passive_dns: false,
-      max_names: 20,
-      authorization_confirmed: true,
-      owned_or_authorized_domain_confirmed: true,
-      public_osint_queries_confirmed: true
-    });
-    expect(await screen.findByRole("heading", { name: "Active / DNS OSINT report" })).toBeInTheDocument();
-    expect(screen.getAllByText("osint_best_effort").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("[REDACTED_DNS_NAME]").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("not_attempted").length).toBeGreaterThan(0);
-    await waitFor(() => expect(jobsCalls).toBeGreaterThan(1));
-    expect(view.container.textContent ?? "").not.toContain("example.internal");
-  });
-
   it("starts a subdomain inventory audit from explicit candidates", async () => {
     render(<App />);
 
@@ -1224,7 +1834,7 @@ describe("App", () => {
     const candidateInputs = screen.getAllByPlaceholderText(/api\.example\.com/);
     const candidatesInput = candidateInputs[candidateInputs.length - 1];
     fireEvent.change(candidatesInput, { target: { value: "www\napi.example.com" } });
-    const checkboxes = screen.getAllByLabelText("Confirmo que tengo autorización para auditar estos subdominios");
+    const checkboxes = screen.getAllByLabelText("I confirm I am authorized to audit these subdomains.");
     fireEvent.click(checkboxes[checkboxes.length - 1]);
     const buttons = screen.getAllByRole("button", { name: /Analyze subdomains/i });
     fireEvent.click(buttons[buttons.length - 1]);
@@ -1264,990 +1874,6 @@ describe("App", () => {
     expect(button).toBeDisabled();
     fireEvent.click(button);
     expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
-  it("creates an Active network dry-run plan only after explicit authorization", async () => {
-    render(<App />);
-
-    await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalled();
-    });
-    vi.mocked(globalThis.fetch).mockClear();
-
-    const heading = screen.getByRole("heading", { name: "Active / Network dry-run" });
-    const panel = heading.closest("section");
-    expect(panel).not.toBeNull();
-    const scoped = within(panel as HTMLElement);
-    const panelText = panel?.textContent ?? "";
-    for (const forbidden of ["Run Nmap", "Scan", "Attack", "Exploit"]) {
-      expect(panelText).not.toContain(forbidden);
-    }
-
-    const targetInput = scoped.getByPlaceholderText("https://example.test");
-    const submit = scoped.getByRole("button", { name: /Create dry-run plan/i });
-    expect(submit).toBeDisabled();
-
-    fireEvent.change(targetInput, { target: { value: "https://example.test/" } });
-    expect(submit).toBeDisabled();
-
-    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
-    expect(submit).not.toBeDisabled();
-    fireEvent.click(submit);
-
-    await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "http://localhost:8000/active/network/dry-run",
-        expect.objectContaining({ method: "POST" })
-      );
-    });
-    const request = vi
-      .mocked(globalThis.fetch)
-      .mock.calls.find(([input]) => String(input).endsWith("/active/network/dry-run"))?.[1] as RequestInit | undefined;
-    expect(request).toBeDefined();
-    expect(JSON.parse(String(request?.body))).toEqual({
-      target: "https://example.test/",
-      authorization: {
-        confirmed: true,
-        statement: "I confirm I own or am authorized to test this target.",
-        scope: "single-target"
-      },
-      mode: "dry_run",
-      profile: "http_header_probe_preview",
-      limits: {
-        max_requests: 0,
-        timeout_seconds: 0,
-        max_redirects: 0,
-        response_size_bytes: 0
-      }
-    });
-  });
-
-  it("shows the Active dry-run disabled backend message without env-file guidance", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.endsWith("/auth/status")) {
-          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
-        }
-        if (url.endsWith("/health")) {
-          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
-        }
-        if (url.endsWith("/files") || url.endsWith("/jobs")) {
-          return Promise.resolve(jsonResponse([]));
-        }
-        if (url.endsWith("/active/network/dry-run")) {
-          return Promise.resolve(jsonResponse({ detail: "Active dry-run checks are disabled in this environment." }, 403));
-        }
-        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
-      })
-    );
-
-    render(<App />);
-
-    const heading = await screen.findByRole("heading", { name: "Active / Network dry-run" });
-    const panel = heading.closest("section");
-    expect(panel).not.toBeNull();
-    const scoped = within(panel as HTMLElement);
-    fireEvent.change(scoped.getByPlaceholderText("https://example.test"), { target: { value: "https://example.test/" } });
-    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
-    fireEvent.click(scoped.getByRole("button", { name: /Create dry-run plan/i }));
-
-    expect(await scoped.findByText(/Active dry-run checks are disabled in this environment/i)).toBeInTheDocument();
-    expect(scoped.getByText(/Ask an administrator to enable the Active dry-run backend flag/i)).toBeInTheDocument();
-    expect(panel?.textContent).not.toContain(".env");
-  });
-
-  it("creates an authorized HTTP header probe only after both live confirmations", async () => {
-    render(<App />);
-
-    await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalled();
-    });
-    vi.mocked(globalThis.fetch).mockClear();
-
-    const heading = screen.getByRole("heading", { name: "Authorized HTTP Header Probe" });
-    const panel = heading.closest("section");
-    expect(panel).not.toBeNull();
-    const scoped = within(panel as HTMLElement);
-    const panelText = panel?.textContent ?? "";
-    expect(panelText).toContain("Live request");
-    expect(panelText).toContain("One HTTP HEAD request");
-    expect(panelText).toContain("No body read");
-    expect(panelText).toContain("Redirects not followed");
-    for (const forbidden of ["Scan", "Run Nmap", "Attack", "Exploit", "port scan", "crawl", "fuzz", "brute force"]) {
-      expect(panelText).not.toContain(forbidden);
-    }
-
-    const targetInput = scoped.getByPlaceholderText("https://example.test/");
-    const submit = scoped.getByRole("button", { name: /Create authorized header probe job/i });
-    expect(submit).toBeDisabled();
-
-    fireEvent.change(targetInput, { target: { value: "https://example.test/" } });
-    expect(submit).toBeDisabled();
-
-    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
-    expect(submit).toBeDisabled();
-
-    fireEvent.click(scoped.getByLabelText("I understand this will send one HTTP HEAD request to the target."));
-    expect(submit).not.toBeDisabled();
-    fireEvent.click(submit);
-
-    await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "http://localhost:8000/active/network/http-header-probe",
-        expect.objectContaining({ method: "POST" })
-      );
-    });
-    const request = vi
-      .mocked(globalThis.fetch)
-      .mock.calls.find(([input]) => String(input).endsWith("/active/network/http-header-probe"))?.[1] as RequestInit | undefined;
-    expect(request).toBeDefined();
-    const requestBody = JSON.parse(String(request?.body));
-    expect(Object.keys(requestBody).sort()).toEqual(["authorization", "limits", "mode", "profile", "target"]);
-    expect(Object.keys(requestBody.authorization).sort()).toEqual(["confirmed", "live_traffic_confirmed", "scope", "statement"]);
-    expect(Object.keys(requestBody.limits).sort()).toEqual([
-      "concurrency",
-      "max_dns_answers",
-      "max_redirects",
-      "max_requests",
-      "max_response_header_bytes",
-      "max_targets",
-      "response_body_bytes",
-      "retries",
-      "timeout_seconds"
-    ]);
-    expect(JSON.stringify(requestBody)).not.toContain("file_id");
-    expect(JSON.stringify(requestBody)).not.toContain("headers");
-    expect(JSON.stringify(requestBody)).not.toContain("cookies");
-    expect(requestBody).toEqual({
-      target: "https://example.test/",
-      authorization: {
-        confirmed: true,
-        live_traffic_confirmed: true,
-        statement: "I confirm I own or am authorized to test this target.",
-        scope: "single-target"
-      },
-      mode: "live_header_probe",
-      profile: "http_header_probe",
-      limits: {
-        max_targets: 1,
-        max_requests: 1,
-        timeout_seconds: 3,
-        max_redirects: 0,
-        response_body_bytes: 0,
-        max_response_header_bytes: 32768,
-        max_dns_answers: 8,
-        retries: 0,
-        concurrency: 1
-      }
-    });
-  });
-
-  it("shows the Active HTTP header probe disabled backend message without env-file guidance", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.endsWith("/auth/status")) {
-          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
-        }
-        if (url.endsWith("/health")) {
-          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
-        }
-        if (url.endsWith("/files") || url.endsWith("/jobs")) {
-          return Promise.resolve(jsonResponse([]));
-        }
-        if (url.endsWith("/active/network/http-header-probe")) {
-          return Promise.resolve(jsonResponse({ detail: "Active HTTP header probe is disabled in this environment." }, 403));
-        }
-        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
-      })
-    );
-
-    render(<App />);
-
-    const heading = await screen.findByRole("heading", { name: "Authorized HTTP Header Probe" });
-    const panel = heading.closest("section");
-    expect(panel).not.toBeNull();
-    const scoped = within(panel as HTMLElement);
-    fireEvent.change(scoped.getByPlaceholderText("https://example.test/"), {
-      target: { value: "http://user:pass@example.com/?token=token_should_never_render" }
-    });
-    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
-    fireEvent.click(scoped.getByLabelText("I understand this will send one HTTP HEAD request to the target."));
-    fireEvent.click(scoped.getByRole("button", { name: /Create authorized header probe job/i }));
-
-    expect(await scoped.findByText(/Active HTTP header probe is disabled in this environment/i)).toBeInTheDocument();
-    expect(scoped.getByText(/This deployment has not enabled live header probes/i)).toBeInTheDocument();
-    const rendered = panel?.textContent ?? "";
-    expect(rendered).not.toContain(".env");
-    expect(rendered).not.toContain("bypass");
-    expect(rendered).not.toContain("retry");
-    expect(rendered).not.toContain("DNS was attempted");
-    expect(rendered).not.toContain("HTTP was attempted");
-    expect(rendered).not.toContain("http://user:pass@example.com");
-    expect(rendered).not.toContain("token_should_never_render");
-    expect(
-      vi
-        .mocked(globalThis.fetch)
-        .mock.calls.filter(([input]) => String(input).endsWith("/jobs"))
-    ).toHaveLength(1);
-  });
-
-  it("creates and opens an Active HTTP header review no-live job record", async () => {
-    const activeJob = {
-      id: "job-active-http-basic-header-review-app",
-      audit_type: "active_http_basic_header_review",
-      file_id: null,
-      target_url: "[REDACTED_TARGET]",
-      target_domain: null,
-      status: "completed",
-      created_at: "2026-06-19T10:00:00Z",
-      updated_at: "2026-06-19T10:00:00Z",
-      source_file_deleted_at: null,
-      result: {
-        audit_type: "active_http_basic_header_review",
-        capability: "active_http_basic_header_review",
-        mode: "live_http_basic_header_review",
-        profile: "http_headers_single_request",
-        status: "not_executed",
-        result_status: "not_executed",
-        lifecycle_state: "not_executed",
-        target: "https://authorized.example/?token=token_should_never_render",
-        raw_target: "https://authorized.example/private?token=token_should_never_render",
-        target_display: "[REDACTED_TARGET]",
-        method: "HEAD",
-        headers: [{ name: "Authorization", value: "Bearer token_should_never_render" }],
-        cookies: ["session_should_not_render=cookie_should_not_render"],
-        redirect_chain: ["redirect-location-should-not-render"],
-        response_body: "response_body_should_not_render",
-        exception: "raw_exception_should_not_render",
-        manual_validation_required: true,
-        review_wording: "HTTP header review indicator",
-        result_interpretation: "HTTP header review indicator",
-        job_status_meaning: "Completed job status means the no-live record was stored; no HTTP request was performed.",
-        execution: {
-          live_request_performed: false,
-          network_requests_sent: 0,
-          requests_sent: 0,
-          http_requests_sent: 0,
-          redirect_followed: false,
-          body_read: false,
-          job_created: true,
-          storage_persisted: true
-        },
-        summary: {
-          status: "not_executed",
-          manual_validation_required: true,
-          review_wording: "HTTP header review indicator",
-          result_interpretation: "HTTP header review indicator",
-          job_status_meaning: "Completed job status means the no-live record was stored; no HTTP request was performed.",
-          live_request_performed: false,
-          redirect_followed: false,
-          body_read: false,
-          network_requests_sent: 0,
-          requests_sent: 0,
-          http_requests_sent: 0,
-          job_created: true,
-          storage_persisted: true
-        },
-        limits: {
-          max_targets: 1,
-          method: "HEAD",
-          max_redirects: 0,
-          response_body_bytes: 0,
-          raw_target_persisted: false,
-          headers_persisted: false,
-          cookies_persisted: false,
-          response_body_persisted: false
-        },
-        surface_caveats: [
-          "No live HTTP request was performed",
-          "No redirect was followed",
-          "No response body was read",
-          "Manual validation required",
-          "HTTP header review indicator wording only"
-        ]
-      },
-      error: "raw_exception_should_not_render token_should_never_render"
-    };
-    let jobs = [] as unknown[];
-    let jobsCalls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.endsWith("/auth/status")) {
-          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
-        }
-        if (url.endsWith("/health")) {
-          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
-        }
-        if (url.endsWith("/files")) {
-          return Promise.resolve(jsonResponse([]));
-        }
-        if (url.endsWith("/active/web/http-basic-header-review")) {
-          jobs = [
-            {
-              ...activeJob,
-              result: undefined,
-              error: undefined,
-              summary: {
-                capability: "active_http_basic_header_review",
-                result_status: "not_executed",
-                target_display: "[REDACTED_TARGET]",
-                method: "HEAD",
-                requests_sent: 0,
-                live_request_performed: false,
-                redirect_followed: false,
-                body_read: false,
-                manual_validation_required: true,
-                review_wording: "HTTP header review indicator"
-              }
-            }
-          ];
-          return Promise.resolve(jsonResponse(activeJob, 202));
-        }
-        if (url.endsWith("/jobs")) {
-          jobsCalls += 1;
-          return Promise.resolve(jsonResponse(jobs));
-        }
-        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
-      })
-    );
-
-    const view = render(<App />);
-    const heading = await screen.findByRole("heading", { name: "Active / HTTP header review" });
-    const panel = heading.closest("section");
-    expect(panel).not.toBeNull();
-    const scoped = within(panel as HTMLElement);
-
-    fireEvent.change(scoped.getByLabelText("URL target"), { target: { value: "https://authorized.example/" } });
-    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this URL."));
-    fireEvent.click(scoped.getByLabelText("I confirm I control this target."));
-    fireEvent.click(scoped.getByLabelText("I understand backend live mode, when enabled by operator config, may attempt at most one HEAD request; my browser will not contact the target."));
-    fireEvent.click(scoped.getByRole("button", { name: /Create HTTP header review job/i }));
-
-    await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "http://localhost:8000/active/web/http-basic-header-review",
-        expect.objectContaining({ method: "POST" })
-      );
-    });
-    const request = vi
-      .mocked(globalThis.fetch)
-      .mock.calls.find(([input]) => String(input).endsWith("/active/web/http-basic-header-review"))?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(request?.body))).toEqual({
-      mode: "live_http_basic_header_review",
-      profile: "http_headers_single_request",
-      target: "https://authorized.example/",
-      method: "HEAD",
-      authorization_confirmed: true,
-      target_control_confirmed: true,
-      delegated_permission_confirmed: false,
-      live_http_request_confirmed: true
-    });
-
-    expect(await scoped.findByText(/HTTP header review indicator job created/i)).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Active / HTTP header review report" })).toBeInTheDocument();
-    await waitFor(() => expect(jobsCalls).toBeGreaterThan(1));
-    const rendered = view.container.textContent ?? "";
-    expect(rendered).toContain("HTTP header review");
-    expect(rendered).toContain("not_executed");
-    expect(rendered).toContain(
-      "not_executed, no-live record stored, HEAD, HTTP header review indicator, 0 requests sent, live request performed false, redirect followed false, body read false, manual validation required"
-    );
-    expect(rendered).toContain("HTTP header review indicator");
-    expect(rendered).toContain("Manual validation required");
-    expect(rendered).toContain("No live HTTP request was performed");
-    expect(rendered).toContain("No redirect was followed");
-    expect(rendered).toContain("No response body was read");
-    expect(rendered).toContain("[REDACTED_TARGET]");
-    expect(rendered).toContain('"requests_sent": 0');
-    expect(rendered).toContain('"live_request_performed": false');
-    for (const value of [
-      "authorized.example",
-      "token_should_never_render",
-      "session_should_not_render",
-      "cookie_should_not_render",
-      "redirect-location-should-not-render",
-      "response_body_should_not_render",
-      "raw_exception_should_not_render"
-    ]) {
-      expect(rendered).not.toContain(value);
-    }
-    expect(
-      vi
-        .mocked(globalThis.fetch)
-        .mock.calls.some(([input]) => String(input).includes("authorized.example"))
-    ).toBe(false);
-  });
-
-  it("renders the Active Nmap basic form without calling the API before confirmations", async () => {
-    render(<App />);
-
-    await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalled();
-    });
-    vi.mocked(globalThis.fetch).mockClear();
-
-    const heading = screen.getByRole("heading", { name: "Active / Nmap basic" });
-    const panel = heading.closest("section");
-    expect(panel).not.toBeNull();
-    const scoped = within(panel as HTMLElement);
-    const panelText = panel?.textContent ?? "";
-
-    expect(panelText).toContain("Local/private/self-hosted");
-    expect(panelText).toContain("Authorized targets only");
-    expect(panelText).toContain("bounded authorized lifecycle record");
-    expect(panelText).toContain("Manual validation required");
-    expect(panelText).toContain("No security finding is asserted");
-    expect(panelText).toContain("No raw flags");
-    expect(panelText).toContain("no credential validation");
-    expect(panelText).not.toContain("full network scan");
-    expect(panelText).not.toContain("scan the internet");
-    expect(panelText).not.toContain("find assets");
-    expect(panelText).not.toContain("target is safe");
-    expect(panelText).not.toContain("exploitable");
-    expect(panelText).not.toContain("all ports found");
-    expect(scoped.getByLabelText("Target")).toBeInTheDocument();
-    expect(scoped.getByLabelText("TCP ports")).toBeInTheDocument();
-    expect(scoped.getByRole("button", { name: /Create bounded record/i })).toBeDisabled();
-    expect(panel?.querySelector("form")).not.toBeNull();
-    expect(panel?.querySelector('input[type="file"]')).toBeNull();
-    expect(panel?.querySelector("textarea")).toBeNull();
-    expect(scoped.queryByLabelText(/raw flags/i)).not.toBeInTheDocument();
-    expect(scoped.queryByLabelText(/credentials/i)).not.toBeInTheDocument();
-    expect(scoped.queryByLabelText(/cookies/i)).not.toBeInTheDocument();
-    expect(scoped.queryByLabelText(/headers/i)).not.toBeInTheDocument();
-    expect(scoped.queryByLabelText(/tokens/i)).not.toBeInTheDocument();
-
-    fireEvent.change(scoped.getByLabelText("Target"), { target: { value: "router.local" } });
-    fireEvent.change(scoped.getByLabelText("TCP ports"), { target: { value: "22, 443" } });
-    fireEvent.click(scoped.getByRole("button", { name: /Create bounded record/i }));
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-    expect(
-      vi
-        .mocked(globalThis.fetch)
-        .mock.calls.some(([input]) => String(input).endsWith("/active/network/nmap-basic"))
-    ).toBe(false);
-  });
-
-  it("creates and opens an Active Nmap basic bounded job record", async () => {
-    const activeJob = {
-      id: "job-active-nmap-no-live-52",
-      audit_type: "active_nmap_basic",
-      file_id: null,
-      target_url: "[REDACTED_TARGET]",
-      target_domain: null,
-      status: "completed",
-      created_at: "2026-06-12T10:00:00Z",
-      updated_at: "2026-06-12T10:00:00Z",
-      source_file_deleted_at: null,
-      result: {
-        audit_type: "active_nmap_basic",
-        capability: "active_nmap_basic",
-        mode: "live_nmap_basic",
-        profile: "tcp_connect_small",
-        status: "not_executed",
-        lifecycle_state: "completed_no_live",
-        no_live_lifecycle_record: true,
-        nmap_executed: false,
-        network_requests_sent: 0,
-        dns_queries_sent: 0,
-        evidence_available: false,
-        observations_available: false,
-        target: "router.local",
-        raw_payload: { target: "router.local", token: "token_should_never_render" },
-        command: "nmap -sT router.local",
-        stdout:
-          "stdout with router.local and <nmaprun><host><address addr='192.168.56.10'/></host></nmaprun>",
-        stderr: "stderr for secret-lab.internal Authorization: Bearer token_should_never_render",
-        raw_xml: "<nmaprun args='nmap -sT router.local'><host><ports /></host></nmaprun>",
-        service_details: { banner: "PrivateServer 9.9.9" },
-        credentials: { api_key: "raw-api-key-123456" },
-        headers: { Authorization: "Bearer token_should_never_render" },
-        cookies: { session: "token_should_never_render" },
-        tokens: ["token_should_never_render"],
-        observations: [{ port: 443, state: "open" }],
-        evidence: ["router.local responded"],
-        surface_caveats: [
-          "No Nmap executed.",
-          "No network requests.",
-          "No DNS queries.",
-          "No evidence collected.",
-          "No observations available.",
-          "Manual validation required."
-        ]
-      },
-      error: null
-    };
-    let jobs = [] as unknown[];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.endsWith("/auth/status")) {
-          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
-        }
-        if (url.endsWith("/health")) {
-          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend", active_nmap_basic: { enabled: true } }));
-        }
-        if (url.endsWith("/files")) {
-          return Promise.resolve(jsonResponse([]));
-        }
-        if (url.endsWith("/active/network/nmap-basic")) {
-          jobs = [
-            {
-              ...activeJob,
-              result: undefined,
-              error: undefined,
-              summary: {
-                capability: "active_nmap_basic",
-                lifecycle_state: "completed_no_live",
-                result_status: "not_executed",
-                no_live_lifecycle_record: true,
-                network_requests_sent: 0,
-                nmap_executed: false,
-                observation_count: 0,
-                target_display: "[REDACTED_TARGET]"
-              }
-            }
-          ];
-          return Promise.resolve(jsonResponse(activeJob, 202));
-        }
-        if (url.endsWith("/jobs")) {
-          return Promise.resolve(jsonResponse(jobs));
-        }
-        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
-      })
-    );
-
-    const view = render(<App />);
-    const heading = await screen.findByRole("heading", { name: "Active / Nmap basic" });
-    const panel = heading.closest("section");
-    expect(panel).not.toBeNull();
-    const scoped = within(panel as HTMLElement);
-
-    fireEvent.change(scoped.getByLabelText("Target"), { target: { value: "router.local" } });
-    fireEvent.change(scoped.getByLabelText("TCP ports"), { target: { value: "22, 443" } });
-    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
-    fireEvent.click(scoped.getByLabelText("I confirm this is local, private, or self-hosted scope."));
-    fireEvent.click(scoped.getByLabelText("I understand this capability is live-traffic scoped and remains bounded by backend policy."));
-    fireEvent.click(scoped.getByRole("button", { name: /Create bounded record/i }));
-
-    await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "http://localhost:8000/active/network/nmap-basic",
-        expect.objectContaining({ method: "POST" })
-      );
-    });
-    const request = vi
-      .mocked(globalThis.fetch)
-      .mock.calls.find(([input]) => String(input).endsWith("/active/network/nmap-basic"))?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(request?.body))).toEqual({
-      mode: "live_nmap_basic",
-      profile: "tcp_connect_small",
-      targets: ["router.local"],
-      ports: [22, 443],
-      authorization_confirmed: true,
-      local_private_scope_confirmed: true,
-      live_traffic_confirmed: true
-    });
-
-    expect(await scoped.findByText(/No-live lifecycle record created/i)).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Active / Nmap basic report" })).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Show redacted Raw JSON"));
-    const rendered = view.container.textContent ?? "";
-    expect(rendered).toContain("completed_no_live");
-    expect(rendered).toContain("not_executed");
-    expect(rendered).toContain("No-live lifecycle record");
-    expect(rendered).toContain("No Nmap executed");
-    expect(rendered).toContain("No network requests");
-    expect(rendered).toContain("No DNS queries");
-    expect(rendered).toContain("No evidence collected");
-    expect(rendered).toContain("No observations available");
-    expect(rendered).toContain("Manual validation required");
-    expect(rendered).toContain("[REDACTED_TARGET]");
-    expect(rendered).toContain("Raw JSON (redacted)");
-    expect(rendered).toContain("[REDACTED");
-    expect(rendered).not.toContain("router.local");
-    expect(rendered).not.toContain("secret-lab.internal");
-    expect(rendered).not.toContain("nmap -sT");
-    expect(rendered).not.toContain("<nmaprun");
-    expect(rendered).not.toContain("stdout with");
-    expect(rendered).not.toContain("stderr for");
-    expect(rendered).not.toContain("PrivateServer");
-    expect(rendered).not.toContain("token_should_never_render");
-    expect(rendered).not.toContain("raw-api-key-123456");
-    expect(rendered).not.toContain("scan completed");
-    expect(rendered).not.toContain("vulnerability found");
-    expect(rendered).not.toContain("completed scan");
-  });
-
-  it("creates and opens an Active TLS basic review indicator job record", async () => {
-    const activeJob = {
-      id: "job-active-tls-basic-04",
-      audit_type: "active_tls_basic",
-      file_id: null,
-      target_url: "[REDACTED_TARGET]",
-      target_domain: null,
-      status: "completed",
-      created_at: "2026-06-14T10:00:00Z",
-      updated_at: "2026-06-14T10:00:00Z",
-      source_file_deleted_at: null,
-      result: {
-        audit_type: "active_tls_basic",
-        capability: "active_tls_basic",
-        mode: "live_tls_basic",
-        profile: "tls_handshake_summary",
-        status: "handshake_succeeded",
-        result_status: "handshake_succeeded",
-        target: "service.local",
-        raw_payload: { target: "service.local", token: "token_should_never_render" },
-        port: 443,
-        handshake: { status: "succeeded", protocol: "TLSv1.3", cipher: "TLS_AES_256_GCM_SHA384" },
-        certificate: {
-          available: true,
-          subject: "commonName=service.local",
-          issuer: "commonName=Inspectra Test CA",
-          san_count: 1,
-          san_sample: [{ type: "DNS", value: "service.local" }],
-          not_before: "2026-01-01T00:00:00Z",
-          not_after: "2026-01-31T00:00:00Z",
-          days_until_expiry: 30,
-          certificate_pem: "-----BEGIN CERTIFICATE-----token_should_never_render-----END CERTIFICATE-----",
-          certificate_der: "raw_der_should_not_render"
-        },
-        execution: {
-          tls_handshake_attempted: true,
-          network_requests_sent: 1,
-          http_requests_sent: 0,
-          target_expansion_performed: false,
-          dns_expansion_performed: false,
-          crawling_performed: false,
-          credential_validation_performed: false
-        },
-        limits: {
-          handshake_timeout_seconds: 3,
-          raw_certificate_persisted: false,
-          raw_target_persisted: false
-        },
-        legacy: {
-          raw_exception: "raw_exception_should_not_render service.local",
-          headers: { Authorization: "Bearer token_should_never_render" },
-          cookies: { session: "token_should_never_render" },
-          tokens: ["token_should_never_render"],
-          credentials: { api_key: "raw-api-key-123456" }
-        },
-        errors: []
-      },
-      error: null
-    };
-    let jobs = [] as unknown[];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.endsWith("/auth/status")) {
-          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
-        }
-        if (url.endsWith("/health")) {
-          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
-        }
-        if (url.endsWith("/files")) {
-          return Promise.resolve(jsonResponse([]));
-        }
-        if (url.endsWith("/active/network/tls-basic")) {
-          jobs = [
-            {
-              ...activeJob,
-              result: undefined,
-              error: undefined,
-              summary: {
-                capability: "active_tls_basic",
-                result_status: "handshake_succeeded",
-                handshake_status: "succeeded",
-                protocol: "TLSv1.3",
-                cipher: "TLS_AES_256_GCM_SHA384",
-                certificate_available: true,
-                san_count: 1,
-                days_until_expiry: 30,
-                tls_handshake_attempted: true,
-                network_requests_sent: 1,
-                target_display: "[REDACTED_TARGET]"
-              }
-            }
-          ];
-          return Promise.resolve(jsonResponse(activeJob, 202));
-        }
-        if (url.endsWith("/jobs")) {
-          return Promise.resolve(jsonResponse(jobs));
-        }
-        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
-      })
-    );
-
-    const view = render(<App />);
-    const heading = await screen.findByRole("heading", { name: "Active / TLS basic" });
-    const panel = heading.closest("section");
-    expect(panel).not.toBeNull();
-    const scoped = within(panel as HTMLElement);
-
-    fireEvent.change(scoped.getByLabelText("Target"), { target: { value: "service.local" } });
-    fireEvent.change(scoped.getByLabelText("TLS port"), { target: { value: "443" } });
-    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to test this target."));
-    fireEvent.click(scoped.getByLabelText("I confirm this is local, private, or self-hosted scope."));
-    fireEvent.click(scoped.getByLabelText("I understand this capability sends one bounded TLS handshake attempt if backend policy accepts it."));
-    fireEvent.click(scoped.getByRole("button", { name: /Create TLS review job/i }));
-
-    await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "http://localhost:8000/active/network/tls-basic",
-        expect.objectContaining({ method: "POST" })
-      );
-    });
-    const request = vi
-      .mocked(globalThis.fetch)
-      .mock.calls.find(([input]) => String(input).endsWith("/active/network/tls-basic"))?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(request?.body))).toEqual({
-      mode: "live_tls_basic",
-      profile: "tls_handshake_summary",
-      target: "service.local",
-      port: 443,
-      authorization_confirmed: true,
-      local_private_scope_confirmed: true,
-      live_traffic_confirmed: true
-    });
-
-    expect(await scoped.findByText(/TLS review indicator job created/i)).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Active / TLS basic report" })).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Show redacted Raw JSON"));
-    const rendered = view.container.textContent ?? "";
-    expect(rendered).toContain("handshake_succeeded");
-    expect(rendered).toContain("TLS handshake review indicator");
-    expect(rendered).toContain("Certificate expiry review indicator");
-    expect(rendered).toContain("Manual validation required");
-    expect(rendered).toContain("[REDACTED_TARGET]");
-    expect(rendered).toContain("TLSv1.3");
-    expect(rendered).toContain("TLS_AES_256_GCM_SHA384");
-    expect(rendered).toContain("30");
-    expect(rendered).toContain("Raw JSON (redacted)");
-    expect(rendered).toContain("[REDACTED");
-    expect(rendered).not.toContain("service.local");
-    expect(rendered).not.toContain("-----BEGIN CERTIFICATE-----");
-    expect(rendered).not.toContain("raw_der_should_not_render");
-    expect(rendered).not.toContain("raw_exception_should_not_render");
-    expect(rendered).not.toContain("token_should_never_render");
-    expect(rendered).not.toContain("raw-api-key-123456");
-    expect(rendered).not.toMatch(/confirmed\s+vulnerability/i);
-    expect(rendered).not.toMatch(/exploitable/i);
-    expect(rendered).not.toMatch(/target\s+is\s+safe/i);
-    expect(rendered).not.toMatch(/full\s+scan/i);
-    expect(rendered).not.toMatch(/all\s+certs\s+found/i);
-    expect(rendered).not.toMatch(/public\s+scanner/i);
-  });
-
-  it("creates and opens an Active DNS inventory review indicator job record", async () => {
-    const activeJob = {
-      id: "job-active-dns-inventory-05",
-      audit_type: "active_dns_inventory",
-      file_id: null,
-      target_url: "[REDACTED_DOMAIN]",
-      target_domain: null,
-      status: "completed",
-      created_at: "2026-06-14T10:00:00Z",
-      updated_at: "2026-06-14T10:00:00Z",
-      source_file_deleted_at: null,
-      result: {
-        audit_type: "active_dns_inventory",
-        capability: "active_dns_inventory",
-        mode: "live_dns_inventory",
-        profile: "dns_inventory_authorized",
-        status: "best_effort_inventory",
-        result_status: "best_effort_inventory",
-        coverage_level: "best_effort_inventory",
-        domain: "secret.example.internal",
-        record_types: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"],
-        records: {
-          A: { count: 1, sample: [{ name: "secret.example.internal", type: "A", value: "192.0.2.55", ttl: 300 }] },
-          MX: {
-            count: 1,
-            sample: [{ name: "secret.example.internal", type: "MX", value: "mail.secret.example.internal", ttl: 300, priority: 10 }]
-          },
-          TXT: {
-            count: 2,
-            sample: [{ name: "secret.example.internal", type: "TXT", value: "v=spf1 include:_spf.example.net -all", ttl: 300 }]
-          }
-        },
-        security_records: {
-          spf: { checked: true, present: true, record_value: "v=spf1 include:_spf.example.net -all" },
-          dmarc: { checked: true, present: true, record_value: "v=DMARC1; p=reject" },
-          caa: { checked: true, present: true, record_count: 1, raw_value: "issue ca.example.net" },
-          dkim: { checked: false, status: "not_attempted" }
-        },
-        subdomains: {
-          enabled: true,
-          strategy: "fixed_candidate_allowlist",
-          candidates_checked: 12,
-          query_record_types: ["A", "AAAA", "CNAME"],
-          count: 2,
-          sample: [
-            { name: "www.secret.example.internal", record_types: ["A"], record_count: 1 },
-            { name: "admin.secret.example.internal", record_types: ["CNAME"], record_count: 1 }
-          ],
-          sample_truncated: false
-        },
-        zone_transfer: { attempted: false, status: "not_attempted" },
-        provider_import: { attempted: false, status: "not_attempted" },
-        execution: {
-          dns_queries_sent: 45,
-          subdomain_queries_sent: 36,
-          http_requests_sent: 0,
-          subprocess_invoked: false,
-          nmap_invoked: false,
-          zone_transfer_attempted: false,
-          provider_api_used: false
-        },
-        limits: {
-          domain_value_persisted: false,
-          dns_packets_persisted: false,
-          resolver_logs_persisted: false
-        },
-        raw_dns_packet: "raw_dns_packet token_should_never_render",
-        raw_resolver_log: "raw_resolver_log secret.example.internal 192.0.2.55",
-        provider_api_token: "provider_api_token token_should_never_render",
-        provider_zone_id: "provider-zone-123",
-        credentials: { api_key: "raw-api-key-123456" },
-        headers: { Authorization: "Bearer token_should_never_render" },
-        cookies: "sessionid=secret-session-cookie",
-        tokens: ["token_should_never_render"],
-        legacy: {
-          notes: "confirmed vulnerability exploitable target is safe all records found full DNS inventory public scanner"
-        },
-        surface_caveats: ["Manual validation required."]
-      },
-      error: null
-    };
-    let jobs = [] as unknown[];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.endsWith("/auth/status")) {
-          return Promise.resolve(jsonResponse(trustedLocalAuthStatus));
-        }
-        if (url.endsWith("/health")) {
-          return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
-        }
-        if (url.endsWith("/files")) {
-          return Promise.resolve(jsonResponse([]));
-        }
-        if (url.endsWith("/active/network/dns-inventory")) {
-          jobs = [
-            {
-              ...activeJob,
-              result: undefined,
-              error: undefined,
-              summary: {
-                capability: "active_dns_inventory",
-                result_status: "best_effort_inventory",
-                coverage_level: "best_effort_inventory",
-                target_display: "[REDACTED_DOMAIN]",
-                record_count: 4,
-                spf_present: true,
-                dmarc_present: true,
-                caa_present: true,
-                subdomain_observed_count: 2,
-                dns_queries_sent: 45,
-                subdomain_queries_sent: 36
-              }
-            }
-          ];
-          return Promise.resolve(jsonResponse(activeJob, 202));
-        }
-        if (url.endsWith("/jobs")) {
-          return Promise.resolve(jsonResponse(jobs));
-        }
-        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
-      })
-    );
-
-    const view = render(<App />);
-    const heading = await screen.findByRole("heading", { name: "Active / DNS inventory" });
-    const panel = heading.closest("section");
-    expect(panel).not.toBeNull();
-    const scoped = within(panel as HTMLElement);
-
-    fireEvent.change(scoped.getByLabelText("Domain"), { target: { value: "secret.example.internal" } });
-    fireEvent.click(scoped.getByLabelText("I confirm I own or am authorized to query this domain."));
-    fireEvent.click(scoped.getByLabelText("I confirm this domain is local, private, self-hosted, or owned scope."));
-    fireEvent.click(scoped.getByLabelText("I understand this capability sends bounded live DNS queries if backend policy accepts it."));
-    fireEvent.click(scoped.getByRole("button", { name: /Create DNS inventory job/i }));
-
-    await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "http://localhost:8000/active/network/dns-inventory",
-        expect.objectContaining({ method: "POST" })
-      );
-    });
-    const request = vi
-      .mocked(globalThis.fetch)
-      .mock.calls.find(([input]) => String(input).endsWith("/active/network/dns-inventory"))?.[1] as RequestInit | undefined;
-    expect(JSON.parse(String(request?.body))).toEqual({
-      mode: "live_dns_inventory",
-      profile: "dns_inventory_authorized",
-      domain: "secret.example.internal",
-      record_types: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"],
-      include_security_records: true,
-      include_subdomain_discovery: true,
-      attempt_zone_transfer: false,
-      authorization_confirmed: true,
-      local_private_or_owned_scope_confirmed: true,
-      live_dns_queries_confirmed: true
-    });
-
-    expect(await scoped.findByText(/DNS configuration review indicator job created/i)).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Active / DNS inventory report" })).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Show redacted Raw JSON"));
-    const rendered = view.container.textContent ?? "";
-    expect(rendered).toContain("best_effort_inventory");
-    expect(rendered).toContain("DNS configuration review indicator");
-    expect(rendered).toContain("best-effort DNS inventory");
-    expect(rendered).toContain("Manual validation required");
-    expect(rendered).toContain("Grouped DNS Records");
-    expect(rendered).toContain("Security Record Indicators");
-    expect(rendered).toContain("Bounded Subdomain Summary");
-    expect(rendered).toContain("[REDACTED_DOMAIN]");
-    expect(rendered).toContain("[REDACTED_DNS_VALUE]");
-    expect(rendered).toContain("[REDACTED_DNS_NAME]");
-    expect(rendered).toContain("not_attempted");
-    expect(rendered).toContain("Raw JSON (redacted)");
-    expect(rendered).toContain("[REDACTED");
-    for (const secret of [
-      "secret.example.internal",
-      "www.secret.example.internal",
-      "admin.secret.example.internal",
-      "mail.secret.example.internal",
-      "192.0.2.55",
-      "_spf.example.net",
-      "ca.example.net",
-      "raw_dns_packet",
-      "raw_resolver_log",
-      "provider_api_token",
-      "provider-zone-123",
-      "token_should_never_render",
-      "raw-api-key-123456"
-    ]) {
-      expect(rendered).not.toContain(secret);
-    }
-    expect(rendered).not.toMatch(/confirmed\s+vulnerability/i);
-    expect(rendered).not.toMatch(/exploitable/i);
-    expect(rendered).not.toMatch(/target\s+is\s+safe/i);
-    expect(rendered).not.toMatch(/all\s+records\s+found/i);
-    expect(rendered).not.toMatch(/full\s+DNS\s+inventory/i);
-    expect(rendered).not.toMatch(/public\s+scanner/i);
   });
 
   it("renders Active dry-run jobs with redacted target table and report payload", async () => {
@@ -2645,9 +2271,9 @@ describe("App", () => {
     const archiveRow = rows.find((row) => row.textContent?.includes("django.zip"));
     const pdfRow = rows.find((row) => row.textContent?.includes("sample.pdf"));
     expect(archiveRow).toBeDefined();
-    expect(archiveRow?.textContent).toContain("Archive reviews are passive and bounded");
-    expect(archiveRow?.textContent).toContain("validate credentials");
-    expect(archiveRow?.textContent).toContain("query CVEs");
+    expect(archiveRow?.textContent).toContain("Passive review");
+    expect(archiveRow?.textContent).toContain("credential checks");
+    expect(archiveRow?.textContent).toContain("CVE query");
     expect(archiveRow?.textContent).toContain("Start here");
     expect(archiveRow?.textContent).toContain("Secrets");
     expect(archiveRow?.textContent).toContain("Application");
@@ -2680,6 +2306,114 @@ describe("App", () => {
     for (const phrase of forbiddenCopy) {
       expect(archiveText).not.toContain(phrase);
     }
+  });
+
+  it("creates an archive-backed project and exposes its queued initial analysis", async () => {
+    render(<App />);
+
+    await screen.findAllByText("django.zip");
+    const authorization = screen.getAllByRole("checkbox", {
+      name: "I confirm I own or am authorized to analyze this archive as a project."
+    });
+    const buttons = screen.getAllByRole("button", { name: "Create project & analyze" });
+    expect(buttons[buttons.length - 1]).toBeDisabled();
+    fireEvent.click(authorization[authorization.length - 1]);
+    expect(buttons[buttons.length - 1]).toBeEnabled();
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/projects",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ source_file_id: "file-archive-1", authorization_confirmed: true })
+        })
+      );
+    });
+
+    expect(await screen.findByText("Project django was created and its initial review is queued.")).toBeInTheDocument();
+    const projectsTable = screen.getByRole("region", { name: "Projects table. Scroll horizontally to view all fields." });
+    expect(within(projectsTable).getByRole("table", { name: "Projects" })).toBeInTheDocument();
+    expect(within(projectsTable).getByText("django")).toBeInTheDocument();
+    expect(within(projectsTable).getByText("snapshot-0123456789abcdef")).toBeInTheDocument();
+    expect(within(projectsTable).getByText("Archive retained; filename withheld")).toBeInTheDocument();
+    expect(projectsTable).not.toHaveTextContent("django.zip");
+    expect(projectsTable).not.toHaveTextContent("fed1234567890fed");
+    expect(within(projectsTable).getByText("queued")).toBeInTheDocument();
+    expect(within(projectsTable).getByRole("button", { name: "View latest analysis for django" })).toBeInTheDocument();
+  });
+
+  it("reruns a retained project snapshot only after its previous analysis is terminal", async () => {
+    projectCreated = true;
+    projectLatestJobStatus = "completed";
+    render(<App />);
+
+    const runAgain = await screen.findByRole("button", { name: "Run recorded snapshot for django again" });
+    expect(runAgain).toBeEnabled();
+    fireEvent.click(runAgain);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/projects/project-archive-1/analyses",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+
+    expect(await screen.findByText("A new analysis of django is queued for its recorded source snapshot.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run recorded snapshot for django again" })).toBeDisabled();
+  });
+
+  it("opens the next-snapshot flow without offering the source already retained by the project", async () => {
+    projectCreated = true;
+    projectLatestJobStatus = "completed";
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add a new archive snapshot to django" }));
+
+    expect(await screen.findByRole("heading", { name: "Add project snapshot" })).toBeInTheDocument();
+    expect(screen.getByText(/Upload a different ZIP or TAR archive/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add snapshot & analyze" })).not.toBeInTheDocument();
+  });
+
+  it("opens a focused project workspace from the project table", async () => {
+    projectCreated = true;
+    projectLatestJobStatus = "completed";
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open workspace for django" }));
+
+    expect(await screen.findByRole("heading", { name: "Project workspace: django" })).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Retained project analysis timeline" })).toBeInTheDocument();
+    expect(window.location.hash).toContain("project=project-archive-1");
+  });
+
+  it("opens a project finding explorer with a restorable project link", async () => {
+    projectCreated = true;
+    projectLatestJobStatus = "completed";
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Explore findings for django" }));
+
+    expect(await screen.findByRole("heading", { name: "Findings: django" })).toBeInTheDocument();
+    expect(await screen.findByText("Dependency is not exactly pinned")).toBeInTheDocument();
+    expect(window.location.hash).toContain("project=project-archive-1");
+  });
+
+  it("refreshes project status while an active project job is being monitored", async () => {
+    projectCreated = true;
+    projectLatestJobStatus = "queued";
+    vi.useFakeTimers();
+    render(<App />);
+
+    await act(async () => {});
+    const projectsTable = screen.getByRole("region", { name: "Projects table. Scroll horizontally to view all fields." });
+    expect(within(projectsTable).getByText("queued")).toBeInTheDocument();
+    projectLatestJobStatus = "completed";
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+
+    expect(screen.getByRole("button", { name: "Run recorded snapshot for django again" })).toBeEnabled();
   });
 
   it("starts a Django config audit from an archive action", async () => {

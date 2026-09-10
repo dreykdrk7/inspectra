@@ -10,9 +10,11 @@ import {
 } from "./projectArchiveReport";
 import type { MetadataEntry } from "./pdfReport";
 import type { FileRecord, JobRecord, JobStatus } from "./types";
+import { sourceReference } from "./sourcePresentation";
 
 export function ProjectArchiveJobReport({ job, file }: { job: JobRecord; file?: FileRecord }) {
   const report = buildProjectArchiveAuditReport(job, file);
+  const isProjectAnalysis = Boolean(job.project_id);
 
   if (!report.isProjectArchiveAudit) {
     return (
@@ -37,10 +39,21 @@ export function ProjectArchiveJobReport({ job, file }: { job: JobRecord; file?: 
           <MetadataRow label="Audit type" value={job.audit_type} />
           <MetadataRow label="Analyzer" value={report.analyzer ?? "Not available"} />
           <MetadataRow label="Archive type" value={report.archiveType ?? "Not available"} />
+          <MetadataRow label="Execution profile" value={formatExecutionProfile(job)} />
           <MetadataRow label="Job ID" value={job.id} mono />
-          <MetadataRow label="File ID" value={job.file_id ?? "N/A"} mono />
+          <MetadataRow
+            label={isProjectAnalysis ? "Source reference" : "File ID"}
+            value={isProjectAnalysis ? sourceReference(job.source_reference) : job.file_id ?? "N/A"}
+            mono
+          />
+          {job.retry_of_job_id ? <MetadataRow label="Retry of analysis" value={job.retry_of_job_id} mono /> : null}
+          <MetadataRow label="Restart recoveries" value={String(job.recovery_count ?? 0)} />
+          <MetadataRow label="Last recovered" value={job.last_recovered_at ? formatDate(job.last_recovered_at) : "Never"} />
           <MetadataRow label="Created" value={formatDate(job.created_at)} />
+          <MetadataRow label="Started" value={job.started_at ? formatDate(job.started_at) : "Not recorded"} />
           <MetadataRow label="Updated" value={formatDate(job.updated_at)} />
+          <MetadataRow label="Finished" value={job.finished_at ? formatDate(job.finished_at) : "Not finished"} />
+          <MetadataRow label="Termination" value={formatTerminationReason(job.termination_reason)} />
           <MetadataRow label="Completed" value={report.completedAt ? formatDate(report.completedAt) : "Not completed"} />
           <MetadataRow
             label="Source file"
@@ -50,12 +63,17 @@ export function ProjectArchiveJobReport({ job, file }: { job: JobRecord; file?: 
       </section>
 
       <div className="report-grid">
-        <ReportSection title="Hashes">
-          <MetadataList entries={report.hashes} empty="No hashes returned yet." monoValues />
+        <ReportSection title={isProjectAnalysis ? "Source identity" : "Hashes"}>
+          {isProjectAnalysis ? (
+            <p className="muted">Content digests are retained server-side for reproducibility and withheld from project views.</p>
+          ) : <MetadataList entries={report.hashes} empty="No hashes returned yet." monoValues />}
         </ReportSection>
         <ReportSection title="Archive File">
           <dl className="summary-list">
-            <MetadataRow label="Original name" value={report.fileInfo.originalFilename ?? "Not available"} />
+            <MetadataRow
+              label="Original name"
+              value={isProjectAnalysis ? "Withheld in project views; available only in Files" : report.fileInfo.originalFilename ?? "Not available"}
+            />
             <MetadataRow label="Size" value={report.fileInfo.sizeBytes === null ? "Not available" : formatBytes(report.fileInfo.sizeBytes)} />
           </dl>
         </ReportSection>
@@ -76,6 +94,35 @@ export function ProjectArchiveJobReport({ job, file }: { job: JobRecord; file?: 
 
       <ReportSection title="Dependency Pinning Summary">
         <DependencyPinningSummaryList entries={report.dependencyPinningSummary} />
+      </ReportSection>
+
+      <ReportSection title="Declared License Review">
+        {report.licenseReview ? (
+          <div className="dependency-groups">
+            <p className="muted">
+              Contract {report.licenseReview.contractVersion ?? "not recorded"}; policy {report.licenseReview.policyMode}.
+              This inventory is not legal advice and does not infer dependency-license compatibility.
+            </p>
+            {report.licenseReview.declarations.length > 0 ? (
+              <div className="dependency-list">
+                {report.licenseReview.declarations.map((declaration) => (
+                  <div className="dependency-row" key={`${declaration.manifestPath}-${declaration.status}-${declaration.expression ?? ""}`}>
+                    <strong>{declaration.expression ?? "No supported declaration"}</strong>
+                    <span className="mono">{declaration.manifestPath}</span>
+                    <span className={`status-pill ${declaration.status === "not_permitted" ? "failed" : declaration.status === "declared" ? "completed" : "partial"}`}>
+                      {declaration.status.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="empty-state">No supported root-project license declarations were observed.</p>}
+            {report.licenseReview.limitations.length > 0 ? (
+              <ul className="warning-list">
+                {report.licenseReview.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}
+              </ul>
+            ) : null}
+          </div>
+        ) : <p className="empty-state">License review was not recorded for this legacy analysis.</p>}
       </ReportSection>
 
       <ReportSection title="Supported Manifests">
@@ -226,6 +273,13 @@ function ParsedManifestCard({ manifest }: { manifest: ParsedProjectManifest }) {
         <MetadataRow label="Size" value={manifest.sizeBytes === null ? "N/A" : formatBytes(manifest.sizeBytes)} />
       </dl>
       <MetadataList entries={manifest.project} empty="No project metadata extracted." />
+      {manifest.integrity.length > 0 ? (
+        <>
+          <h4 className="compact-heading">Requirements integrity</h4>
+          <p className="muted">Aggregate evidence only. Inspectra discards digest values and does not treat an exact pin as artifact integrity.</p>
+          <MetadataList entries={manifest.integrity} empty="No integrity evidence reported." />
+        </>
+      ) : null}
       {manifest.scripts.length > 0 ? (
         <>
           <h4 className="compact-heading">Scripts</h4>
@@ -276,6 +330,10 @@ function FindingCard({ finding }: { finding: ProjectArchiveFinding }) {
         </div>
       </div>
       {finding.description ? <p>{finding.description}</p> : null}
+      {finding.manifestPath ? (
+        <p className="mono evidence-line">{finding.manifestPath}{finding.line ? `:${finding.line}` : ""}</p>
+      ) : null}
+      {finding.confidence ? <p className="muted">Confidence: {finding.confidence}</p> : null}
       {finding.evidence ? <p className="mono evidence-line">{finding.evidence}</p> : null}
       {finding.recommendation ? <p className="muted">{finding.recommendation}</p> : null}
     </article>
@@ -307,7 +365,7 @@ function groupFindingsByEcosystem(findings: ProjectArchiveFinding[]) {
 function MetadataRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
     <>
-      <dt>{label}</dt>
+      <dt className="metadata-key">{label}</dt>
       <dd className={mono ? "mono" : undefined}>{value}</dd>
     </>
   );
@@ -318,12 +376,30 @@ function StatusBadge({ status }: { status: JobStatus }) {
 }
 
 function RawJson({ job }: { job: JobRecord }) {
+  const visibleJob = job.project_id ? projectJobWithoutSourceMetadata(job) : job;
   return (
     <details className="raw-json">
       <summary>Raw JSON</summary>
-      <pre>{JSON.stringify(job, null, 2)}</pre>
+      <pre>{JSON.stringify(visibleJob, null, 2)}</pre>
     </details>
   );
+}
+
+function projectJobWithoutSourceMetadata(job: JobRecord): Record<string, unknown> {
+  const visibleJob: Record<string, unknown> = { ...job };
+  delete visibleJob.file_id;
+  delete visibleJob.source_sha256;
+  const result = job.result ? { ...job.result } : null;
+  if (result) {
+    delete result.hashes;
+    const fileIdentification = result.file_identification;
+    if (fileIdentification && typeof fileIdentification === "object" && !Array.isArray(fileIdentification)) {
+      const safeIdentification = { ...(fileIdentification as Record<string, unknown>) };
+      delete safeIdentification.original_filename;
+      result.file_identification = safeIdentification;
+    }
+  }
+  return { ...visibleJob, result };
 }
 
 function formatMetadataValue(entry: MetadataEntry): string {
@@ -339,6 +415,54 @@ function formatDate(value: string): string {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(new Date(value));
+}
+
+function formatExecutionProfile(job: JobRecord): string {
+  const profile = job.execution_profile;
+  if (!profile) {
+    return "Not recorded (legacy analysis)";
+  }
+  const timeout = typeof profile.timeout_seconds === "number" ? `${profile.timeout_seconds}s` : "not recorded";
+  const limits = [
+    ["workspace copy", profile.workspace_max_bytes, true],
+    ["expanded", profile.max_total_uncompressed_bytes, true],
+    ["entries", profile.max_archive_entries, false],
+    ["manifests", profile.max_manifests, false],
+    ["manifest item", profile.max_manifest_bytes, true],
+    ["manifest total", profile.max_total_manifest_bytes, true],
+    ["lockfiles", profile.max_lockfiles, false],
+    ["lock packages", profile.max_lockfile_packages, false],
+    ["lock edges", profile.max_lockfile_edges, false]
+  ] as const;
+  const recordedLimits = limits.flatMap(([label, value, bytes]) => (
+    typeof value === "number" ? [`${label} ${bytes ? formatBytes(value) : value}`] : []
+  )).join("; ");
+  const queueLimits = typeof profile.audit_max_inflight_jobs === "number" && typeof profile.audit_max_inflight_jobs_per_owner === "number"
+    ? `; in-flight global ${profile.audit_max_inflight_jobs}; in-flight per owner ${profile.audit_max_inflight_jobs_per_owner}`
+    : "; in-flight limits not recorded";
+  const worker = profile.worker_contract_version
+    ? `; isolated worker ${profile.worker_contract_version}, ${profile.worker_lifecycle ?? "lifecycle not recorded"}, concurrency ${profile.worker_max_concurrency ?? "not recorded"}, CPU ${profile.worker_cpu_seconds ?? "not recorded"} s, memory ${profile.worker_memory_bytes ? formatBytes(profile.worker_memory_bytes) : "not recorded"}`
+    : "";
+  const licensePolicy = profile.license_policy_contract_version
+    ? `; license review ${profile.license_policy_contract_version}, exact deny entries ${profile.license_policy_denied_identifiers?.length ?? 0}`
+    : "";
+  return `${profile.profile_name}; contract ${profile.contract_version}; rules ${profile.ruleset_version}; admission ${formatBytes(profile.max_upload_bytes)}; timeout ${timeout}; concurrency ${profile.audit_max_concurrency}${queueLimits}; workspace ${profile.workspace_policy ?? "legacy shared source"}${worker}${licensePolicy}${recordedLimits ? `; ${recordedLimits}` : ""}`;
+}
+
+function formatTerminationReason(reason: string | null | undefined): string {
+  return ({
+    completed: "Completed under the recorded contract",
+    cancelled_by_owner: "Cancelled by the project owner after workspace cleanup",
+    application_restart: "Interrupted by application restart; safe retry required",
+    application_shutdown: "Interrupted during application shutdown; safe retry required",
+    recovery_rejected: "Queued work rejected because its retained source or execution contract changed",
+    runner_timeout: "Stopped at the recorded time limit",
+    runner_resource_limit: "Stopped at the recorded isolated-worker resource boundary",
+    runner_unavailable: "Runner unavailable; safe retry required",
+    runner_contract_invalid: "Runner limit contract did not match",
+    workspace_error: "Workspace could not be prepared within limits",
+    internal_error: "Controlled internal execution error"
+  } as Record<string, string>)[reason ?? ""] ?? (reason ? "Unrecognized terminal reason" : "Not recorded");
 }
 
 function formatBytes(bytes: number): string {

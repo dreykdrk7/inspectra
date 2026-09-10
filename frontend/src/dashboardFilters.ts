@@ -16,7 +16,7 @@ export function buildDashboardMetrics(files: FileRecord[], jobs: JobListItem[]) 
     totalJobs: jobs.length,
     completedJobs: jobs.filter((job) => job.status === "completed").length,
     failedJobs: jobs.filter((job) => job.status === "failed").length,
-    activeJobs: jobs.filter((job) => job.status === "queued" || job.status === "running").length
+    activeJobs: jobs.filter((job) => job.status === "queued" || job.status === "running" || job.status === "cancelling").length
   };
 }
 
