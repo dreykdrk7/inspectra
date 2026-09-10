@@ -279,7 +279,7 @@ def test_secret_scan_is_configured_with_only_synthetic_fixture_allowlists() -> N
     assert "demo-archive-container-infra/terraform/main[.]tf" in config
     assert "src/" not in config
     fingerprints = [line for line in ignore.splitlines() if line and not line.startswith("#")]
-    assert len(fingerprints) == 51
+    assert len(fingerprints) == 54
     assert all(line.count(":") >= 3 for line in fingerprints)
     assert all(
         ":backend/tests/" in line

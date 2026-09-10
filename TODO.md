@@ -679,7 +679,7 @@ no equivale a cobertura de proyectos analizados.
 | PROD-126 | P0 | completada | S | PROD-113, PROD-123 y revisión visual de PROD-117 |
 | PROD-127 | P0 | completada | S | PROD-026, PROD-090 y validación real de PROD-117 |
 | PROD-128 | P0 | completada | S | PROD-113, PROD-126 y revisión visual de PROD-117 |
-| PROD-129 | P1 | en progreso | L | PROD-117/127/128 completadas; consolidación local autorizada el 2026-09-10 |
+| PROD-129 | P1 | completada | L | PROD-117/127/128 completadas; consolidación local autorizada el 2026-09-10 |
 | PROD-130 | P1 | bloqueada | M | PROD-129 y SEC-012; requiere autorización explícita para cambios de CI/push |
 | PROD-131 | P1 | completada | L | PROD-043, PROD-073 y flujo archive-backed completados |
 | PROD-132 | P1 | completada | M | PROD-131 completada |
@@ -2738,7 +2738,7 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 ### PROD-129 — Preparar un corte local coherente y revisable
 
 - **Prioridad:** P1
-- **Estado:** en progreso
+- **Estado:** completada
 - **Descripción y motivo:** tras el GO acotado, el siguiente paso es consolidar
   una candidatura local identificable: revisar el árbol completo, resolver la
   versión única del producto y alinear la documentación canónica sin declarar
@@ -2758,23 +2758,36 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 - **Dependencias:** `PROD-117`, `PROD-127` y `PROD-128` completadas. La
   consolidación local y la versión `0.3.0-beta.1` fueron autorizadas el
   2026-09-10; CI remoto y cualquier publicación permanecen fuera de alcance.
-- **Evidencia de validación al completarla:** en curso. Preflight inicial:
-  rama creada desde `8e72f1e704f1fa05ff6cf72a70a697fda01b7d83` conservando exactamente
-  el estado del árbol (`db9de357…` antes/después); 357 rutas clasificadas tras
-  añadir las guardas de candidatura, sin submódulos ni cambios de modo.
-  Gitleaks revisó 351 commits sin fugas y el
-  canario detectó su señal sintética; las 53 señales del conjunto candidato
-  tienen marcador sintético explícito y están limitadas a pruebas, fixtures
-  negativos o ejemplos documentales. Pasaron 1.613 pruebas backend, 481 de
-  herramientas, 65 CLI y 420 frontend; `compileall`, TypeScript, build,
-  presupuesto 302,7/322 KiB y seis variantes Compose también pasaron. Cinco
-  locks Python no tienen vulnerabilidades conocidas. Se detectó y corrigió
-  `CVE-2026-84373 / GHSA-82fw-gwwq-j7x9` actualizando Vitest y
-  `@vitest/mocker` a 4.1.11; instalación limpia Node 22, pruebas y auditoría npm
-  posterior quedaron verdes. Dos construcciones independientes produjeron los
-  mismos digests de wheel, sdist, SBOM y checksums. Pendientes la serie de
-  commits, el smoke de la punta candidata y el escaneo final del historial; no
-  se creó tag, push, PR, release ni despliegue.
+- **Evidencia de validación al completarla:** 2026-09-10: rama local creada
+  desde `8e72f1e704f1fa05ff6cf72a70a697fda01b7d83` conservando exactamente el
+  árbol inicial (`db9de357…` antes/después). El inventario clasifica 357 rutas:
+  351 incluidas y seis excluidas como entorno/runtime, sin submódulos, cambios
+  de modo ni material ambiguo. La serie local separa núcleo, frontend, CLI,
+  documentación/release y fingerprints sintéticos; el tip que contiene esta
+  evidencia es la identidad candidata, sin tag ni referencia remota.
+  Gitleaks dejó limpio el historial completo y el canario detectó su señal; las
+  53 señales del árbol previo a commits quedaron clasificadas como material
+  sintético explícito en 25 pruebas/fixtures/documentos. La regresión del tip
+  pasó 1.613 pruebas backend, 481 de herramientas, 65 CLI y 420 frontend,
+  además de `compileall`, TypeScript, build, presupuesto 302,7/322 KiB, seis
+  variantes Compose, `pip check`, sincronización de backlogs/versión y
+  `git diff --check`. Cinco locks Python no reportan vulnerabilidades conocidas.
+  La auditoría npm descubrió y se corrigió
+  `CVE-2026-84373 / GHSA-82fw-gwwq-j7x9` con Vitest y `@vitest/mocker` 4.1.11;
+  instalación limpia Node 22, pruebas y auditoría posterior quedaron verdes.
+  Dos construcciones independientes produjeron los mismos SHA-256:
+  wheel `52b38e9a…`, sdist `a326e512…`, SBOM `666a5b90…` y `SHA256SUMS`
+  `c869b31b…`; el wheel se instaló y verificó offline fuera del repositorio.
+  El smoke TLS sintético del commit candidato terminó en 1.296,506 ms con
+  salud/readiness, cabeceras, auth/cookie/CSRF, análisis, privacidad, egress
+  apagado, 25 clases de retención, informes y cleanup; no contactó proveedores.
+  Al retirar el runner, health siguió 200 y readiness pasó 503; la recuperación
+  volvió a 200. La limpieza final dejó cero contenedores, volúmenes, redes,
+  imágenes y temporales del candidato. El primer intento de suite agotó 512 MiB
+  exactos de `/tmp`; se aisló por grupos y la repetición con 2 GiB pasó. Dos
+  intentos de smoke ejecutaron cero flujo por dependencia cliente ausente y CA
+  `0600`; se diagnosticaron y la pasada válida se repitió completa. No hubo
+  push, PR, tag, release, publicación ni despliegue.
 
 ### PROD-130 — Validar CI remoto y cerrar la puerta de release
 

@@ -199,7 +199,7 @@ integración con esos proveedores.
 | PROD-126 | P0 | completada | Eliminar desborde horizontal del recorrido de proyecto a 320 px |
 | PROD-127 | P0 | completada | Compatibilidad estricta con respuestas resumidas de OSV |
 | PROD-128 | P0 | completada | Presentación móvil e indicadores semánticos de inteligencia |
-| PROD-129 | P1 | en progreso | Preparar un corte local coherente y revisable |
+| PROD-129 | P1 | completada | Preparar un corte local coherente y revisable |
 | PROD-130 | P1 | bloqueada | Validar CI remoto y cerrar la puerta de release |
 | PROD-131 | P1 | completada | CLI: snapshot Git seguro, preflight y dry-run |
 | PROD-132 | P1 | completada | CLI: subida, seguimiento y resultado end-to-end |
@@ -3806,7 +3806,7 @@ las pruebas indicadas y se sincronicen ambos backlogs.
 ### PROD-129 — Preparar un corte local coherente y revisable
 
 - **Prioridad:** P1
-- **Estado:** en progreso
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** un evaluador necesita asociar la
   candidatura aceptada a una versión y conjunto de cambios inequívocos antes de
   instalarla o compararla, sin que eso implique declarar una versión estable.
@@ -3829,22 +3829,29 @@ las pruebas indicadas y se sincronicen ambos backlogs.
 - **Estrategia de pruebas:** inventario de diff/archivos, escaneo de secretos,
   comparación de metadatos, suites/build/Compose/auditorías y reconstrucción
   por digest desde el commit local propuesto.
-- **Evidencia de validación al completarse:** en curso. Se creó
-  `release-prep/inspectra-0.3-beta` desde `8e72f1e…` con el mismo digest de
-  estado antes/después; 357 rutas quedaron clasificadas tras incorporar las
-  guardas y documentos de candidatura, sin submódulos ni cambios de modo.
-  Gitleaks dejó limpio el historial de 351 commits; el canario funcionó y las
-  53 señales candidatas iniciales se verificaron como material sintético
-  explícito en pruebas/fixtures/documentación. Pasaron 1.613 pruebas backend,
-  481 de herramientas, 65 CLI y 420 frontend, además de `compileall`, build,
-  presupuesto 302,7/322 KiB y seis variantes Compose. Cinco locks Python no
-  tienen vulnerabilidades conocidas. La auditoría npm descubrió y se corrigió
-  `CVE-2026-84373 / GHSA-82fw-gwwq-j7x9` actualizando Vitest y
-  `@vitest/mocker` a 4.1.11; una instalación limpia Node 22, la suite y la
-  auditoría posterior quedaron verdes. Wheel, sdist, SBOM y checksums se
-  reprodujeron byte a byte en dos construcciones. Faltan commits, smoke de la
-  punta candidata y escaneo final del historial;
-  no hubo tag, push, PR, release ni despliegue.
+- **Evidencia de validación al completarse:** 2026-09-10: rama local creada
+  desde `8e72f1e…` sin alterar el árbol inicial (`db9de357…`). El inventario
+  clasifica 357 rutas, 351 incluidas y seis excluidas como entorno/runtime, sin
+  submódulos, modos ni ambigüedades. La serie local separa núcleo, frontend,
+  CLI, documentación/release y fingerprints sintéticos; el tip que contiene
+  esta evidencia identifica la candidatura sin tag ni referencia remota.
+  Gitleaks dejó limpio el historial y el canario funcionó; las 53 señales del
+  árbol candidato se verificaron como sintéticas en 25 archivos controlados.
+  La matriz del tip pasó 1.613 backend, 481 tools, 65 CLI y 420 frontend,
+  `compileall`, TypeScript/build, presupuesto 302,7/322 KiB, seis Compose,
+  `pip check`, guardas y diff-check. Las cinco auditorías Python quedaron
+  limpias. `CVE-2026-84373 / GHSA-82fw-gwwq-j7x9` se corrigió actualizando
+  Vitest/`@vitest/mocker` a 4.1.11; instalación limpia Node 22 y auditoría npm
+  quedaron a cero. Dos builds dieron los mismos SHA-256: wheel `52b38e9a…`,
+  sdist `a326e512…`, SBOM `666a5b90…` y checksums `c869b31b…`; el wheel se
+  instaló offline fuera del repo. El smoke TLS sintético pasó en 1.296,506 ms
+  con auth, análisis, privacidad, egress apagado, informes y cleanup; ningún
+  proveedor fue contactado. La degradación mantuvo health 200/readiness 503 y
+  recuperó 200. Quedaron cero recursos/temporales. El `ENOSPC` inicial se
+  atribuyó al `/tmp` de 512 MiB y la suite pasó con 2 GiB; dos smokes que no
+  iniciaron flujo por cliente sin `httpx` y CA `0600` se diagnosticaron antes de
+  repetir la aceptación válida completa. No hubo push, PR, tag, release,
+  publicación ni despliegue.
 
 ### PROD-130 — Validar CI remoto y cerrar la puerta de release
 
