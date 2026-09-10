@@ -52,3 +52,8 @@ d9a788d8ed2c7a84b6d75fc222b2e8d1ff9a2191:frontend/src/ActiveNmapBasicJobReport.t
 d9a788d8ed2c7a84b6d75fc222b2e8d1ff9a2191:frontend/src/ActiveNmapBasicJobReport.test.tsx:generic-api-key:33
 d9a788d8ed2c7a84b6d75fc222b2e8d1ff9a2191:frontend/src/App.test.tsx:generic-api-key:1683
 e48b0ca28bc54169a476b6c3f79175902f9b5c0e:frontend/src/App.test.tsx:generic-api-key:1405
+# Reviewed synthetic boundary fixtures introduced by the local 0.3.0-beta.1
+# consolidation. They exercise cache redaction and token-pattern rejection.
+6d95d8b7bbf3ad2c84cc3342dc06522ada649489:backend/tests/test_public_advisory_egress.py:generic-api-key:1080
+6d95d8b7bbf3ad2c84cc3342dc06522ada649489:backend/tests/test_public_advisory_egress.py:generic-api-key:1081
+6d95d8b7bbf3ad2c84cc3342dc06522ada649489:backend/tests/test_backend.py:gitlab-pat:25593
