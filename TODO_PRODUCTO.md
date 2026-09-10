@@ -3914,7 +3914,12 @@ las pruebas indicadas y se sincronicen ambos backlogs.
   dio 52,28 s. La regresión separa ahora la guarda de memoria `<64 MiB` de una
   segunda medición de rebuild sin instrumentación que conserva `<60 s`; la
   prueba completa dirigida pasó offline/read-only sin relajar ninguno de los
-  dos límites.
+  dos límites. El siguiente CI ejecutó 419/420 pruebas frontend y mostró el
+  flujo restaurado desde URL, pero su informe terminó de cargar después de los
+  5 s específicos. Solo ese caso usa ahora 10 s de espera/15 s totales; los
+  demás presupuestos y el timeout global siguen intactos. En Node 22/Vitest
+  4.1.11 y cuatro CPU pasaron 59/59 archivos, 420/420 pruebas, build y bundle
+  302,7/322 KiB.
 
 ## Ciclo 6 — Expansión funcional para desarrolladores y empresas
 

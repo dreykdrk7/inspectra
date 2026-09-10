@@ -2854,7 +2854,12 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
   de 60 s, mientras la repetición aislada local dio 52,28 s. La regresión separa
   ahora la guarda de memoria `<64 MiB` de una segunda medición de rebuild sin
   instrumentación que conserva `<60 s`; la prueba completa dirigida pasó
-  offline/read-only sin relajar ninguno de los dos límites.
+  offline/read-only sin relajar ninguno de los dos límites. El siguiente CI
+  ejecutó 419/420 pruebas frontend y mostró el flujo restaurado desde URL, pero
+  su informe terminó de cargar después de los 5 s específicos. Solo ese caso
+  usa ahora 10 s de espera/15 s totales; los demás presupuestos y el timeout
+  global siguen intactos. En Node 22/Vitest 4.1.11 y cuatro CPU pasaron 59/59
+  archivos, 420/420 pruebas, build y bundle 302,7/322 KiB.
 
 ### PROD-179 — Readiness efectivo del runner por capacidad
 

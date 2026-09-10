@@ -9,6 +9,8 @@ import { ApiError } from "./api";
 // tolerant of CI worker contention without relaxing the timeout for every test.
 const APP_TRANSITION_TIMEOUT = { timeout: 5_000 } as const;
 const APP_TRANSITION_TEST_TIMEOUT_MS = 10_000;
+const APP_URL_RESTORE_TIMEOUT = { timeout: 10_000 } as const;
+const APP_URL_RESTORE_TEST_TIMEOUT_MS = 15_000;
 
 function jsonResponse(payload: unknown, status = 200, headers: HeadersInit = {}): Response {
   const responseHeaders = new Headers(headers);
@@ -1737,12 +1739,12 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "General Summary" }, APP_TRANSITION_TIMEOUT)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "General Summary" }, APP_URL_RESTORE_TIMEOUT)).toBeInTheDocument();
     expect(screen.getByText("PDF basic is completed. Its result is now selected below.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "4. Review result" })).toHaveAttribute("aria-current", "step");
     expect(document.activeElement).toHaveAttribute("id", "results");
     expect(window.location.hash).toBe("#job=job-pdf-1");
-  }, APP_TRANSITION_TEST_TIMEOUT_MS);
+  }, APP_URL_RESTORE_TEST_TIMEOUT_MS);
 
   it("clears an unavailable job link and gives a recoverable next step", async () => {
     window.history.replaceState({}, "", "/#job=missing-job");
