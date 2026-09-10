@@ -282,7 +282,7 @@ def test_active_runner_does_not_import_network_or_probe_runtime_modules():
                 for forbidden in forbidden_modules
                 if module == forbidden or module.startswith(f"{forbidden}.")
             }
-            if path.name != "http_header_probe.py":
+            if path.name not in {"http_header_probe.py", "verification.py"}:
                 blocked.update(module for module in imported if module == "socket")
             assert not blocked, f"{path} imports forbidden active runtime module(s): {blocked}"
 

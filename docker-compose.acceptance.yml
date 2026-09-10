@@ -1,0 +1,42 @@
+# Local-only deployment-candidate overlay. Apply after docker-compose.yml and
+# docker-compose.private.example.yml with a unique Compose project name.
+# It deliberately removes fixed container names, isolates application networks,
+# uses a caller-owned temporary data directory and terminates TLS only on
+# loopback with Caddy's local CA.
+
+services:
+  backend:
+    container_name: !reset null
+    volumes: !override
+      - ${INSPECTRA_ACCEPTANCE_DATA_DIR:?Set a private temporary acceptance data directory.}:/app/data
+
+  audit-tools:
+    container_name: !reset null
+
+  network-tools:
+    container_name: !reset null
+
+  frontend:
+    container_name: !reset null
+
+  proxy:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:${INSPECTRA_ACCEPTANCE_HTTP_PORT:-18080}:80"
+      - "127.0.0.1:${INSPECTRA_ACCEPTANCE_HTTPS_PORT:-18443}:443"
+    volumes: !override
+      - ./deploy/acceptance/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - inspectra_host_access
+      - inspectra_acceptance_entry
+
+networks:
+  inspectra_internal:
+    internal: true
+  inspectra_host_access:
+    internal: true
+  inspectra_web_egress:
+    internal: true
+  inspectra_acceptance_entry:

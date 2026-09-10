@@ -1,0 +1,26 @@
+[
+  {
+    "ghsa_id": "GHSA-aaaa-bbbb-cccc",
+    "cve_id": "CVE-2025-1234",
+    "html_url": "https://github.com/advisories/GHSA-aaaa-bbbb-cccc",
+    "references": ["https://nvd.nist.gov/vuln/detail/CVE-2025-1234"],
+    "published_at": "2025-01-02T03:04:05Z",
+    "updated_at": "2025-02-03T04:05:06Z",
+    "withdrawn_at": null,
+    "identifiers": [
+      {"type": "GHSA", "value": "GHSA-aaaa-bbbb-cccc"},
+      {"type": "CVE", "value": "CVE-2025-1234"}
+    ],
+    "vulnerabilities": [
+      {
+        "package": {"ecosystem": "npm", "name": "react"},
+        "vulnerable_version_range": "<18.3.2",
+        "first_patched_version": {"identifier": "18.3.2"}
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {"vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "score": 9.8},
+      "cvss_v4": {"vector_string": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N", "score": 9.3}
+    }
+  }
+]

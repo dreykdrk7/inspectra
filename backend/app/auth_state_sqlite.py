@@ -11,7 +11,7 @@ from typing import Any
 from app.auth import ADMIN_CSRF_TOKEN_BYTES, ADMIN_SESSION_ID_BYTES, AdminSession, LoginAttemptRecord
 
 
-AUTH_STATE_SCHEMA_VERSION = 1
+AUTH_STATE_SCHEMA_VERSION = 2
 _HASH_PREFIX = "inspectra-auth-state-v1"
 
 
@@ -26,6 +26,8 @@ class SQLiteAuthSession:
     created_at: datetime
     last_seen_at: datetime
     expires_at: datetime
+    organization_id: str | None = None
+    role: str | None = None
     revoked_at: datetime | None = None
     revocation_reason: str | None = None
 
@@ -51,6 +53,8 @@ class SQLiteAuthStateStore:
         operator_id: str,
         auth_mode: str = "self_hosted_single_admin",
         *,
+        organization_id: str | None = None,
+        role: str | None = None,
         expires_at: datetime | float | int,
         now: datetime | float | int | None = None,
         client_key: str | None = None,
@@ -82,8 +86,10 @@ class SQLiteAuthStateStore:
                 revocation_reason,
                 client_key_hash,
                 user_agent_hash
+                , organization_id
+                , role
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
             """,
             (
                 session_hash,
@@ -95,6 +101,8 @@ class SQLiteAuthStateStore:
                 expires_ts,
                 client_key_hash,
                 user_agent_hash,
+                organization_id,
+                role,
             ),
         )
         return SQLiteAuthSession(
@@ -103,6 +111,8 @@ class SQLiteAuthStateStore:
             created_at=_datetime_from_timestamp(now_ts),
             last_seen_at=_datetime_from_timestamp(now_ts),
             expires_at=_datetime_from_timestamp(expires_ts),
+            organization_id=organization_id,
+            role=role,
         )
 
     def get_session(self, session_id: str | None, *, now: datetime | float | int | None = None) -> SQLiteAuthSession | None:
@@ -183,6 +193,44 @@ class SQLiteAuthStateStore:
             (_timestamp(now), _safe_reason(reason), hash_session_id(session_id)),
         )
         return cursor.rowcount > 0
+
+    def revoke_operator_sessions(
+        self,
+        operator_id: str,
+        reason: str | None = None,
+        *,
+        now: datetime | float | int | None = None,
+    ) -> int:
+        self._require_non_blank("operator_id", operator_id)
+        cursor = self._execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = ?, revocation_reason = ?
+            WHERE operator_id = ? AND revoked_at IS NULL
+            """,
+            (_timestamp(now), _safe_reason(reason), operator_id),
+        )
+        return max(0, cursor.rowcount)
+
+    def revoke_operator_organization_sessions(
+        self,
+        operator_id: str,
+        organization_id: str,
+        reason: str | None = None,
+        *,
+        now: datetime | float | int | None = None,
+    ) -> int:
+        self._require_non_blank("operator_id", operator_id)
+        self._require_non_blank("organization_id", organization_id)
+        cursor = self._execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = ?, revocation_reason = ?
+            WHERE operator_id = ? AND organization_id = ? AND revoked_at IS NULL
+            """,
+            (_timestamp(now), _safe_reason(reason), operator_id, organization_id),
+        )
+        return max(0, cursor.rowcount)
 
     def touch_session(self, session_id: str | None, *, now: datetime | float | int | None = None) -> bool:
         if not isinstance(session_id, str) or not session_id:
@@ -401,6 +449,8 @@ class SQLiteAuthStateStore:
                     );
                     """
                 )
+                _ensure_column(connection, "auth_sessions", "organization_id", "TEXT NULL")
+                _ensure_column(connection, "auth_sessions", "role", "TEXT NULL")
                 connection.execute(
                     """
                     INSERT INTO auth_state_metadata (key, value, updated_at)
@@ -460,7 +510,14 @@ class SQLiteAdminSessionStore:
         self._auth_state = SQLiteAuthStateStore(db_path)
         self._csrf_token_cache: dict[str, str] = {}
 
-    def create_admin_session(self, operator_id: str, auth_mode: str = "self_hosted_single_admin") -> AdminSession:
+    def create_admin_session(
+        self,
+        operator_id: str,
+        auth_mode: str = "self_hosted_single_admin",
+        *,
+        organization_id: str | None = None,
+        role: str | None = None,
+    ) -> AdminSession:
         now = self._now()
         session_id = self._unique_session_id()
         csrf_token = self._csrf_token_factory()
@@ -469,6 +526,8 @@ class SQLiteAdminSessionStore:
             csrf_token,
             operator_id,
             auth_mode=auth_mode,
+            organization_id=organization_id,
+            role=role,
             expires_at=now + timedelta(seconds=self.ttl_seconds),
             now=now,
         )
@@ -480,6 +539,8 @@ class SQLiteAdminSessionStore:
             created_at=persisted.created_at,
             expires_at=persisted.expires_at,
             auth_mode=persisted.auth_mode,
+            organization_id=persisted.organization_id,
+            role=persisted.role,
         )
 
     def get_session(self, session_id: str | None) -> AdminSession | None:
@@ -496,6 +557,8 @@ class SQLiteAdminSessionStore:
             created_at=persisted.created_at,
             expires_at=persisted.expires_at,
             auth_mode=persisted.auth_mode,
+            organization_id=persisted.organization_id,
+            role=persisted.role,
         )
 
     def is_session_valid(self, session: AdminSession | None) -> bool:
@@ -507,6 +570,8 @@ class SQLiteAdminSessionStore:
             and persisted.operator_id == session.operator_id
             and persisted.auth_mode == session.auth_mode
             and persisted.expires_at == session.expires_at
+            and persisted.organization_id == session.organization_id
+            and persisted.role == session.role
         )
 
     def invalidate_session(self, session_id: str | None) -> bool:
@@ -517,6 +582,17 @@ class SQLiteAdminSessionStore:
 
     def purge_expired_sessions(self) -> int:
         return self._auth_state.cleanup_sessions(now=self._now())
+
+    def invalidate_operator_sessions(self, operator_id: str) -> int:
+        return self._auth_state.revoke_operator_sessions(operator_id, "membership_revoked", now=self._now())
+
+    def invalidate_operator_organization_sessions(self, operator_id: str, organization_id: str) -> int:
+        return self._auth_state.revoke_operator_organization_sessions(
+            operator_id,
+            organization_id,
+            "membership_revoked",
+            now=self._now(),
+        )
 
     def csrf_token_for_session(self, session: AdminSession | None) -> str | None:
         if session is None:
@@ -694,6 +770,8 @@ def _session_from_row(row: sqlite3.Row) -> SQLiteAuthSession:
         created_at=_datetime_from_timestamp(row["created_at"]),
         last_seen_at=_datetime_from_timestamp(row["last_seen_at"]),
         expires_at=_datetime_from_timestamp(row["expires_at"]),
+        organization_id=str(row["organization_id"]) if row["organization_id"] is not None else None,
+        role=str(row["role"]) if row["role"] is not None else None,
         revoked_at=_datetime_from_timestamp(row["revoked_at"]) if row["revoked_at"] is not None else None,
         revocation_reason=str(row["revocation_reason"]) if row["revocation_reason"] is not None else None,
     )
@@ -733,6 +811,12 @@ def _safe_reason(reason: str | None) -> str | None:
     if not normalized:
         return None
     return normalized[:120]
+
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+    columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 def _utc_now() -> datetime:

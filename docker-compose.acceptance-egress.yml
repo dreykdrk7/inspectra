@@ -1,0 +1,21 @@
+# Apply only after an explicit provider authorization and a successful local
+# source preflight. The ordinary acceptance stack remains fully isolated.
+
+services:
+  backend:
+    environment:
+      INSPECTRA_PUBLIC_ADVISORY_EGRESS_ENABLED: ${INSPECTRA_ACCEPTANCE_PUBLIC_ADVISORY_EGRESS_ENABLED:?Set explicitly to true only for an authorized provider acceptance.}
+      INSPECTRA_PUBLIC_ADVISORY_NVD_ENABLED: ${INSPECTRA_ACCEPTANCE_NVD_ENABLED:-false}
+      INSPECTRA_PUBLIC_ADVISORY_PRIVATE_PACKAGE_RULES: ${INSPECTRA_ACCEPTANCE_PRIVATE_PACKAGE_RULES:-}
+      INSPECTRA_PUBLIC_ADVISORY_PUBLIC_PYPI_PACKAGES: ${INSPECTRA_ACCEPTANCE_PUBLIC_PYPI_PACKAGES:-}
+      INSPECTRA_PUBLIC_ADVISORY_PUBLIC_GO_MODULES: ${INSPECTRA_ACCEPTANCE_PUBLIC_GO_MODULES:-}
+      INSPECTRA_PUBLIC_ADVISORY_PUBLIC_COMPOSER_PACKAGES: ${INSPECTRA_ACCEPTANCE_PUBLIC_COMPOSER_PACKAGES:-}
+      INSPECTRA_PUBLIC_ADVISORY_PUBLIC_MAVEN_PACKAGES: ${INSPECTRA_ACCEPTANCE_PUBLIC_MAVEN_PACKAGES:-}
+      INSPECTRA_PUBLIC_ADVISORY_PUBLIC_NUGET_PACKAGES: ${INSPECTRA_ACCEPTANCE_PUBLIC_NUGET_PACKAGES:-}
+    networks: !override
+      - inspectra_internal
+      - inspectra_host_access
+      - inspectra_public_advisory_egress
+
+networks:
+  inspectra_public_advisory_egress:

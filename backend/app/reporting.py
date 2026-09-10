@@ -5,10 +5,21 @@ import html
 import json
 import re
 import textwrap
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 from xml.etree import ElementTree
 
-from app.models import JobRecord
+from app.finding_normalization import is_canonical_public_reference
+from app.component_inventory import build_component_coverage_matrix
+from app.models import (
+    FindingLifecycleState,
+    JobRecord,
+    NormalizedFinding,
+    ProjectRecord,
+    effective_project_source_channel,
+    opaque_source_reference,
+)
+from app.project_coverage import build_project_analysis_coverage
+from app.execution_profile import execution_profile_report_text, termination_reason_report_text
 from app.project_archive_findings import categorize_project_archive_result
 from app.web_security import redact_text_urls, redact_url_query
 
@@ -29,6 +40,14 @@ DJANGO_SECRET_KEYWORDS = (
     "PRIVATE_KEY",
 )
 JWT_LIKE_RE = re.compile(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b")
+KNOWN_SECRET_VALUE_PATTERNS = (
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b", flags=re.IGNORECASE),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b", flags=re.IGNORECASE),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b", flags=re.IGNORECASE),
+    re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b", flags=re.IGNORECASE),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{16,}\b", flags=re.IGNORECASE),
+)
 SENSITIVE_QUERY_PARAM_RE = re.compile(
     r"(?i)([?&](?:access_token|refresh_token|id_token|api_key|apikey|key|token|secret|password|passwd|pwd|session|sid|auth|authorization|jwt|bearer|sig|signature|client_secret|code|state)=)[^&#\s]+"
 )
@@ -369,6 +388,779 @@ def build_report_filename(job: JobRecord, extension: str) -> str:
     return f"inspectra-job-{job.id}.{extension}"
 
 
+def build_project_report_filename(project: ProjectRecord, job: JobRecord, extension: str) -> str:
+    """Use opaque IDs only; an export filename must not reveal a source name or path."""
+
+    return f"inspectra-project-{project.id}-analysis-{job.id}.{extension}"
+
+
+def render_project_markdown_report(
+    project: ProjectRecord,
+    job: JobRecord,
+    findings: list[NormalizedFinding],
+    *,
+    result_truncated: bool,
+    vulnerability_intelligence: Any | None = None,
+    finding_lifecycle: dict[str, FindingLifecycleState] | None = None,
+    project_responsibility_state: str = "unassigned",
+    project_responsible_username: str | None = None,
+    profile: Literal["minimal", "technical"] = "minimal",
+) -> str:
+    lines = ["# Inspectra Project Report", "", project_report_profile_notice(profile), ""]
+    for section in build_project_report_sections(
+        project,
+        job,
+        findings,
+        result_truncated=result_truncated,
+        vulnerability_intelligence=vulnerability_intelligence,
+        finding_lifecycle=finding_lifecycle,
+        project_responsibility_state=project_responsibility_state,
+        project_responsible_username=project_responsible_username,
+        profile=profile,
+    ):
+        lines.append(f"## {section.title}")
+        lines.append("")
+        if section.items:
+            for key, value in section.items:
+                lines.extend(render_markdown_item(key, value))
+        else:
+            lines.append("N/A")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_project_html_report(
+    project: ProjectRecord,
+    job: JobRecord,
+    findings: list[NormalizedFinding],
+    *,
+    result_truncated: bool,
+    vulnerability_intelligence: Any | None = None,
+    finding_lifecycle: dict[str, FindingLifecycleState] | None = None,
+    project_responsibility_state: str = "unassigned",
+    project_responsible_username: str | None = None,
+    profile: Literal["minimal", "technical"] = "minimal",
+) -> str:
+    sections = build_project_report_sections(
+        project,
+        job,
+        findings,
+        result_truncated=result_truncated,
+        vulnerability_intelligence=vulnerability_intelligence,
+        finding_lifecycle=finding_lifecycle,
+        project_responsibility_state=project_responsibility_state,
+        project_responsible_username=project_responsible_username,
+        profile=profile,
+    )
+    body_sections = "\n".join(render_html_section(section) for section in sections)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Inspectra Project Report</title>
+  <style>
+    :root {{ color: #172033; background: #f5f7fb; font-family: Arial, sans-serif; }}
+    body {{ margin: 0; padding: 32px; }}
+    main {{ max-width: 980px; margin: 0 auto; background: #fff; border: 1px solid #d9e0ea; border-radius: 8px; padding: 28px; }}
+    h1 {{ margin: 0 0 8px; font-size: 28px; }}
+    h2 {{ margin: 26px 0 12px; padding-top: 18px; border-top: 1px solid #d9e0ea; font-size: 18px; }}
+    h2:first-of-type {{ border-top: 0; padding-top: 0; }}
+    .subtle {{ color: #66768a; margin: 0 0 20px; }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ border-bottom: 1px solid #d9e0ea; padding: 8px; text-align: left; vertical-align: top; }}
+    th {{ width: 28%; color: #526070; }}
+    td {{ overflow-wrap: anywhere; }}
+    code {{ font-family: Consolas, monospace; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Inspectra Project Report</h1>
+    <p class="subtle">{html.escape(project_report_profile_notice(profile))}</p>
+    {body_sections}
+  </main>
+</body>
+</html>
+"""
+
+
+def render_project_pdf_report(
+    project: ProjectRecord,
+    job: JobRecord,
+    findings: list[NormalizedFinding],
+    *,
+    result_truncated: bool,
+    vulnerability_intelligence: Any | None = None,
+    finding_lifecycle: dict[str, FindingLifecycleState] | None = None,
+    project_responsibility_state: str = "unassigned",
+    project_responsible_username: str | None = None,
+    profile: Literal["minimal", "technical"] = "minimal",
+) -> bytes:
+    lines = ["Inspectra Project Report", "", project_report_profile_notice(profile), ""]
+    for section in build_project_report_sections(
+        project,
+        job,
+        findings,
+        result_truncated=result_truncated,
+        vulnerability_intelligence=vulnerability_intelligence,
+        finding_lifecycle=finding_lifecycle,
+        project_responsibility_state=project_responsibility_state,
+        project_responsible_username=project_responsible_username,
+        profile=profile,
+    ):
+        lines.append(section.title)
+        if not section.items:
+            lines.append("  N/A")
+        for key, value in section.items:
+            lines.extend(wrap_pdf_line(f"{key}: {value}", indent="  "))
+        lines.append("")
+    return build_simple_pdf(lines)
+
+
+def build_project_report_sections(
+    project: ProjectRecord,
+    job: JobRecord,
+    findings: list[NormalizedFinding],
+    *,
+    result_truncated: bool,
+    vulnerability_intelligence: Any | None = None,
+    finding_lifecycle: dict[str, FindingLifecycleState] | None = None,
+    project_responsibility_state: str = "unassigned",
+    project_responsible_username: str | None = None,
+    profile: Literal["minimal", "technical"] = "minimal",
+) -> list[ReportSection]:
+    by_severity = {severity: 0 for severity in ("critical", "high", "medium", "low", "info")}
+    for finding in findings:
+        by_severity[finding.severity] += 1
+    workflow_states = finding_lifecycle or {}
+    by_status = {item: 0 for item in ("open", "in_review", "accepted", "false_positive", "resolved")}
+    for finding in findings:
+        state = workflow_states.get(finding.id)
+        by_status[state.current_status if state is not None else "open"] += 1
+
+    source_retention = "No — retained redacted result only" if job.source_file_deleted_at else "Yes"
+    coverage = build_project_analysis_coverage(job)
+    limitation_text = ", ".join(item.replace("_", " ") for item in coverage.limitations) or "None recorded"
+    if profile == "minimal":
+        return [
+            ReportSection(
+                "Executive Summary",
+                [
+                    ("Report profile", "Minimal — suitable for bounded team sharing."),
+                    ("Analysis status", job.status),
+                    ("Retained result integrity", job.result_integrity_status),
+                    ("Completed or updated at", job.updated_at.isoformat()),
+                    (
+                        "Decision guidance",
+                        "Prioritize the highest-severity review indicators and validate them in project context. This report does not confirm exploitation or remediation.",
+                    ),
+                ],
+            ),
+            ReportSection(
+                "Risk Summary",
+                [(severity.capitalize(), str(by_severity[severity])) for severity in ("critical", "high", "medium", "low", "info")]
+                + [("Total normalized findings", str(len(findings)))],
+            ),
+            ReportSection(
+                "Finding Workflow Summary",
+                [(status.replace("_", " ").title(), str(by_status[status])) for status in ("open", "in_review", "accepted", "false_positive", "resolved")]
+                + [("Findings needing review", str(sum(state.needs_review for state in workflow_states.values())))]
+                + [("Exception review dates overdue", str(sum(state.review_overdue for state in workflow_states.values())))],
+            ),
+            ReportSection(
+                "Coverage And Limitations",
+                [
+                    ("Analysis result truncated", "Yes — counts may be incomplete." if result_truncated else "No reported truncation."),
+                    ("Source archive retained", source_retention),
+                    ("Coverage status", coverage.coverage_status),
+                    ("Supported manifests parsed", f"{coverage.supported_manifests_parsed} of {coverage.supported_manifests_found}"),
+                    ("Lockfiles parsed", f"{coverage.lockfiles_parsed} of {coverage.lockfiles_detected}"),
+                    ("Coverage limitations", limitation_text),
+                    ("Scope", "Passive project analysis. Inspectra does not execute project code or confirm exploitability."),
+                    (
+                        "Data excluded",
+                        "Project and member names, source and analysis identifiers, filenames, paths, evidence, component identities, advisory details, free-text decisions, credentials, secrets and source-content digests.",
+                    ),
+                ],
+            ),
+            *build_minimal_public_vulnerability_intelligence_sections(vulnerability_intelligence),
+        ]
+    baseline_summary = (
+        f"Configured (policy version {project.baseline_version})"
+        if project.baseline_analysis_id is not None
+        else "Not configured"
+    )
+    source_reference = opaque_source_reference(job.file_id or project.source_file_id) or "Unavailable"
+    source_snapshot = next(
+        (snapshot for snapshot in project.source_snapshots if snapshot.source_file_id == (job.file_id or project.source_file_id)),
+        None,
+    )
+    source_channel = (
+        effective_project_source_channel(source_snapshot).replace("_", " ")
+        if source_snapshot is not None
+        else "unavailable"
+    )
+    sections = [
+        ReportSection(
+            "Executive Summary",
+            [
+                ("Project", project_report_text(project.name)),
+                ("Report profile", "Technical — explicitly confirmed for authorized review."),
+                ("Analysis ID", job.id),
+                ("Analysis profile", project_report_text(job.analysis_profile or "Not recorded")),
+                ("Execution profile", project_report_text(execution_profile_report_text(job.execution_profile))),
+                ("Started at", job.started_at.isoformat() if job.started_at is not None else "Not recorded"),
+                ("Finished at", job.finished_at.isoformat() if job.finished_at is not None else "Not finished"),
+                ("Termination", termination_reason_report_text(job.termination_reason)),
+                ("Retry of analysis", job.retry_of_job_id or "Not a retry"),
+                ("Restart recoveries", str(job.recovery_count)),
+                ("Last recovered at", job.last_recovered_at.isoformat() if job.last_recovered_at is not None else "Never"),
+                ("Regression baseline", baseline_summary),
+                (
+                    "Project accountable member",
+                    project_report_text(project_responsible_username)
+                    if project_responsible_username
+                    else "Unassigned",
+                ),
+                (
+                    "Project responsibility state",
+                    project_report_text(project_responsibility_state.replace("_", " ")),
+                ),
+                ("Source snapshot reference", source_reference),
+                ("Source admission channel", source_channel),
+                ("Analysis status", job.status),
+                ("Retained result integrity", job.result_integrity_status),
+                ("Completed or updated at", job.updated_at.isoformat()),
+                ("Decision guidance", "Prioritize the highest-severity review indicators and validate them in project context. This report does not confirm exploitation or remediation."),
+            ],
+        ),
+        ReportSection(
+            "Risk Summary",
+            [(severity.capitalize(), str(by_severity[severity])) for severity in ("critical", "high", "medium", "low", "info")]
+            + [("Total normalized findings", str(len(findings)))],
+        ),
+        ReportSection(
+            "Finding Workflow Summary",
+            [(status.replace("_", " ").title(), str(by_status[status])) for status in ("open", "in_review", "accepted", "false_positive", "resolved")]
+            + [("Findings needing review", str(sum(state.needs_review for state in workflow_states.values())))]
+            + [("Exception review dates overdue", str(sum(state.review_overdue for state in workflow_states.values())))],
+        ),
+        ReportSection(
+            "Coverage And Limitations",
+            [
+                ("Analysis result truncated", "Yes — counts may be incomplete." if result_truncated else "No reported truncation."),
+                ("Source archive retained", source_retention),
+                ("Coverage status", coverage.coverage_status),
+                ("Supported manifests parsed", f"{coverage.supported_manifests_parsed} of {coverage.supported_manifests_found}"),
+                ("Lockfiles parsed", f"{coverage.lockfiles_parsed} of {coverage.lockfiles_detected}"),
+                ("Coverage limitations", limitation_text),
+                ("Scope", "Passive project-archive analysis. Inspectra does not execute project code, validate credentials, or confirm external exploitability."),
+                ("Data included", "Normalized, redacted findings and bounded evidence receipts only. The report excludes raw JSON, source bytes, source filenames, source-content digests, host paths, credentials, and secrets."),
+            ],
+        ),
+    ]
+    result = job.result if isinstance(job.result, dict) else {}
+    graph_evidence = as_dict(result.get("dependency_graph_evidence"))
+    if graph_evidence.get("ecosystem") == "go":
+        sections.append(
+            ReportSection(
+                "Go Dependency Relationship Evidence",
+                [
+                    ("State", project_report_text(str(graph_evidence.get("state") or "unavailable"))),
+                    ("Reason", project_report_text(str(graph_evidence.get("reason") or "unavailable"))),
+                    ("Contract", project_report_text(str(graph_evidence.get("contract_version") or "unavailable"))),
+                    ("Source commit", project_report_text(str(graph_evidence.get("source_commit_sha") or "unavailable"))),
+                    ("Artifact SHA-256", project_report_text(str(graph_evidence.get("artifact_sha256") or "unavailable"))),
+                    ("Source binding", "Verified" if graph_evidence.get("source_binding_verified") is True else "Not verified"),
+                    ("Nodes / edges", f"{int(graph_evidence.get('nodes_reported') or 0)} / {int(graph_evidence.get('edges_reported') or 0)}"),
+                    ("Matched / unmatched", f"{int(graph_evidence.get('components_matched') or 0)} / {int(graph_evidence.get('components_unmatched') or 0)}"),
+                    ("Cycles", "Detected and handled" if graph_evidence.get("cycles_detected") is True else "None detected"),
+                    ("Interpretation", "A divergent or truncated graph is inconclusive and is never presented as complete transitive coverage."),
+                ],
+            )
+        )
+    cargo_graph_evidence = as_dict(result.get("cargo_dependency_graph_evidence"))
+    if cargo_graph_evidence.get("ecosystem") == "cargo":
+        sections.append(
+            ReportSection(
+                "Cargo Dependency Relationship Evidence",
+                [
+                    ("State", project_report_text(str(cargo_graph_evidence.get("state") or "unavailable"))),
+                    ("Reason", project_report_text(str(cargo_graph_evidence.get("reason") or "unavailable"))),
+                    ("Contract", project_report_text(str(cargo_graph_evidence.get("contract_version") or "unavailable"))),
+                    ("Source commit", project_report_text(str(cargo_graph_evidence.get("source_commit_sha") or "unavailable"))),
+                    ("Artifact SHA-256", project_report_text(str(cargo_graph_evidence.get("artifact_sha256") or "unavailable"))),
+                    ("Source binding", "Verified" if cargo_graph_evidence.get("source_binding_verified") is True else "Not verified"),
+                    ("Nodes / edges", f"{int(cargo_graph_evidence.get('nodes_reported') or 0)} / {int(cargo_graph_evidence.get('edges_reported') or 0)}"),
+                    ("Features / targets", f"{int(cargo_graph_evidence.get('features_reported') or 0)} / {int(cargo_graph_evidence.get('targets_reported') or 0)}"),
+                    ("Matched / unmatched", f"{int(cargo_graph_evidence.get('components_matched') or 0)} / {int(cargo_graph_evidence.get('components_unmatched') or 0)}"),
+                    ("Cycles", "Detected and handled" if cargo_graph_evidence.get("cycles_detected") is True else "None detected"),
+                    ("Interpretation", "Feature names, target identifiers and raw edges are excluded. Divergent or truncated evidence remains inconclusive."),
+                ],
+            )
+        )
+    composer_graph_evidence = as_dict(result.get("composer_dependency_graph_evidence"))
+    if composer_graph_evidence.get("ecosystem") == "composer":
+        sections.append(
+            ReportSection(
+                "Composer Dependency Relationship Evidence",
+                [
+                    ("State", project_report_text(str(composer_graph_evidence.get("state") or "unavailable"))),
+                    ("Reason", project_report_text(str(composer_graph_evidence.get("reason") or "unavailable"))),
+                    ("Contract", project_report_text(str(composer_graph_evidence.get("contract_version") or "unavailable"))),
+                    ("Source commit", project_report_text(str(composer_graph_evidence.get("source_commit_sha") or "unavailable"))),
+                    ("Artifact SHA-256", project_report_text(str(composer_graph_evidence.get("artifact_sha256") or "unavailable"))),
+                    ("Source binding", "Verified" if composer_graph_evidence.get("source_binding_verified") is True else "Not verified"),
+                    ("Nodes / edges", f"{int(composer_graph_evidence.get('nodes_reported') or 0)} / {int(composer_graph_evidence.get('edges_reported') or 0)}"),
+                    ("Matched / unmatched", f"{int(composer_graph_evidence.get('components_matched') or 0)} / {int(composer_graph_evidence.get('components_unmatched') or 0)}"),
+                    ("Cycles", "Detected and handled" if composer_graph_evidence.get("cycles_detected") is True else "None detected"),
+                    ("Registry provenance", "Not attested; relationship evidence never makes a Packagist-origin claim."),
+                    ("Interpretation", "A divergent or truncated graph is inconclusive and is never presented as complete transitive coverage."),
+                ],
+            )
+        )
+    gradle_graph_evidence = as_dict(result.get("gradle_dependency_graph_evidence"))
+    if gradle_graph_evidence.get("ecosystem") == "maven" and gradle_graph_evidence.get("producer") == "gradle":
+        sections.append(
+            ReportSection(
+                "Gradle Dependency Relationship Evidence",
+                [
+                    ("State", project_report_text(str(gradle_graph_evidence.get("state") or "unavailable"))),
+                    ("Reason", project_report_text(str(gradle_graph_evidence.get("reason") or "unavailable"))),
+                    ("Contract", project_report_text(str(gradle_graph_evidence.get("contract_version") or "unavailable"))),
+                    ("Source commit", project_report_text(str(gradle_graph_evidence.get("source_commit_sha") or "unavailable"))),
+                    ("Artifact SHA-256", project_report_text(str(gradle_graph_evidence.get("artifact_sha256") or "unavailable"))),
+                    ("Source binding", "Verified" if gradle_graph_evidence.get("source_binding_verified") is True else "Not verified"),
+                    ("Nodes / edges", f"{int(gradle_graph_evidence.get('nodes_reported') or 0)} / {int(gradle_graph_evidence.get('edges_reported') or 0)}"),
+                    ("Build scopes", ", ".join(str(item) for item in gradle_graph_evidence.get("scope_coverage", []) if isinstance(item, str)) or "unavailable"),
+                    ("Scope assignments", str(int(gradle_graph_evidence.get("scope_assignments_reported") or 0))),
+                    ("Matched / unmatched", f"{int(gradle_graph_evidence.get('components_matched') or 0)} / {int(gradle_graph_evidence.get('components_unmatched') or 0)}"),
+                    ("Registry provenance", "Not attested; this CI evidence does not prove Maven Central origin."),
+                    ("Interpretation", "Scopes and relationships are CI-reported, not inferred by executing Gradle. Divergent or truncated evidence remains inconclusive."),
+                ],
+            )
+        )
+    nuget_graph_evidence = as_dict(result.get("nuget_dependency_graph_evidence"))
+    if nuget_graph_evidence.get("ecosystem") == "nuget" and nuget_graph_evidence.get("producer") == "nuget":
+        sections.append(
+            ReportSection(
+                "NuGet Dependency Relationship Evidence",
+                [
+                    ("State", project_report_text(str(nuget_graph_evidence.get("state") or "unavailable"))),
+                    ("Reason", project_report_text(str(nuget_graph_evidence.get("reason") or "unavailable"))),
+                    ("Contract", project_report_text(str(nuget_graph_evidence.get("contract_version") or "unavailable"))),
+                    ("Source commit", project_report_text(str(nuget_graph_evidence.get("source_commit_sha") or "unavailable"))),
+                    ("Artifact SHA-256", project_report_text(str(nuget_graph_evidence.get("artifact_sha256") or "unavailable"))),
+                    ("Source binding", "Verified" if nuget_graph_evidence.get("source_binding_verified") is True else "Not verified"),
+                    ("Nodes / edges", f"{int(nuget_graph_evidence.get('nodes_reported') or 0)} / {int(nuget_graph_evidence.get('edges_reported') or 0)}"),
+                    ("Opaque target variants", str(int(nuget_graph_evidence.get("targets_reported") or 0))),
+                    ("Target assignments", str(int(nuget_graph_evidence.get("target_assignments_reported") or 0))),
+                    ("Matched / unmatched", f"{int(nuget_graph_evidence.get('components_matched') or 0)} / {int(nuget_graph_evidence.get('components_unmatched') or 0)}"),
+                    ("Registry provenance", "Not attested; this CI evidence does not prove NuGet.org origin."),
+                    ("Interpretation", "Targets and relationships are CI-reported. Divergent or truncated evidence remains inconclusive."),
+                ],
+            )
+        )
+    if not findings:
+        sections.append(ReportSection("Technical Findings", [("Status", "No normalized review indicators were recorded for this completed analysis.")]))
+
+    for index, finding in enumerate(findings, start=1):
+        workflow = workflow_states.get(finding.id)
+        decision = workflow.current_decision if workflow is not None else None
+        sections.append(
+            ReportSection(
+                f"Technical Finding {index}",
+                [
+                    ("Title", project_report_text(finding.title)),
+                    ("Rule", project_report_text(finding.rule_id)),
+                    ("Category", project_report_text(finding.category)),
+                    ("Severity", finding.severity),
+                    ("Confidence", finding.confidence),
+                    ("Source", project_report_text(finding.source_audit_type)),
+                    ("Location", project_report_location(finding)),
+                    ("Description", project_report_text(finding.description) or "Not reported"),
+                    ("Redacted evidence", project_report_text(finding.evidence) or "Not reported"),
+                    ("Recommended next step", project_report_text(finding.recommendation) or "Not reported"),
+                    ("Public references", project_report_references(finding)),
+                    ("Workflow status", project_report_text(workflow.current_status.replace("_", " ") if workflow else "open — not yet triaged")),
+                    ("Needs review", "Yes" if workflow and workflow.needs_review else "No"),
+                    ("Exception review overdue", "Yes" if workflow and workflow.review_overdue else "No"),
+                    ("Assigned to", project_report_text(decision.assignee_username) if decision and decision.assignee_username else "Unassigned"),
+                    ("Latest decision reason", project_report_text(decision.reason) if decision else "No decision recorded"),
+                    ("Latest decision by", project_report_text(decision.actor_username) if decision else "Not recorded"),
+                    ("Decision recorded at", decision.created_at.isoformat() if decision else "Not recorded"),
+                    ("Review at", decision.review_at.isoformat() if decision and decision.review_at else "Not scheduled"),
+                ],
+            )
+        )
+    sections.extend(build_public_vulnerability_intelligence_sections(vulnerability_intelligence))
+    return sections
+
+
+def build_public_vulnerability_intelligence_sections(vulnerability_intelligence: Any | None) -> list[ReportSection]:
+    """Render only already-normalized OSV data; never read an upstream payload."""
+
+    if vulnerability_intelligence is None:
+        return [ReportSection("Public Dependency Intelligence", [("Status", "Not requested for this analysis.")])]
+    state = getattr(vulnerability_intelligence, "state", None)
+    summary = getattr(vulnerability_intelligence, "summary", None)
+    findings = getattr(vulnerability_intelligence, "findings", [])
+    sources = getattr(vulnerability_intelligence, "sources", [])
+    if not isinstance(state, str) or summary is None:
+        return [ReportSection("Public Dependency Intelligence", [("Status", "Unavailable: stored intelligence did not pass validation.")])]
+    sections = [
+        ReportSection(
+            "Public Dependency Intelligence",
+            [
+                ("Provider", project_report_text(str(getattr(vulnerability_intelligence, "provider", "osv")).upper())),
+                ("State", project_report_text(state.replace("_", " "))),
+                ("Retained refresh", project_report_text(str(getattr(vulnerability_intelligence, "snapshot_recorded_at", None) or "Not recorded"))),
+                (
+                    "Snapshot integrity",
+                    project_report_text(
+                        f"{getattr(vulnerability_intelligence, 'snapshot_integrity_status', 'unknown')} "
+                        f"({str(getattr(vulnerability_intelligence, 'snapshot_sha256', None))[:12]}…)"
+                        if getattr(vulnerability_intelligence, "snapshot_sha256", None)
+                        else "unknown (legacy or not retained)"
+                    ),
+                ),
+                (
+                    "Refresh view",
+                    "Latest retained intelligence"
+                    if getattr(vulnerability_intelligence, "is_latest_snapshot", True)
+                    else "Historical immutable intelligence snapshot",
+                ),
+                ("Checked at", project_report_text(str(getattr(vulnerability_intelligence, "queried_at", None) or "Not recorded"))),
+                ("Fresh until", project_report_text(str(getattr(vulnerability_intelligence, "expires_at", None) or "Not recorded"))),
+                ("Exact components eligible/queryable", f"{getattr(summary, 'correlation_eligible_components', 0)}/{getattr(summary, 'queryable_components', 0)}"),
+                ("Exact components queried", str(getattr(summary, "queried_components", 0))),
+                ("OSV response pages", str(getattr(summary, "osv_pages", 0))),
+                ("Verified findings", str(getattr(summary, "findings", 0))),
+                ("Component correlation outcomes", public_intelligence_component_outcomes(summary)),
+                ("Public-source freshness", public_intelligence_source_freshness(sources)),
+                ("Coverage caveat", public_intelligence_caveat(state, summary)),
+            ],
+        )
+    ]
+    for index, finding in enumerate(findings, start=1):
+        rows = [
+            ("Finding identity", project_report_text(str(getattr(finding, "id", "Not recorded")))),
+            ("Finding identity schema", project_report_text(str(getattr(finding, "fingerprint_version", "legacy_evidence_digest")))),
+            ("Advisory", project_report_text(str(getattr(finding, "advisory_id", "Not reported")))),
+            ("Aliases", project_report_text(", ".join(getattr(finding, "aliases", [])) or "Not reported")),
+            ("Evidence status", project_report_text(str(getattr(finding, "source_consensus", "osv_only")).replace("_", " "))),
+            ("Field-level source trace", public_intelligence_field_provenance(getattr(finding, "field_provenance", []))),
+            ("Component", project_report_text(f"{getattr(finding, 'ecosystem', '')}:{getattr(finding, 'component_name', '')}@{getattr(finding, 'component_version', '')}")),
+            ("Public identity evidence", project_report_text(str(getattr(finding, "component_identity_provenance", "not_applicable")).replace("_", " "))),
+            ("Dependency scope", project_report_text(str(getattr(finding, "dependency_scope", "Not reported")))),
+            ("Relationship evidence", project_report_text(str(getattr(finding, "relationship_status", "reported")))),
+            ("Affected ranges", public_intelligence_ranges(getattr(finding, "affected_ranges", []))),
+            ("Fixed versions", project_report_text(", ".join(getattr(finding, "fixed_versions", [])) or "Not published")),
+            ("CVSS base score", public_intelligence_cvss_score(finding)),
+            ("CVSS vectors", project_report_text(", ".join(getattr(item, "vector", "") for item in getattr(finding, "severity", []) if getattr(item, "vector", "")) or "Not published")),
+            ("Recommended next step", project_report_text(str(getattr(finding, "recommendation", "Not reported")))),
+            ("Public references", public_intelligence_references(getattr(finding, "references", []))),
+        ]
+        for bulletin in getattr(finding, "vendor_bulletins", []):
+            rows.extend(
+                [
+                    (
+                        "Official vendor security bulletin",
+                        project_report_text(
+                            f"{getattr(bulletin, 'publisher', 'Vendor')} advisory "
+                            f"{getattr(bulletin, 'advisory_id', 'Not recorded')} "
+                            f"(policy {getattr(bulletin, 'policy_version', 'Not recorded')})."
+                        ),
+                    ),
+                    ("Official vendor bulletin link", public_intelligence_url(getattr(bulletin, "url", None))),
+                ]
+            )
+        for corroboration in getattr(finding, "corroborations", []):
+            if getattr(corroboration, "provider", None) != "github_advisories":
+                continue
+            rows.extend(
+                [
+                    (
+                        "GitHub withdrawal" if getattr(corroboration, "withdrawn_at", None) else "GitHub corroboration",
+                        project_report_text(str(getattr(corroboration, "advisory_id", "Not reported"))),
+                    ),
+                    ("GitHub affected ranges", public_intelligence_ranges(getattr(corroboration, "affected_ranges", []))),
+                    ("GitHub fixed versions", project_report_text(", ".join(getattr(corroboration, "fixed_versions", [])) or "Not published")),
+                    ("GitHub CVSS vectors", project_report_text(", ".join(getattr(item, "vector", "") for item in getattr(corroboration, "severity", []) if getattr(item, "vector", "")) or "Not published")),
+                    ("GitHub updated at", project_report_text(str(getattr(corroboration, "updated_at", None) or "Not recorded"))),
+                    ("GitHub withdrawn at", project_report_text(str(getattr(corroboration, "withdrawn_at", None) or "Not withdrawn"))),
+                    ("GitHub references", public_intelligence_references(getattr(corroboration, "references", []))),
+                ]
+            )
+        for nvd_evidence in getattr(finding, "nvd_evidence", []):
+            if getattr(nvd_evidence, "provider", None) != "nvd":
+                continue
+            nvd_vectors = ", ".join(
+                getattr(item, "vector", "")
+                for item in getattr(nvd_evidence, "severity", [])
+                if getattr(item, "vector", "")
+            )
+            cpe_count = getattr(nvd_evidence, "cpe_match_count", 0)
+            mapping_status = getattr(nvd_evidence, "cpe_status", "not_present")
+            if mapping_status == "identity_corroborated":
+                mapping_ids = ", ".join(getattr(nvd_evidence, "cpe_mapping_ids", [])) or "not retained"
+                cpe_status = (
+                    f"Package identity corroborated by reviewed mapping {mapping_ids} under policy "
+                    f"{getattr(nvd_evidence, 'cpe_mapping_policy_version', 'unknown')} "
+                    f"({getattr(nvd_evidence, 'cpe_corroborated_match_count', 0)} of {cpe_count} records). "
+                    "This does not replace OSV affected-version evidence."
+                )
+            elif mapping_status == "present_unmapped":
+                cpe_status = (
+                    f"CPE match records present but deliberately unmapped ({cpe_count}); "
+                    "NVD does not establish package applicability."
+                )
+            else:
+                cpe_status = "No CPE match record retained; this is not evidence of package applicability."
+            rows.extend(
+                [
+                    (
+                        "NVD CVE evidence",
+                        project_report_text(
+                            f"{getattr(nvd_evidence, 'cve_id', 'Not reported')} — "
+                            f"{str(getattr(nvd_evidence, 'status', 'unknown')).replace('_', ' ')}. "
+                            "CVE-level enrichment only; the existing OSV match remains primary."
+                        ),
+                    ),
+                    ("NVD CVSS vectors", project_report_text(nvd_vectors) or "Not published"),
+                    (
+                        "NVD CWEs",
+                        project_report_text(", ".join(getattr(nvd_evidence, "cwes", []))) or "Not published",
+                    ),
+                    ("NVD CPE evidence", project_report_text(cpe_status)),
+                    (
+                        "NVD published/updated",
+                        project_report_text(
+                            f"{getattr(nvd_evidence, 'published_at', None) or 'Not recorded'} / "
+                            f"{getattr(nvd_evidence, 'updated_at', None) or 'Not recorded'}"
+                        ),
+                    ),
+                    ("NVD source", public_intelligence_references(getattr(nvd_evidence, "references", []))),
+                ]
+            )
+        for conflict in getattr(finding, "source_conflicts", []):
+            if getattr(conflict, "provider", None) == "github_advisories":
+                rows.append(
+                    (
+                        "GitHub evidence status",
+                        project_report_text(
+                            f"{getattr(conflict, 'type', 'conflict').replace('_', ' ')} for "
+                            f"{getattr(conflict, 'advisory_id', 'Not reported')} "
+                            f"at {getattr(conflict, 'observed_at', None) or 'not recorded'}; "
+                            "source values remain separate and are not merged."
+                        ),
+                    )
+                )
+        for signal in getattr(finding, "kev_signals", []):
+            status = getattr(signal, "status", "not_evaluated")
+            cve_id = getattr(signal, "cve_id", None) or "No exact CVE"
+            if status == "known_exploited":
+                rows.extend(
+                    [
+                        ("CISA KEV signal", project_report_text(f"Known exploited: {cve_id}. This does not establish exploitation in this project and does not alter CVSS.")),
+                        ("CISA KEV added/due", project_report_text(f"{getattr(signal, 'date_added', None) or 'Not recorded'} / {getattr(signal, 'due_date', None) or 'Not published'}")),
+                        ("CISA required action", project_report_text(str(getattr(signal, "required_action", None) or "Review CISA catalog entry."))),
+                        ("CISA ransomware use", project_report_text(str(getattr(signal, "known_ransomware_campaign_use", None) or "Not published"))),
+                        ("CISA KEV source", public_intelligence_url(getattr(signal, "source_url", None))),
+                    ]
+                )
+            elif status == "not_listed":
+                rows.append(("CISA KEV signal", project_report_text(f"{cve_id} not listed in catalog {getattr(signal, 'catalog_version', None) or 'not recorded'}; this does not establish no exploitation.")))
+            elif status == "unavailable":
+                rows.append(("CISA KEV signal", project_report_text(f"Coverage unavailable for {cve_id}; this does not establish no exploitation.")))
+            else:
+                rows.append(("CISA KEV signal", "Not evaluated: no exact CVE identifier was retained."))
+        sections.append(
+            ReportSection(
+                f"Public Dependency Advisory {index}",
+                rows,
+            )
+        )
+    return sections
+
+
+def build_minimal_public_vulnerability_intelligence_sections(
+    vulnerability_intelligence: Any | None,
+) -> list[ReportSection]:
+    """Summarize retained intelligence without exporting package or advisory identity."""
+
+    if vulnerability_intelligence is None:
+        return [ReportSection("Public Dependency Intelligence", [("Status", "Not requested for this analysis.")])]
+    state = getattr(vulnerability_intelligence, "state", None)
+    summary = getattr(vulnerability_intelligence, "summary", None)
+    sources = getattr(vulnerability_intelligence, "sources", [])
+    if not isinstance(state, str) or summary is None:
+        return [
+            ReportSection(
+                "Public Dependency Intelligence",
+                [("Status", "Unavailable: stored intelligence did not pass validation.")],
+            )
+        ]
+    return [
+        ReportSection(
+            "Public Dependency Intelligence",
+            [
+                ("State", project_report_text(state.replace("_", " "))),
+                ("Exact components eligible/queryable", f"{getattr(summary, 'correlation_eligible_components', 0)}/{getattr(summary, 'queryable_components', 0)}"),
+                ("Exact components queried", str(getattr(summary, "queried_components", 0))),
+                ("Verified findings", str(getattr(summary, "findings", 0))),
+                ("Component correlation outcomes", public_intelligence_component_outcomes(summary)),
+                ("Public-source freshness", public_intelligence_source_freshness(sources)),
+                ("Coverage caveat", public_intelligence_caveat(state, summary)),
+                (
+                    "Data excluded",
+                    "Package names and versions, advisory identifiers, affected ranges, fixed versions, vectors, links, provider payloads and retained snapshot identifiers.",
+                ),
+            ],
+        )
+    ]
+
+
+def project_report_profile_notice(profile: Literal["minimal", "technical"]) -> str:
+    if profile == "minimal":
+        return "Minimal redacted profile: aggregate risk, workflow and coverage only; identifying and technical evidence is excluded."
+    return "Technical redacted profile: explicit authorized export with actionable detail; secrets, unsafe paths and source content remain excluded."
+
+
+def public_intelligence_caveat(state: str, summary: Any) -> str:
+    if state in {"degraded", "stale"}:
+        return "Provider data was incomplete or stale; an empty result is not absence of vulnerability."
+    if state in {"disabled", "not_requested", "no_correlatable_components"}:
+        return "No public-source conclusion was produced; an empty result is not absence of vulnerability."
+    if getattr(summary, "unverified_advisories", 0) or getattr(summary, "withdrawn_advisories", 0):
+        return "Some source advisories were not retained as current verified findings; review source coverage before treating zero as absence."
+    return "Only exact versions with a locally corroborated affected range are included; this is not an exploitability verdict."
+
+
+def public_intelligence_ranges(ranges: Any) -> str:
+    values = []
+    for value in ranges if isinstance(ranges, list) else []:
+        range_type = getattr(value, "type", "UNKNOWN")
+        expression = getattr(value, "expression", None)
+        if isinstance(expression, str) and expression:
+            fixed = getattr(value, "fixed", None)
+            values.append(f"{range_type}: {expression}" + (f"; fixed {fixed}" if fixed else ""))
+            continue
+        introduced = getattr(value, "introduced", None) or "unspecified"
+        fixed = getattr(value, "fixed", None)
+        last_affected = getattr(value, "last_affected", None)
+        end = f"fixed {fixed}" if fixed else f"last affected {last_affected}" if last_affected else "no end published"
+        values.append(f"{range_type}: introduced {introduced}; {end}")
+    return project_report_text("; ".join(values)) if values else "Not published"
+
+
+def public_intelligence_cvss_score(finding: Any) -> str:
+    score = getattr(finding, "cvss_base_score", None)
+    band = getattr(finding, "cvss_band", "unknown")
+    source = getattr(finding, "cvss_score_status", "not_available")
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        return "Not available from a supported CVSS vector"
+    origin = "derived from provider vector" if source == "derived_from_vector" else "published by source"
+    return project_report_text(f"{score:.1f} ({band}; {origin})")
+
+
+def public_intelligence_source_freshness(sources: Any) -> str:
+    values = []
+    for source in sources if isinstance(sources, list) else []:
+        provider = getattr(source, "provider", None)
+        state = getattr(source, "state", None)
+        if not isinstance(provider, str) or not isinstance(state, str):
+            continue
+        as_of = getattr(source, "as_of", None) or "not recorded"
+        expires = getattr(source, "expires_at", None) or "not recorded"
+        reason = getattr(source, "reason", None) or "not recorded"
+        evidence_count = getattr(source, "evidence_count", 0)
+        evidence_sha256 = getattr(source, "evidence_sha256", None)
+        offline_snapshot_id = getattr(source, "offline_snapshot_id", None)
+        evidence = (
+            f"{evidence_count} response(s), set {evidence_sha256[:12]}…"
+            if isinstance(evidence_sha256, str)
+            else "no retained response digest"
+        )
+        offline = f"; offline snapshot {offline_snapshot_id[:12]}…" if isinstance(offline_snapshot_id, str) else ""
+        values.append(f"{provider}: {state} ({reason}); as of {as_of}; expires {expires}; {evidence}{offline}")
+    return project_report_text(" | ".join(values)) if values else "Not requested"
+
+
+def public_intelligence_field_provenance(rows: Any) -> str:
+    values = []
+    for row in rows if isinstance(rows, list) else []:
+        field = getattr(row, "field", None)
+        state = getattr(row, "state", None)
+        if not isinstance(field, str) or not isinstance(state, str):
+            continue
+        sources = []
+        for source in getattr(row, "sources", []):
+            provider = getattr(source, "provider", None)
+            source_status = getattr(source, "status", None)
+            observed_at = getattr(source, "observed_at", None) or "date not recorded"
+            if isinstance(provider, str) and isinstance(source_status, str):
+                sources.append(f"{provider} {source_status} ({observed_at})")
+        values.append(f"{field}: {state}" + (f" [{', '.join(sources)}]" if sources else ""))
+    return project_report_text(" | ".join(values)) if values else "Not recorded in this retained contract"
+
+
+def public_intelligence_component_outcomes(summary: Any) -> str:
+    return project_report_text(
+        " | ".join(
+            f"{label}: {getattr(summary, field, 0)}"
+            for label, field in (
+                ("affected", "affected_components"),
+                ("not affected", "not_affected_components"),
+                ("not correlatable", "not_correlatable_components"),
+                ("source unavailable", "unavailable_components"),
+            )
+        )
+    )
+
+
+def public_intelligence_references(references: Any) -> str:
+    values = []
+    for reference in references if isinstance(references, list) else []:
+        url = getattr(reference, "url", None)
+        if isinstance(url, str) and url.startswith("https://"):
+            values.append(url)
+    return project_report_text("; ".join(values)) if values else "Not published"
+
+
+def public_intelligence_url(value: Any) -> str:
+    return project_report_text(value) if isinstance(value, str) and value.startswith("https://") else "Not published"
+
+
+def project_report_text(value: str) -> str:
+    return redact_active_secret_text(redact_text_urls(value))
+
+
+def project_report_location(finding: NormalizedFinding) -> str:
+    if finding.location_status == "withheld_unsafe_path":
+        return "Withheld: location is not a safe project-relative path."
+    path = finding.location.path if finding.location else None
+    line = finding.location.line if finding.location else None
+    if not path:
+        return "Not reported"
+    normalized = path.replace("\\", "/")
+    parts = normalized.split("/")
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:/", normalized) or ".." in parts:
+        return "Withheld: location is not a safe project-relative path."
+    location = project_report_text(normalized)
+    if not location:
+        return "Not reported"
+    return f"{location}:{line}" if isinstance(line, int) and line > 0 else location
+
+
+def project_report_references(finding: NormalizedFinding) -> str:
+    public_references: list[str] = []
+    for reference in finding.references:
+        if is_canonical_public_reference(reference.type, reference.id, reference.url):
+            public_references.append(f"{reference.type.upper()}: {reference.id} ({reference.url})")
+    return project_report_text("; ".join(public_references)) if public_references else "Not reported"
+
+
 def render_markdown_report(job: JobRecord) -> str:
     sections = build_report_sections(job)
     lines = ["# Inspectra Audit Report", ""]
@@ -632,7 +1424,128 @@ def build_project_archive_sections(result: dict[str, Any]) -> list[ReportSection
         ReportSection("Unsupported Manifests", flatten_list(result.get("unsupported_manifests"))),
         ReportSection("Parsed Manifests", flatten_list(result.get("parsed_manifests"))),
         ReportSection("Ecosystem Summary", flatten_project_archive_ecosystem_summary(result.get("ecosystem_summary"))),
+        ReportSection(
+            "Dependency Coverage Matrix",
+            flatten_list(build_component_coverage_matrix(result, result.get("component_inventory") if isinstance(result.get("component_inventory"), list) else [])),
+        ),
     ]
+    graph_evidence = as_dict(result.get("dependency_graph_evidence"))
+    if graph_evidence.get("ecosystem") == "go":
+        sections.append(
+            ReportSection(
+                "Go Dependency Graph Evidence",
+                [
+                    ("State", stringify(graph_evidence.get("state"))),
+                    ("Reason", stringify(graph_evidence.get("reason"))),
+                    ("Contract", stringify(graph_evidence.get("contract_version"))),
+                    ("Source commit", stringify(graph_evidence.get("source_commit_sha"))),
+                    ("Artifact SHA-256", stringify(graph_evidence.get("artifact_sha256"))),
+                    ("Source binding verified", stringify(graph_evidence.get("source_binding_verified"))),
+                    ("Nodes reported", stringify(graph_evidence.get("nodes_reported"))),
+                    ("Edges reported", stringify(graph_evidence.get("edges_reported"))),
+                    ("Components matched", stringify(graph_evidence.get("components_matched"))),
+                    ("Components unmatched", stringify(graph_evidence.get("components_unmatched"))),
+                    ("Cycles detected", stringify(graph_evidence.get("cycles_detected"))),
+                    ("Truncation reason", stringify(graph_evidence.get("truncation_reason") or "none")),
+                ],
+            )
+        )
+    cargo_graph_evidence = as_dict(result.get("cargo_dependency_graph_evidence"))
+    if cargo_graph_evidence.get("ecosystem") == "cargo":
+        sections.append(
+            ReportSection(
+                "Cargo Dependency Graph Evidence",
+                [
+                    ("State", stringify(cargo_graph_evidence.get("state"))),
+                    ("Reason", stringify(cargo_graph_evidence.get("reason"))),
+                    ("Contract", stringify(cargo_graph_evidence.get("contract_version"))),
+                    ("Source commit", stringify(cargo_graph_evidence.get("source_commit_sha"))),
+                    ("Artifact SHA-256", stringify(cargo_graph_evidence.get("artifact_sha256"))),
+                    ("Source binding verified", stringify(cargo_graph_evidence.get("source_binding_verified"))),
+                    ("Nodes reported", stringify(cargo_graph_evidence.get("nodes_reported"))),
+                    ("Edges reported", stringify(cargo_graph_evidence.get("edges_reported"))),
+                    ("Features reported", stringify(cargo_graph_evidence.get("features_reported"))),
+                    ("Targets reported", stringify(cargo_graph_evidence.get("targets_reported"))),
+                    ("Components matched", stringify(cargo_graph_evidence.get("components_matched"))),
+                    ("Components unmatched", stringify(cargo_graph_evidence.get("components_unmatched"))),
+                    ("Cycles detected", stringify(cargo_graph_evidence.get("cycles_detected"))),
+                    ("Truncation reason", stringify(cargo_graph_evidence.get("truncation_reason") or "none")),
+                ],
+            )
+        )
+    composer_graph_evidence = as_dict(result.get("composer_dependency_graph_evidence"))
+    if composer_graph_evidence.get("ecosystem") == "composer":
+        sections.append(
+            ReportSection(
+                "Composer Dependency Graph Evidence",
+                [
+                    ("State", stringify(composer_graph_evidence.get("state"))),
+                    ("Reason", stringify(composer_graph_evidence.get("reason"))),
+                    ("Contract", stringify(composer_graph_evidence.get("contract_version"))),
+                    ("Source commit", stringify(composer_graph_evidence.get("source_commit_sha"))),
+                    ("Artifact SHA-256", stringify(composer_graph_evidence.get("artifact_sha256"))),
+                    ("Source binding verified", stringify(composer_graph_evidence.get("source_binding_verified"))),
+                    ("Nodes reported", stringify(composer_graph_evidence.get("nodes_reported"))),
+                    ("Edges reported", stringify(composer_graph_evidence.get("edges_reported"))),
+                    ("Components matched", stringify(composer_graph_evidence.get("components_matched"))),
+                    ("Components unmatched", stringify(composer_graph_evidence.get("components_unmatched"))),
+                    ("Cycles detected", stringify(composer_graph_evidence.get("cycles_detected"))),
+                    ("Truncation reason", stringify(composer_graph_evidence.get("truncation_reason") or "none")),
+                    ("Registry provenance", "not attested by this evidence"),
+                ],
+            )
+        )
+    gradle_graph_evidence = as_dict(result.get("gradle_dependency_graph_evidence"))
+    if gradle_graph_evidence.get("ecosystem") == "maven" and gradle_graph_evidence.get("producer") == "gradle":
+        sections.append(
+            ReportSection(
+                "Gradle Dependency Graph Evidence",
+                [
+                    ("State", stringify(gradle_graph_evidence.get("state"))),
+                    ("Reason", stringify(gradle_graph_evidence.get("reason"))),
+                    ("Contract", stringify(gradle_graph_evidence.get("contract_version"))),
+                    ("Source commit", stringify(gradle_graph_evidence.get("source_commit_sha"))),
+                    ("Artifact SHA-256", stringify(gradle_graph_evidence.get("artifact_sha256"))),
+                    ("Source binding verified", stringify(gradle_graph_evidence.get("source_binding_verified"))),
+                    ("Relationship origin", stringify(gradle_graph_evidence.get("relationship_origin"))),
+                    ("Build scopes", ", ".join(str(item) for item in gradle_graph_evidence.get("scope_coverage", []) if isinstance(item, str)) or "unavailable"),
+                    ("Nodes reported", stringify(gradle_graph_evidence.get("nodes_reported"))),
+                    ("Edges reported", stringify(gradle_graph_evidence.get("edges_reported"))),
+                    ("Scope assignments", stringify(gradle_graph_evidence.get("scope_assignments_reported"))),
+                    ("Components matched", stringify(gradle_graph_evidence.get("components_matched"))),
+                    ("Components unmatched", stringify(gradle_graph_evidence.get("components_unmatched"))),
+                    ("Cycles detected", stringify(gradle_graph_evidence.get("cycles_detected"))),
+                    ("Truncation reason", stringify(gradle_graph_evidence.get("truncation_reason") or "none")),
+                    ("Registry provenance", "not attested by this evidence"),
+                ],
+            )
+        )
+    nuget_graph_evidence = as_dict(result.get("nuget_dependency_graph_evidence"))
+    if nuget_graph_evidence.get("ecosystem") == "nuget" and nuget_graph_evidence.get("producer") == "nuget":
+        sections.append(
+            ReportSection(
+                "NuGet Dependency Graph Evidence",
+                [
+                    ("State", stringify(nuget_graph_evidence.get("state"))),
+                    ("Reason", stringify(nuget_graph_evidence.get("reason"))),
+                    ("Contract", stringify(nuget_graph_evidence.get("contract_version"))),
+                    ("Source commit", stringify(nuget_graph_evidence.get("source_commit_sha"))),
+                    ("Artifact SHA-256", stringify(nuget_graph_evidence.get("artifact_sha256"))),
+                    ("Source binding verified", stringify(nuget_graph_evidence.get("source_binding_verified"))),
+                    ("Relationship origin", stringify(nuget_graph_evidence.get("relationship_origin"))),
+                    ("Target coverage", stringify(nuget_graph_evidence.get("target_coverage"))),
+                    ("Opaque targets reported", stringify(nuget_graph_evidence.get("targets_reported"))),
+                    ("Target assignments", stringify(nuget_graph_evidence.get("target_assignments_reported"))),
+                    ("Nodes reported", stringify(nuget_graph_evidence.get("nodes_reported"))),
+                    ("Edges reported", stringify(nuget_graph_evidence.get("edges_reported"))),
+                    ("Components matched", stringify(nuget_graph_evidence.get("components_matched"))),
+                    ("Components unmatched", stringify(nuget_graph_evidence.get("components_unmatched"))),
+                    ("Cycles detected", stringify(nuget_graph_evidence.get("cycles_detected"))),
+                    ("Truncation reason", stringify(nuget_graph_evidence.get("truncation_reason") or "none")),
+                    ("Registry provenance", "not attested by this evidence"),
+                ],
+            )
+        )
     dependency_pinning_summary = flatten_project_archive_dependency_pinning_summary(result.get("dependency_pinning_summary"))
     if dependency_pinning_summary:
         sections.append(ReportSection("Dependency Pinning Summary", dependency_pinning_summary))
@@ -3716,7 +4629,12 @@ def redact_active_secret_text(value: str) -> str:
     redacted = re.sub(r"(?i)\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "Authorization: [REDACTED]", redacted)
     redacted = re.sub(r"(?i)\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", "[REDACTED]", redacted)
     redacted = re.sub(
-        r"(?i)\b([a-z][a-z0-9+.-]*://)([^:\s/@;\"']+):([^@\s/;\"']+)@([^\s;\"']+)",
+        r"(?i)\b((?:X-)?(?:Api-Key|Auth-Token|Csrf-Token)|(?:Set-)?Cookie)(\s*:\s*)[^\s,;]+",
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b([a-z][a-z0-9+.-]*://)([^@\s/;\"']*):([^@\s/;\"']*)@([^\s;\"']+)",
         r"\1[REDACTED]@\4",
         redacted,
     )
@@ -3726,6 +4644,8 @@ def redact_active_secret_text(value: str) -> str:
         lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]",
         redacted,
     )
+    for pattern in KNOWN_SECRET_VALUE_PATTERNS:
+        redacted = pattern.sub("[REDACTED]", redacted)
     redacted = redacted.replace("PRIVATE KEY", "[REDACTED]")
     return re.sub(r"\[REDACTED\]\]+", "[REDACTED]", redacted)
 

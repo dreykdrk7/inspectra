@@ -1,0 +1,54 @@
+{
+  "contract_version": "2026-09-09.1",
+  "network_policy": "no_external_network",
+  "fixtures": [
+    {
+      "path": "cisa/kev-valid.json",
+      "provider": "cisa_kev",
+      "origin": "synthetic_from_public_schema",
+      "schema_reference": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+      "reviewed_on": "2026-09-09",
+      "purpose": "Exercise exact-CVE KEV enrichment, catalog metadata, and bounded action normalization.",
+      "transformation": "Hand-authored one-row synthetic catalog; all identifiers, vendor, product, dates, and prose are fictional.",
+      "license_status": "synthetic_no_provider_content_copied",
+      "sha256": "c39c311868d0ff3e5354491a18f24b9fd6b47bcaad59f2d0daef1a41a92b58d4",
+      "max_bytes": 2048
+    },
+    {
+      "path": "github/global-advisory-valid.json",
+      "provider": "github_advisories",
+      "origin": "synthetic_from_public_schema",
+      "schema_reference": "https://docs.github.com/en/rest/security-advisories/global-advisories",
+      "reviewed_on": "2026-09-09",
+      "purpose": "Exercise component-bound GHSA corroboration, withdrawal, range, CVSS v3/v4, and reference normalization.",
+      "transformation": "Hand-authored minimal synthetic response; advisory and CVE identifiers, package relation, dates, and scores are test-only values.",
+      "license_status": "synthetic_no_provider_content_copied",
+      "sha256": "debc49a04a8f9dfb46fece53152f5cf754348a48222fd14d3097231d5f569236",
+      "max_bytes": 2048
+    },
+    {
+      "path": "nvd/cve-valid.json",
+      "provider": "nvd",
+      "origin": "synthetic_from_public_schema",
+      "schema_reference": "https://nvd.nist.gov/developers/vulnerabilities",
+      "reviewed_on": "2026-09-09",
+      "purpose": "Exercise exact-CVE NVD 2.0 enrichment, CVSS, CWE, status, and explicitly unmapped CPE presence.",
+      "transformation": "Hand-authored one-CVE synthetic response; identifiers, CPE, dates, source accounts, prose, scores, and references are fictional.",
+      "license_status": "synthetic_no_provider_content_copied",
+      "sha256": "84cfdcf1233042f655df6ebc07e76258a35a88a51004df34b6d0769836000749",
+      "max_bytes": 2048
+    },
+    {
+      "path": "osv/querybatch-valid.json",
+      "provider": "osv",
+      "origin": "synthetic_from_public_schema",
+      "schema_reference": "https://google.github.io/osv.dev/api/",
+      "reviewed_on": "2026-09-09",
+      "purpose": "Exercise OSV batch normalization, affected intervals, aliases, timestamps, severity, references, and empty results.",
+      "transformation": "Hand-authored minimal synthetic response; identifiers, package relation, dates, and ranges are test-only values and one unsafe URL is intentional negative input.",
+      "license_status": "synthetic_no_provider_content_copied",
+      "sha256": "07ca6a1de77b09a184cf0505979980037e17e67fb8852b7f557c60e664d89d3c",
+      "max_bytes": 2048
+    }
+  ]
+}

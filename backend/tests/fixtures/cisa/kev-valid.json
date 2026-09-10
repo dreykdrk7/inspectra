@@ -1,0 +1,20 @@
+{
+  "title": "Known Exploited Vulnerabilities Catalog",
+  "catalogVersion": "2026.09.05",
+  "dateReleased": "2026-09-05",
+  "count": 1,
+  "vulnerabilities": [
+    {
+      "cveID": "CVE-2025-1234",
+      "vendorProject": "Example vendor",
+      "product": "Example component",
+      "vulnerabilityName": "Synthetic fixture vulnerability",
+      "dateAdded": "2026-09-04",
+      "shortDescription": "A synthetic fixture only.",
+      "requiredAction": "Apply the vendor update or mitigation by the due date.",
+      "dueDate": "2026-09-18",
+      "knownRansomwareCampaignUse": "Unknown",
+      "notes": "Synthetic fixture; not a real vulnerability."
+    }
+  ]
+}

@@ -22,12 +22,19 @@ def test_active_tools_scaffold_files_exist() -> None:
 def test_active_tools_dockerfile_keeps_active_boundary_separate() -> None:
     body = _read(DOCKERFILE)
 
-    assert "FROM python:3.12-slim" in body
+    assert "FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea" in body
     assert "apt-get install" in body
     assert "nmap" in body
-    assert "COPY docker/active-tools/requirements.txt /tmp/active-tools-requirements.txt" in body
-    assert "pip install --no-cache-dir -r /tmp/active-tools-requirements.txt" in body
+    assert "COPY docker/active-tools/requirements.lock /tmp/active-tools-requirements.lock" in body
+    assert "pip install --no-cache-dir -r /tmp/active-tools-requirements.lock" in body
     assert "COPY tools/active_runner /app/active_runner" in body
+    for module in (
+        "active_dns_inventory.py",
+        "active_dns_osint.py",
+        "active_http_basic_header_review.py",
+        "active_tls_basic.py",
+    ):
+        assert f"COPY backend/app/{module} /app/app/{module}" in body
     assert "tools/runner/main.py" not in body
     assert "HEALTHCHECK" not in body
     assert "EXPOSE" not in body
@@ -42,7 +49,7 @@ def test_active_tools_dockerfile_keeps_active_boundary_separate() -> None:
 def test_active_tools_asgi_packaging_is_minimal_and_explicit() -> None:
     body = _read(REQUIREMENTS).splitlines()
 
-    assert body == ["fastapi>=0.115,<1.0", "uvicorn>=0.30,<1.0"]
+    assert body == ["fastapi==0.141.1", "httpx==0.28.1", "uvicorn==0.52.4"]
 
 
 def test_active_tools_compose_example_is_disabled_and_private() -> None:
@@ -52,10 +59,18 @@ def test_active_tools_compose_example_is_disabled_and_private() -> None:
     assert "image: inspectra-active-tools:asgi-smoke" in body
     assert "dockerfile: docker/active-tools/Dockerfile" in body
     assert 'command: ["python", "-m", "uvicorn", "active_runner.app:app", "--host", "0.0.0.0", "--port", "8080"]' in body
-    assert "INSPECTRA_ACTIVE_TOOLS_MODE: asgi_no_live" in body
+    for flag in (
+        "INSPECTRA_ACTIVE_TOOLS_NMAP_BASIC_EXECUTION_ENABLED",
+        "INSPECTRA_ACTIVE_TOOLS_DNS_INVENTORY_EXECUTION_ENABLED",
+        "INSPECTRA_ACTIVE_TOOLS_DNS_OSINT_EXECUTION_ENABLED",
+        "INSPECTRA_ACTIVE_TOOLS_HTTP_HEADERS_EXECUTION_ENABLED",
+        "INSPECTRA_ACTIVE_TOOLS_TLS_BASIC_EXECUTION_ENABLED",
+    ):
+        assert f'{flag}: "false"' in body
     assert "healthcheck:" in body
     assert "http://127.0.0.1:8080/health" in body
     assert "internal: true" in body
+    assert "inspectra_active_egress:" in body
     assert "cap_drop:" in body
     assert "- ALL" in body
     assert "read_only: true" in body

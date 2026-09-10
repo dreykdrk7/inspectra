@@ -1,6 +1,5 @@
-# Example-only scaffold for the future active-tools service.
-# Do not include this file in normal `docker compose up` flows until a later
-# phase explicitly approves build/run validation.
+# Standalone review example for the isolated active-tools service. All network
+# capabilities remain disabled unless an operator explicitly enables each one.
 
 name: inspectra-active-tools-example
 
@@ -14,9 +13,15 @@ services:
     command: ["python", "-m", "uvicorn", "active_runner.app:app", "--host", "0.0.0.0", "--port", "8080"]
     container_name: inspectra-active-tools
     environment:
-      INSPECTRA_ACTIVE_TOOLS_MODE: asgi_no_live
+      INSPECTRA_ACTIVE_TOOLS_NMAP_BASIC_EXECUTION_ENABLED: "false"
+      INSPECTRA_ACTIVE_TOOLS_DNS_INVENTORY_EXECUTION_ENABLED: "false"
+      INSPECTRA_ACTIVE_TOOLS_DNS_OSINT_EXECUTION_ENABLED: "false"
+      INSPECTRA_ACTIVE_TOOLS_HTTP_HEADERS_EXECUTION_ENABLED: "false"
+      INSPECTRA_ACTIVE_TOOLS_TLS_BASIC_EXECUTION_ENABLED: "false"
+      INSPECTRA_ACTIVE_TOOLS_ASSET_VERIFICATION_EXECUTION_ENABLED: "false"
     networks:
       - inspectra_internal
+      - inspectra_active_egress
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
@@ -36,3 +41,4 @@ services:
 networks:
   inspectra_internal:
     internal: true
+  inspectra_active_egress:

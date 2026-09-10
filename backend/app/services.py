@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 import httpx
+from fastapi import status
 
 from active_runner.dry_run import run_active_network_dry_run
 from active_runner.http_header_probe import run_authorized_http_header_probe
@@ -12,6 +16,8 @@ from active_runner.nmap_basic.result import build_active_nmap_basic_result_paylo
 from app.config import Settings
 from app.active_nmap_handoff import ActiveNmapBasicHandoffPlan, ActiveNmapBasicHandoffUnit
 from app.project_archive_findings import categorize_project_archive_result
+from app.license_review import add_project_license_review
+from app.runner_contract import isolated_runner_contract
 from app.reporting import (
     redact_active_config_value,
     redact_active_secret_text,
@@ -27,7 +33,7 @@ from app.reporting import (
     redact_redis_secret_text,
     redact_terraform_config_value,
 )
-from app.storage import FileStore, JobStore
+from app.storage import ExecutionWorkspaceError, ExecutionWorkspaceStore, FileStore, JobStore
 
 
 ACTIVE_NMAP_BASIC_CONTROLLED_EXECUTION_STATUSES = {
@@ -51,6 +57,46 @@ ACTIVE_NMAP_BASIC_CONTROLLED_REASONS = {
     "process_timeout",
     "nmap_missing",
 }
+
+def isolated_runner_payload(
+    files: FileStore,
+    stored_file,
+    payload: Mapping[str, Any],
+    *,
+    source_path: Path | None = None,
+    max_source_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Attach one bounded source without disclosing its storage path.
+
+    The runner receives only the source bytes, recorded size and SHA-256. Owner,
+    project, workspace, host paths and stored filenames remain backend-local.
+    """
+
+    maximum = max_source_bytes or files.settings.max_upload_bytes
+    path = source_path or files.source_path(stored_file)
+    chunks: list[bytes] = []
+    observed = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            observed += len(chunk)
+            if observed > maximum:
+                raise ExecutionWorkspaceError("isolated source byte limit exceeded")
+            chunks.append(chunk)
+    source = b"".join(chunks)
+    if len(source) != stored_file.size_bytes or len(source) > maximum:
+        raise ExecutionWorkspaceError("isolated source byte contract mismatch")
+    digest = hashlib.sha256(source).hexdigest()
+    if digest != stored_file.sha256:
+        raise ExecutionWorkspaceError("isolated source integrity mismatch")
+    isolated_payload = {key: value for key, value in payload.items() if key != "relative_path"}
+    isolated_payload.update(
+        {
+            "source_base64": base64.b64encode(source).decode("ascii"),
+            "source_sha256": digest,
+            "source_size_bytes": len(source),
+        }
+    )
+    return isolated_payload
 
 
 class ActiveNmapBasicExecutorAdapter(Protocol):
@@ -87,9 +133,10 @@ class PdfAuditService:
             "file_id": stored_file.id,
             "relative_path": self.files.relative_upload_path(stored_file),
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/pdf", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -112,9 +159,10 @@ class ImageAuditService:
             "file_id": stored_file.id,
             "relative_path": self.files.relative_upload_path(stored_file),
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/image", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -138,9 +186,10 @@ class ManifestAuditService:
             "relative_path": self.files.relative_upload_path(stored_file),
             "original_filename": stored_file.original_filename,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/manifest", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -164,9 +213,10 @@ class ArchiveAuditService:
             "relative_path": self.files.relative_upload_path(stored_file),
             "original_filename": stored_file.original_filename,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/archive", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -177,29 +227,145 @@ class ArchiveAuditService:
 
 
 class ProjectArchiveAuditService:
-    def __init__(self, settings: Settings, files: FileStore, jobs: JobStore) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        files: FileStore,
+        jobs: JobStore,
+        workspaces: ExecutionWorkspaceStore | None = None,
+    ) -> None:
         self.settings = settings
         self.files = files
         self.jobs = jobs
+        self.workspaces = workspaces or ExecutionWorkspaceStore(settings, files)
 
     async def run_project_archive_analysis(self, job_id: str) -> None:
         job = self.jobs.update(job_id, status="running")
         stored_file = self.files.get(job.file_id)
-        payload = {
-            "file_id": stored_file.id,
-            "relative_path": self.files.relative_upload_path(stored_file),
-            "original_filename": stored_file.original_filename,
-        }
-
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(f"{self.settings.tool_runner_url}/analyze/project-archive", json=payload)
-                response.raise_for_status()
-        except httpx.HTTPError as exc:
-            self.jobs.update(job_id, status="failed", error=f"Tool runner request failed: {exc}")
+            relative_path = self.workspaces.prepare(job, stored_file)
+        except ExecutionWorkspaceError:
+            self.jobs.update(
+                job_id,
+                status="failed",
+                error="The execution workspace could not be prepared within its configured limits. Review storage health and retry.",
+                termination_reason="workspace_error",
+            )
             return
 
-        self.jobs.update(job_id, status="completed", result=categorize_project_archive_result(response.json()))
+        try:
+            payload = {
+                "file_id": stored_file.id,
+                "relative_path": relative_path,
+                "original_filename": stored_file.original_filename,
+                **project_archive_runner_limits(self.settings),
+            }
+            payload = isolated_runner_payload(
+                self.files,
+                stored_file,
+                payload,
+                source_path=self.settings.data_dir / relative_path,
+                max_source_bytes=self.settings.execution_workspace_max_bytes,
+            )
+            async with httpx.AsyncClient(timeout=self.settings.project_archive_timeout_seconds, trust_env=False) as client:
+                response = await client.post(f"{self.settings.tool_runner_url}/analyze/project-archive", json=payload)
+                response.raise_for_status()
+            try:
+                result = response.json()
+            except ValueError:
+                self.jobs.update(
+                    job_id,
+                    status="failed",
+                    error="The analysis runner returned an invalid result contract. Retry after reviewing service health.",
+                    termination_reason="runner_contract_invalid",
+                )
+                return
+            if not project_archive_runner_result_matches_contract(result, stored_file.id, self.settings):
+                self.jobs.update(
+                    job_id,
+                    status="failed",
+                    error="The analysis runner returned an incompatible limit contract. Align backend and runner configuration before retrying.",
+                    termination_reason="runner_contract_invalid",
+                )
+                return
+            denied_licenses = (
+                job.execution_profile.license_policy_denied_identifiers
+                if job.execution_profile is not None
+                else ()
+            )
+            result = add_project_license_review(result, denied_licenses)
+            self.jobs.update(job_id, status="completed", result=categorize_project_archive_result(result))
+        except httpx.TimeoutException:
+            self.jobs.update(
+                job_id,
+                status="failed",
+                error="The project review reached its configured time limit. Reduce the snapshot or review the execution limits before retrying.",
+                termination_reason="runner_timeout",
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == status.HTTP_504_GATEWAY_TIMEOUT:
+                self.jobs.update(
+                    job_id,
+                    status="failed",
+                    error="The isolated project worker reached its recorded time limit. Reduce the snapshot or review the execution contract before retrying.",
+                    termination_reason="runner_timeout",
+                )
+            elif exc.response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT:
+                self.jobs.update(
+                    job_id,
+                    status="failed",
+                    error="The isolated project worker reached a recorded resource boundary. Reduce the snapshot or review the execution contract before retrying.",
+                    termination_reason="runner_resource_limit",
+                )
+            else:
+                self.jobs.update(
+                    job_id,
+                    status="failed",
+                    error="The analysis runner rejected the request safely. Review service health and the retained execution contract before retrying.",
+                    termination_reason="runner_contract_invalid",
+                )
+        except httpx.HTTPError:
+            self.jobs.update(
+                job_id,
+                status="failed",
+                error="The analysis runner is temporarily unavailable. Retry after reviewing service health.",
+                termination_reason="runner_unavailable",
+            )
+        except ExecutionWorkspaceError:
+            self.jobs.update(
+                job_id,
+                status="failed",
+                error="The execution workspace failed its integrity check and was removed. Review storage health before retrying.",
+                termination_reason="workspace_error",
+            )
+        finally:
+            self.workspaces.cleanup(job_id)
+
+
+def project_archive_runner_limits(settings: Settings) -> dict[str, int]:
+    """Return only the non-sensitive limit contract sent to the local runner."""
+
+    return {
+        "max_total_uncompressed_bytes": settings.project_archive_max_total_uncompressed_bytes,
+        "max_archive_entries": settings.project_archive_max_archive_entries,
+        "max_manifests": settings.project_archive_max_manifests,
+        "max_manifest_bytes": settings.project_archive_max_manifest_bytes,
+        "max_total_manifest_bytes": settings.project_archive_max_total_manifest_bytes,
+        "max_lockfiles": settings.project_archive_max_lockfiles,
+        "max_lockfile_packages": settings.project_archive_max_lockfile_packages,
+        "max_lockfile_edges": settings.project_archive_max_lockfile_edges,
+    }
+
+
+def project_archive_runner_result_matches_contract(result: Any, file_id: str, settings: Settings) -> bool:
+    if not isinstance(result, dict) or result.get("file_id") != file_id or result.get("analyzer") != "project_archive_basic":
+        return False
+    limits = result.get("limits")
+    return (
+        isinstance(limits, dict)
+        and all(limits.get(key) == value for key, value in project_archive_runner_limits(settings).items())
+        and result.get("execution_isolation") == isolated_runner_contract()
+    )
 
 
 class DjangoConfigAuditService:
@@ -219,9 +385,10 @@ class DjangoConfigAuditService:
             "max_file_bytes": self.settings.django_config_max_file_bytes,
             "max_total_bytes": self.settings.django_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/django-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -248,9 +415,10 @@ class DockerConfigAuditService:
             "max_file_bytes": self.settings.docker_config_max_file_bytes,
             "max_total_bytes": self.settings.docker_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/docker-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -277,9 +445,10 @@ class SecretsReviewAuditService:
             "max_file_bytes": self.settings.secrets_review_max_file_bytes,
             "max_total_bytes": self.settings.secrets_review_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/secrets-review", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -306,9 +475,10 @@ class NodePackageConfigAuditService:
             "max_file_bytes": self.settings.node_package_config_max_file_bytes,
             "max_total_bytes": self.settings.node_package_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/node-package-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -335,9 +505,10 @@ class CiCdConfigAuditService:
             "max_file_bytes": self.settings.ci_cd_config_max_file_bytes,
             "max_total_bytes": self.settings.ci_cd_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/ci-cd-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -365,9 +536,10 @@ class K8sConfigAuditService:
             "max_file_bytes": self.settings.k8s_config_max_file_bytes,
             "max_total_bytes": self.settings.k8s_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/k8s-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -395,9 +567,10 @@ class TerraformConfigAuditService:
             "max_file_bytes": self.settings.terraform_config_max_file_bytes,
             "max_total_bytes": self.settings.terraform_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/terraform-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -425,9 +598,10 @@ class NginxConfigAuditService:
             "max_file_bytes": self.settings.nginx_config_max_file_bytes,
             "max_total_bytes": self.settings.nginx_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/nginx-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -455,9 +629,10 @@ class ComposeConfigAuditService:
             "max_file_bytes": self.settings.compose_config_max_file_bytes,
             "max_total_bytes": self.settings.compose_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/compose-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -485,9 +660,10 @@ class DatabaseConfigAuditService:
             "max_file_bytes": self.settings.database_config_max_file_bytes,
             "max_total_bytes": self.settings.database_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/database-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -515,9 +691,10 @@ class SqlDatabaseConfigAuditService:
             "max_file_bytes": self.settings.sql_database_config_max_file_bytes,
             "max_total_bytes": self.settings.sql_database_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/sql-database-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -545,9 +722,10 @@ class RedisConfigAuditService:
             "max_file_bytes": self.settings.redis_config_max_file_bytes,
             "max_total_bytes": self.settings.redis_config_max_total_bytes,
         }
+        payload = isolated_runner_payload(self.files, stored_file, payload)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
                 response = await client.post(f"{self.settings.tool_runner_url}/analyze/redis-config", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -827,8 +1005,8 @@ class WebAuditService:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.settings.web_timeout_seconds + 10.0) as client:
-                response = await client.post(f"{self.settings.tool_runner_url}/analyze/web-basic", json=payload)
+            async with httpx.AsyncClient(timeout=self.settings.web_timeout_seconds + 10.0, trust_env=False) as client:
+                response = await client.post(f"{self.settings.network_tool_runner_url}/analyze/web-basic", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
             self.jobs.update(job_id, status="failed", error=f"Tool runner request failed: {exc}")
@@ -882,8 +1060,8 @@ class DomainAuditService:
         )
 
         try:
-            async with httpx.AsyncClient(timeout=runner_timeout_seconds) as client:
-                response = await client.post(f"{self.settings.tool_runner_url}/analyze/domain-basic", json=payload)
+            async with httpx.AsyncClient(timeout=runner_timeout_seconds, trust_env=False) as client:
+                response = await client.post(f"{self.settings.network_tool_runner_url}/analyze/domain-basic", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
             self.jobs.update(job_id, status="failed", error=f"Tool runner request failed: {exc}")
@@ -918,8 +1096,8 @@ class SubdomainInventoryAuditService:
         )
 
         try:
-            async with httpx.AsyncClient(timeout=runner_timeout_seconds) as client:
-                response = await client.post(f"{self.settings.tool_runner_url}/analyze/subdomains-basic", json=payload)
+            async with httpx.AsyncClient(timeout=runner_timeout_seconds, trust_env=False) as client:
+                response = await client.post(f"{self.settings.network_tool_runner_url}/analyze/subdomains-basic", json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
             self.jobs.update(job_id, status="failed", error=f"Tool runner request failed: {exc}")

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -10,12 +13,17 @@ import json
 import os
 from pathlib import Path
 import re
+import resource
+import shutil
+import signal
 import socket
 import ssl
 import stat
 import struct
 import subprocess
+import sys
 import tarfile
+import tempfile
 import time
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -23,7 +31,13 @@ from uuid import uuid4
 import zipfile
 
 from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field, model_validator
+from starlette.responses import JSONResponse
+import yaml
+from yaml.constructor import ConstructorError
+from yaml.resolver import BaseResolver
+from yaml.tokens import AliasToken, AnchorToken, TagToken
 
 try:
     import tomllib
@@ -33,31 +47,58 @@ except ModuleNotFoundError:  # Python < 3.11 in local test environments.
 
 DATA_DIR = Path(os.getenv("INSPECTRA_DATA_DIR", "/app/data")).resolve()
 MAX_OUTPUT_CHARS = 120_000
+ISOLATED_WORKER_CONTRACT_VERSION = "2026-09-06.1"
+ISOLATED_WORKER_ROOT = Path(os.getenv("INSPECTRA_TOOL_WORKER_ROOT", "/var/lib/inspectra-workers")).resolve()
+ISOLATED_WORKER_LOCK = asyncio.Lock()
 
 
-class PdfAnalysisRequest(BaseModel):
+class StoredSourceRequest(BaseModel):
     file_id: str
-    relative_path: str
+    relative_path: str | None = None
+    source_base64: str | None = None
+    source_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    source_size_bytes: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_source_contract(self) -> "StoredSourceRequest":
+        has_inline_source = self.source_base64 is not None
+        if has_inline_source and (self.source_sha256 is None or self.source_size_bytes is None):
+            raise ValueError("Inline source integrity metadata is required.")
+        if has_inline_source and self.source_size_bytes is not None and self.source_size_bytes > ISOLATED_WORKER_MAX_SOURCE_BYTES:
+            raise ValueError("Inline source exceeds the isolated worker limit.")
+        max_encoded_length = ((ISOLATED_WORKER_MAX_SOURCE_BYTES + 2) // 3) * 4
+        if has_inline_source and len(self.source_base64 or "") > max_encoded_length:
+            raise ValueError("Inline source exceeds the isolated worker limit.")
+        if not has_inline_source and not self.relative_path:
+            raise ValueError("An isolated source or internal worker path is required.")
+        return self
 
 
-class ImageAnalysisRequest(BaseModel):
-    file_id: str
-    relative_path: str
+class PdfAnalysisRequest(StoredSourceRequest):
+    pass
 
 
-class ManifestAnalysisRequest(BaseModel):
-    file_id: str
-    relative_path: str
+class ImageAnalysisRequest(StoredSourceRequest):
+    pass
+
+
+class ManifestAnalysisRequest(StoredSourceRequest):
     original_filename: str | None = None
 
 
-class ArchiveAnalysisRequest(BaseModel):
-    file_id: str
-    relative_path: str
+class ArchiveAnalysisRequest(StoredSourceRequest):
     original_filename: str | None = None
     max_files: int | None = None
     max_file_bytes: int | None = None
     max_total_bytes: int | None = None
+    max_total_uncompressed_bytes: int | None = None
+    max_archive_entries: int | None = None
+    max_manifests: int | None = None
+    max_manifest_bytes: int | None = None
+    max_total_manifest_bytes: int | None = None
+    max_lockfiles: int | None = None
+    max_lockfile_packages: int | None = None
+    max_lockfile_edges: int | None = None
 
 
 class WebBasicAnalysisRequest(BaseModel):
@@ -81,6 +122,14 @@ class SubdomainInventoryAnalysisRequest(BaseModel):
     max_candidates: int | None = None
     wildcard_checks: int | None = None
     global_deadline_seconds: float | None = None
+
+
+@dataclass(frozen=True)
+class ValidatedWebTarget:
+    url: str
+    host: str
+    port: int
+    addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]
 
 
 def positive_float_from_env(name: str, default: float) -> float:
@@ -134,6 +183,18 @@ def bool_from_env(name: str, default: bool) -> bool:
     raise ValueError(f"{name} must be a boolean value.")
 
 
+ISOLATED_WORKER_MAX_SOURCE_BYTES = positive_int_from_env("INSPECTRA_TOOL_WORKER_MAX_SOURCE_BYTES", 20_971_520)
+ISOLATED_WORKER_TIMEOUT_SECONDS = positive_float_from_env("INSPECTRA_TOOL_WORKER_TIMEOUT_SECONDS", 55.0)
+ISOLATED_WORKER_CPU_SECONDS = positive_int_from_env("INSPECTRA_TOOL_WORKER_CPU_SECONDS", 45)
+ISOLATED_WORKER_MEMORY_BYTES = positive_int_from_env("INSPECTRA_TOOL_WORKER_MEMORY_BYTES", 402_653_184)
+ISOLATED_WORKER_MAX_RESULT_BYTES = positive_int_from_env("INSPECTRA_TOOL_WORKER_MAX_RESULT_BYTES", 4_194_304)
+ISOLATED_WORKER_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_TOOL_WORKER_MAX_FILE_BYTES", 33_554_432)
+ISOLATED_WORKER_MAX_OPEN_FILES = positive_int_from_env("INSPECTRA_TOOL_WORKER_MAX_OPEN_FILES", 64)
+ISOLATED_WORKER_MAX_PROCESSES = positive_int_from_env("INSPECTRA_TOOL_WORKER_MAX_PROCESSES", 32)
+FILE_ANALYSIS_ENABLED = bool_from_env("INSPECTRA_FILE_ANALYSIS_ENABLED", True)
+NETWORK_ANALYSIS_ENABLED = bool_from_env("INSPECTRA_NETWORK_ANALYSIS_ENABLED", True)
+
+
 def ports_from_env(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -177,6 +238,26 @@ PROJECT_ARCHIVE_MAX_MANIFESTS = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE
 PROJECT_ARCHIVE_MAX_MANIFEST_BYTES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES", 1_048_576)
 PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES", 5_242_880)
 PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES", ARCHIVE_MAX_ENTRIES)
+PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES = positive_int_from_env(
+    "INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES", ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES
+)
+PROJECT_ARCHIVE_MAX_LOCKFILES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILES", 5)
+PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES", 2_000)
+PROJECT_ARCHIVE_MAX_LOCKFILE_EDGES = positive_int_from_env("INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILE_EDGES", 4_000)
+PROJECT_ARCHIVE_MAX_PNPM_YAML_TOKENS = 20_000
+PROJECT_ARCHIVE_MAX_YARN_CLASSIC_LINES = 20_000
+POETRY_LOCKFILE_SUPPORTED_VERSION = "2.1"
+PIPFILE_LOCK_SUPPORTED_VERSION = 6
+GO_MODULE_FORMAT_VERSION = "go-mod-v1"
+GO_SUM_FORMAT_VERSION = "go-sum-v1"
+PROJECT_ARCHIVE_MAX_GO_LINES = 20_000
+CARGO_LOCKFILE_SUPPORTED_VERSIONS = frozenset({3, 4})
+CARGO_CRATES_IO_SOURCES = frozenset(
+    {
+        "registry+https://github.com/rust-lang/crates.io-index",
+        "sparse+https://index.crates.io/",
+    }
+)
 DJANGO_CONFIG_MAX_FILES = positive_int_from_env("INSPECTRA_DJANGO_CONFIG_MAX_FILES", 100)
 DJANGO_CONFIG_MAX_FILE_BYTES = positive_int_from_env("INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES", 524_288)
 DJANGO_CONFIG_MAX_TOTAL_BYTES = positive_int_from_env("INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES", 2_097_152)
@@ -275,6 +356,7 @@ SENSITIVE_QUERY_PARAM_NAMES = {
 }
 SENSITIVE_QUERY_PARAM_FRAGMENTS = ("token", "secret", "password", "passwd", "session", "auth", "signature", "api_key", "apikey")
 URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+")
+URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^@\s/]*@")
 DOMAIN_PATTERN = re.compile(r"^[a-z0-9.-]+$")
 BLOCKED_DOMAIN_SUFFIXES = (".local", ".localhost", ".internal", ".test", ".invalid")
 BLOCKED_DOMAIN_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
@@ -302,6 +384,162 @@ class ZipMetadataPreflight:
     reason: str | None = None
 
 
+def isolated_worker_attestation() -> dict[str, Any]:
+    """Return the fixed, non-sensitive contract enforced by this runner."""
+
+    return {
+        "contract_version": ISOLATED_WORKER_CONTRACT_VERSION,
+        "source_transport": "inline_base64_sha256_v1",
+        "source_scope": "single_request",
+        "worker_lifecycle": "ephemeral_subprocess",
+        "max_concurrent_source_workers": 1,
+        "limits": {
+            "source_bytes": ISOLATED_WORKER_MAX_SOURCE_BYTES,
+            "wall_time_seconds": ISOLATED_WORKER_TIMEOUT_SECONDS,
+            "cpu_seconds": ISOLATED_WORKER_CPU_SECONDS,
+            "memory_bytes": ISOLATED_WORKER_MEMORY_BYTES,
+            "result_bytes": ISOLATED_WORKER_MAX_RESULT_BYTES,
+            "file_bytes": ISOLATED_WORKER_MAX_FILE_BYTES,
+            "open_files": ISOLATED_WORKER_MAX_OPEN_FILES,
+            "processes": ISOLATED_WORKER_MAX_PROCESSES,
+        },
+        "temporary_storage": "request_scoped_tmpfs_cleanup",
+    }
+
+
+def _decode_isolated_source(request: StoredSourceRequest) -> bytes:
+    encoded = request.source_base64
+    if encoded is None or request.source_sha256 is None or request.source_size_bytes is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="An isolated source is required.")
+    try:
+        source = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The isolated source encoding is invalid.") from exc
+    if len(source) != request.source_size_bytes or len(source) > ISOLATED_WORKER_MAX_SOURCE_BYTES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The isolated source size does not match its contract.")
+    if hashlib.sha256(source).hexdigest() != request.source_sha256:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The isolated source integrity check failed.")
+    return source
+
+
+def _apply_isolated_worker_limits() -> None:
+    """Apply per-process limits before any untrusted parser is imported."""
+
+    os.umask(0o077)
+    resource.setrlimit(resource.RLIMIT_CPU, (ISOLATED_WORKER_CPU_SECONDS, ISOLATED_WORKER_CPU_SECONDS + 1))
+    resource.setrlimit(resource.RLIMIT_AS, (ISOLATED_WORKER_MEMORY_BYTES, ISOLATED_WORKER_MEMORY_BYTES))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (ISOLATED_WORKER_MAX_FILE_BYTES, ISOLATED_WORKER_MAX_FILE_BYTES))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (ISOLATED_WORKER_MAX_OPEN_FILES, ISOLATED_WORKER_MAX_OPEN_FILES))
+    if hasattr(resource, "RLIMIT_NPROC"):
+        resource.setrlimit(resource.RLIMIT_NPROC, (ISOLATED_WORKER_MAX_PROCESSES, ISOLATED_WORKER_MAX_PROCESSES))
+
+
+def _clean_isolated_worker_root() -> int:
+    """Remove only runner-owned opaque workspaces; never follow symlinks."""
+
+    ISOLATED_WORKER_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    cleaned = 0
+    for candidate in ISOLATED_WORKER_ROOT.iterdir():
+        if candidate.is_symlink() or candidate.is_file():
+            candidate.unlink(missing_ok=True)
+        elif candidate.is_dir():
+            shutil.rmtree(candidate)
+        cleaned += 1
+    return cleaned
+
+
+async def _terminate_isolated_worker(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    await process.wait()
+
+
+async def run_isolated_file_analysis(analyzer: str, request: StoredSourceRequest) -> dict[str, Any]:
+    """Run one source analysis in an ephemeral, resource-bounded subprocess."""
+
+    source = _decode_isolated_source(request)
+    async with ISOLATED_WORKER_LOCK:
+        _clean_isolated_worker_root()
+        workspace = Path(tempfile.mkdtemp(prefix="job-", dir=ISOLATED_WORKER_ROOT))
+        workspace.chmod(0o700)
+        source_path = workspace / "source"
+        process: asyncio.subprocess.Process | None = None
+        try:
+            source_path.write_bytes(source)
+            source_path.chmod(0o400)
+            child_payload = request.model_dump(exclude={"source_base64", "source_sha256", "source_size_bytes"})
+            child_payload["relative_path"] = "source"
+            tools_root = Path(__file__).resolve().parents[1]
+            child_environment = {
+                "PATH": os.getenv("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                "PYTHONPATH": str(tools_root),
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONUNBUFFERED": "1",
+                "INSPECTRA_ISOLATED_WORKER_CHILD": "1",
+                "TMPDIR": str(workspace),
+                "TMP": str(workspace),
+                "TEMP": str(workspace),
+            }
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "runner.worker",
+                analyzer,
+                cwd=workspace,
+                env=child_environment,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+                preexec_fn=_apply_isolated_worker_limits,
+            )
+            try:
+                stdout, _stderr = await asyncio.wait_for(
+                    process.communicate(json.dumps(child_payload, separators=(",", ":")).encode("utf-8")),
+                    timeout=ISOLATED_WORKER_TIMEOUT_SECONDS,
+                )
+            except TimeoutError as exc:
+                await _terminate_isolated_worker(process)
+                raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="The isolated analysis reached its time limit.") from exc
+            except BaseException:
+                await _terminate_isolated_worker(process)
+                raise
+            if len(stdout) > ISOLATED_WORKER_MAX_RESULT_BYTES:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="The isolated analysis returned an oversized result.")
+            if process.returncode is not None and process.returncode < 0 and not stdout:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="The isolated analysis stopped at its resource boundary.",
+                )
+            try:
+                envelope = json.loads(stdout)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="The isolated analysis returned an invalid result contract.") from exc
+            if not isinstance(envelope, dict) or not isinstance(envelope.get("status_code"), int):
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="The isolated analysis returned an invalid result contract.")
+            if envelope["status_code"] != status.HTTP_200_OK:
+                detail = envelope.get("detail")
+                safe_detail = detail if isinstance(detail, str) and len(detail) <= 500 else "The isolated analysis failed safely."
+                raise HTTPException(status_code=envelope["status_code"], detail=safe_detail)
+            result = envelope.get("result")
+            if not isinstance(result, dict):
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="The isolated analysis returned an invalid result contract.")
+            result["execution_isolation"] = isolated_worker_attestation()
+            return result
+        finally:
+            if process is not None and process.returncode is None:
+                await _terminate_isolated_worker(process)
+            source = b""
+            if workspace.is_symlink() or workspace.is_file():
+                workspace.unlink(missing_ok=True)
+            elif workspace.exists():
+                shutil.rmtree(workspace)
+
+
 app = FastAPI(
     title="Inspectra Audit Tools",
     summary="Internal containerized tool runner for passive audit tasks.",
@@ -309,13 +547,41 @@ app = FastAPI(
 )
 
 
+@app.exception_handler(RequestValidationError)
+async def sanitized_request_validation_error(_request, exc: RequestValidationError) -> JSONResponse:
+    """Never echo a source body, filename or other rejected input."""
+
+    safe_errors = [
+        {
+            "type": error.get("type", "validation_error"),
+            "loc": list(error.get("loc", ())),
+            "msg": error.get("msg", "Invalid request."),
+        }
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": safe_errors})
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "inspectra-audit-tools"}
 
 
+def require_file_analysis_capability() -> None:
+    if not FILE_ANALYSIS_ENABLED:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File analysis is not available on this runner.")
+
+
+def require_network_analysis_capability() -> None:
+    if not NETWORK_ANALYSIS_ENABLED:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Network analysis is not available on this runner.")
+
+
 @app.post("/analyze/pdf")
 async def analyze_pdf(request: PdfAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("pdf", request)
     pdf_path = resolve_data_path(request.relative_path)
     if not pdf_path.exists() or not pdf_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PDF not found.")
@@ -364,6 +630,9 @@ async def analyze_pdf(request: PdfAnalysisRequest) -> dict[str, Any]:
 
 @app.post("/analyze/image")
 async def analyze_image(request: ImageAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("image", request)
     image_path = resolve_data_path(request.relative_path)
     if not image_path.exists() or not image_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
@@ -412,6 +681,9 @@ async def analyze_image(request: ImageAnalysisRequest) -> dict[str, Any]:
 
 @app.post("/analyze/manifest")
 async def analyze_manifest(request: ManifestAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("manifest", request)
     manifest_path = resolve_data_path(request.relative_path)
     if not manifest_path.exists() or not manifest_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manifest not found.")
@@ -465,6 +737,9 @@ async def analyze_manifest(request: ManifestAnalysisRequest) -> dict[str, Any]:
 
 @app.post("/analyze/archive")
 async def analyze_archive(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("archive", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -507,6 +782,10 @@ async def analyze_archive(request: ArchiveAnalysisRequest) -> dict[str, Any]:
 
 @app.post("/analyze/project-archive")
 async def analyze_project_archive(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("project-archive", request)
+    validate_project_archive_request_limits(request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -526,14 +805,32 @@ async def analyze_project_archive(request: ArchiveAnalysisRequest) -> dict[str, 
 
     try:
         analysis = analyze_project_archive_manifests(archive_path, archive_type)
-    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
-        analysis = empty_project_archive_analysis(errors=[f"Archive could not be parsed safely: {exc}"])
+    except (OSError, tarfile.TarError, zipfile.BadZipFile):
+        analysis = empty_project_archive_analysis(errors=["Archive could not be parsed safely within the configured limits."])
+
+    try:
+        secrets_analysis = analyze_secrets_review_archive(
+            archive_path,
+            archive_type,
+            max_files=SECRETS_REVIEW_MAX_FILES,
+            max_file_bytes=SECRETS_REVIEW_MAX_FILE_BYTES,
+            max_total_bytes=SECRETS_REVIEW_MAX_TOTAL_BYTES,
+        )
+    except (OSError, tarfile.TarError, zipfile.BadZipFile):
+        secrets_analysis = empty_secrets_review_analysis(
+            errors=["Sensitive-data review could not parse the archive safely within its configured limits."]
+        )
+    attach_project_sensitive_data_review(analysis, secrets_analysis)
+    attach_project_configuration_reviews(analysis, archive_path, archive_type)
 
     return build_project_archive_result(request.file_id, archive_path, original_filename, archive_type, analysis)
 
 
 @app.post("/analyze/django-config")
 async def analyze_django_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("django-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -563,6 +860,9 @@ async def analyze_django_config(request: ArchiveAnalysisRequest) -> dict[str, An
 
 @app.post("/analyze/docker-config")
 async def analyze_docker_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("docker-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -592,6 +892,9 @@ async def analyze_docker_config(request: ArchiveAnalysisRequest) -> dict[str, An
 
 @app.post("/analyze/secrets-review")
 async def analyze_secrets_review(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("secrets-review", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -621,6 +924,9 @@ async def analyze_secrets_review(request: ArchiveAnalysisRequest) -> dict[str, A
 
 @app.post("/analyze/node-package-config")
 async def analyze_node_package_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("node-package-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -650,6 +956,9 @@ async def analyze_node_package_config(request: ArchiveAnalysisRequest) -> dict[s
 
 @app.post("/analyze/ci-cd-config")
 async def analyze_ci_cd_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("ci-cd-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -679,6 +988,9 @@ async def analyze_ci_cd_config(request: ArchiveAnalysisRequest) -> dict[str, Any
 
 @app.post("/analyze/k8s-config")
 async def analyze_k8s_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("k8s-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -708,6 +1020,9 @@ async def analyze_k8s_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
 
 @app.post("/analyze/terraform-config")
 async def analyze_terraform_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("terraform-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -737,6 +1052,9 @@ async def analyze_terraform_config(request: ArchiveAnalysisRequest) -> dict[str,
 
 @app.post("/analyze/nginx-config")
 async def analyze_nginx_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("nginx-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -766,6 +1084,9 @@ async def analyze_nginx_config(request: ArchiveAnalysisRequest) -> dict[str, Any
 
 @app.post("/analyze/compose-config")
 async def analyze_compose_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("compose-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -795,6 +1116,9 @@ async def analyze_compose_config(request: ArchiveAnalysisRequest) -> dict[str, A
 
 @app.post("/analyze/database-config")
 async def analyze_database_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("database-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -825,6 +1149,9 @@ async def analyze_database_config(request: ArchiveAnalysisRequest) -> dict[str, 
 
 @app.post("/analyze/sql-database-config")
 async def analyze_sql_database_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("sql-database-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -857,6 +1184,9 @@ async def analyze_sql_database_config(request: ArchiveAnalysisRequest) -> dict[s
 
 @app.post("/analyze/redis-config")
 async def analyze_redis_config(request: ArchiveAnalysisRequest) -> dict[str, Any]:
+    require_file_analysis_capability()
+    if request.source_base64 is not None:
+        return await run_isolated_file_analysis("redis-config", request)
     archive_path = resolve_data_path(request.relative_path)
     if not archive_path.exists() or not archive_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Archive not found.")
@@ -889,6 +1219,7 @@ async def analyze_redis_config(request: ArchiveAnalysisRequest) -> dict[str, Any
 
 @app.post("/analyze/web-basic")
 async def analyze_web_basic(request: WebBasicAnalysisRequest) -> dict[str, Any]:
+    require_network_analysis_capability()
     allow_private = WEB_ALLOW_PRIVATE_TARGETS if request.allow_private_targets is None else request.allow_private_targets
     timeout_seconds = request.timeout_seconds or WEB_TIMEOUT_SECONDS
     max_response_bytes = request.max_response_bytes or WEB_MAX_RESPONSE_BYTES
@@ -942,6 +1273,7 @@ async def analyze_web_basic(request: WebBasicAnalysisRequest) -> dict[str, Any]:
 
 @app.post("/analyze/domain-basic")
 async def analyze_domain_basic(request: DomainBasicAnalysisRequest) -> dict[str, Any]:
+    require_network_analysis_capability()
     timeout_seconds = request.timeout_seconds or DOMAIN_DNS_TIMEOUT_SECONDS
     if timeout_seconds <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain DNS timeout must be positive.")
@@ -951,6 +1283,7 @@ async def analyze_domain_basic(request: DomainBasicAnalysisRequest) -> dict[str,
 
 @app.post("/analyze/subdomains-basic")
 async def analyze_subdomains_basic(request: SubdomainInventoryAnalysisRequest) -> dict[str, Any]:
+    require_network_analysis_capability()
     timeout_seconds = DOMAIN_DNS_TIMEOUT_SECONDS if request.timeout_seconds is None else request.timeout_seconds
     if timeout_seconds <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain DNS timeout must be positive.")
@@ -1100,36 +1433,31 @@ def fetch_http_once(
     max_response_bytes: int,
     allowed_ports: tuple[int, ...],
 ) -> dict[str, Any]:
-    url = normalize_web_url(raw_url)
-    validate_web_url_allowed(url, allow_private_targets=allow_private_targets, allowed_ports=allowed_ports)
-    parsed = urlsplit(url)
-    host = parsed.hostname or ""
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
-    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-    connection = connection_class(host, port=port, timeout=timeout_seconds)
-    try:
-        connection.request(
-            "GET",
-            target,
-            headers={
-                "User-Agent": "Inspectra/0.1 passive-web-audit",
-                "Accept": "*/*",
-                "Connection": "close",
-            },
-        )
-        response = connection.getresponse()
-        headers = response.getheaders()
-        body, truncated = read_limited_response(response, max_response_bytes)
-    finally:
-        connection.close()
+    validated_target = resolve_allowed_web_target(
+        raw_url,
+        allow_private_targets=allow_private_targets,
+        allowed_ports=allowed_ports,
+    )
+    parsed = urlsplit(validated_target.url)
+    request_target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    status_code, reason, headers, body, truncated = request_pinned_http(
+        validated_target,
+        request_target,
+        timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        headers={
+            "User-Agent": "Inspectra/0.1 passive-web-audit",
+            "Accept": "*/*",
+            "Connection": "close",
+        },
+    )
 
-    public_headers = public_header_mapping(headers, base_url=url)
+    public_headers = public_header_mapping(headers, base_url=validated_target.url)
     return {
         "method": "GET",
-        "url": url,
-        "status_code": response.status,
-        "reason": response.reason,
+        "url": validated_target.url,
+        "status_code": status_code,
+        "reason": reason,
         "response_headers": public_headers,
         "set_cookie_headers": [value for name, value in headers if name.lower() == "set-cookie"],
         "content_type": header_value(public_headers, "Content-Type"),
@@ -1183,9 +1511,24 @@ def redact_url_query(url: str) -> str:
     try:
         parsed = urlsplit(url)
     except ValueError:
-        return url
+        return redact_url_userinfo(url)
     redacted_query, _ = redact_query_params(parsed.query)
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, redacted_query, parsed.fragment))
+    netloc = parsed.netloc
+    if "@" in netloc:
+        netloc = f"[REDACTED]@{netloc.rsplit('@', 1)[-1]}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, redacted_query, parsed.fragment))
+
+
+def redact_url_userinfo(url: str) -> str:
+    """Remove userinfo from rejected, legacy, or malformed URL-shaped text."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return URL_USERINFO_RE.sub(r"\1[REDACTED]@", url)
+    if "@" not in parsed.netloc:
+        return url
+    host_part = parsed.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parsed.scheme, f"[REDACTED]@{host_part}", parsed.path, parsed.query, parsed.fragment))
 
 
 def redact_query_params(query: str) -> tuple[str, list[str]]:
@@ -1213,7 +1556,21 @@ def redact_text_urls(value: str) -> str:
 
 
 def validate_web_url_allowed(raw_url: str, *, allow_private_targets: bool, allowed_ports: tuple[int, ...]) -> None:
-    parsed = urlsplit(normalize_web_url(raw_url))
+    resolve_allowed_web_target(
+        raw_url,
+        allow_private_targets=allow_private_targets,
+        allowed_ports=allowed_ports,
+    )
+
+
+def resolve_allowed_web_target(
+    raw_url: str,
+    *,
+    allow_private_targets: bool,
+    allowed_ports: tuple[int, ...],
+) -> ValidatedWebTarget:
+    normalized_url = normalize_web_url(raw_url)
+    parsed = urlsplit(normalized_url)
     host = parsed.hostname or ""
     if host.lower().rstrip(".") in METADATA_HOSTS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cloud metadata targets are not allowed.")
@@ -1222,10 +1579,60 @@ def validate_web_url_allowed(raw_url: str, *, allow_private_targets: bool, allow
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Target port {port} is not allowed for web audits.")
     if host.lower().rstrip(".") in LOCALHOST_HOSTS and not allow_private_targets:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target resolves to a blocked address range: loopback address.")
-    for address in resolve_web_host(host, port):
+    addresses = tuple(sorted(resolve_web_host(host, port), key=lambda address: (address.version, int(address))))
+    for address in addresses:
         reason = blocked_web_ip_reason(address, allow_private_targets=allow_private_targets)
         if reason:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Target resolves to a blocked address range: {reason}.")
+    return ValidatedWebTarget(url=normalized_url, host=host, port=port, addresses=addresses)
+
+
+def pinned_http_connection(
+    target: ValidatedWebTarget,
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    timeout_seconds: float,
+) -> http.client.HTTPConnection:
+    parsed = urlsplit(target.url)
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_class(target.host, port=target.port, timeout=timeout_seconds)
+
+    def connect_to_validated_address(
+        _address: tuple[str, int],
+        timeout: float | None,
+        source_address: tuple[str, int] | None = None,
+    ) -> socket.socket:
+        return socket.create_connection((str(address), target.port), timeout, source_address)
+
+    # Keep the original hostname on HTTPConnection so Host and HTTPS SNI remain correct,
+    # while its transport connects only to the IP address accepted by the SSRF policy.
+    connection._create_connection = connect_to_validated_address
+    return connection
+
+
+def request_pinned_http(
+    target: ValidatedWebTarget,
+    request_target: str,
+    *,
+    timeout_seconds: float,
+    max_response_bytes: int,
+    headers: dict[str, str],
+) -> tuple[int, str, list[tuple[str, str]], bytes, bool]:
+    last_error: OSError | ssl.SSLError | http.client.HTTPException | None = None
+    for address in target.addresses:
+        connection = pinned_http_connection(target, address, timeout_seconds)
+        try:
+            connection.request("GET", request_target, headers=headers)
+            response = connection.getresponse()
+            response_headers = response.getheaders()
+            body, truncated = read_limited_response(response, max_response_bytes)
+            return response.status, response.reason, response_headers, body, truncated
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            last_error = exc
+        finally:
+            connection.close()
+    if last_error:
+        raise last_error
+    raise OSError("Target host did not provide a usable validated address.")
 
 
 def resolve_web_host(host: str, port: int) -> set[ipaddress.IPv4Address | ipaddress.IPv6Address]:
@@ -1355,23 +1762,31 @@ def inspect_tls(raw_url: str, *, allow_private_targets: bool, timeout_seconds: f
     parsed = urlsplit(normalize_web_url(raw_url))
     if parsed.scheme != "https":
         return {"present": False, "errors": []}
-    validate_web_url_allowed(raw_url, allow_private_targets=allow_private_targets, allowed_ports=allowed_ports)
-    host = parsed.hostname or ""
-    port = parsed.port or 443
+    target = resolve_allowed_web_target(
+        raw_url,
+        allow_private_targets=allow_private_targets,
+        allowed_ports=allowed_ports,
+    )
     context = ssl.create_default_context()
-    try:
-        with socket.create_connection((host, port), timeout=timeout_seconds) as raw_socket:
-            with context.wrap_socket(raw_socket, server_hostname=host) as tls_socket:
-                cert = tls_socket.getpeercert()
-                return {
-                    "present": True,
-                    "version": tls_socket.version(),
-                    "cipher": tls_socket.cipher()[0] if tls_socket.cipher() else None,
-                    "certificate": summarize_certificate(cert),
-                    "errors": [],
-                }
-    except (OSError, ssl.SSLError, ValueError) as exc:
-        return {"present": True, "errors": [redact_text_urls(f"TLS inspection failed: {exc.__class__.__name__}: {exc}")]}
+    last_error: OSError | ssl.SSLError | ValueError | None = None
+    for address in target.addresses:
+        try:
+            with socket.create_connection((str(address), target.port), timeout=timeout_seconds) as raw_socket:
+                with context.wrap_socket(raw_socket, server_hostname=target.host) as tls_socket:
+                    cert = tls_socket.getpeercert()
+                    return {
+                        "present": True,
+                        "version": tls_socket.version(),
+                        "cipher": tls_socket.cipher()[0] if tls_socket.cipher() else None,
+                        "certificate": summarize_certificate(cert),
+                        "errors": [],
+                    }
+        except (OSError, ssl.SSLError, ValueError) as exc:
+            last_error = exc
+    if last_error:
+        message = f"TLS inspection failed: {last_error.__class__.__name__}: {last_error}"
+        return {"present": True, "errors": [redact_text_urls(message)]}
+    return {"present": True, "errors": ["TLS inspection failed: no validated address was usable."]}
 
 
 def summarize_certificate(cert: dict[str, Any]) -> dict[str, Any]:
@@ -1498,20 +1913,21 @@ def fetch_body_text(
     max_response_bytes: int,
     allowed_ports: tuple[int, ...],
 ) -> str:
-    validate_web_url_allowed(url, allow_private_targets=allow_private_targets, allowed_ports=allowed_ports)
-    parsed = urlsplit(url)
-    host = parsed.hostname or ""
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
-    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-    connection = connection_class(host, port=port, timeout=timeout_seconds)
-    try:
-        connection.request("GET", target, headers={"User-Agent": "Inspectra/0.1 passive-web-audit", "Connection": "close"})
-        response = connection.getresponse()
-        body, _ = read_limited_response(response, max_response_bytes)
-        return body.decode("utf-8", errors="replace")
-    finally:
-        connection.close()
+    validated_target = resolve_allowed_web_target(
+        url,
+        allow_private_targets=allow_private_targets,
+        allowed_ports=allowed_ports,
+    )
+    parsed = urlsplit(validated_target.url)
+    request_target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    _status_code, _reason, _headers, body, _truncated = request_pinned_http(
+        validated_target,
+        request_target,
+        timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        headers={"User-Agent": "Inspectra/0.1 passive-web-audit", "Connection": "close"},
+    )
+    return body.decode("utf-8", errors="replace")
 
 
 def parse_security_txt_fields(text: str) -> dict[str, list[str]]:
@@ -2611,7 +3027,18 @@ def analyze_package_json_manifest(raw_text: str) -> tuple[dict[str, Any], list[d
     project = {
         "name": payload.get("name") if isinstance(payload.get("name"), str) else None,
         "version": payload.get("version") if isinstance(payload.get("version"), str) else None,
+        **safe_declared_license_fields(payload.get("license")),
     }
+    workspace_value = payload.get("workspaces")
+    workspace_declared = (
+        isinstance(workspace_value, str)
+        and bool(workspace_value.strip())
+        or isinstance(workspace_value, (list, dict))
+    )
+    if workspace_declared:
+        # This safe boolean is sufficient for downstream pairing policy. Do not
+        # retain workspace names or paths from untrusted project metadata.
+        project["workspace_declared"] = True
 
     if scripts:
         findings.append(
@@ -2649,12 +3076,20 @@ def analyze_package_json_manifest(raw_text: str) -> tuple[dict[str, Any], list[d
 def analyze_requirements_manifest(raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
     findings: list[dict[str, str]] = []
     dependencies: list[dict[str, str]] = []
+    exact_pins = 0
+    exact_pins_with_hashes = 0
+    exact_pins_missing_hashes = 0
+    hash_entries_for_exact_pins = 0
+    non_registry_entries_excluded = 0
 
-    for line_number, raw_line in enumerate(raw_text.splitlines(), start=1):
+    for line_number, raw_line in requirements_logical_lines(raw_text):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         line = strip_inline_comment(line)
+        if not line:
+            continue
+        line, hash_count = strip_requirements_hash_options(line)
         if not line:
             continue
 
@@ -2665,34 +3100,36 @@ def analyze_requirements_manifest(raw_text: str) -> tuple[dict[str, Any], list[d
                     "Custom package index or link source",
                     "medium",
                     "The requirements file references an alternate index or link source. This is an informational supply-chain signal.",
-                    f"line {line_number}: {line}",
+                    f"line {line_number}: alternate package index or link source detected; reference withheld.",
                     "Confirm the configured package source is trusted and expected.",
                 )
             )
             continue
 
         if line == "-e" or line.startswith("-e "):
+            editable_name = parse_editable_name(line)
             dependencies.append(
                 {
-                    "name": parse_editable_name(line),
-                    "specifier": line,
+                    "name": editable_name,
+                    "specifier": "",
                     "source": f"line {line_number}",
-                    "declared_requirement": line,
+                    "declared_requirement": f"{editable_name}: editable reference withheld",
                     "source_type": "editable",
                 }
             )
+            non_registry_entries_excluded += 1
             findings.append(
                 make_finding(
                     "requirements_editable_install",
                     "Editable install reference",
                     "medium",
                     "Editable installs can point at local paths or VCS sources. Inspectra records this without installing anything.",
-                    f"line {line_number}: {line}",
+                    f"line {line_number}: editable dependency reference detected; source withheld.",
                     "Review the referenced source before installing this requirements file.",
                 )
             )
             if contains_external_or_local_source(line):
-                findings.append(make_dependency_source_finding(f"line {line_number}", line))
+                findings.append(make_dependency_source_finding(f"line {line_number}"))
             continue
 
         if line.startswith("-"):
@@ -2702,7 +3139,7 @@ def analyze_requirements_manifest(raw_text: str) -> tuple[dict[str, Any], list[d
                     "Requirements option present",
                     "info",
                     "The file contains a pip option. Inspectra does not execute pip and records this for manual review.",
-                    f"line {line_number}: {line}",
+                    f"line {line_number}: pip option detected; value withheld.",
                     "Check that this option is expected before using the file with pip.",
                 )
             )
@@ -2710,7 +3147,11 @@ def analyze_requirements_manifest(raw_text: str) -> tuple[dict[str, Any], list[d
 
         dependency = parse_requirement_dependency(line, line_number)
         dependencies.append(dependency)
-        if "==" not in dependency["specifier"]:
+        if dependency["source_type"] != "registry":
+            non_registry_entries_excluded += 1
+            findings.append(make_dependency_source_finding(f"line {line_number}"))
+            continue
+        if not is_exact_requirements_pin(dependency["specifier"]):
             findings.append(
                 make_finding(
                     "requirements_dependency_not_exactly_pinned",
@@ -2721,15 +3162,87 @@ def analyze_requirements_manifest(raw_text: str) -> tuple[dict[str, Any], list[d
                     "Consider exact pins or a lockfile in workflows that require deterministic installs.",
                 )
             )
-        if contains_external_or_local_source(line):
-            findings.append(make_dependency_source_finding(f"line {line_number}", line))
+            continue
+        exact_pins += 1
+        if hash_count:
+            exact_pins_with_hashes += 1
+            hash_entries_for_exact_pins += hash_count
+        else:
+            exact_pins_missing_hashes += 1
+
+    if exact_pins_missing_hashes:
+        findings.append(
+            make_finding(
+                "requirements_exact_pins_missing_hashes",
+                "Some exact Python requirements have no retained hash evidence",
+                "info",
+                "Exact pins improve repeatability but do not provide artifact-integrity evidence by themselves.",
+                f"{exact_pins_missing_hashes} of {exact_pins} exact requirement entries had no supported hash option.",
+                "Generate and review a fully hashed requirements workflow where artifact integrity is required.",
+            )
+        )
+
+    integrity_status = (
+        "not_applicable"
+        if exact_pins == 0
+        else "missing"
+        if exact_pins_missing_hashes
+        else "hashes_present"
+    )
 
     return {
         "project": {},
         "dependencies": {"dependencies": dependencies},
+        "integrity_summary": {
+            "contract_version": "requirements-hash-summary-v1",
+            "status": integrity_status,
+            "exact_pins": exact_pins,
+            "exact_pins_with_hashes": exact_pins_with_hashes,
+            "exact_pins_missing_hashes": exact_pins_missing_hashes,
+            "hash_entries_for_exact_pins": hash_entries_for_exact_pins,
+            "non_registry_entries_excluded": non_registry_entries_excluded,
+        },
         "scripts": {},
         "engines": {},
     }, findings, []
+
+
+def requirements_logical_lines(raw_text: str) -> list[tuple[int, str]]:
+    """Join backslash continuations without evaluating includes or variables."""
+
+    logical: list[tuple[int, str]] = []
+    parts: list[str] = []
+    start_line = 1
+    for line_number, raw_line in enumerate(raw_text.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not parts:
+            start_line = line_number
+        continued = stripped.endswith("\\")
+        parts.append(stripped[:-1].rstrip() if continued else stripped)
+        if not continued:
+            logical.append((start_line, " ".join(part for part in parts if part)))
+            parts = []
+    if parts:
+        logical.append((start_line, " ".join(part for part in parts if part)))
+    return logical
+
+
+_REQUIREMENTS_HASH_OPTION = re.compile(
+    r"(?<!\S)--hash(?:=|\s+)(?:sha256:[A-Fa-f0-9]{64}|sha384:[A-Fa-f0-9]{96}|sha512:[A-Fa-f0-9]{128})(?=\s|$)",
+    re.IGNORECASE,
+)
+
+
+def strip_requirements_hash_options(line: str) -> tuple[str, int]:
+    """Return a requirement without ever retaining recognized digest values."""
+
+    matches = list(_REQUIREMENTS_HASH_OPTION.finditer(line))
+    sanitized = _REQUIREMENTS_HASH_OPTION.sub("", line)
+    # An unsupported or malformed hash option must not leak its value and does
+    # not count as integrity evidence.
+    sanitized = re.sub(r"(?<!\S)--hash(?:=|\s+)\S+", "", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r"(?<!\S)--hash(?=\s|$)", "", sanitized, flags=re.IGNORECASE)
+    return " ".join(sanitized.split()), len(matches)
 
 
 def analyze_pyproject_manifest(raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
@@ -2773,12 +3286,14 @@ def analyze_pyproject_manifest(raw_text: str) -> tuple[dict[str, Any], list[dict
             ]
 
     findings.extend(find_dependency_indicators(dependency_groups))
+    license_value = (project.get("license") if project else None) or poetry.get("license")
     return {
         "project": {
             key: value
             for key, value in {
                 "name": project.get("name") if project else None,
                 "version": project.get("version") if project else None,
+                **safe_declared_license_fields(license_value),
             }.items()
             if isinstance(value, str)
         },
@@ -2788,8 +3303,93 @@ def analyze_pyproject_manifest(raw_text: str) -> tuple[dict[str, Any], list[dict
     }, findings, errors
 
 
+def analyze_pipfile_manifest(raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
+    """Parse only Pipenv's bounded dependency declaration tables.
+
+    Source tables, indexes, URLs, paths, VCS locators and arbitrary table
+    metadata are never retained. Inline dependency tables become non-registry
+    unless they contain only a version selector and benign markers/extras.
+    """
+
+    payload, errors = parse_toml_document(raw_text)
+    if payload is None:
+        return empty_manifest_parse(), [], errors
+    dependency_groups: dict[str, list[dict[str, str]]] = {}
+    for group in ("packages", "dev-packages"):
+        raw_dependencies = payload.get(group)
+        if raw_dependencies is None:
+            continue
+        if not isinstance(raw_dependencies, dict):
+            return empty_manifest_parse(), [], ["pipfile_dependency_group_not_object"]
+        normalized: list[dict[str, str]] = []
+        for raw_name, raw_value in sorted(raw_dependencies.items()):
+            name = canonicalize_pypi_lockfile_name(raw_name) if isinstance(raw_name, str) else None
+            if not name:
+                continue
+            source_type = "registry"
+            specifier = ""
+            if isinstance(raw_value, str):
+                specifier = raw_value.strip()[:160]
+                source_type = classify_dependency_source_hint("pyproject_toml", name, specifier)
+            elif isinstance(raw_value, dict):
+                unsafe_keys = {"path", "file", "git", "url", "index", "editable", "ref"}.intersection(raw_value)
+                raw_version = raw_value.get("version")
+                if unsafe_keys or not isinstance(raw_version, str):
+                    source_type = "unknown"
+                else:
+                    specifier = raw_version.strip()[:160]
+                    source_type = classify_dependency_source_hint("pyproject_toml", name, specifier)
+            else:
+                source_type = "unknown"
+            normalized.append({
+                "name": name,
+                "specifier": specifier if source_type == "registry" else "",
+                "declared_requirement": f"{name}: {specifier}" if source_type == "registry" and specifier else name,
+                "source_type": source_type,
+            })
+        dependency_groups[group] = normalized
+    findings = find_dependency_indicators(dependency_groups)
+    return {"project": {}, "dependencies": dependency_groups, "scripts": {}, "engines": {}}, findings, []
+
+
 def empty_manifest_parse() -> dict[str, Any]:
     return {"project": {}, "dependencies": {}, "scripts": {}, "engines": {}}
+
+
+SUPPORTED_DECLARED_LICENSE_IDENTIFIERS = {
+    value.lower(): value
+    for value in (
+        "0BSD", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "CC0-1.0", "GPL-2.0-only",
+        "GPL-2.0-or-later", "GPL-3.0-only", "GPL-3.0-or-later", "ISC", "LGPL-2.1-only",
+        "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later", "MIT", "MPL-2.0",
+        "Unlicense", "AGPL-3.0-only", "AGPL-3.0-or-later",
+    )
+}
+
+
+def safe_declared_license_fields(value: Any) -> dict[str, str]:
+    """Retain only a narrow SPDX expression; withhold arbitrary manifest text."""
+
+    if value is None:
+        return {"license_status": "unknown"}
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 160:
+        return {"license_status": "unrecognized_withheld"}
+    expression = " ".join(value.strip().split())
+    raw_tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9.+-]*|[()]", expression)
+    if " ".join(raw_tokens).replace("( ", "(").replace(" )", ")") != expression:
+        return {"license_status": "unrecognized_withheld"}
+    canonical: list[str] = []
+    for token in raw_tokens:
+        if token in {"(", ")"}:
+            canonical.append(token)
+        elif token.upper() in {"AND", "OR"}:
+            canonical.append(token.upper())
+        elif token.lower() in SUPPORTED_DECLARED_LICENSE_IDENTIFIERS:
+            canonical.append(SUPPORTED_DECLARED_LICENSE_IDENTIFIERS[token.lower()])
+        else:
+            return {"license_status": "unrecognized_withheld"}
+    normalized = " ".join(canonical).replace("( ", "(").replace(" )", ")")
+    return {"license": normalized, "license_status": "declared"}
 
 
 def normalize_mapping_dependencies(dependencies: dict[str, Any]) -> list[dict[str, str]]:
@@ -2820,21 +3420,26 @@ def parse_requirement_dependency(line: str, line_number: int) -> dict[str, str]:
     match = re.match(r"^([A-Za-z0-9_.-]+(?:\[[^\]]+\])?)(.*)$", requirement)
     if not match:
         return {
-            "name": requirement,
-            "specifier": line,
+            "name": "unparsed-requirement",
+            "specifier": "",
             "source": f"line {line_number}",
-            "declared_requirement": line,
-            "source_type": classify_dependency_source_hint("requirements_txt", requirement, line, line),
+            "declared_requirement": "unparsed requirement withheld",
+            "source_type": "unknown",
         }
     name = match.group(1)
     specifier = match.group(2).strip() or ""
+    source_type = classify_dependency_source_hint("requirements_txt", name, specifier, line)
     return {
         "name": name,
-        "specifier": specifier,
+        "specifier": specifier if source_type == "registry" else "",
         "source": f"line {line_number}",
-        "declared_requirement": line,
-        "source_type": classify_dependency_source_hint("requirements_txt", name, specifier, line),
+        "declared_requirement": f"{name}{specifier}" if source_type == "registry" else f"{name}: non-registry reference withheld",
+        "source_type": source_type,
     }
+
+
+def is_exact_requirements_pin(specifier: str) -> bool:
+    return bool(re.fullmatch(r"==[0-9][A-Za-z0-9._+!\-]{0,127}", specifier.strip()))
 
 
 def parse_editable_name(line: str) -> str:
@@ -2880,6 +3485,10 @@ def find_dependency_indicators(dependency_groups: dict[str, list[dict[str, str]]
         for dependency in dependencies:
             name = dependency.get("name", "unknown")
             specifier = dependency.get("specifier", "")
+            source_type = dependency.get("source_type", "unknown")
+            if source_type != "registry":
+                findings.append(make_dependency_source_finding(group))
+                continue
             evidence = f"{group}: {name} {specifier}".strip()
             if is_broad_dependency_range(specifier):
                 findings.append(
@@ -2892,9 +3501,7 @@ def find_dependency_indicators(dependency_groups: dict[str, list[dict[str, str]]
                         "Prefer a deliberate version range or lockfile for reproducible environments.",
                     )
                 )
-            if contains_external_or_local_source(specifier):
-                findings.append(make_dependency_source_finding(group, evidence))
-            elif specifier and not has_exact_pin(specifier):
+            if specifier and not has_exact_pin(specifier):
                 findings.append(
                     make_finding(
                         "dependency_not_exactly_pinned",
@@ -2908,13 +3515,13 @@ def find_dependency_indicators(dependency_groups: dict[str, list[dict[str, str]]
     return findings
 
 
-def make_dependency_source_finding(source: str, evidence: str) -> dict[str, str]:
+def make_dependency_source_finding(source: str) -> dict[str, str]:
     return make_finding(
         "dependency_external_or_local_source",
         "Dependency references URL, VCS, or local source",
         "medium",
         "The dependency appears to reference a URL, VCS, or local path. This can be legitimate, but should be reviewed as a supply-chain signal.",
-        f"{source}: {evidence}",
+        f"{source}: non-registry dependency reference detected; source withheld.",
         "Confirm the referenced source is trusted, pinned, and expected.",
     )
 
@@ -3323,6 +3930,8 @@ def analyze_project_archive_manifests(path: Path, archive_type: str) -> dict[str
     state = {
         "total_manifest_bytes": 0,
         "parseable_manifests_seen": 0,
+        "parseable_lockfiles_seen": 0,
+        "total_declared_uncompressed_bytes": 0,
     }
 
     if archive_type == "zip":
@@ -3346,6 +3955,8 @@ def analyze_project_archive_manifests(path: Path, archive_type: str) -> dict[str
                     "mode": format_file_mode(mode),
                     "link_target": None,
                 }
+                if project_archive_declared_size_limit_reached(analysis, state, entry["size"]):
+                    break
                 process_project_archive_entry(
                     analysis,
                     state,
@@ -3366,6 +3977,8 @@ def analyze_project_archive_manifests(path: Path, archive_type: str) -> dict[str
                     "link_target": member.linkname or None,
                     "member": member,
                 }
+                if project_archive_declared_size_limit_reached(analysis, state, entry["size"]):
+                    break
                 process_project_archive_entry(
                     analysis,
                     state,
@@ -3388,10 +4001,16 @@ def empty_project_archive_analysis(errors: list[str] | None = None) -> dict[str,
             "dependency_groups": [],
             "findings_count": 0,
             "truncated": False,
+            "lockfiles_detected": 0,
+            "lockfiles_parsed": 0,
+            "lockfiles_skipped": 0,
+            "total_declared_uncompressed_bytes": 0,
         },
         "supported_manifests": [],
         "unsupported_manifests": [],
         "parsed_manifests": [],
+        "parsed_lockfiles": [],
+        "lockfiles": [],
         "findings": [],
         "errors": errors or [],
     }
@@ -3422,15 +4041,108 @@ def build_project_archive_result(
             "max_manifest_bytes": PROJECT_ARCHIVE_MAX_MANIFEST_BYTES,
             "max_total_manifest_bytes": PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES,
             "max_archive_entries": PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES,
+            "max_total_uncompressed_bytes": PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES,
+            "max_lockfiles": PROJECT_ARCHIVE_MAX_LOCKFILES,
+            "max_lockfile_packages": PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES,
+            "max_lockfile_edges": PROJECT_ARCHIVE_MAX_LOCKFILE_EDGES,
+            "sensitive_data_max_files": SECRETS_REVIEW_MAX_FILES,
+            "sensitive_data_max_file_bytes": SECRETS_REVIEW_MAX_FILE_BYTES,
+            "sensitive_data_max_total_bytes": SECRETS_REVIEW_MAX_TOTAL_BYTES,
             "max_zip_central_directory_bytes": ARCHIVE_MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
         },
         "summary": summary,
         "supported_manifests": analysis.get("supported_manifests", []),
         "unsupported_manifests": analysis.get("unsupported_manifests", []),
         "parsed_manifests": analysis.get("parsed_manifests", []),
+        "parsed_lockfiles": analysis.get("parsed_lockfiles", []),
+        "passive_reviews": analysis.get("passive_reviews", {}),
         "findings": findings,
         "errors": analysis.get("errors", []),
     }
+
+
+def attach_project_sensitive_data_review(analysis: dict[str, Any], review: dict[str, Any]) -> None:
+    """Merge only bounded, redacted review evidence into a project result."""
+
+    review_summary = as_dict(review.get("summary"))
+    review_findings = review.get("findings") if isinstance(review.get("findings"), list) else []
+    review_errors = [item for item in review.get("errors", []) if isinstance(item, str)][:8]
+    truncated = bool(review_summary.get("truncated"))
+    analysis["findings"].extend(review_findings)
+    analysis["summary"].update(
+        {
+            "sensitive_data_review_status": "partial" if truncated or review_errors else "completed",
+            "sensitive_data_files_considered": int(review_summary.get("files_considered") or 0),
+            "sensitive_data_files_reviewed": int(review_summary.get("files_reviewed") or 0),
+            "sensitive_files_detected": int(review_summary.get("sensitive_files_detected") or 0),
+            "sensitive_data_findings": len(review_findings),
+            "sensitive_data_values_redacted": int(review_summary.get("redacted_values_count") or 0),
+        }
+    )
+    if truncated:
+        analysis["summary"]["truncated"] = True
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
+    analysis["passive_reviews"] = {
+        "contract_version": "2026-09-09.1",
+        "sensitive_data": {
+            "status": "partial" if truncated or review_errors else "completed",
+            "files_considered": int(review_summary.get("files_considered") or 0),
+            "files_reviewed": int(review_summary.get("files_reviewed") or 0),
+            "sensitive_files_detected": int(review_summary.get("sensitive_files_detected") or 0),
+            "findings_count": len(review_findings),
+            "redacted_values_count": int(review_summary.get("redacted_values_count") or 0),
+            "errors": review_errors,
+        },
+    }
+    analysis["errors"].extend(review_errors)
+
+
+def attach_project_configuration_reviews(analysis: dict[str, Any], path: Path, archive_type: str) -> None:
+    """Run the existing closed passive configuration analyzers in one worker."""
+
+    reviews = (
+        ("docker", analyze_docker_config_archive, DOCKER_CONFIG_MAX_FILES, DOCKER_CONFIG_MAX_FILE_BYTES, DOCKER_CONFIG_MAX_TOTAL_BYTES),
+        ("compose", analyze_compose_config_archive, COMPOSE_CONFIG_MAX_FILES, COMPOSE_CONFIG_MAX_FILE_BYTES, COMPOSE_CONFIG_MAX_TOTAL_BYTES),
+        ("kubernetes", analyze_k8s_config_archive, K8S_CONFIG_MAX_FILES, K8S_CONFIG_MAX_FILE_BYTES, K8S_CONFIG_MAX_TOTAL_BYTES),
+        ("terraform", analyze_terraform_config_archive, TERRAFORM_CONFIG_MAX_FILES, TERRAFORM_CONFIG_MAX_FILE_BYTES, TERRAFORM_CONFIG_MAX_TOTAL_BYTES),
+    )
+    retained_reviews = analysis.setdefault("passive_reviews", {"contract_version": "2026-09-09.1"})
+    for review_name, analyzer, max_files, max_file_bytes, max_total_bytes in reviews:
+        try:
+            review = analyzer(
+                path,
+                archive_type,
+                max_files=max_files,
+                max_file_bytes=max_file_bytes,
+                max_total_bytes=max_total_bytes,
+            )
+        except (OSError, tarfile.TarError, zipfile.BadZipFile):
+            review = {"summary": {"truncated": False}, "findings": [], "errors": ["Configuration review could not parse the archive safely."]}
+        summary = as_dict(review.get("summary"))
+        findings = review.get("findings") if isinstance(review.get("findings"), list) else []
+        errors = [item for item in review.get("errors", []) if isinstance(item, str)][:8]
+        truncated = bool(summary.get("truncated"))
+        for finding in findings:
+            if isinstance(finding, dict):
+                scoped = dict(finding)
+                scoped["project_review"] = review_name
+                analysis["findings"].append(scoped)
+        retained_reviews[review_name] = {
+            "status": "partial" if truncated or errors else "completed",
+            "summary": {
+                key: value
+                for key, value in list(summary.items())[:32]
+                if isinstance(key, str) and isinstance(value, (bool, int))
+            },
+            "limits": {"max_files": max_files, "max_file_bytes": max_file_bytes, "max_total_bytes": max_total_bytes},
+            "errors": errors,
+        }
+        if truncated:
+            analysis["summary"]["truncated"] = True
+        analysis["summary"][f"{review_name}_review_status"] = "partial" if truncated or errors else "completed"
+        analysis["summary"][f"{review_name}_findings"] = len(findings)
+        analysis["errors"].extend(errors)
+    analysis["summary"]["findings_count"] = len(analysis["findings"])
 
 
 def should_stop_project_archive_scan(index: int, analysis: dict[str, Any]) -> bool:
@@ -3449,6 +4161,51 @@ def should_stop_project_archive_scan(index: int, analysis: dict[str, Any]) -> bo
         return True
     summary["total_entries_seen"] = index
     return False
+
+
+def project_archive_declared_size_limit_reached(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    declared_size: Any,
+) -> bool:
+    size_bytes = declared_size if isinstance(declared_size, int) and declared_size > 0 else 0
+    state["total_declared_uncompressed_bytes"] += size_bytes
+    analysis["summary"]["total_declared_uncompressed_bytes"] = state["total_declared_uncompressed_bytes"]
+    if state["total_declared_uncompressed_bytes"] <= PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES:
+        return False
+    analysis["summary"]["truncated"] = True
+    add_project_finding(
+        analysis,
+        "project_archive_uncompressed_size_limit_reached",
+        "Declared uncompressed size limit reached",
+        "medium",
+        "Inspectra stopped scanning archive entries when their declared size exceeded the configured expansion budget.",
+        f"Configured declared-byte limit: {PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES} bytes.",
+        "Reduce or split the archive before retrying; do not raise the limit for untrusted input without additional isolation.",
+    )
+    return True
+
+
+def validate_project_archive_request_limits(request: ArchiveAnalysisRequest) -> None:
+    """Reject backend/runner limit drift instead of silently widening a job."""
+
+    expected = {
+        "max_total_uncompressed_bytes": PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES,
+        "max_archive_entries": PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES,
+        "max_manifests": PROJECT_ARCHIVE_MAX_MANIFESTS,
+        "max_manifest_bytes": PROJECT_ARCHIVE_MAX_MANIFEST_BYTES,
+        "max_total_manifest_bytes": PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES,
+        "max_lockfiles": PROJECT_ARCHIVE_MAX_LOCKFILES,
+        "max_lockfile_packages": PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES,
+        "max_lockfile_edges": PROJECT_ARCHIVE_MAX_LOCKFILE_EDGES,
+    }
+    for field, configured in expected.items():
+        requested = getattr(request, field)
+        if requested is not None and requested != configured:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Project analysis limit contract does not match the runner configuration.",
+            )
 
 
 def add_project_zip_preflight_finding(
@@ -3473,6 +4230,11 @@ def process_project_archive_entry(
     path = str(entry["path"])
     manifest_name = detect_archive_manifest(path)
     if manifest_name is None:
+        return
+
+    lockfile_type = supported_project_lockfile_type(path)
+    if lockfile_type is not None:
+        process_project_lockfile_entry(analysis, state, entry, open_entry, lockfile_type)
         return
 
     manifest_type = supported_project_manifest_type(path)
@@ -3515,7 +4277,7 @@ def process_project_archive_entry(
             raise ValueError("entry could not be opened as a regular file")
         with stream:
             raw_bytes = read_limited_stream(stream, PROJECT_ARCHIVE_MAX_MANIFEST_BYTES)
-    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as exc:
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError):
         manifest_record["status"] = "skipped"
         manifest_record["reason"] = "manifest_read_error"
         analysis["supported_manifests"].append(manifest_record)
@@ -3525,7 +4287,7 @@ def process_project_archive_entry(
             "Manifest could not be read safely",
             "low",
             "A supported manifest entry could not be read from the archive within Inspectra limits.",
-            f"{path}: {exc}",
+            f"{path}: read failed within the configured archive limits",
             "Review this manifest manually in a constrained environment if it is expected.",
         )
         return
@@ -3533,7 +4295,7 @@ def process_project_archive_entry(
     state["total_manifest_bytes"] += len(raw_bytes)
     try:
         raw_text = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
+    except UnicodeDecodeError:
         manifest_record["status"] = "skipped"
         manifest_record["reason"] = "manifest_utf8_decode_error"
         analysis["supported_manifests"].append(manifest_record)
@@ -3543,12 +4305,16 @@ def process_project_archive_entry(
             "Manifest is not valid UTF-8 text",
             "low",
             "A supported manifest entry could not be decoded as UTF-8 text.",
-            f"{path}: {exc}",
+            f"{path}: invalid UTF-8 text",
             "Review this file manually before treating it as a dependency manifest.",
         )
         return
 
     parsed, parser_findings, parser_errors = parse_manifest_text_by_type(manifest_type, raw_text)
+    # Keep the category of a non-registry dependency to explain why it cannot
+    # be correlated, but never retain its URL, VCS reference, local path or
+    # alias target in the project result.
+    parsed = sanitize_project_archive_dependency_references(parsed)
     dependency_groups = parsed.get("dependencies", {})
     dependency_count = sum(len(items) for items in dependency_groups.values() if isinstance(items, list))
     parsed_record = {
@@ -3583,6 +4349,85 @@ def process_project_archive_entry(
             f"{path}: {'; '.join(parser_errors)}",
             "Review the manifest syntax manually before relying on the extracted dependency data.",
         )
+
+
+def process_project_lockfile_entry(
+    analysis: dict[str, Any],
+    state: dict[str, int],
+    entry: dict[str, Any],
+    open_entry,
+    lockfile_type: str,
+) -> None:
+    """Read only the narrow lockfile grammar supported by this project audit."""
+
+    path = str(entry["path"])
+    size_bytes = int(entry.get("size") or 0)
+    flags, depth = archive_entry_flags(path, entry.get("mode_int"))
+    record = {
+        "path": path,
+        "lockfile_type": lockfile_type,
+        "size_bytes": size_bytes,
+        "entry_type": str(entry["type"]),
+        "mode": entry.get("mode"),
+        "depth": depth,
+        "flags": flags,
+    }
+    summary = as_dict(analysis["summary"])
+    summary["lockfiles_detected"] += 1
+    state["parseable_lockfiles_seen"] += 1
+
+    skip_reason = project_manifest_skip_reason(record, state)
+    if not skip_reason and state["parseable_lockfiles_seen"] > PROJECT_ARCHIVE_MAX_LOCKFILES:
+        skip_reason = "too_many_lockfiles"
+    if skip_reason:
+        record["status"] = "skipped"
+        record["reason"] = skip_reason
+        analysis["lockfiles"].append(record)
+        summary["lockfiles_skipped"] += 1
+        if skip_reason in {"too_many_lockfiles", "total_manifest_bytes_limit"}:
+            summary["truncated"] = True
+        return
+
+    try:
+        stream = open_entry()
+        if stream is None:
+            raise ValueError("entry could not be opened as a regular file")
+        with stream:
+            raw_bytes = read_limited_stream(stream, PROJECT_ARCHIVE_MAX_MANIFEST_BYTES)
+    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError):
+        record["status"] = "skipped"
+        record["reason"] = "lockfile_read_error"
+        analysis["lockfiles"].append(record)
+        summary["lockfiles_skipped"] += 1
+        return
+
+    state["total_manifest_bytes"] += len(raw_bytes)
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        record["status"] = "skipped"
+        record["reason"] = "lockfile_utf8_decode_error"
+        analysis["lockfiles"].append(record)
+        summary["lockfiles_skipped"] += 1
+        return
+
+    parsed, errors = parse_project_lockfile_text(lockfile_type, raw_text)
+    if errors:
+        record["status"] = "skipped"
+        record["reason"] = errors[0]
+        analysis["lockfiles"].append(record)
+        summary["lockfiles_skipped"] += 1
+        return
+
+    record["status"] = "parsed"
+    record["lockfile_version"] = parsed["lockfile_version"]
+    record["resolved_packages"] = len(parsed["packages"])
+    if parsed["truncated"]:
+        record["truncated"] = True
+        summary["truncated"] = True
+    analysis["lockfiles"].append(record)
+    analysis["parsed_lockfiles"].append({"path": path, "lockfile_type": lockfile_type, **parsed})
+    summary["lockfiles_parsed"] += 1
 
 
 def project_manifest_skip_reason(manifest_record: dict[str, Any], state: dict[str, int]) -> str | None:
@@ -6049,7 +6894,7 @@ def redact_secrets_review_text(text: str) -> str:
         redacted,
     )
     redacted = re.sub(
-        r"(?i)\b([A-Z0-9_.-]*(?:SECRET_KEY|DJANGO_SECRET_KEY|CLIENT_SECRET|PRIVATE_KEY|DATABASE_URL|REDIS_URL|API_KEY|PASSWORD|TOKEN|SECRET|PASS)[A-Z0-9_.-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\"}\]]+",
+        r"(?i)\b([A-Z0-9_.-]*(?:SECRET_KEY|DJANGO_SECRET_KEY|CLIENT_SECRET|PRIVATE_KEY|DATABASE_URL|REDIS_URL|API_KEY|PASSWORD|TOKEN|SECRET|PASS)[A-Z0-9_.-]*)(\s*[:=]\s*)(['\"]?)[^\s,'\"}\]\[]+",
         r"\1\2\3[REDACTED]",
         redacted,
     )
@@ -16535,15 +17380,1284 @@ def parse_manifest_text_by_type(manifest_type: str, raw_text: str) -> tuple[dict
         return analyze_package_json_manifest(raw_text)
     if manifest_type == "requirements_txt":
         return analyze_requirements_manifest(raw_text)
+    if manifest_type == "pipfile":
+        return analyze_pipfile_manifest(raw_text)
+    if manifest_type == "go_mod":
+        return parse_go_mod_manifest(raw_text)
+    if manifest_type == "cargo_toml":
+        return parse_cargo_manifest(raw_text)
+    if manifest_type == "composer_json":
+        return parse_composer_manifest(raw_text)
+    if manifest_type == "gradle_build":
+        return parse_gradle_build_marker(raw_text)
+    if manifest_type == "dotnet_project":
+        return parse_dotnet_project_marker(raw_text)
     return analyze_pyproject_manifest(raw_text)
+
+
+def parse_project_lockfile_text(lockfile_type: str, raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    if "\x00" in raw_text:
+        return {}, ["lockfile_contains_nul_bytes"]
+    if lockfile_type == "npm_package_lock":
+        return parse_npm_package_lockfile_text(raw_text)
+    if lockfile_type == "pnpm_lock":
+        return parse_pnpm_lockfile_text(raw_text)
+    if lockfile_type == "yarn_classic_lock":
+        return parse_yarn_classic_lockfile_text(raw_text)
+    if lockfile_type == "poetry_lock":
+        return parse_poetry_lockfile_text(raw_text)
+    if lockfile_type == "pipfile_lock":
+        return parse_pipfile_lockfile_text(raw_text)
+    if lockfile_type == "go_sum":
+        return parse_go_sum_lockfile_text(raw_text)
+    if lockfile_type == "cargo_lock":
+        return parse_cargo_lockfile_text(raw_text)
+    if lockfile_type == "composer_lock":
+        return parse_composer_lockfile_text(raw_text)
+    if lockfile_type == "gradle_lock":
+        return parse_gradle_lockfile_text(raw_text)
+    if lockfile_type == "nuget_packages_lock":
+        return parse_nuget_packages_lockfile_text(raw_text)
+    return {}, ["unsupported_lockfile_type"]
+
+
+def parse_go_mod_manifest(raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
+    """Parse a bounded Go module dependency subset without invoking Go.
+
+    Only exact ``require`` identities are retained. A ``replace`` directive
+    marks the original module as non-registry, but its replacement target is
+    deliberately discarded because it may contain a private path or host.
+    """
+
+    lines = raw_text.splitlines()
+    if len(lines) > PROJECT_ARCHIVE_MAX_GO_LINES:
+        return empty_manifest_parse(), [], ["go_mod_line_limit"]
+    requirements: list[tuple[str, str, bool]] = []
+    replaced: set[str] = set()
+    block: str | None = None
+    for raw_line in lines:
+        if len(raw_line) > 4_096:
+            return empty_manifest_parse(), [], ["go_mod_line_too_long"]
+        line = raw_line.strip()
+        if not line or line.startswith("//"):
+            continue
+        if block is not None and line == ")":
+            block = None
+            continue
+        if block is None and line in {"require (", "replace ("}:
+            block = line.split(" ", 1)[0]
+            continue
+        directive = block
+        value = line
+        if directive is None:
+            parts = line.split(None, 1)
+            if len(parts) != 2 or parts[0] not in {"require", "replace"}:
+                continue
+            directive, value = parts
+        if directive == "replace":
+            source = value.split("=>", 1)[0].strip().split()
+            if source:
+                module = normalize_go_module_path(source[0])
+                if module:
+                    replaced.add(module)
+            continue
+        indirect = value.endswith("// indirect")
+        declaration = value[: -len("// indirect")].strip() if indirect else value.split("//", 1)[0].strip()
+        parts = declaration.split()
+        if len(parts) != 2:
+            continue
+        module = normalize_go_module_path(parts[0])
+        version = normalize_go_module_version(parts[1])
+        if module and version:
+            requirements.append((module, version, indirect))
+
+    dependencies = {"require": [], "indirect": []}
+    for module, version, indirect in requirements[:PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES]:
+        source_type = "unknown" if module in replaced else "registry"
+        dependencies["indirect" if indirect else "require"].append(
+            {
+                "name": module,
+                "specifier": version if source_type == "registry" else "",
+                "dependency_source_type": source_type,
+            }
+        )
+    return {
+        "project": {},
+        "dependencies": dependencies,
+        "format_version": GO_MODULE_FORMAT_VERSION,
+        "truncated": len(requirements) > PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES,
+    }, [], []
+
+
+def parse_go_sum_lockfile_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    """Retain only exact module/version pairs from Go's checksum manifest.
+
+    Hashes are checked only for shape and are never returned. ``go.sum`` does
+    not prove a module is public; all records therefore remain unverified until
+    the backend applies a separate deployment-level attestation.
+    """
+
+    lines = raw_text.splitlines()
+    if len(lines) > PROJECT_ARCHIVE_MAX_GO_LINES:
+        return {}, ["go_sum_line_limit"]
+    packages: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    truncated = False
+    for raw_line in lines:
+        if len(raw_line) > 4_096:
+            return {}, ["go_sum_line_too_long"]
+        parts = raw_line.split()
+        if len(parts) != 3 or not re.fullmatch(r"h1:[A-Za-z0-9+/=]{20,200}", parts[2]):
+            continue
+        module = normalize_go_module_path(parts[0])
+        version_value = parts[1].removesuffix("/go.mod")
+        version = normalize_go_module_version(version_value)
+        if not module or not version or (module, version) in seen:
+            continue
+        if len(packages) >= PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+            truncated = True
+            break
+        seen.add((module, version))
+        packages.append({"name": module, "version": version, "source_type": "unverified_registry"})
+    return {"lockfile_version": GO_SUM_FORMAT_VERSION, "packages": packages, "truncated": truncated}, []
+
+
+def normalize_go_module_path(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 300:
+        return None
+    candidate = value.strip()
+    if candidate != candidate.lower() or not re.fullmatch(
+        r"[a-z0-9][a-z0-9._~-]*(?:/[a-z0-9][a-z0-9._~+\-]*)+", candidate
+    ):
+        return None
+    first_segment = candidate.split("/", 1)[0]
+    return candidate if "." in first_segment and not first_segment.startswith((".", "-")) else None
+
+
+def normalize_go_module_version(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 160:
+        return None
+    candidate = value.strip()
+    return candidate if re.fullmatch(r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", candidate) else None
+
+
+def parse_cargo_manifest(raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
+    """Read bounded direct Cargo declarations without resolving or executing."""
+
+    if tomllib is None:
+        return empty_manifest_parse(), [], ["cargo_toml_parser_unavailable"]
+    try:
+        payload = tomllib.loads(raw_text)
+    except tomllib.TOMLDecodeError:
+        return empty_manifest_parse(), [], ["cargo_toml_parse_error"]
+    if not isinstance(payload, dict):
+        return empty_manifest_parse(), [], ["cargo_toml_root_not_object"]
+    dependencies: dict[str, list[dict[str, str]]] = {}
+    total = 0
+    truncated = False
+    for group in ("dependencies", "dev-dependencies", "build-dependencies"):
+        raw_dependencies = payload.get(group)
+        if not isinstance(raw_dependencies, dict):
+            continue
+        records: list[dict[str, str]] = []
+        for raw_name, raw_specifier in sorted(raw_dependencies.items()):
+            if total >= PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+                truncated = True
+                break
+            name = normalize_cargo_crate_name(raw_name)
+            if name is None:
+                continue
+            source_type = "registry"
+            specifier = ""
+            if isinstance(raw_specifier, str):
+                specifier = raw_specifier.strip()[:160]
+            elif isinstance(raw_specifier, dict):
+                raw_version = raw_specifier.get("version")
+                specifier = raw_version.strip()[:160] if isinstance(raw_version, str) else ""
+                if "package" in raw_specifier:
+                    source_type = "alias"
+                elif raw_specifier.get("workspace") is True:
+                    source_type = "workspace"
+                elif "path" in raw_specifier:
+                    source_type = "local"
+                elif "git" in raw_specifier:
+                    source_type = "vcs"
+                elif "registry" in raw_specifier or "registry-index" in raw_specifier:
+                    source_type = "unknown"
+            else:
+                source_type = "unknown"
+            records.append(
+                {
+                    "name": name,
+                    "specifier": specifier if source_type == "registry" else "",
+                    "dependency_source_type": source_type,
+                }
+            )
+            total += 1
+        dependencies[group] = records
+        if truncated:
+            break
+    return {"project": {}, "dependencies": dependencies, "format_version": "cargo-toml-v1", "truncated": truncated}, [], []
+
+
+def parse_cargo_lockfile_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    """Accept Cargo.lock v3/v4 and discard every locator and checksum."""
+
+    if tomllib is None:
+        return {}, ["cargo_lockfile_parser_unavailable"]
+    try:
+        payload = tomllib.loads(raw_text)
+    except tomllib.TOMLDecodeError:
+        return {}, ["cargo_lockfile_toml_parse_error"]
+    if not isinstance(payload, dict):
+        return {}, ["cargo_lockfile_root_not_object"]
+    version = payload.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or version not in CARGO_LOCKFILE_SUPPORTED_VERSIONS:
+        return {}, ["cargo_lockfile_version_not_supported"]
+    raw_packages = payload.get("package")
+    if not isinstance(raw_packages, list):
+        return {}, ["cargo_lockfile_packages_not_array"]
+    packages: list[dict[str, str]] = []
+    truncated = False
+    for index, raw_package in enumerate(raw_packages, start=1):
+        if index > PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+            truncated = True
+            break
+        if not isinstance(raw_package, dict):
+            continue
+        name = normalize_cargo_crate_name(raw_package.get("name"))
+        crate_version = normalize_cargo_version(raw_package.get("version"))
+        if name is None or crate_version is None:
+            continue
+        source = raw_package.get("source")
+        source_type = "registry" if source in CARGO_CRATES_IO_SOURCES else "workspace" if source is None else "unknown"
+        packages.append(
+            {
+                "name": name,
+                "version": crate_version if source_type == "registry" else "",
+                "source_type": source_type,
+            }
+        )
+    return {"lockfile_version": version, "packages": packages, "truncated": truncated}, []
+
+
+def normalize_cargo_crate_name(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 128:
+        return None
+    candidate = value.strip()
+    return candidate if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", candidate) else None
+
+
+def normalize_cargo_version(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 160:
+        return None
+    candidate = value.strip()
+    return candidate if re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", candidate) else None
+
+
+def parse_composer_manifest(raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
+    """Read direct Composer declarations without retaining repository data."""
+
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return empty_manifest_parse(), [], ["composer_json_parse_error"]
+    if not isinstance(payload, dict):
+        return empty_manifest_parse(), [], ["composer_json_root_not_object"]
+    # Any repository override makes public origin unknowable at this boundary.
+    # Retain only this boolean safety decision, never repository names/URLs.
+    custom_repositories = "repositories" in payload
+    dependencies: dict[str, list[dict[str, str]]] = {}
+    total = 0
+    truncated = False
+    for group in ("require", "require-dev"):
+        raw_dependencies = payload.get(group)
+        if not isinstance(raw_dependencies, dict):
+            continue
+        records: list[dict[str, str]] = []
+        for raw_name, raw_specifier in sorted(raw_dependencies.items()):
+            if total >= PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+                truncated = True
+                break
+            name = normalize_composer_package_name(raw_name)
+            if name is None or not isinstance(raw_specifier, str):
+                continue
+            specifier = raw_specifier.strip()[:160]
+            records.append(
+                {
+                    "name": name,
+                    "specifier": specifier if not custom_repositories else "",
+                    "dependency_source_type": "registry" if not custom_repositories else "unknown",
+                }
+            )
+            total += 1
+        dependencies[group] = records
+        if truncated:
+            break
+    return {
+        "project": {"custom_repositories_declared": custom_repositories},
+        "dependencies": dependencies,
+        "format_version": "composer-json-v1",
+        "truncated": truncated,
+    }, [], []
+
+
+def parse_composer_lockfile_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    """Keep exact package/version/scope only; discard all Composer locators."""
+
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return {}, ["composer_lockfile_json_parse_error"]
+    if not isinstance(payload, dict):
+        return {}, ["composer_lockfile_root_not_object"]
+    if not isinstance(payload.get("packages"), list) or not isinstance(payload.get("packages-dev", []), list):
+        return {}, ["composer_lockfile_packages_not_array"]
+    packages: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    truncated = False
+    for group, values in (("require", payload["packages"]), ("require-dev", payload.get("packages-dev", []))):
+        for raw_package in values:
+            if len(packages) >= PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+                truncated = True
+                break
+            if not isinstance(raw_package, dict):
+                continue
+            name = normalize_composer_package_name(raw_package.get("name"))
+            package_version = normalize_composer_version(raw_package.get("version"))
+            key = (name or "", package_version or "", group)
+            if name is None or package_version is None or key in seen:
+                continue
+            seen.add(key)
+            packages.append({
+                "name": name,
+                "version": package_version,
+                "dependency_group": group,
+                "source_type": "unverified_registry",
+            })
+        if truncated:
+            break
+    return {"lockfile_version": "composer-lock-json-v1", "packages": packages, "truncated": truncated}, []
+
+
+def normalize_composer_package_name(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 200:
+        return None
+    candidate = value.strip()
+    return candidate if candidate == candidate.lower() and re.fullmatch(r"[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*", candidate) else None
+
+
+def normalize_composer_version(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 160:
+        return None
+    candidate = value.strip()
+    matched = re.fullmatch(r"v?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)", candidate)
+    return matched.group(1) if matched else None
+
+
+def parse_gradle_build_marker(raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
+    """Acknowledge a Gradle build without evaluating its executable DSL."""
+
+    _ = raw_text
+    return {
+        "project": {"build_dsl_not_evaluated": True},
+        "dependencies": {},
+        "format_version": "gradle-build-marker-v1",
+        "truncated": False,
+    }, [], []
+
+
+def parse_gradle_lockfile_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    """Parse Gradle's line lock format and discard configuration names."""
+
+    lines = raw_text.splitlines()
+    if len(lines) > PROJECT_ARCHIVE_MAX_GO_LINES:
+        return {}, ["gradle_lockfile_line_limit"]
+    packages: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    truncated = False
+    for raw_line in lines:
+        if len(raw_line) > 4_096:
+            return {}, ["gradle_lockfile_line_too_long"]
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line == "empty=" or "=" not in line:
+            continue
+        coordinate, _configurations = line.split("=", 1)
+        parts = coordinate.split(":")
+        if len(parts) != 3:
+            continue
+        name = normalize_maven_coordinate(parts[0], parts[1])
+        package_version = normalize_maven_semver(parts[2])
+        if name is None or package_version is None or (name, package_version) in seen:
+            continue
+        if len(packages) >= PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+            truncated = True
+            break
+        seen.add((name, package_version))
+        packages.append({"name": name, "version": package_version, "source_type": "unverified_registry"})
+    return {"lockfile_version": "gradle-lockfile-v1", "packages": packages, "truncated": truncated}, []
+
+
+def normalize_maven_coordinate(group: object, artifact: object) -> str | None:
+    if not isinstance(group, str) or not isinstance(artifact, str):
+        return None
+    group_value, artifact_value = group.strip(), artifact.strip()
+    if len(group_value) > 200 or len(artifact_value) > 120:
+        return None
+    if group_value != group_value.lower() or artifact_value != artifact_value.lower():
+        return None
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", group_value) or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", artifact_value):
+        return None
+    return f"{group_value}:{artifact_value}"
+
+
+def normalize_maven_semver(value: object) -> str | None:
+    """Retain only the reviewed Maven ComparableVersion subset.
+
+    The historic name is kept for the private runner contract; this now admits
+    bounded numeric components and Maven's known qualifiers, never arbitrary
+    vendor strings or range syntax.
+    """
+    if not isinstance(value, str) or len(value) > 160:
+        return None
+    candidate = value.strip()
+    matched = re.fullmatch(
+        r"(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*))*"
+        r"(?:[.-](?:alpha|a|beta|b|milestone|m|rc|cr|snapshot|ga|final|release|sp)"
+        r"(?:[.-]?(?:0|[1-9]\d*))?)?",
+        candidate,
+        re.IGNORECASE,
+    )
+    if (
+        matched is None
+        or re.search(r"(?:snapshot|ga|final|release)[.-]?\d+$", candidate, re.IGNORECASE)
+        or re.search(r"\.(?:alpha|a|beta|b|milestone|m|rc|cr|snapshot|sp)(?:[.-]?\d+)?$", candidate, re.IGNORECASE)
+        or re.search(r"-(?:a|b|m)$", candidate, re.IGNORECASE)
+    ):
+        return None
+    return candidate
+
+
+def parse_dotnet_project_marker(raw_text: str) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
+    """Acknowledge a .NET project without evaluating MSBuild or XML content."""
+
+    _ = raw_text
+    return {
+        "project": {"msbuild_not_evaluated": True},
+        "dependencies": {},
+        "format_version": "dotnet-project-marker-v1",
+        "truncated": False,
+    }, [], []
+
+
+def parse_nuget_packages_lockfile_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    """Parse the bounded, resolved subset of ``packages.lock.json`` v1.
+
+    Target framework names, requested ranges, hashes, dependency edges and all
+    unknown metadata are discarded. A package resolved to different versions
+    across targets is retained only as an ambiguous local identity.
+    """
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(raw_text, object_pairs_hook=reject_duplicate_keys)
+    except (json.JSONDecodeError, ValueError):
+        return {}, ["nuget_lockfile_json_parse_error"]
+    if not isinstance(payload, dict):
+        return {}, ["nuget_lockfile_root_not_object"]
+    if payload.get("version") != 1 or isinstance(payload.get("version"), bool):
+        return {}, ["nuget_lockfile_version_not_supported"]
+    targets = payload.get("dependencies")
+    if not isinstance(targets, dict) or not targets:
+        return {}, ["nuget_lockfile_targets_not_object"]
+    if len(targets) > 64:
+        return {}, ["nuget_lockfile_target_limit"]
+
+    collected: dict[str, list[tuple[str | None, str]]] = {}
+    entry_count = 0
+    for target_name, raw_packages in targets.items():
+        if not isinstance(target_name, str) or not isinstance(raw_packages, dict):
+            return {}, ["nuget_lockfile_target_shape_invalid"]
+        for raw_name, raw_package in raw_packages.items():
+            name = normalize_nuget_package_name(raw_name)
+            if name is None or not isinstance(raw_package, dict):
+                continue
+            raw_type = raw_package.get("type")
+            package_type = raw_type.lower() if isinstance(raw_type, str) else "unknown"
+            if package_type not in {"direct", "transitive", "project"}:
+                package_type = "unknown"
+            version = normalize_nuget_version(raw_package.get("resolved"))
+            collected.setdefault(name, []).append((version, package_type))
+            entry_count += 1
+            if entry_count > PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES * 64:
+                return {}, ["nuget_lockfile_entry_limit"]
+
+    packages: list[dict[str, Any]] = []
+    truncated = False
+    ambiguous_packages = 0
+    for name in sorted(collected):
+        observations = collected[name]
+        versions = {version for version, _ in observations if version is not None}
+        types = {package_type for _, package_type in observations}
+        ambiguous = len(versions) != 1 or any(version is None for version, _ in observations)
+        if len(packages) >= PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+            truncated = True
+            break
+        if ambiguous:
+            ambiguous_packages += 1
+            packages.append({"name": name, "source_type": "unknown", "dependency_scope": "unknown"})
+            continue
+        version = next(iter(versions))
+        if "project" in types:
+            packages.append({"name": name, "version": version, "source_type": "local", "dependency_scope": "unknown"})
+        else:
+            scope = next(iter(types)) if len(types) == 1 and next(iter(types)) in {"direct", "transitive"} else "unknown"
+            packages.append({"name": name, "version": version, "source_type": "unverified_registry", "dependency_scope": scope})
+    return {
+        "lockfile_version": "nuget-packages-lock-json-v1",
+        "packages": packages,
+        "target_count": len(targets),
+        "ambiguous_packages": ambiguous_packages,
+        "truncated": truncated,
+    }, []
+
+
+def normalize_nuget_package_name(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 200:
+        return None
+    candidate = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", candidate):
+        return None
+    return candidate.lower()
+
+
+def normalize_nuget_version(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    candidate = value.strip()
+    matched = re.fullmatch(
+        r"(\d+(?:\.\d+){0,3})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+        candidate,
+    )
+    if matched is None:
+        return None
+    numbers = [int(part) for part in matched.group(1).split(".")]
+    if any(part > 2_147_483_647 for part in numbers):
+        return None
+    numbers.extend([0] * (4 - len(numbers)))
+    core = ".".join(str(part) for part in numbers[:3])
+    if numbers[3]:
+        core = f"{core}.{numbers[3]}"
+    prerelease = matched.group(2)
+    if prerelease is None:
+        return core
+    labels = prerelease.split(".")
+    if any(part.isdigit() and int(part) > 2_147_483_647 for part in labels):
+        return None
+    canonical_labels = ".".join(str(int(part)) if part.isdigit() else part.lower() for part in labels)
+    return f"{core}-{canonical_labels}"
+
+
+def parse_npm_package_lockfile_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    """Parse the existing narrow JSON package-lock grammar."""
+
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return {}, ["npm_package_lock_json_parse_error"]
+    if not isinstance(payload, dict):
+        return {}, ["npm_package_lock_root_not_object"]
+    version = payload.get("lockfileVersion")
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {2, 3}:
+        return {}, ["npm_package_lock_version_not_supported"]
+    raw_packages = payload.get("packages")
+    if not isinstance(raw_packages, dict):
+        return {}, ["npm_package_lock_packages_not_object"]
+
+    packages: list[dict[str, str]] = []
+    truncated = False
+    for index, (package_path, raw_package) in enumerate(raw_packages.items(), start=1):
+        if index > PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+            truncated = True
+            break
+        if not isinstance(package_path, str) or not isinstance(raw_package, dict):
+            continue
+        name = npm_lockfile_package_name(package_path)
+        if not name:
+            continue
+        version_value = raw_package.get("version")
+        source_type = npm_lockfile_source_type(package_path, raw_package)
+        if not isinstance(version_value, str) or not is_npm_exact_version(version_value):
+            source_type = "workspace" if raw_package.get("link") is True else "unknown"
+        packages.append(
+            {
+                "name": name,
+                "version": version_value if source_type == "registry" else "",
+                "source_type": source_type,
+            }
+        )
+    dependency_graph = build_npm_lockfile_dependency_graph(raw_packages)
+    dependency_graph["nodes_truncated"] = dependency_graph["nodes_truncated"] or truncated
+    return {
+        "lockfile_version": version,
+        "packages": packages,
+        "truncated": truncated,
+        "dependency_graph": dependency_graph,
+    }, []
+
+
+def parse_pnpm_lockfile_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    """Read pnpm v9 direct resolutions without executing or expanding YAML.
+
+    pnpm v9 identifies packages in a YAML lockfile, but its lock data does not
+    prove that a package came from the public npm registry.  This parser retains
+    exact direct versions for local inventory only; public-advisory egress keeps
+    requiring the separate npm package-lock provenance contract.
+    """
+
+    payload, errors = safe_pnpm_yaml_mapping(raw_text)
+    if errors:
+        return {}, errors
+    if not isinstance(payload, dict):  # defensive: the loader already enforces this.
+        return {}, ["pnpm_lockfile_root_not_object"]
+    version = payload.get("lockfileVersion")
+    if not isinstance(version, str) or version != "9.0":
+        return {}, ["pnpm_lockfile_version_not_supported"]
+    raw_importers = payload.get("importers")
+    if not isinstance(raw_importers, dict):
+        return {}, ["pnpm_lockfile_importers_not_object"]
+    root_importer = raw_importers.get(".")
+    if not isinstance(root_importer, dict):
+        return {}, ["pnpm_lockfile_root_importer_not_object"]
+    if not isinstance(payload.get("packages"), dict):
+        return {}, ["pnpm_lockfile_packages_not_object"]
+
+    packages, truncated = pnpm_root_importer_packages(root_importer)
+    return {
+        "lockfile_version": version,
+        "packages": packages,
+        "truncated": truncated,
+    }, []
+
+
+class PnpmLockfileLoader(yaml.SafeLoader):
+    """Safe YAML loader with duplicate/non-string mapping keys rejected."""
+
+
+def _pnpm_construct_mapping(loader: PnpmLockfileLoader, node: yaml.nodes.MappingNode, deep: bool = False) -> dict[str, Any]:
+    mapping: dict[str, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, str) or key in mapping:
+            raise ConstructorError("while constructing pnpm lockfile", node.start_mark, "duplicate or non-string mapping key", key_node.start_mark)
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+PnpmLockfileLoader.add_constructor(BaseResolver.DEFAULT_MAPPING_TAG, _pnpm_construct_mapping)
+
+
+def safe_pnpm_yaml_mapping(raw_text: str) -> tuple[dict[str, Any] | None, list[str]]:
+    """Reject YAML features that are unnecessary for the supported pnpm subset."""
+
+    try:
+        for index, token in enumerate(yaml.scan(raw_text), start=1):
+            if index > PROJECT_ARCHIVE_MAX_PNPM_YAML_TOKENS:
+                return None, ["pnpm_lockfile_yaml_token_limit"]
+            if isinstance(token, (AnchorToken, AliasToken, TagToken)):
+                return None, ["pnpm_lockfile_yaml_feature_not_allowed"]
+        payload = yaml.load(raw_text, Loader=PnpmLockfileLoader)
+    except (yaml.YAMLError, RecursionError, ValueError):
+        return None, ["pnpm_lockfile_yaml_parse_error"]
+    if not isinstance(payload, dict):
+        return None, ["pnpm_lockfile_root_not_object"]
+    return payload, []
+
+
+def pnpm_root_importer_packages(root_importer: dict[str, Any]) -> tuple[list[dict[str, str]], bool]:
+    """Keep only exact direct versions, never resolution URLs, hashes or peer suffixes."""
+
+    versions_by_name: dict[str, set[str]] = {}
+    seen_entries = 0
+    truncated = False
+    for group in ("dependencies", "devDependencies", "optionalDependencies"):
+        dependencies = root_importer.get(group)
+        if not isinstance(dependencies, dict):
+            continue
+        for name, raw_dependency in sorted(dependencies.items()):
+            seen_entries += 1
+            if seen_entries > PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+                truncated = True
+                break
+            if not isinstance(name, str) or not is_valid_npm_lockfile_name(name) or not isinstance(raw_dependency, dict):
+                continue
+            version = raw_dependency.get("version")
+            if isinstance(version, str) and is_npm_exact_version(version):
+                versions_by_name.setdefault(name, set()).add(version)
+        if truncated:
+            break
+    return [
+        {"name": name, "version": next(iter(versions)), "source_type": "unverified_registry"}
+        for name, versions in sorted(versions_by_name.items())
+        if len(versions) == 1
+    ], truncated
+
+
+def parse_yarn_classic_lockfile_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    """Read a narrow, line-oriented Yarn Classic v1 grammar without Yarn.
+
+    Yarn Berry lockfiles use another format and are deliberately not treated as
+    Classic. The retained records are keyed by an opaque selector digest so a
+    component must match its own declaration; URLs, integrity data, aliases and
+    selector text are never persisted or used as an advisory identity.
+    """
+
+    lines = raw_text.splitlines()
+    if len(lines) > PROJECT_ARCHIVE_MAX_YARN_CLASSIC_LINES:
+        return {}, ["yarn_classic_lockfile_line_limit"]
+    first_content = next((line.strip() for line in lines if line.strip()), "")
+    if first_content == "__metadata:" or any(line.strip() == "__metadata:" for line in lines[:8]):
+        return {}, ["yarn_lockfile_berry_not_supported"]
+    try:
+        header_index = lines.index("# yarn lockfile v1")
+    except ValueError:
+        return {}, ["yarn_classic_lockfile_version_not_supported"]
+    if any(line.strip() and not line.lstrip().startswith("#") for line in lines[:header_index]):
+        return {}, ["yarn_classic_lockfile_grammar_not_supported"]
+
+    versions_by_selector: dict[tuple[str, str], set[str]] = {}
+    selectors: list[tuple[str, str]] = []
+    version: str | None = None
+    malformed_entry = False
+    entries_seen = 0
+    truncated = False
+
+    def commit_entry() -> None:
+        if malformed_entry or version is None:
+            return
+        for name, selector_id in selectors:
+            versions_by_selector.setdefault((name, selector_id), set()).add(version)
+
+    for line in lines[header_index + 1 :]:
+        if len(line) > 4_096 or "\t" in line:
+            return {}, ["yarn_classic_lockfile_grammar_not_supported"]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            commit_entry()
+            entries_seen += 1
+            if entries_seen > PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+                truncated = True
+                break
+            if not line.endswith(":"):
+                return {}, ["yarn_classic_lockfile_grammar_not_supported"]
+            selectors = yarn_classic_selector_records(line[:-1])
+            version = None
+            malformed_entry = False
+            continue
+        if not selectors:
+            continue
+        if line.startswith("  version "):
+            parsed_version = yarn_classic_entry_version(line)
+            if parsed_version is None or version is not None:
+                malformed_entry = True
+            else:
+                version = parsed_version
+    commit_entry()
+    packages = [
+        {
+            "name": name,
+            "selector_id": selector_id,
+            "version": next(iter(versions)),
+            "source_type": "unverified_registry",
+        }
+        for (name, selector_id), versions in sorted(versions_by_selector.items())
+        if len(versions) == 1
+    ]
+    return {"lockfile_version": 1, "packages": packages, "truncated": truncated}, []
+
+
+def yarn_classic_selector_records(value: str) -> list[tuple[str, str]]:
+    """Return only safe `name@specifier` selectors as opaque identities."""
+
+    selectors: list[tuple[str, str]] = []
+    for raw_selector in yarn_classic_split_selector_list(value):
+        selector = raw_selector.strip()
+        if len(selector) >= 2 and selector[0] == selector[-1] == '"':
+            selector = selector[1:-1]
+        if not selector or '"' in selector or "\\" in selector:
+            continue
+        name, specifier = yarn_classic_selector_parts(selector)
+        if name is None or specifier is None:
+            continue
+        selectors.append((name, yarn_classic_selector_id(name, specifier)))
+    return sorted(set(selectors))
+
+
+def yarn_classic_split_selector_list(value: str) -> list[str]:
+    """Split Classic selectors without interpreting quote escapes or YAML."""
+
+    values: list[str] = []
+    start = 0
+    quoted = False
+    for index, character in enumerate(value):
+        if character == '"':
+            quoted = not quoted
+        elif character == "," and not quoted:
+            values.append(value[start:index])
+            start = index + 1
+    if quoted:
+        return []
+    values.append(value[start:])
+    return values
+
+
+def yarn_classic_selector_parts(value: str) -> tuple[str | None, str | None]:
+    if value.startswith("@"):
+        slash = value.find("/")
+        separator = value.find("@", slash + 1) if slash > 1 else -1
+    else:
+        separator = value.find("@")
+    if separator <= 0:
+        return None, None
+    name = value[:separator]
+    specifier = value[separator + 1 :]
+    if not is_valid_npm_lockfile_name(name) or not is_safe_yarn_classic_specifier(specifier):
+        return None, None
+    return name, specifier
+
+
+def is_safe_yarn_classic_specifier(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9*^~<>=][A-Za-z0-9._*^~<>=|+\-]*", value)) and len(value) <= 160
+
+
+def yarn_classic_selector_id(name: str, specifier: str) -> str:
+    return hashlib.sha256(f"{name}\0{specifier}".encode("utf-8")).hexdigest()[:24]
+
+
+def yarn_classic_entry_version(line: str) -> str | None:
+    match = re.fullmatch(r'  version "([0-9A-Za-z.+-]+)"', line)
+    return match.group(1) if match is not None and is_npm_exact_version(match.group(1)) else None
+
+
+def parse_poetry_lockfile_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    """Read only Poetry's TOML lock format 2.1 as local-only resolution data.
+
+    ``poetry.lock`` can include package files/hashes and a ``package.source``
+    table with custom-index, VCS, local-path, or credential-bearing locators.
+    This narrow parser intentionally retains none of that data. It does not
+    execute Poetry, resolve a dependency, or prove public-registry provenance;
+    its records can therefore never enable public-advisory egress.
+    """
+
+    if tomllib is None:
+        return {}, ["poetry_lockfile_parser_unavailable"]
+    try:
+        payload = tomllib.loads(raw_text)
+    except tomllib.TOMLDecodeError:
+        return {}, ["poetry_lockfile_toml_parse_error"]
+    if not isinstance(payload, dict):
+        return {}, ["poetry_lockfile_root_not_object"]
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}, ["poetry_lockfile_metadata_not_object"]
+    lock_version = metadata.get("lock-version")
+    if lock_version != POETRY_LOCKFILE_SUPPORTED_VERSION:
+        return {}, ["poetry_lockfile_version_not_supported"]
+    raw_packages = payload.get("package")
+    if not isinstance(raw_packages, list):
+        return {}, ["poetry_lockfile_packages_not_array"]
+
+    packages: list[dict[str, str]] = []
+    truncated = False
+    for index, raw_package in enumerate(raw_packages, start=1):
+        if index > PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+            truncated = True
+            break
+        if not isinstance(raw_package, dict):
+            continue
+        raw_name = raw_package.get("name")
+        raw_version = raw_package.get("version")
+        if not isinstance(raw_name, str) or not isinstance(raw_version, str):
+            continue
+        name = canonicalize_pypi_lockfile_name(raw_name)
+        version = raw_version.strip()
+        if not name or not is_pypi_exact_lockfile_version(version):
+            continue
+        # Do not copy ``source``, ``files``, dependency edges, markers, groups,
+        # hashes, URLs, or any package metadata from the untrusted lockfile.
+        packages.append({"name": name, "version": version, "source_type": "unverified_registry"})
+    return {
+        "lockfile_version": POETRY_LOCKFILE_SUPPORTED_VERSION,
+        "packages": packages,
+        "truncated": truncated,
+    }, []
+
+
+def parse_pipfile_lockfile_text(raw_text: str) -> tuple[dict[str, Any], list[str]]:
+    """Read only the public-identity-free Pipfile.lock format 6 subset."""
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        parsed: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in parsed:
+                raise ValueError("duplicate JSON key")
+            parsed[key] = value
+        return parsed
+
+    try:
+        payload = json.loads(raw_text, object_pairs_hook=reject_duplicate_keys)
+    except (json.JSONDecodeError, ValueError):
+        return {}, ["pipfile_lock_json_parse_error"]
+    if not isinstance(payload, dict):
+        return {}, ["pipfile_lock_root_not_object"]
+    metadata = payload.get("_meta")
+    if not isinstance(metadata, dict):
+        return {}, ["pipfile_lock_metadata_not_object"]
+    version = metadata.get("pipfile-spec")
+    if version != PIPFILE_LOCK_SUPPORTED_VERSION or isinstance(version, bool):
+        return {}, ["pipfile_lock_version_not_supported"]
+
+    packages: list[dict[str, str]] = []
+    excluded = {"ambiguous_source": 0, "invalid_version": 0, "invalid_name": 0}
+    truncated = False
+    entries_seen = 0
+    for group in ("default", "develop"):
+        raw_group = payload.get(group, {})
+        if not isinstance(raw_group, dict):
+            return {}, ["pipfile_lock_dependency_group_not_object"]
+        for raw_name, raw_package in sorted(raw_group.items()):
+            entries_seen += 1
+            if entries_seen > PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+                truncated = True
+                break
+            name = canonicalize_pypi_lockfile_name(raw_name) if isinstance(raw_name, str) else None
+            if not name:
+                excluded["invalid_name"] += 1
+                continue
+            if not isinstance(raw_package, dict):
+                excluded["invalid_version"] += 1
+                continue
+            if any(key in raw_package for key in ("index", "path", "file", "git", "url", "editable", "ref")):
+                excluded["ambiguous_source"] += 1
+                continue
+            raw_version = raw_package.get("version")
+            exact = raw_version[2:].strip() if isinstance(raw_version, str) and raw_version.startswith("==") else ""
+            if not is_pypi_exact_lockfile_version(exact):
+                excluded["invalid_version"] += 1
+                continue
+            packages.append({
+                "name": name,
+                "version": exact,
+                "dependency_group": "packages" if group == "default" else "dev-packages",
+                "source_type": "unverified_registry",
+            })
+        if truncated:
+            break
+    return {
+        "lockfile_version": PIPFILE_LOCK_SUPPORTED_VERSION,
+        "packages": packages,
+        "excluded": excluded,
+        "truncated": truncated,
+    }, []
+
+
+def canonicalize_pypi_lockfile_name(value: str) -> str | None:
+    normalized = re.sub(r"[-_.]+", "-", value.strip()).lower()
+    return normalized if re.fullmatch(r"[a-z0-9][a-z0-9-]*", normalized) else None
+
+
+def is_pypi_exact_lockfile_version(value: str) -> bool:
+    """Accept the bounded PEP 440-like version token emitted by Poetry 2.1."""
+
+    return bool(re.fullmatch(r"[0-9][A-Za-z0-9._+\-!]*", value)) and len(value) <= 128
+
+
+def build_npm_lockfile_dependency_graph(raw_packages: dict[str, Any]) -> dict[str, Any]:
+    """Return a bounded graph with opaque node IDs, never raw lockfile paths.
+
+    The graph is a passive representation of npm v2/v3 ``packages`` entries.
+    It does not install packages, fetch a registry, retain a download URL, or
+    infer unresolved edges. The caller already bounds lockfile text and nodes.
+    """
+
+    root_scopes = npm_root_dependency_scopes(raw_packages.get(""))
+    node_records: list[tuple[str, dict[str, Any], dict[str, str]]] = []
+    nodes_by_path: dict[str, dict[str, str]] = {}
+    nodes_truncated = False
+    for package_path, raw_package in sorted(raw_packages.items(), key=lambda item: item[0] if isinstance(item[0], str) else ""):
+        if len(node_records) >= PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:
+            nodes_truncated = True
+            break
+        if not isinstance(package_path, str) or not isinstance(raw_package, dict) or not is_safe_npm_lockfile_package_path(package_path):
+            continue
+        name = npm_lockfile_package_name(package_path)
+        if not name:
+            continue
+        version_value = raw_package.get("version")
+        source_type = npm_lockfile_source_type(package_path, raw_package)
+        if not isinstance(version_value, str) or not is_npm_exact_version(version_value):
+            source_type = "workspace" if raw_package.get("link") is True else "unknown"
+        version = version_value.strip() if source_type == "registry" else ""
+        scope = root_scopes.get(name) if package_path == f"node_modules/{name}" else None
+        node = {
+            "id": npm_lockfile_node_id(package_path, name, version),
+            "name": name,
+            "version": version,
+            "source_type": source_type,
+            "dependency_scope": scope or "transitive",
+        }
+        node_records.append((package_path, raw_package, node))
+        nodes_by_path[package_path] = node
+
+    edges: list[dict[str, str]] = []
+    seen_edges: set[tuple[str, str, str]] = set()
+    edges_truncated = False
+    for package_path, raw_package, node in node_records:
+        for key, edge_kind in (("dependencies", "runtime"), ("optionalDependencies", "optional")):
+            for dependency_name in sorted(npm_lockfile_dependency_names(raw_package.get(key))):
+                target = npm_lockfile_dependency_target(package_path, dependency_name, nodes_by_path)
+                if target is None:
+                    continue
+                edge_key = (node["id"], target["id"], edge_kind)
+                if edge_key in seen_edges:
+                    continue
+                if len(edges) >= PROJECT_ARCHIVE_MAX_LOCKFILE_EDGES:
+                    edges_truncated = True
+                    break
+                seen_edges.add(edge_key)
+                edges.append({"from": node["id"], "to": target["id"], "kind": edge_kind})
+            if edges_truncated:
+                break
+        if edges_truncated:
+            break
+    incoming_edge_kinds: dict[str, set[str]] = {}
+    for edge in edges:
+        incoming_edge_kinds.setdefault(edge["to"], set()).add(edge["kind"])
+    for _package_path, _raw_package, node in node_records:
+        node["dependency_scope"] = npm_graph_component_scope(node["dependency_scope"], incoming_edge_kinds.get(node["id"], set()))
+    return {
+        "nodes": [node for _path, _raw, node in node_records],
+        "edges": edges,
+        "nodes_truncated": nodes_truncated,
+        "edges_truncated": edges_truncated,
+    }
+
+
+def npm_root_dependency_scopes(raw_root: Any) -> dict[str, str]:
+    root = raw_root if isinstance(raw_root, dict) else {}
+    scopes: dict[str, str] = {}
+    for key, scope in (
+        ("dependencies", "runtime_direct"),
+        ("devDependencies", "development_direct"),
+        ("peerDependencies", "peer_direct"),
+        ("optionalDependencies", "optional_direct"),
+    ):
+        for name in npm_lockfile_dependency_names(root.get(key)):
+            scopes[name] = scope
+    return scopes
+
+
+def npm_graph_component_scope(root_scope: str, incoming_edge_kinds: set[str]) -> str:
+    """Classify npm graph nodes only from declared root/edge semantics.
+
+    A node reached by any runtime edge is not optional even if another optional
+    edge references it. `peerDependencies` are direct declarations for
+    prioritisation, without claiming they are installed in every deployment.
+    """
+
+    if root_scope in {"runtime_direct", "development_direct", "peer_direct"}:
+        return "direct"
+    if root_scope == "optional_direct" and "runtime" not in incoming_edge_kinds:
+        return "optional"
+    if incoming_edge_kinds and incoming_edge_kinds <= {"optional"}:
+        return "optional"
+    return "transitive"
+
+
+def npm_lockfile_dependency_names(value: Any) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    return {name for name in value if isinstance(name, str) and is_valid_npm_lockfile_name(name)}
+
+
+def is_safe_npm_lockfile_package_path(value: str) -> bool:
+    normalized = value.replace("\\", "/").strip("/")
+    if not normalized or normalized != value or "\x00" in normalized:
+        return False
+    parts = normalized.split("/")
+    index = 0
+    while index < len(parts):
+        if parts[index] != "node_modules":
+            return False
+        index += 1
+        if index >= len(parts):
+            return False
+        if parts[index].startswith("@"):
+            if index + 1 >= len(parts) or not is_valid_npm_lockfile_name(f"{parts[index]}/{parts[index + 1]}"):
+                return False
+            index += 2
+        elif is_valid_npm_lockfile_name(parts[index]):
+            index += 1
+        else:
+            return False
+    return True
+
+
+def npm_lockfile_node_id(package_path: str, name: str, version: str) -> str:
+    return hashlib.sha256(f"{package_path}\0{name}\0{version}".encode("utf-8")).hexdigest()[:24]
+
+
+def npm_lockfile_dependency_target(
+    package_path: str,
+    dependency_name: str,
+    nodes_by_path: dict[str, dict[str, str]],
+) -> dict[str, str] | None:
+    current_path: str | None = package_path
+    while current_path is not None:
+        candidate = f"{current_path}/node_modules/{dependency_name}"
+        if candidate in nodes_by_path:
+            return nodes_by_path[candidate]
+        current_path = npm_lockfile_parent_path(current_path)
+    return nodes_by_path.get(f"node_modules/{dependency_name}")
+
+
+def npm_lockfile_parent_path(package_path: str) -> str | None:
+    parts = package_path.split("/")
+    last_marker = max(index for index, part in enumerate(parts) if part == "node_modules")
+    parent = "/".join(parts[:last_marker])
+    return parent or None
+
+
+def npm_lockfile_package_name(package_path: str) -> str | None:
+    normalized = package_path.replace("\\", "/").strip("/")
+    if not normalized or "\x00" in normalized:
+        return None
+    marker = "/node_modules/"
+    if marker in normalized:
+        candidate = normalized.rsplit(marker, 1)[-1]
+    elif normalized.startswith("node_modules/"):
+        candidate = normalized[len("node_modules/") :]
+    else:
+        return None
+    parts = candidate.split("/")
+    name = "/".join(parts[:2]) if candidate.startswith("@") and len(parts) >= 2 else parts[0]
+    return name if is_valid_npm_lockfile_name(name) else None
+
+
+def npm_lockfile_source_type(package_path: str, raw_package: dict[str, Any]) -> str:
+    """Classify a lockfile node without trusting a source locator as registry.
+
+    A fixed version alone does not prove public-registry provenance. Aliases,
+    linked workspaces, VCS references and tarball/private-registry URLs remain
+    local-only categories and never become advisory identities.
+    """
+
+    if raw_package.get("link") is True:
+        return "workspace"
+    package_name = npm_lockfile_package_name(package_path)
+    declared_name = raw_package.get("name")
+    if isinstance(declared_name, str) and is_valid_npm_lockfile_name(declared_name) and declared_name != package_name:
+        return "alias"
+    resolved = raw_package.get("resolved")
+    if not isinstance(resolved, str) or not resolved.strip():
+        # A lockfile version without an explicit, approved download origin is
+        # reproducible package data but not proof that the package came from a
+        # public registry. Keep it local until a future resolver can provide
+        # equally bounded provenance for that ecosystem.
+        return "unknown"
+    value = resolved.strip()
+    lowered = value.lower()
+    if lowered.startswith(("file:", "link:", "portal:")) or looks_like_local_dependency_path(value):
+        return "local"
+    if looks_like_vcs_dependency(value):
+        return "vcs"
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return "unknown"
+    if parsed.scheme in {"http", "https"}:
+        # npm's documented registry host is the only URL accepted as registry.
+        # Any other host, userinfo or tarball is intentionally not inferred.
+        if (
+            parsed.scheme == "https"
+            and parsed.hostname == "registry.npmjs.org"
+            and parsed.username is None
+            and parsed.password is None
+        ):
+            return "registry"
+        return "url"
+    return "unknown"
+
+
+def sanitize_project_archive_dependency_references(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Retain a non-registry category but not its source locator in project data."""
+
+    sanitized = json.loads(json.dumps(parsed)) if isinstance(parsed, dict) else {}
+    dependencies = as_dict(sanitized.get("dependencies"))
+    allowed_non_registry_types = {"url", "vcs", "local", "editable", "workspace", "alias", "unknown"}
+    for group, raw_dependencies in dependencies.items():
+        if not isinstance(group, str) or not isinstance(raw_dependencies, list):
+            continue
+        for raw_dependency in raw_dependencies:
+            if not isinstance(raw_dependency, dict):
+                continue
+            source_type = str(raw_dependency.get("source_type") or "unknown").lower()
+            if source_type == "registry":
+                continue
+            raw_dependency.pop("specifier", None)
+            raw_dependency.pop("declared_requirement", None)
+            raw_dependency.pop("source", None)
+            raw_dependency["source_type"] = source_type if source_type in allowed_non_registry_types else "unknown"
+    return sanitized
+
+
+def is_valid_npm_lockfile_name(value: str) -> bool:
+    return bool(re.fullmatch(r"(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*", value))
+
+
+def is_npm_exact_version(value: str) -> bool:
+    return bool(re.fullmatch(r"v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", value.strip()))
 
 
 def supported_project_manifest_type(path: str) -> str | None:
     basename = path.replace("\\", "/").lower().rsplit("/", 1)[-1]
+    if basename.endswith(".csproj") and len(basename) > len(".csproj"):
+        return "dotnet_project"
     return {
         "package.json": "package_json",
         "requirements.txt": "requirements_txt",
         "pyproject.toml": "pyproject_toml",
+        "pipfile": "pipfile",
+        "go.mod": "go_mod",
+        "cargo.toml": "cargo_toml",
+        "composer.json": "composer_json",
+        "build.gradle": "gradle_build",
+        "build.gradle.kts": "gradle_build",
+    }.get(basename)
+
+
+def supported_project_lockfile_type(path: str) -> str | None:
+    basename = path.replace("\\", "/").lower().rsplit("/", 1)[-1]
+    return {
+        "package-lock.json": "npm_package_lock",
+        "yarn.lock": "yarn_classic_lock",
+        "pnpm-lock.yaml": "pnpm_lock",
+        "poetry.lock": "poetry_lock",
+        "go.sum": "go_sum",
+        "cargo.lock": "cargo_lock",
+        "composer.lock": "composer_lock",
+        "gradle.lockfile": "gradle_lock",
+        "packages.lock.json": "nuget_packages_lock",
+        "pipfile.lock": "pipfile_lock",
     }.get(basename)
 
 
@@ -16557,8 +18671,12 @@ def project_manifest_ecosystem(manifest_type: str) -> str | None:
         return "go"
     if normalized in {"cargo.toml", "cargo.lock"}:
         return "rust"
-    if normalized in {"pom.xml", "build.gradle"}:
+    if normalized in {"composer.json", "composer.lock"}:
+        return "php"
+    if normalized in {"pom.xml", "build.gradle", "build.gradle.kts", "gradle.lockfile"}:
         return "jvm"
+    if normalized in {"dotnet_project", "packages.lock.json"} or normalized.endswith(".csproj"):
+        return "dotnet"
     if normalized in {"composer.json", "composer.lock"}:
         return "php"
     if normalized in {"dockerfile", "docker-compose.yml", "compose.yml"}:
@@ -16860,8 +18978,8 @@ def detect_archive_manifest(path: str) -> str | None:
         "pnpm-lock.yaml",
         "requirements.txt",
         "pyproject.toml",
-        "poetry.lock",
         "pipfile",
+        "poetry.lock",
         "pipfile.lock",
         "go.mod",
         "go.sum",
@@ -16869,12 +18987,17 @@ def detect_archive_manifest(path: str) -> str | None:
         "cargo.lock",
         "pom.xml",
         "build.gradle",
+        "build.gradle.kts",
+        "gradle.lockfile",
+        "packages.lock.json",
         "composer.json",
         "composer.lock",
         "dockerfile",
         "docker-compose.yml",
         "compose.yml",
     }
+    if basename.endswith(".csproj") and len(basename) > len(".csproj"):
+        return basename
     if basename in manifest_names:
         return basename
     return None

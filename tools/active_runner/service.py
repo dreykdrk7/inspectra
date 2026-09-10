@@ -197,13 +197,30 @@ ActiveToolsFakeExecutor = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 ActiveToolsNmapRunner = Callable[..., Any]
 
 
-def active_tools_capability_metadata(*, active_nmap_basic_execution_enabled: bool = False) -> dict[str, Any]:
+ACTIVE_TOOLS_HEALTH_CAPABILITIES = (
+    ACTIVE_NMAP_BASIC_CAPABILITY,
+    "active_dns_inventory",
+    "active_dns_osint",
+    "active_http_basic_header_review",
+    "active_tls_basic",
+    "active_asset_verification",
+)
+
+
+def active_tools_capability_metadata(
+    *,
+    active_nmap_basic_execution_enabled: bool = False,
+    capability_execution_flags: Mapping[str, bool] | None = None,
+) -> dict[str, Any]:
+    flags = dict(capability_execution_flags or {})
+    flags[ACTIVE_NMAP_BASIC_CAPABILITY] = active_nmap_basic_execution_enabled
     return {
-        ACTIVE_NMAP_BASIC_CAPABILITY: {
-            "status": "ready_bounded_execution" if active_nmap_basic_execution_enabled else "disabled_no_scan",
-            "execution_enabled": active_nmap_basic_execution_enabled,
+        capability: {
+            "status": "ready_bounded_execution" if flags.get(capability, False) else "disabled_no_scan",
+            "execution_enabled": bool(flags.get(capability, False)),
             "target_input_allowed": False,
         }
+        for capability in ACTIVE_TOOLS_HEALTH_CAPABILITIES
     }
 
 
@@ -211,6 +228,7 @@ def handle_active_tools_health(
     payload: Mapping[str, Any] | None = None,
     *,
     active_nmap_basic_execution_enabled: bool = False,
+    capability_execution_flags: Mapping[str, bool] | None = None,
 ) -> dict[str, Any]:
     if payload is not None:
         if not isinstance(payload, Mapping):
@@ -221,7 +239,8 @@ def handle_active_tools_health(
         "service": ACTIVE_TOOLS_SERVICE_NAME,
         "status": "scaffold_ready",
         "capabilities": active_tools_capability_metadata(
-            active_nmap_basic_execution_enabled=active_nmap_basic_execution_enabled
+            active_nmap_basic_execution_enabled=active_nmap_basic_execution_enabled,
+            capability_execution_flags=capability_execution_flags,
         ),
         "network_requests_sent": 0,
         "nmap_executed": False,

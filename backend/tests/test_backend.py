@@ -1,4 +1,8 @@
 from datetime import datetime, timedelta, timezone
+import asyncio
+import base64
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import hashlib
 from http.cookies import SimpleCookie
 import io
@@ -16,7 +20,10 @@ import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient, ConnectError, MockTransport, ReadTimeout, Response
 
+from app.adoption_metrics import AdoptionMetricsStore
+
 from app.auth import (
+    ADMIN_CSRF_HEADER_NAME,
     ADMIN_PASSWORD_HASH_SCHEME,
     ADMIN_SESSION_COOKIE_NAME,
     ADMIN_SESSION_COOKIE_SAMESITE,
@@ -34,6 +41,13 @@ from app.auth_state_sqlite import (
     SQLiteLoginAttemptStore,
 )
 from app.config import (
+    DEFAULT_AUDIT_MAX_CONCURRENCY,
+    DEFAULT_AUDIT_MAX_INFLIGHT_JOBS,
+    DEFAULT_AUDIT_MAX_INFLIGHT_JOBS_PER_OWNER,
+    DEFAULT_ACTIVE_MAX_INFLIGHT_JOBS,
+    DEFAULT_ACTIVE_MAX_INFLIGHT_JOBS_PER_ASSET,
+    DEFAULT_ACTIVE_MAX_INFLIGHT_JOBS_PER_CAPABILITY,
+    DEFAULT_ACTIVE_MAX_INFLIGHT_JOBS_PER_ORGANIZATION,
     DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_ENABLED,
     DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_NAMES_PARSED,
     DEFAULT_ACTIVE_DNS_OSINT_CT_SOURCE_MAX_RESPONSE_BYTES,
@@ -49,18 +63,31 @@ from app.config import (
     DEFAULT_ACTIVE_TOOLS_URL,
     DEFAULT_AUTH_STATE_STORE,
     DEFAULT_AUTH_MODE,
+    DEFAULT_JOB_RETENTION_DAYS,
     DEFAULT_LOGIN_ATTEMPT_MAX_FAILURES,
     DEFAULT_LOGIN_ATTEMPT_MAX_KEYS,
     DEFAULT_LOGIN_ATTEMPT_WINDOW_SECONDS,
     DEFAULT_LOGIN_LOCKOUT_SECONDS,
     DEFAULT_LOCAL_OPERATOR,
+    DEFAULT_PROJECT_MAX_SOURCE_SNAPSHOTS,
+    MAX_PROJECT_MAX_SOURCE_SNAPSHOTS,
     DEFAULT_SESSION_TTL_SECONDS,
+    DEFAULT_TEAM_INVITATION_RETENTION_DAYS,
+    MAX_TEAM_INVITATION_RETENTION_DAYS,
+    DEFAULT_UPLOAD_RETENTION_DAYS,
     get_auth_mode,
     get_current_operator_for_trusted_local,
     is_single_admin_auth_configured,
     load_settings,
 )
+from app.go_dependency_graph import parse_go_dependency_graph_artifact
+from app.cargo_dependency_graph import parse_cargo_dependency_graph_artifact
+from app.composer_dependency_graph import parse_composer_dependency_graph_artifact
+from app.gradle_dependency_graph import parse_gradle_dependency_graph_artifact
+from app.nuget_dependency_graph import parse_nuget_dependency_graph_artifact
+from app.team_identity import TeamIdentityStore, hash_invitation_token
 from app.active_tools_client import check_active_tools_health, run_active_nmap_basic
+from app.active_assets import ActiveAssetStore
 from app.domain_security import normalize_domain, normalize_subdomain_candidate
 from app.active_nmap_boundary import (
     build_active_nmap_basic_boundary_request,
@@ -86,11 +113,30 @@ from app.active_dns_osint import (
 )
 from app import active_http_basic_header_review as active_http_basic_header_review_module
 from app.active_tls_basic import ActiveTlsBasicConnectionSnapshot
-from app.main import AUTH_REQUIRED_DETAIL, CSRF_REQUIRED_DETAIL, RATE_LIMITED_DETAIL, app, login_client_key_for_request
-from app.models import JobRecord
+from app.component_inventory import COMPONENT_INVENTORY_CONTRACT_VERSION, build_component_inventory
+from app.execution_profile import EXECUTION_RULESET_VERSION
+from app.project_coverage import build_project_analysis_coverage
+from app.operational_readiness import OperationalReadinessService, probe_private_storage
+from app.offline_advisory_snapshots import import_offline_advisory_bundle
+from app.project_vulnerability_intelligence import OsvVulnerabilityIntelligenceService, ProjectVulnerabilityIntelligenceStore
+from app.public_advisory_egress import PublicAdvisoryEgressClient
+from app.main import (
+    AUTOMATION_TOKEN_INVALID_DETAIL,
+    AUTH_REQUIRED_DETAIL,
+    CSRF_REQUIRED_DETAIL,
+    PROJECT_FLOW_MUTATION_ROUTE_CONTRACT,
+    RATE_LIMITED_DETAIL,
+    REQUEST_VALIDATION_DETAIL,
+    TEAM_READER_READ_POST_PATHS,
+    app,
+    login_client_key_for_request,
+)
+from app.models import JobRecord, ProjectRecord, ProjectView, StoredFile, opaque_source_reference
 from app.project_archive_findings import categorize_project_archive_result, project_archive_finding_metadata
-from app.reporting import markdown_block_value, markdown_inline_value
+from app.project_deletion import ProjectDeletionService
+from app.reporting import markdown_block_value, markdown_inline_value, redact_active_secret_text
 from app.sbom import extract_components_from_job, generate_cyclonedx_json, generate_spdx_json
+from app.vulnerability_fingerprint import PUBLIC_VULNERABILITY_FINDING_FINGERPRINT_VERSION
 from app.services import (
     ArchiveAuditService,
     ActiveHttpHeaderProbeService,
@@ -118,7 +164,18 @@ from app.services import (
     calculate_domain_runner_timeout_seconds,
     calculate_subdomain_inventory_runner_timeout_seconds,
 )
-from app.storage import FileStore, JobStore
+from app.storage import (
+    ExecutionWorkspaceError,
+    ExecutionWorkspaceStore,
+    FileStore,
+    JobStore,
+    ProjectSnapshotAdmissionStore,
+    ProjectSnapshotAdmissionRecord,
+    ProjectStore,
+    redact_job_value_for_storage,
+    run_retention_cleanup,
+    sanitize_job_record_for_storage,
+)
 from app import main as backend_main
 from app import services as audit_services
 from app import web_security
@@ -146,6 +203,21 @@ SQL_DATABASE_SECRET_FIXTURES = (
 )
 ADMIN_PASSWORD_FIXTURE = "correct-admin-password"
 ADMIN_PASSWORD_FIXTURE_SALT = "localAdminSaltForTests"
+
+
+def test_team_reader_read_like_post_allowlist_is_exact_and_contains_no_resource_identifier():
+    assert TEAM_READER_READ_POST_PATHS == frozenset({
+        "/projects/search",
+        "/projects/portfolio/search",
+        "/projects/trends",
+        "/projects/trends/refresh",
+        "/projects/trends/report",
+        "/remediation/search",
+        "/remediation/report",
+        "/remediation/plans",
+        "/active/operations/weekly-review-receipts/verify",
+    })
+    assert all("{" not in path and "}" not in path and "*" not in path for path in TEAM_READER_READ_POST_PATHS)
 
 
 def make_admin_password_hash(password: str = ADMIN_PASSWORD_FIXTURE, salt: str = ADMIN_PASSWORD_FIXTURE_SALT) -> str:
@@ -443,26 +515,112 @@ def make_active_dns_inventory_fake_resolver(
 
 def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    # Historical route-contract tests exercise explicitly opted-in compatibility
+    # surfaces; production/default settings keep free-target Active routes off.
+    monkeypatch.setenv("INSPECTRA_ACTIVE_LEGACY_FREE_TARGETS_ENABLED", "true")
     if max_upload_bytes is not None:
         monkeypatch.setenv("INSPECTRA_MAX_UPLOAD_BYTES", str(max_upload_bytes))
     settings = load_settings()
     settings.ensure_directories()
     file_store = FileStore(settings)
     job_store = JobStore(settings)
+    project_store = ProjectStore(settings)
+    execution_workspaces = ExecutionWorkspaceStore(settings, file_store)
     app.state.settings = settings
+    app.state.audit_semaphore = backend_main.asyncio.Semaphore(settings.audit_max_concurrency)
+    app.state.audit_cancellation_events = {}
+    app.state.durable_audit_tasks = set()
+    app.state.scheduled_project_audit_job_ids = set()
+    app.state.scheduled_remediation_plan_job_ids = set()
+    app.state.scheduled_risk_trend_refresh_owner_ids = set()
+    app.state.remediation_plan_semaphore = backend_main.asyncio.Semaphore(2)
+    app.state.risk_trend_refresh_semaphore = backend_main.asyncio.Semaphore(1)
+    app.state.active_asset_revocation_events = {}
     app.state.auth_mode = get_auth_mode(settings)
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
+    app.state.team_identity = backend_main.create_team_identity_store(settings)
     app.state.admin_sessions = backend_main.create_admin_session_store(settings)
     app.state.login_attempts = backend_main.create_login_attempt_store(settings)
-    app.state.session_cookie_settings = build_session_cookie_settings(settings.session_ttl_seconds)
+    app.state.automation_tokens = backend_main.create_automation_token_store(settings)
+    app.state.session_cookie_settings = build_session_cookie_settings(
+        settings.session_ttl_seconds,
+        secure=settings.session_cookie_secure,
+    )
     app.state.files = file_store
     app.state.jobs = job_store
+    app.state.projects = project_store
+    app.state.active_assets = ActiveAssetStore(settings)
+    app.state.finding_decisions = backend_main.FindingDecisionStore(settings)
+    app.state.remediation_saved_views = backend_main.RemediationSavedViewStore(settings)
+    app.state.remediation_plan_jobs = backend_main.RemediationPlanJobStore(settings)
+    app.state.product_audit = backend_main.ProductAuditStore(settings)
+    app.state.project_snapshot_admissions = ProjectSnapshotAdmissionStore(settings, file_store, project_store, job_store)
+    app.state.sbom_preflights = backend_main.SbomPreflightStore()
+    app.state.execution_workspaces = execution_workspaces
+    app.state.public_advisory_egress_client = PublicAdvisoryEgressClient.from_settings(settings)
+    app.state.project_vulnerability_intelligence_store = ProjectVulnerabilityIntelligenceStore(settings.public_advisories_dir)
+    app.state.project_portfolio = backend_main.ProjectPortfolioService(
+        project_store,
+        job_store,
+        app.state.project_vulnerability_intelligence_store,
+        app.state.finding_decisions,
+        app.state.team_identity,
+    )
+    app.state.project_action_inbox = backend_main.ProjectActionInboxService(
+        app.state.project_portfolio,
+        backend_main.ProjectActionInboxStore(settings),
+    )
+    app.state.remediation_center = backend_main.RemediationCenterService(
+        project_store,
+        job_store,
+        app.state.project_vulnerability_intelligence_store,
+        app.state.finding_decisions,
+    )
+    app.state.project_risk_trends = backend_main.ProjectRiskTrendsService(
+        project_store,
+        job_store,
+        app.state.project_vulnerability_intelligence_store,
+        app.state.finding_decisions,
+        app.state.project_portfolio,
+    )
+    app.state.project_deletions = ProjectDeletionService(
+        settings,
+        project_store,
+        job_store,
+        app.state.finding_decisions,
+        app.state.project_snapshot_admissions,
+        app.state.project_vulnerability_intelligence_store,
+        execution_workspaces,
+        app.state.project_action_inbox.store,
+    )
+    app.state.operational_readiness = OperationalReadinessService(
+        settings,
+        job_store,
+        app.state.project_snapshot_admissions,
+        execution_workspaces,
+        deletion_pending_probe=app.state.project_deletions.has_pending,
+    )
+    app.state.retention_maintenance = backend_main.RetentionMaintenanceService(
+        settings,
+        file_store,
+        job_store,
+        project_store,
+        app.state.project_vulnerability_intelligence_store,
+        app.state.public_advisory_egress_client.cache,
+        app.state.product_audit,
+        app.state.automation_tokens,
+        app.state.team_identity,
+    )
+    app.state.project_vulnerability_intelligence = OsvVulnerabilityIntelligenceService(
+        app.state.public_advisory_egress_client,
+        cache_ttl_seconds=settings.public_advisory_cache_ttl_seconds,
+    )
     app.state.pdf_audits = PdfAuditService(settings, file_store, job_store)
     app.state.image_audits = ImageAuditService(settings, file_store, job_store)
     app.state.manifest_audits = ManifestAuditService(settings, file_store, job_store)
     app.state.archive_audits = ArchiveAuditService(settings, file_store, job_store)
-    app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store)
+    app.state.project_archive_audits = ProjectArchiveAuditService(settings, file_store, job_store, execution_workspaces)
     app.state.django_config_audits = DjangoConfigAuditService(settings, file_store, job_store)
     app.state.docker_config_audits = DockerConfigAuditService(settings, file_store, job_store)
     app.state.secrets_review_audits = SecretsReviewAuditService(settings, file_store, job_store)
@@ -507,6 +665,468 @@ async def test_health(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "inspectra-backend"}
+    assert re.fullmatch(r"[a-f0-9]{32}", response.headers["x-request-id"])
+
+
+def readiness_runner_transport(requests: list[str] | None = None) -> MockTransport:
+    def handler(request):
+        if requests is not None:
+            requests.append(str(request.url))
+        return Response(200, json={"status": "ok", "service": "inspectra-audit-tools"})
+
+    return MockTransport(handler)
+
+
+@pytest.mark.anyio
+async def test_readiness_checks_storage_fixed_runners_admission_and_recovery(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    requests: list[str] = []
+    app.state.operational_readiness = OperationalReadinessService(
+        app.state.settings,
+        app.state.jobs,
+        app.state.project_snapshot_admissions,
+        app.state.execution_workspaces,
+        transport=readiness_runner_transport(requests),
+    )
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "service": "inspectra-backend",
+        "checks": {
+            "storage": "ready",
+            "analysis_runners": "ready",
+            "admission": "ready",
+            "recovery_cleanup": "ready",
+        },
+    }
+    assert requests == ["http://audit-tools:8081/health", "http://network-tools:8081/health"]
+    assert not list(app.state.settings.runtime_dir.glob(".readiness-*"))
+
+
+@pytest.mark.anyio
+async def test_readiness_degrades_without_exposing_runner_storage_or_queue_details(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS", "1")
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS_PER_OWNER", "1")
+    configure_test_state(monkeypatch, tmp_path)
+    saturated_job = app.state.jobs.create_web_job("https://private-project.example/secret", owner_id=DEFAULT_LOCAL_OPERATOR.id)
+    orphan = app.state.settings.execution_workspaces_dir / ("a" * 32)
+    orphan.mkdir()
+    leaked_detail = f"cannot write {tmp_path}/customer-secret"
+
+    def failed_storage_probe():
+        raise OSError(leaked_detail)
+
+    app.state.operational_readiness = OperationalReadinessService(
+        app.state.settings,
+        app.state.jobs,
+        app.state.project_snapshot_admissions,
+        app.state.execution_workspaces,
+        storage_probe=failed_storage_probe,
+        runner_probe=lambda: asyncio.sleep(0, result=False),
+    )
+    caplog.set_level("INFO", logger="inspectra.audit")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not_ready",
+        "service": "inspectra-backend",
+        "checks": {
+            "storage": "unavailable",
+            "analysis_runners": "unavailable",
+            "admission": "saturated",
+            "recovery_cleanup": "unavailable",
+        },
+    }
+    serialized = response.text + "\n" + "\n".join(record.getMessage() for record in caplog.records)
+    assert leaked_detail not in serialized
+    assert str(tmp_path) not in serialized
+    assert "private-project" not in serialized
+    assert DEFAULT_LOCAL_OPERATOR.id not in serialized
+
+    app.state.jobs.update(saturated_job.id, status="failed", error="controlled failure")
+    orphan.rmdir()
+    app.state.operational_readiness = OperationalReadinessService(
+        app.state.settings,
+        app.state.jobs,
+        app.state.project_snapshot_admissions,
+        app.state.execution_workspaces,
+        transport=readiness_runner_transport(),
+    )
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        recovered = await client.get("/ready")
+    assert recovered.status_code == 200
+    assert recovered.json()["status"] == "ready"
+
+
+@pytest.mark.anyio
+async def test_readiness_timeout_and_hostile_inputs_fail_with_bounded_output(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+
+    async def slow_runner_probe():
+        await asyncio.sleep(0.05)
+        return True
+
+    app.state.operational_readiness = OperationalReadinessService(
+        replace(app.state.settings, readiness_timeout_seconds=0.01),
+        app.state.jobs,
+        app.state.project_snapshot_admissions,
+        app.state.execution_workspaces,
+        storage_probe=lambda: True,
+        runner_probe=slow_runner_probe,
+    )
+    transport = ASGITransport(app=app)
+    secret = "readiness-secret-must-not-return"
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        timed_out = await client.get("/ready")
+        query = await client.get("/ready", params={"target": secret})
+        body = await client.request("GET", "/ready", content=secret)
+
+    assert timed_out.status_code == 503
+    assert timed_out.json()["checks"]["analysis_runners"] == "unavailable"
+    assert timed_out.json()["checks"]["storage"] == "ready"
+    assert query.status_code == 400
+    assert query.json() == {"detail": "Readiness does not accept query parameters."}
+    assert body.status_code == 400
+    assert body.json() == {"detail": "Readiness does not accept a request body."}
+    assert secret not in query.text + body.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "runner_response",
+    [
+        Response(302, headers={"location": "http://private.example/secret"}),
+        Response(200, content=b"x" * 4_097, headers={"content-type": "application/json"}),
+        Response(200, json={"status": "ok", "service": "unexpected-runner", "path": "/private/source"}),
+    ],
+)
+async def test_readiness_rejects_redirect_oversize_and_incompatible_runner_health(
+    monkeypatch,
+    tmp_path,
+    runner_response,
+):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.operational_readiness = OperationalReadinessService(
+        app.state.settings,
+        app.state.jobs,
+        app.state.project_snapshot_admissions,
+        app.state.execution_workspaces,
+        transport=MockTransport(
+            lambda _request: Response(
+                runner_response.status_code,
+                content=runner_response.content,
+                headers=dict(runner_response.headers),
+            )
+        ),
+    )
+
+    result = await app.state.operational_readiness.check()
+
+    assert result["status"] == "not_ready"
+    assert result["checks"]["analysis_runners"] == "unavailable"
+    assert "private" not in json.dumps(result).lower()
+    assert len(json.dumps(result)) < 300
+
+
+def test_private_storage_readiness_probe_cleans_its_sentinel(tmp_path):
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(mode=0o700)
+
+    assert probe_private_storage(runtime_dir) is True
+    assert list(runtime_dir.iterdir()) == []
+
+
+@pytest.mark.anyio
+async def test_opt_in_adoption_metrics_capture_only_the_closed_route_dimension(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    metrics = AdoptionMetricsStore(
+        replace(app.state.settings, adoption_metrics_enabled=True)
+    )
+    monkeypatch.setattr(app.state, "adoption_metrics", metrics, raising=False)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/projects",
+            json={"private-project-secret": "must-not-be-retained"},
+        )
+
+    assert response.status_code == 422
+    exported = json.loads(metrics.export())
+    assert exported["metrics"][0]["flow"] == "archive_onboarding"
+    assert exported["metrics"][0]["outcome"] == "invalid"
+    retained = metrics.path.read_bytes()
+    assert b"private-project-secret" not in retained
+    assert b"must-not-be-retained" not in retained
+
+
+@pytest.mark.anyio
+async def test_project_archive_preflight_returns_aggregate_capabilities_without_source_input(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path, max_upload_bytes=12_345_678)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/project-analysis-preflight")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "available"
+    assert payload["upload_limit_bytes"] == 12_345_678
+    assert payload["accepted_archive_formats"] == [".zip", ".tar", ".tar.gz", ".tgz"]
+    assert payload["analysis_profile"]["profile_name"] == "project_archive_basic"
+    assert payload["analysis_profile"]["safe_default"] is True
+    assert payload["analysis_profile"]["selection_mode"] == "manifest_driven_closed_catalog"
+    assert payload["analysis_profile"]["execution_mode"] == "passive_no_project_execution"
+    assert payload["analysis_profile"]["network_access"] == "disabled"
+    assert payload["analysis_profile"]["ruleset_version"] == payload["execution_profile"]["ruleset_version"]
+    assert payload["execution_profile"]["max_upload_bytes"] == 12_345_678
+    assert {rule["id"] for rule in payload["analysis_profile"]["rules"]} == {
+        "archive_safety_limits",
+        "manifest_parse_integrity",
+        "dependency_repeatability",
+        "dependency_source_boundary",
+            "package_execution_indicators",
+            "multi_ecosystem_coverage",
+            "sensitive_data_indicators",
+            "container_configuration",
+            "kubernetes_configuration",
+            "terraform_configuration",
+            "declared_license_review",
+        }
+    assert {item["name"] for item in payload["supported_manifests"]} == {
+        "package.json",
+        "requirements.txt",
+        "pyproject.toml",
+        "Pipfile",
+        "go.mod",
+        "Cargo.toml",
+        "composer.json",
+        "build.gradle[.kts]",
+        "*.csproj",
+    }
+    assert payload["exact_resolution"] == [
+        {
+            "name": "package-lock.json",
+            "ecosystem": "npm",
+            "coverage": "exact registry versions only when one npm v2/v3 lockfile matches the manifest root",
+        },
+        {
+            "name": "pnpm-lock.yaml",
+            "ecosystem": "npm",
+            "coverage": "exact direct local versions only when one pnpm v9 lockfile matches the manifest root; never public-advisory egress",
+        },
+        {
+            "name": "yarn.lock (Classic v1)",
+            "ecosystem": "npm",
+            "coverage": "exact direct local versions only when one Classic v1 lockfile selector matches the manifest root; Berry remains detected but not resolved; never public-advisory egress",
+        },
+        {
+            "name": "poetry.lock (v2.1)",
+            "ecosystem": "PyPI",
+            "coverage": "exact direct local versions only when one Poetry v2.1 lockfile matches the pyproject root; never public-advisory egress",
+        },
+        {
+            "name": "Pipfile.lock (v6)",
+            "ecosystem": "PyPI",
+            "coverage": "exact grouped direct local versions only when one v6 lockfile matches the Pipfile root; hashes and sources are discarded; never public-advisory egress",
+        },
+        {
+            "name": "go.sum",
+            "ecosystem": "Go",
+            "coverage": "exact local versions only when one go.sum matches the go.mod root; OSV additionally requires an exact operator public-module attestation",
+        },
+        {
+            "name": "Cargo.lock (v3/v4)",
+            "ecosystem": "Rust",
+            "coverage": "exact crates with supported official crates.io provenance only; sources and checksums are discarded",
+        },
+        {
+            "name": "composer.lock",
+            "ecosystem": "PHP",
+            "coverage": "exact local versions under the supported structural contract; public origin requires exact operator attestation",
+        },
+        {
+            "name": "gradle.lockfile",
+            "ecosystem": "JVM",
+            "coverage": "bounded exact coordinates only; configurations are discarded and public origin requires exact operator attestation",
+        },
+        {
+            "name": "packages.lock.json (v1)",
+            "ecosystem": ".NET",
+            "coverage": "bounded exact versions under an unambiguous target; public origin requires exact operator attestation",
+        },
+    ]
+    assert payload["detected_not_resolved"] == []
+    serialized = json.dumps(payload, sort_keys=True)
+    for forbidden in ("source_file_id", "source_path", "relative_path", "token", "password", "secret"):
+        assert forbidden not in serialized.lower()
+
+
+@pytest.mark.anyio
+async def test_client_capabilities_is_public_static_closed_and_source_free(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/client-capabilities")
+        query = await client.get("/client-capabilities", params={"project": "private-value"})
+        body = await client.request("GET", "/client-capabilities", content=b"private-value")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "contract_version": "2026-09-10.6",
+        "status": "available",
+        "server_version": "0.3.0-beta.1",
+        "supported_cli_protocols": ["2026-09-10.6"],
+        "contracts": {
+            "git_snapshot": ["2026-09-07.1"],
+            "ci_admission": ["2026-09-06.1"],
+            "policy_result": ["2026-09-07.1"],
+            "cli_result": ["2026-09-07.1"],
+            "go_dependency_graph": ["2026-09-10.1"],
+            "cargo_dependency_graph": ["2026-09-10.2"],
+            "composer_dependency_graph": ["2026-09-10.3"],
+            "gradle_dependency_graph": ["2026-09-10.4"],
+            "nuget_dependency_graph": ["2026-09-10.5"],
+            "ci_graph_envelope": ["2026-09-10.1"],
+        },
+    }
+    assert query.status_code == 400
+    assert body.status_code == 400
+    assert "private-value" not in query.text
+    assert "private-value" not in body.text
+
+
+@pytest.mark.anyio
+async def test_project_archive_preflight_rejects_user_controlled_query_or_body_without_reflection(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    hostile_value = "source_path=/private/project?token=do-not-reflect"
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        query_response = await client.get("/project-analysis-preflight", params={"source_path": hostile_value})
+        body_response = await client.request("GET", "/project-analysis-preflight", content=hostile_value.encode("utf-8"))
+
+    assert query_response.status_code == 400
+    assert body_response.status_code == 400
+    assert query_response.json()["detail"] == "Project coverage preview does not accept query parameters."
+    assert body_response.json()["detail"] == "Project coverage preview does not accept a request body."
+    assert hostile_value not in query_response.text
+    assert hostile_value not in body_response.text
+
+
+@pytest.mark.anyio
+async def test_cors_allows_only_frontend_headers_and_methods(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    request_headers = {
+        "Origin": "http://localhost:5173",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type, x-csrf-token, x-inspectra-active-approval",
+    }
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        allowed = await client.options("/files/pdf", headers=request_headers)
+        denied = await client.options(
+            "/files/pdf",
+            headers={**request_headers, "Access-Control-Request-Headers": "x-unexpected-header"},
+        )
+        actual = await client.get("/health", headers={"Origin": "http://localhost:5173"})
+
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-methods"] == "GET, POST, PUT, DELETE"
+    assert allowed.headers["access-control-allow-headers"].lower() == "accept, accept-language, content-language, content-type, x-csrf-token, x-inspectra-active-approval"
+    assert denied.status_code == 400
+    assert actual.headers["access-control-expose-headers"].lower() == "x-inspectra-snapshot-sha256"
+
+
+def test_cors_configuration_normalizes_origins_and_only_allows_safe_restrictions(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_CORS_ORIGINS", "HTTPS://INSPECTRA.EXAMPLE.TEST:443/, http://localhost:4173")
+    monkeypatch.setenv("INSPECTRA_CORS_ALLOWED_METHODS", "post")
+    monkeypatch.setenv("INSPECTRA_CORS_ALLOWED_HEADERS", "Content-Type")
+
+    settings = load_settings()
+
+    assert settings.cors_origins == ("http://localhost:4173", "https://inspectra.example.test")
+    assert settings.cors_allowed_methods == ("POST",)
+    assert settings.cors_allowed_headers == ("Content-Type",)
+
+
+@pytest.mark.parametrize(
+    ("env_name", "raw_value"),
+    [
+        ("INSPECTRA_CORS_ORIGINS", "*"),
+        ("INSPECTRA_CORS_ORIGINS", "https://inspectra.example.test/path"),
+        ("INSPECTRA_CORS_ORIGINS", "https://admin:secret@inspectra.example.test"),
+        ("INSPECTRA_CORS_ORIGINS", "https://inspectra.example.test?preview=true"),
+        ("INSPECTRA_CORS_ALLOWED_METHODS", "PATCH"),
+        ("INSPECTRA_CORS_ALLOWED_HEADERS", "Authorization"),
+    ],
+)
+def test_cors_configuration_rejects_unsafe_values(monkeypatch, tmp_path, env_name, raw_value):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(env_name, raw_value)
+
+    with pytest.raises(ValueError, match=env_name):
+        load_settings()
+
+
+@pytest.mark.anyio
+async def test_web_and_domain_request_models_reject_oversized_inputs(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        web_response = await client.post(
+            "/audits/web/basic",
+            json={"url": f"https://example.test/{'a' * 2048}", "authorization_confirmed": True},
+        )
+        domain_response = await client.post(
+            "/audits/domain/basic",
+            json={"domain": f"{'a' * 250}.example.test", "authorization_confirmed": True},
+        )
+
+    assert web_response.status_code == 422
+    assert domain_response.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_request_validation_errors_do_not_echo_rejected_input(monkeypatch, tmp_path, caplog):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    rejected_secret = "inspectra-validation-secret-must-not-be-returned"
+    caplog.set_level("INFO", logger="inspectra.audit")
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/projects",
+            json={
+                "source_file_id": "a" * 32,
+                "authorization_confirmed": True,
+                "repository_url": f"https://example.test/private?token={rejected_secret}",
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": REQUEST_VALIDATION_DETAIL}
+    assert rejected_secret not in response.text
+    assert "repository_url" not in response.text
+    assert response.headers["x-request-id"]
+    assert rejected_secret not in "\n".join(record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.anyio
@@ -525,6 +1145,7 @@ async def test_active_tools_health_runtime_surface_defaults_to_controlled_unconf
         "active_tools": {
             "available": False,
             "status": None,
+            "capabilities": make_empty_active_tools_health_capabilities(),
             "active_nmap_basic_status": None,
             "execution_enabled": None,
             "target_input_allowed": None,
@@ -931,8 +1552,8 @@ def test_sqlite_auth_state_schema_initializes_idempotently(tmp_path):
     store = SQLiteAuthStateStore(db_path)
     second_store = SQLiteAuthStateStore(db_path)
 
-    assert store.get_schema_version() == 1
-    assert second_store.get_schema_version() == 1
+    assert store.get_schema_version() == 2
+    assert second_store.get_schema_version() == 2
     with sqlite3.connect(db_path) as connection:
         tables = {
             row[0]
@@ -953,6 +1574,54 @@ def test_sqlite_auth_state_schema_initializes_idempotently(tmp_path):
     assert "idx_auth_sessions_operator_id" in indexes
     assert "idx_auth_login_attempts_locked_until" in indexes
     assert "idx_auth_login_attempts_updated_at" in indexes
+    with sqlite3.connect(db_path) as connection:
+        session_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(auth_sessions)").fetchall()
+        }
+    assert {"organization_id", "role"}.issubset(session_columns)
+
+
+def test_sqlite_auth_state_migrates_v1_session_columns_without_dropping_rows(tmp_path):
+    db_path = tmp_path / "runtime" / "auth_state.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE auth_sessions (
+                session_id_hash TEXT PRIMARY KEY,
+                csrf_token_hash TEXT NOT NULL,
+                operator_id TEXT NOT NULL,
+                auth_mode TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                last_seen_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                revoked_at REAL NULL,
+                revocation_reason TEXT NULL,
+                client_key_hash TEXT NULL,
+                user_agent_hash TEXT NULL
+            );
+            CREATE TABLE auth_state_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            INSERT INTO auth_sessions VALUES (
+                'legacy-session-hash', 'legacy-csrf-hash', 'local-admin',
+                'self_hosted_single_admin', 1, 1, 4102444800,
+                NULL, NULL, NULL, NULL
+            );
+            INSERT INTO auth_state_metadata VALUES ('schema_version', '1', 1);
+            """
+        )
+
+    store = SQLiteAuthStateStore(db_path)
+
+    assert store.get_schema_version() == 2
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT operator_id, organization_id, role FROM auth_sessions WHERE session_id_hash = 'legacy-session-hash'"
+        ).fetchone()
+    assert row == ("local-admin", None, None)
 
 
 def test_sqlite_auth_state_create_get_session_redacts_raw_tokens(tmp_path):
@@ -1030,6 +1699,38 @@ def test_sqlite_auth_state_expired_and_revoked_sessions_are_invalid(tmp_path):
             "SELECT revoked_at FROM auth_sessions WHERE revocation_reason = 'logout'"
         ).fetchone()[0]
     assert revoked_at is not None
+
+
+def test_sqlite_auth_state_revokes_only_the_departing_membership_workspace(tmp_path):
+    db_path = tmp_path / "auth_state.sqlite3"
+    current_time = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    store = SQLiteAuthStateStore(db_path)
+    operator_id = "a" * 32
+    first_organization = "b" * 32
+    second_organization = "c" * 32
+    for session_id, organization_id in (
+        ("first-workspace-session", first_organization),
+        ("second-workspace-session", second_organization),
+    ):
+        store.create_session(
+            session_id,
+            f"{session_id}-csrf",
+            operator_id,
+            auth_mode="private_team_lightweight_users",
+            organization_id=organization_id,
+            role="reader",
+            expires_at=current_time + timedelta(hours=1),
+            now=current_time,
+        )
+
+    assert store.revoke_operator_organization_sessions(
+        operator_id,
+        first_organization,
+        "membership_revoked",
+        now=current_time,
+    ) == 1
+    assert store.get_session("first-workspace-session", now=current_time) is None
+    assert store.get_session("second-workspace-session", now=current_time) is not None
 
 
 def test_sqlite_auth_state_cleanup_removes_expired_and_old_revoked_sessions(tmp_path):
@@ -1375,6 +2076,500 @@ def test_session_ttl_config_defaults_and_env_override(monkeypatch, tmp_path):
     assert app.state.session_cookie_settings.max_age_seconds == 120
 
 
+def test_retention_config_defaults_and_env_override(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+
+    assert app.state.settings.upload_retention_days == DEFAULT_UPLOAD_RETENTION_DAYS
+    assert app.state.settings.job_retention_days == DEFAULT_JOB_RETENTION_DAYS
+
+    monkeypatch.setenv("INSPECTRA_UPLOAD_RETENTION_DAYS", "7")
+    monkeypatch.setenv("INSPECTRA_JOB_RETENTION_DAYS", "14")
+    configure_test_state(monkeypatch, tmp_path)
+
+    assert app.state.settings.upload_retention_days == 7
+    assert app.state.settings.job_retention_days == 14
+
+
+@pytest.mark.parametrize(
+    ("env_name", "raw_value"),
+    [
+        ("INSPECTRA_UPLOAD_RETENTION_DAYS", "-1"),
+        ("INSPECTRA_JOB_RETENTION_DAYS", "not-a-number"),
+    ],
+)
+def test_retention_config_rejects_invalid_values(monkeypatch, tmp_path, env_name, raw_value):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(env_name, raw_value)
+
+    with pytest.raises(ValueError, match=env_name):
+        load_settings()
+
+
+@pytest.mark.anyio
+async def test_audit_concurrency_config_and_scheduler_limit(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_CONCURRENCY", "1")
+    configure_test_state(monkeypatch, tmp_path)
+    running = 0
+    maximum_running = 0
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def audit_task(position):
+        nonlocal maximum_running, running
+        running += 1
+        maximum_running = max(maximum_running, running)
+        if position == 1:
+            first_started.set()
+            await release_first.wait()
+        running -= 1
+
+    first = asyncio.create_task(backend_main.run_bounded_audit(app, audit_task, 1))
+    await first_started.wait()
+    second = asyncio.create_task(backend_main.run_bounded_audit(app, audit_task, 2))
+    await asyncio.sleep(0)
+    assert maximum_running == 1
+    release_first.set()
+    await asyncio.gather(first, second)
+    assert app.state.settings.audit_max_concurrency == 1
+    assert DEFAULT_AUDIT_MAX_CONCURRENCY == 4
+
+
+def test_project_operational_limits_are_configurable_and_bounded(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_PROJECT_ARCHIVE_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("INSPECTRA_EXECUTION_WORKSPACE_MAX_BYTES", "123456")
+    monkeypatch.setenv("INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES", "900000")
+    monkeypatch.setenv("INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES", "321")
+    monkeypatch.setenv("INSPECTRA_PROJECT_MAX_SOURCE_SNAPSHOTS", "45")
+    monkeypatch.setenv("INSPECTRA_READINESS_TIMEOUT_SECONDS", "1.25")
+    settings = load_settings()
+
+    assert settings.project_archive_timeout_seconds == 45
+    assert settings.execution_workspace_max_bytes == 123456
+    assert settings.project_archive_max_total_uncompressed_bytes == 900000
+    assert settings.project_archive_max_archive_entries == 321
+    assert settings.project_max_source_snapshots == 45
+    assert DEFAULT_PROJECT_MAX_SOURCE_SNAPSHOTS == 100
+    assert settings.readiness_timeout_seconds == 1.25
+
+    monkeypatch.setenv("INSPECTRA_PROJECT_ARCHIVE_TIMEOUT_SECONDS", "301")
+    with pytest.raises(ValueError, match="INSPECTRA_PROJECT_ARCHIVE_TIMEOUT_SECONDS"):
+        load_settings()
+    monkeypatch.setenv("INSPECTRA_PROJECT_ARCHIVE_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("INSPECTRA_PROJECT_MAX_SOURCE_SNAPSHOTS", str(MAX_PROJECT_MAX_SOURCE_SNAPSHOTS + 1))
+    with pytest.raises(ValueError, match="INSPECTRA_PROJECT_MAX_SOURCE_SNAPSHOTS"):
+        load_settings()
+    monkeypatch.setenv("INSPECTRA_PROJECT_MAX_SOURCE_SNAPSHOTS", "45")
+    monkeypatch.setenv("INSPECTRA_READINESS_TIMEOUT_SECONDS", "5.1")
+    with pytest.raises(ValueError, match="INSPECTRA_READINESS_TIMEOUT_SECONDS"):
+        load_settings()
+
+
+@pytest.mark.anyio
+async def test_execution_workspace_is_owner_bound_integrity_checked_and_cleaned(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("workspace.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+    stored_file = app.state.files.get(archive["id"])
+    job = app.state.jobs.create_project_archive_job(
+        stored_file.id,
+        owner_id=stored_file.owner_id,
+        project_id="b" * 32,
+        source_sha256=stored_file.sha256,
+    )
+
+    relative_path = app.state.execution_workspaces.prepare(job, stored_file)
+    workspace_file = tmp_path / relative_path
+
+    assert relative_path == f"workspaces/{job.id}/source.archive"
+    assert workspace_file.read_bytes() == app.state.files.source_path(stored_file).read_bytes()
+    assert hashlib.sha256(workspace_file.read_bytes()).hexdigest() == stored_file.sha256
+    assert stored_file.owner_id not in relative_path
+    with pytest.raises(ExecutionWorkspaceError, match="ownership mismatch"):
+        app.state.execution_workspaces.prepare(
+            job,
+            stored_file.model_copy(update={"owner_id": "other-owner", "organization_id": "other-owner"}),
+        )
+    assert app.state.execution_workspaces.cleanup(job.id) is True
+    assert not workspace_file.parent.exists()
+
+
+@pytest.mark.anyio
+async def test_project_archive_service_attests_limits_and_cleans_workspace_without_leaking_failures(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("bounded.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+    stored_file = app.state.files.get(archive["id"])
+    job = app.state.jobs.create_project_archive_job(
+        stored_file.id,
+        owner_id=stored_file.owner_id,
+        project_id="c" * 32,
+        source_sha256=stored_file.sha256,
+    )
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "file_id": stored_file.id,
+                "analyzer": "project_archive_basic",
+                "limits": audit_services.project_archive_runner_limits(app.state.settings),
+                "execution_isolation": audit_services.isolated_runner_contract(),
+                "summary": {"findings_count": 0, "truncated": False},
+                "findings": [],
+                "errors": [],
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, timeout, trust_env):
+            assert trust_env is False
+            assert timeout == app.state.settings.project_archive_timeout_seconds
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json):
+            calls.append({"url": url, "json": json})
+            return FakeResponse()
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FakeAsyncClient)
+    await app.state.project_archive_audits.run_project_archive_analysis(job.id)
+
+    completed = app.state.jobs.get(job.id)
+    assert completed.status == "completed"
+    assert completed.started_at is not None
+    assert completed.finished_at is not None
+    assert completed.termination_reason == "completed"
+    assert "relative_path" not in calls[0]["json"]
+    assert "owner_id" not in calls[0]["json"]
+    assert "project_id" not in calls[0]["json"]
+    assert base64.b64decode(calls[0]["json"]["source_base64"], validate=True) == app.state.files.source_path(stored_file).read_bytes()
+    assert calls[0]["json"]["source_sha256"] == stored_file.sha256
+    assert calls[0]["json"]["source_size_bytes"] == stored_file.size_bytes
+    assert {key: calls[0]["json"][key] for key in audit_services.project_archive_runner_limits(app.state.settings)} == (
+        audit_services.project_archive_runner_limits(app.state.settings)
+    )
+    assert not (tmp_path / "workspaces" / job.id).exists()
+
+    failed_job = app.state.jobs.create_project_archive_job(
+        stored_file.id,
+        owner_id=stored_file.owner_id,
+        project_id="c" * 32,
+        source_sha256=stored_file.sha256,
+    )
+
+    class FailingAsyncClient(FakeAsyncClient):
+        async def post(self, url, json):
+            raise audit_services.httpx.ConnectError(
+                "runner failed at /srv/private/project token=do-not-retain",
+            )
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FailingAsyncClient)
+    await app.state.project_archive_audits.run_project_archive_analysis(failed_job.id)
+    failed = app.state.jobs.get(failed_job.id)
+    serialized = failed.model_dump_json()
+    assert failed.status == "failed"
+    assert failed.termination_reason == "runner_unavailable"
+    assert "/srv/private" not in serialized
+    assert "do-not-retain" not in serialized
+    assert not (tmp_path / "workspaces" / failed_job.id).exists()
+
+
+@pytest.mark.anyio
+async def test_project_archive_service_fails_closed_and_cleans_if_staged_source_changes(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("bounded.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+    stored_file = app.state.files.get(archive["id"])
+    job = app.state.jobs.create_project_archive_job(
+        stored_file.id,
+        owner_id=stored_file.owner_id,
+        project_id="c" * 32,
+        source_sha256=stored_file.sha256,
+    )
+    original_prepare = app.state.execution_workspaces.prepare
+
+    def prepare_then_tamper(job_record, file_record):
+        relative_path = original_prepare(job_record, file_record)
+        staged = tmp_path / relative_path
+        staged.chmod(0o600)
+        staged.write_bytes(b"tampered")
+        return relative_path
+
+    monkeypatch.setattr(app.state.execution_workspaces, "prepare", prepare_then_tamper)
+    await app.state.project_archive_audits.run_project_archive_analysis(job.id)
+
+    failed = app.state.jobs.get(job.id)
+    assert failed.status == "failed"
+    assert failed.termination_reason == "workspace_error"
+    assert failed.result is None
+    assert "tampered" not in failed.model_dump_json()
+    assert not (tmp_path / "workspaces" / job.id).exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("runner_status", "termination_reason"),
+    [(504, "runner_timeout"), (422, "runner_resource_limit")],
+)
+async def test_project_archive_service_records_isolated_worker_stop_reason(
+    monkeypatch,
+    tmp_path,
+    runner_status,
+    termination_reason,
+):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("bounded.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+    stored_file = app.state.files.get(archive["id"])
+    job = app.state.jobs.create_project_archive_job(
+        stored_file.id,
+        owner_id=stored_file.owner_id,
+        project_id="c" * 32,
+        source_sha256=stored_file.sha256,
+    )
+
+    class FailingResponseClient:
+        def __init__(self, timeout, trust_env):
+            assert trust_env is False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json):
+            return Response(runner_status, request=audit_services.httpx.Request("POST", url))
+
+    monkeypatch.setattr(audit_services.httpx, "AsyncClient", FailingResponseClient)
+    await app.state.project_archive_audits.run_project_archive_analysis(job.id)
+
+    failed = app.state.jobs.get(job.id)
+    assert failed.status == "failed"
+    assert failed.termination_reason == termination_reason
+    assert failed.result is None
+    assert not (tmp_path / "workspaces" / job.id).exists()
+
+
+@pytest.mark.anyio
+async def test_bounded_scheduler_cancels_running_project_job_and_cleans_workspace(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = app.state.jobs.create_project_archive_job(
+        "a" * 32,
+        owner_id=app.state.default_local_operator.id,
+        project_id="b" * 32,
+        source_sha256="c" * 64,
+    )
+    workspace = tmp_path / "workspaces" / job.id
+    workspace.mkdir()
+    (workspace / "source.archive").write_bytes(b"temporary")
+    started = asyncio.Event()
+
+    async def slow_audit(job_id):
+        app.state.jobs.update(job_id, status="running")
+        started.set()
+        await asyncio.Event().wait()
+
+    running = asyncio.create_task(backend_main.run_bounded_audit(app, slow_audit, job.id))
+    await started.wait()
+    app.state.jobs.request_cancellation(job.id, owner_id=app.state.default_local_operator.id)
+    app.state.audit_cancellation_events[job.id].set()
+    await running
+
+    cancelled = app.state.jobs.get(job.id)
+    assert cancelled.status == "cancelled"
+    assert cancelled.termination_reason == "cancelled_by_owner"
+    assert cancelled.cancellation_requested_at is not None
+    assert cancelled.finished_at is not None
+    assert cancelled.result is None
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize("raw_value", ["0", "17", "not-a-number"])
+def test_audit_concurrency_config_rejects_invalid_values(monkeypatch, tmp_path, raw_value):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_CONCURRENCY", raw_value)
+
+    with pytest.raises(ValueError, match="INSPECTRA_AUDIT_MAX_CONCURRENCY"):
+        load_settings()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("INSPECTRA_TOOL_RUNNER_URL", "https://attacker.example.invalid/collect"),
+        ("INSPECTRA_TOOL_RUNNER_URL", "http://audit-tools:8081/extra"),
+        ("INSPECTRA_NETWORK_TOOL_RUNNER_URL", "http://audit-tools:8081"),
+        ("INSPECTRA_NETWORK_TOOL_RUNNER_URL", "http://network-tools:8082"),
+    ],
+)
+def test_runner_destinations_are_fixed_before_source_transport(monkeypatch, tmp_path, name, value):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match="fixed internal Inspectra service destination"):
+        load_settings()
+
+
+def test_audit_admission_config_defaults_overrides_and_relation(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    assert settings.audit_max_inflight_jobs == DEFAULT_AUDIT_MAX_INFLIGHT_JOBS
+    assert settings.audit_max_inflight_jobs_per_owner == DEFAULT_AUDIT_MAX_INFLIGHT_JOBS_PER_OWNER
+
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS", "12")
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS_PER_OWNER", "3")
+    settings = load_settings()
+    assert settings.audit_max_inflight_jobs == 12
+    assert settings.audit_max_inflight_jobs_per_owner == 3
+
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS_PER_OWNER", "13")
+    with pytest.raises(ValueError, match="must not exceed"):
+        load_settings()
+
+
+def test_active_admission_config_defaults_overrides_and_relations(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    assert settings.active_max_inflight_jobs == DEFAULT_ACTIVE_MAX_INFLIGHT_JOBS
+    assert settings.active_max_inflight_jobs_per_organization == DEFAULT_ACTIVE_MAX_INFLIGHT_JOBS_PER_ORGANIZATION
+    assert settings.active_max_inflight_jobs_per_asset == DEFAULT_ACTIVE_MAX_INFLIGHT_JOBS_PER_ASSET
+    assert settings.active_max_inflight_jobs_per_capability == DEFAULT_ACTIVE_MAX_INFLIGHT_JOBS_PER_CAPABILITY
+
+    monkeypatch.setenv("INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS", "8")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS_PER_ORGANIZATION", "3")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS_PER_ASSET", "1")
+    monkeypatch.setenv("INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS_PER_CAPABILITY", "2")
+    settings = load_settings()
+    assert (
+        settings.active_max_inflight_jobs,
+        settings.active_max_inflight_jobs_per_organization,
+        settings.active_max_inflight_jobs_per_asset,
+        settings.active_max_inflight_jobs_per_capability,
+    ) == (8, 3, 1, 2)
+
+    monkeypatch.setenv("INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS_PER_ASSET", "4")
+    with pytest.raises(ValueError, match="PER_ASSET must not exceed"):
+        load_settings()
+
+
+def test_job_admission_enforces_owner_and_global_limits_and_releases_on_terminal_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS", "2")
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS_PER_OWNER", "1")
+    settings = load_settings()
+    settings.ensure_directories()
+    jobs = JobStore(settings)
+
+    owner_a = jobs.create_web_job("https://example.test/a", owner_id="owner-a")
+    with pytest.raises(HTTPException) as owner_error:
+        jobs.create_web_job("https://example.test/a-second", owner_id="owner-a")
+    assert owner_error.value.status_code == 429
+    assert owner_error.value.headers == {"Retry-After": "5"}
+    assert owner_error.value.detail == "Analysis capacity is temporarily full. Wait for an active analysis to finish, then retry."
+
+    after_store_recreate = JobStore(settings)
+    with pytest.raises(HTTPException) as restart_error:
+        after_store_recreate.create_web_job("https://example.test/a-after-restart", owner_id="owner-a")
+    assert restart_error.value.status_code == 429
+
+    jobs.create_web_job("https://example.test/b", owner_id="owner-b")
+    with pytest.raises(HTTPException) as global_error:
+        jobs.create_web_job("https://example.test/c", owner_id="owner-c")
+    assert global_error.value.status_code == 429
+    assert "2" not in global_error.value.detail
+
+    after_store_recreate.update(owner_a.id, status="failed", error="controlled")
+    admitted_after_release = JobStore(settings).create_web_job("https://example.test/a-retry", owner_id="owner-a")
+    assert admitted_after_release.status == "queued"
+
+
+def test_job_admission_is_atomic_under_concurrent_requests(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS", "1")
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS_PER_OWNER", "1")
+    settings = load_settings()
+    settings.ensure_directories()
+    jobs = JobStore(settings)
+    barrier = threading.Barrier(2)
+    outcomes: list[tuple[str, int | str]] = []
+
+    def submit(label: str) -> None:
+        barrier.wait()
+        try:
+            outcomes.append(("accepted", jobs.create_web_job(f"https://example.test/{label}", owner_id="owner-a").id))
+        except HTTPException as exc:
+            outcomes.append(("rejected", exc.status_code))
+
+    threads = [threading.Thread(target=submit, args=(label,)) for label in ("one", "two")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert [outcome[0] for outcome in outcomes].count("accepted") == 1
+    assert outcomes.count(("rejected", 429)) == 1
+    assert len(list(settings.jobs_dir.glob("*.json"))) == 1
+
+
+@pytest.mark.anyio
+async def test_project_creation_capacity_rejection_does_not_create_partial_project(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS", "1")
+    monkeypatch.setenv("INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS_PER_OWNER", "1")
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.jobs.create_web_job("https://example.test/already-queued", owner_id=DEFAULT_LOCAL_OPERATOR.id)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        uploaded = await client.post(
+            "/files/archive",
+            files={"file": ("authorized.zip", b"PK\x03\x04bounded", "application/zip")},
+        )
+        response = await client.post(
+            "/projects",
+            json={"source_file_id": uploaded.json()["id"], "authorization_confirmed": True},
+        )
+        projects = await client.get("/projects")
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "5"
+    assert response.json() == {
+        "detail": "Analysis capacity is temporarily full. Wait for an active analysis to finish, then retry."
+    }
+    assert projects.json() == []
+
+
 def test_login_attempt_config_defaults_and_env_override(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
 
@@ -1424,6 +2619,21 @@ def test_auth_state_store_config_defaults_and_sqlite_override(monkeypatch, tmp_p
     assert db_path.exists()
 
 
+def test_team_invitation_retention_config_is_bounded(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    assert load_settings().team_invitation_retention_days == DEFAULT_TEAM_INVITATION_RETENTION_DAYS
+
+    monkeypatch.setenv("INSPECTRA_TEAM_INVITATION_RETENTION_DAYS", "45")
+    assert load_settings().team_invitation_retention_days == 45
+
+    monkeypatch.setenv(
+        "INSPECTRA_TEAM_INVITATION_RETENTION_DAYS",
+        str(MAX_TEAM_INVITATION_RETENTION_DAYS + 1),
+    )
+    with pytest.raises(ValueError, match="INSPECTRA_TEAM_INVITATION_RETENTION_DAYS"):
+        load_settings()
+
+
 def test_auth_state_store_sqlite_is_ignored_for_trusted_local(monkeypatch, tmp_path):
     db_path = tmp_path / "runtime" / "trusted-local-auth.sqlite3"
     monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
@@ -1444,6 +2654,124 @@ def test_auth_state_store_config_rejects_unknown_store(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="INSPECTRA_AUTH_STATE_STORE"):
         load_settings()
+
+
+def test_private_tls_proxy_profile_requires_supported_private_auth(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_DEPLOYMENT_PROFILE", "private_tls_proxy")
+
+    with pytest.raises(ValueError, match="requires self_hosted_single_admin or private_team_lightweight_users auth"):
+        load_settings()
+
+
+def test_private_tls_proxy_profile_requires_supported_admin_verifier(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_DEPLOYMENT_PROFILE", "private_tls_proxy")
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_CORS_ORIGINS", "https://inspectra.example.test")
+
+    with pytest.raises(ValueError, match="requires a supported INSPECTRA_ADMIN_PASSWORD_HASH"):
+        load_settings()
+
+
+def test_private_tls_proxy_profile_requires_https_cors_origins(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_DEPLOYMENT_PROFILE", "private_tls_proxy")
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_CORS_ORIGINS", "http://inspectra.example.test")
+
+    with pytest.raises(ValueError, match="requires HTTPS INSPECTRA_CORS_ORIGINS"):
+        load_settings()
+
+
+def test_private_tls_proxy_profile_requires_secure_session_cookie(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_DEPLOYMENT_PROFILE", "private_tls_proxy")
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_CORS_ORIGINS", "https://inspectra.example.test")
+
+    with pytest.raises(ValueError, match="requires INSPECTRA_SESSION_COOKIE_SECURE=true"):
+        load_settings()
+
+
+def test_private_tls_proxy_profile_requires_retention(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_DEPLOYMENT_PROFILE", "private_tls_proxy")
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_CORS_ORIGINS", "https://inspectra.example.test")
+    monkeypatch.setenv("INSPECTRA_SESSION_COOKIE_SECURE", "true")
+    monkeypatch.setenv("INSPECTRA_UPLOAD_RETENTION_DAYS", "0")
+
+    with pytest.raises(ValueError, match="requires non-zero upload and job retention periods"):
+        load_settings()
+
+
+def test_private_tls_proxy_profile_requires_persistent_auth_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_DEPLOYMENT_PROFILE", "private_tls_proxy")
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_CORS_ORIGINS", "https://inspectra.example.test")
+    monkeypatch.setenv("INSPECTRA_SESSION_COOKIE_SECURE", "true")
+
+    with pytest.raises(ValueError, match="requires INSPECTRA_AUTH_STATE_STORE=sqlite"):
+        load_settings()
+
+
+def test_private_tls_proxy_profile_requires_auth_state_inside_persistent_data_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path / "inspectra-data"))
+    monkeypatch.setenv("INSPECTRA_DEPLOYMENT_PROFILE", "private_tls_proxy")
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_CORS_ORIGINS", "https://inspectra.example.test")
+    monkeypatch.setenv("INSPECTRA_SESSION_COOKIE_SECURE", "true")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_DB_PATH", str(tmp_path / "outside-data" / "auth.sqlite3"))
+
+    with pytest.raises(ValueError, match="requires INSPECTRA_AUTH_STATE_DB_PATH inside INSPECTRA_DATA_DIR"):
+        load_settings()
+
+
+def test_private_tls_proxy_profile_rejects_group_or_world_accessible_persistent_storage(monkeypatch, tmp_path):
+    data_dir = tmp_path / "inspectra-data"
+    data_dir.mkdir(mode=0o755)
+    data_dir.chmod(0o755)
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("INSPECTRA_DEPLOYMENT_PROFILE", "private_tls_proxy")
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_CORS_ORIGINS", "https://inspectra.example.test")
+    monkeypatch.setenv("INSPECTRA_SESSION_COOKIE_SECURE", "true")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+
+    settings = load_settings()
+
+    with pytest.raises(ValueError, match="requires persistent storage without group or world permissions"):
+        settings.ensure_directories()
+
+    data_dir.chmod(0o700)
+    settings.ensure_directories()
+
+    assert settings.runtime_dir.is_dir()
+
+
+def test_private_tls_proxy_profile_accepts_hardened_settings(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_DEPLOYMENT_PROFILE", "private_tls_proxy")
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_CORS_ORIGINS", "https://inspectra.example.test")
+    monkeypatch.setenv("INSPECTRA_SESSION_COOKIE_SECURE", "true")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+
+    settings = load_settings()
+
+    assert settings.deployment_profile == "private_tls_proxy"
+    assert settings.auth_state_store == "sqlite"
+    assert settings.resolved_auth_state_db_path == tmp_path / "runtime" / "auth_state.sqlite3"
 
 
 def test_self_hosted_sqlite_session_store_init_failure_fails_closed(monkeypatch, tmp_path):
@@ -1515,6 +2843,10 @@ async def test_auth_status_defaults_to_trusted_local_no_auth(monkeypatch, tmp_pa
         "login_available": False,
         "authenticated": False,
         "operator_id": None,
+        "username": None,
+        "organization_id": None,
+        "organization_name": None,
+        "role": None,
         "csrf_required": False,
         "csrf_token": None,
     }
@@ -1805,15 +3137,44 @@ async def test_self_hosted_login_success_sets_http_only_session_cookie(monkeypat
         "authenticated": True,
         "operator_id": "local-admin",
         "auth_mode": "self_hosted_single_admin",
+        "organization_id": None,
+        "role": None,
     }
     assert ADMIN_PASSWORD_FIXTURE not in serialized
     assert admin_hash not in serialized
     assert ADMIN_SESSION_COOKIE_NAME not in serialized
     assert ADMIN_SESSION_COOKIE_NAME in set_cookie
     assert "HttpOnly" in set_cookie
-    assert "SameSite=lax" in set_cookie
+    assert "SameSite=strict" in set_cookie
     assert "Max-Age=3600" in set_cookie
     assert "Path=/" in set_cookie
+
+
+@pytest.mark.anyio
+async def test_self_hosted_login_sets_secure_session_cookie_when_configured(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_SESSION_COOKIE_SECURE", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="https://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        status_response = await client.get("/auth/status")
+        logout_response = await client.post(
+            "/auth/logout",
+            headers={ADMIN_CSRF_HEADER_NAME: status_response.json()["csrf_token"]},
+        )
+
+    login_cookie = login_response.headers.get("set-cookie", "")
+    logout_cookie = logout_response.headers.get("set-cookie", "")
+    assert login_response.status_code == 200
+    assert "Secure" in login_cookie
+    assert "HttpOnly" in login_cookie
+    assert "SameSite=strict" in login_cookie
+    assert status_response.status_code == 200
+    assert logout_response.status_code == 200
+    assert "Secure" in logout_cookie
 
 
 @pytest.mark.anyio
@@ -1966,11 +3327,1799 @@ async def test_self_hosted_logout_requires_csrf_and_clears_session(monkeypatch, 
         "authenticated": False,
         "operator_id": None,
         "auth_mode": "self_hosted_single_admin",
+        "organization_id": None,
+        "role": None,
     }
     assert "Max-Age=0" in logout_response.headers.get("set-cookie", "")
     assert denied_response.status_code == 401
     assert denied_response.json() == {"detail": AUTH_REQUIRED_DETAIL}
     assert second_logout_response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_public_advisory_operations_is_admin_only_aggregate_and_cleanup_is_audited(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    cache = app.state.public_advisory_egress_client.cache
+    assert cache is not None
+    invalid_key = "f" * 64
+    invalid_path = cache.directory / "osv" / f"{invalid_key}.json"
+    invalid_path.parent.mkdir(parents=True, exist_ok=True)
+    invalid_path.write_text('{"private":"must-not-leak"}', encoding="utf-8")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        csrf = (await client.get("/auth/status")).json()["csrf_token"]
+        status_response = await client.get("/operations/public-advisories")
+        query_rejected = await client.get("/operations/public-advisories?component=private-canary")
+        missing_csrf = await client.post("/operations/public-advisories/cache/purge-expired")
+        cleaned = await client.post(
+            "/operations/public-advisories/cache/purge-expired",
+            headers={ADMIN_CSRF_HEADER_NAME: csrf},
+        )
+        audit = await client.get("/audit/events?action=public_advisory.cache_expired_purged")
+
+    assert status_response.status_code == 200
+    assert status_response.headers["cache-control"] == "private, no-store"
+    assert [item["provider"] for item in status_response.json()["providers"]] == [
+        "osv", "github_advisories", "nvd", "cisa_kev",
+    ]
+    assert "must-not-leak" not in status_response.text
+    assert invalid_key not in status_response.text
+    assert query_rejected.status_code == 400
+    assert "private-canary" not in query_rejected.text
+    assert missing_csrf.status_code == 403
+    assert cleaned.status_code == 200
+    assert cleaned.json()["removed_entries"] == 1
+    assert audit.status_code == 200
+    assert audit.json()["items"][0]["metadata"] == {"event_count": 1}
+
+
+@pytest.mark.anyio
+async def test_private_team_invitation_shared_scope_role_and_revocation_flow(monkeypatch, tmp_path):
+    admin_hash = make_admin_password_hash()
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", admin_hash)
+    monkeypatch.setenv("INSPECTRA_TEAM_ORGANIZATION_NAME", "Acme security")
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as admin_client:
+        admin_login = await admin_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": ADMIN_PASSWORD_FIXTURE},
+        )
+        admin_status = await admin_client.get("/auth/status")
+        csrf = admin_status.json()["csrf_token"]
+        admin_headers = {ADMIN_CSRF_HEADER_NAME: csrf}
+        uploaded = await admin_client.post(
+            "/files/archive",
+            files={"file": ("authorized.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            headers=admin_headers,
+        )
+        invitation = await admin_client.post(
+            "/organization/invitations",
+            json={"username": "reviewer.one", "role": "maintainer"},
+            headers=admin_headers,
+        )
+        members_before = await admin_client.get("/organization/members")
+
+        assert admin_login.status_code == 200
+        assert admin_status.json()["organization_id"] == "local-admin"
+        assert admin_status.json()["organization_name"] == "Acme security"
+        assert admin_status.json()["role"] == "administrator"
+        assert uploaded.status_code == 201
+        assert uploaded.json()["organization_id"] == "local-admin"
+        assert invitation.status_code == 201
+        assert [member["username"] for member in members_before.json()] == ["admin"]
+        invitation_payload = invitation.json()
+        invitation_token = invitation_payload["token"]
+
+        async with AsyncClient(transport=transport, base_url="http://testserver") as member_client:
+            accepted = await member_client.post(
+                "/auth/invitations/accept",
+                json={"token": invitation_token, "password": "reviewer-password"},
+            )
+            replayed = await member_client.post(
+                "/auth/invitations/accept",
+                json={"token": invitation_token, "password": "reviewer-password"},
+            )
+            member_login = await member_client.post(
+                "/auth/login",
+                json={"username": "reviewer.one", "password": "reviewer-password"},
+            )
+            member_status = await member_client.get("/auth/status")
+            maintainer_headers = {ADMIN_CSRF_HEADER_NAME: member_status.json()["csrf_token"]}
+            maintainer_admin_mutation = await member_client.post(
+                "/organization/invitations",
+                json={"username": "must.not.exist", "role": "reader"},
+                headers=maintainer_headers,
+            )
+            maintainer_audit_read = await member_client.get("/audit/events")
+            shared_files = await member_client.get("/files")
+
+            assert accepted.status_code == 200
+            assert accepted.json() == {"accepted": True, "username": "reviewer.one"}
+            assert replayed.status_code == 400
+            assert replayed.json() == {"detail": "Invitation is invalid or expired."}
+            assert member_login.status_code == 200
+            assert member_status.json()["role"] == "maintainer"
+            assert maintainer_admin_mutation.status_code == 403
+            assert maintainer_audit_read.status_code == 403
+            assert [item["id"] for item in shared_files.json()] == [uploaded.json()["id"]]
+            members_after = await admin_client.get("/organization/members")
+            member_id = next(item["user_id"] for item in members_after.json() if item["username"] == "reviewer.one")
+            changed = await admin_client.post(
+                f"/organization/members/{member_id}/role",
+                json={"role": "reader"},
+                headers=admin_headers,
+            )
+            invalidated_after_role_change = await member_client.get("/files")
+            reader_login = await member_client.post(
+                "/auth/login",
+                json={"username": "reviewer.one", "password": "reviewer-password"},
+            )
+            reader_status = await member_client.get("/auth/status")
+            reader_mutation = await member_client.post(
+                "/projects",
+                json={},
+                headers={ADMIN_CSRF_HEADER_NAME: reader_status.json()["csrf_token"]},
+            )
+            reader_portfolio_without_csrf = await member_client.post(
+                "/projects/portfolio/search", json={}
+            )
+            reader_portfolio = await member_client.post(
+                "/projects/portfolio/search",
+                json={},
+                headers={ADMIN_CSRF_HEADER_NAME: reader_status.json()["csrf_token"]},
+            )
+            revoked = await admin_client.delete(
+                f"/organization/members/{member_id}",
+                headers=admin_headers,
+            )
+            invalidated_after_revoke = await member_client.get("/files")
+
+            assert changed.status_code == 200
+            assert changed.json()["role"] == "reader"
+            assert invalidated_after_role_change.status_code == 401
+            assert reader_login.status_code == 200
+            assert reader_mutation.status_code == 403
+            assert reader_mutation.json() == {"detail": "This role cannot modify workspace data."}
+            assert reader_portfolio_without_csrf.status_code == 403
+            assert reader_portfolio_without_csrf.json() == {"detail": CSRF_REQUIRED_DETAIL}
+            assert reader_portfolio.status_code == 200
+            assert reader_portfolio.json()["summary"]["total_projects"] == 0
+            assert revoked.status_code == 204
+            assert invalidated_after_revoke.status_code == 401
+
+    persisted = (tmp_path / "runtime" / "auth_state.sqlite3").read_bytes()
+    assert invitation_token.encode() not in persisted
+    assert b"reviewer-password" not in persisted
+
+
+@pytest.mark.anyio
+async def test_team_public_identity_approval_flow_is_role_scoped_audited_and_revocable(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as admin_client:
+        assert (await admin_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": ADMIN_PASSWORD_FIXTURE},
+        )).status_code == 200
+        admin_csrf = (await admin_client.get("/auth/status")).json()["csrf_token"]
+        admin_headers = {ADMIN_CSRF_HEADER_NAME: admin_csrf}
+        invitation = await admin_client.post(
+            "/organization/invitations",
+            json={"username": "package.maintainer", "role": "maintainer"},
+            headers=admin_headers,
+        )
+
+        async with AsyncClient(transport=transport, base_url="http://testserver") as maintainer_client:
+            assert (await maintainer_client.post(
+                "/auth/invitations/accept",
+                json={"token": invitation.json()["token"], "password": "maintainer-password"},
+            )).status_code == 200
+            assert (await maintainer_client.post(
+                "/auth/login",
+                json={"username": "package.maintainer", "password": "maintainer-password"},
+            )).status_code == 200
+            maintainer_csrf = (await maintainer_client.get("/auth/status")).json()["csrf_token"]
+            maintainer_headers = {ADMIN_CSRF_HEADER_NAME: maintainer_csrf}
+            proposed = await maintainer_client.post(
+                "/organization/public-identities",
+                json={"ecosystem": "pypi", "package_name": "Requests_Library", "requested_ttl_days": 30},
+                headers=maintainer_headers,
+            )
+            denied_approval = await maintainer_client.post(
+                f"/organization/public-identities/{proposed.json()['id']}/approve",
+                headers=maintainer_headers,
+            )
+
+        assert proposed.status_code == 201
+        assert proposed.json()["package_name"] == "requests-library"
+        assert proposed.json()["status"] == "pending"
+        assert denied_approval.status_code == 403
+
+        approved = await admin_client.post(
+            f"/organization/public-identities/{proposed.json()['id']}/approve",
+            headers=admin_headers,
+        )
+        listed = await admin_client.get("/organization/public-identities")
+        audit = await admin_client.get("/audit/events", params={"action": "public_identity.approved"})
+        revoked = await admin_client.delete(
+            f"/organization/public-identities/{proposed.json()['id']}",
+            headers=admin_headers,
+        )
+
+        assert approved.status_code == 200
+        assert approved.headers["cache-control"] == "private, no-store"
+        assert approved.json()["status"] == "approved"
+        assert approved.json()["revision"] == 2
+        assert listed.json() == [approved.json()]
+        assert listed.headers["cache-control"] == "private, no-store"
+        assert audit.status_code == 200
+        assert audit.json()["items"][0]["resource_id"] == proposed.json()["id"]
+        assert audit.json()["items"][0]["metadata"] == {"package_ecosystem": "pypi", "policy_revision": 2}
+        assert "requests-library" not in audit.text
+        assert revoked.status_code == 200
+        assert revoked.json()["status"] == "revoked"
+        assert app.state.team_identity.approved_public_identity_keys("local-admin") == ()
+
+
+@pytest.mark.anyio
+async def test_team_osv_egress_requires_current_workspace_approval_at_request_time(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_PUBLIC_ADVISORY_EGRESS_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    outbound = []
+
+    def handler(request):
+        outbound.append(json.loads(request.content))
+        return Response(200, json={"results": [{}]})
+
+    advisory = PublicAdvisoryEgressClient(
+        enabled=True,
+        timeout_seconds=1,
+        max_response_bytes=1024 * 1024,
+        max_concurrency=1,
+        max_retries=0,
+        max_batch_components=25,
+        http_transport=MockTransport(handler),
+    )
+    app.state.public_advisory_egress_client = advisory
+    app.state.project_vulnerability_intelligence = OsvVulnerabilityIntelligenceService(advisory, cache_ttl_seconds=3600)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        assert (await client.post(
+            "/auth/login",
+            json={"username": "admin", "password": ADMIN_PASSWORD_FIXTURE},
+        )).status_code == 200
+        csrf = (await client.get("/auth/status")).json()["csrf_token"]
+        headers = {ADMIN_CSRF_HEADER_NAME: csrf}
+        uploaded = (await client.post(
+            "/files/archive",
+            files={"file": ("team-project.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            headers=headers,
+        )).json()
+        created = (await client.post(
+            "/projects",
+            json={"source_file_id": uploaded["id"], "authorization_confirmed": True},
+            headers=headers,
+        )).json()
+        project_id = created["project"]["id"]
+        analysis_id = created["job"]["id"]
+        app.state.jobs.update(
+            analysis_id,
+            status="completed",
+            result={
+                "summary": {"supported_manifests_found": 1},
+                "normalized_findings": [],
+                "parsed_manifests": [{
+                    "path": "private/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {"dependencies": {"dependencies": [{
+                        "name": "react", "specifier": "18.3.1", "source_type": "registry",
+                    }]}},
+                }],
+                "parsed_lockfiles": [{
+                    "path": "private/package-lock.json",
+                    "lockfile_type": "npm_package_lock",
+                    "packages": [{"name": "react", "version": "18.3.1", "source_type": "registry"}],
+                }],
+                "lockfiles": [{"path": "private/package-lock.json", "lockfile_type": "npm_package_lock"}],
+            },
+        )
+
+        before = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence/osv",
+            headers=headers,
+        )
+        proposed = await client.post(
+            "/organization/public-identities",
+            json={"ecosystem": "npm", "package_name": "react", "requested_ttl_days": 7},
+            headers=headers,
+        )
+        approved = await client.post(
+            f"/organization/public-identities/{proposed.json()['id']}/approve",
+            headers=headers,
+        )
+        after = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence/osv",
+            headers=headers,
+        )
+        revoked = await client.delete(
+            f"/organization/public-identities/{proposed.json()['id']}",
+            headers=headers,
+        )
+        after_revoke = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence/osv",
+            headers=headers,
+        )
+
+    assert before.status_code == 200
+    assert before.json()["state"] == "no_correlatable_components"
+    assert before.json()["component_correlations"][0]["reason"] == "organization_identity_not_attested"
+    assert approved.json()["status"] == "approved"
+    assert after.status_code == 200
+    assert after.json()["state"] == "ready"
+    assert after.json()["summary"]["queried_components"] == 1
+    assert revoked.json()["status"] == "revoked"
+    assert after_revoke.json()["state"] == "no_correlatable_components"
+    assert outbound == [{"queries": [{"package": {"ecosystem": "npm", "name": "react"}, "version": "18.3.1"}]}]
+
+
+@pytest.mark.anyio
+async def test_automation_token_is_one_time_hashed_project_bound_revocable_and_csrf_independent(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        assert (await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})).status_code == 200
+        csrf = (await client.get("/auth/status")).json()["csrf_token"]
+        browser_headers = {ADMIN_CSRF_HEADER_NAME: csrf}
+        archive_bytes = make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON})
+        upload = await client.post(
+            "/files/archive",
+            files={"file": ("authorized.zip", archive_bytes, "application/zip")},
+            headers=browser_headers,
+        )
+        project = await client.post(
+            "/projects",
+            json={"name": "CI target", "source_file_id": upload.json()["id"], "authorization_confirmed": True},
+            headers=browser_headers,
+        )
+        created = await client.post(
+            "/automation/tokens",
+            json={
+                "name": "GitHub Actions",
+                "project_id": project.json()["project"]["id"],
+                "scopes": ["project:scan", "project:read", "report:read"],
+                "lifetime_seconds": 3600,
+            },
+            headers=browser_headers,
+        )
+
+        assert upload.status_code == 201
+        assert project.status_code == 201
+        assert created.status_code == 201
+        payload = created.json()
+        plaintext = payload.pop("token")
+        assert plaintext.startswith(f"inspectra_at_{payload['id']}_")
+        listed = await client.get("/automation/tokens")
+        assert listed.status_code == 200
+        assert listed.json()[0].get("token") is None
+        assert plaintext not in (tmp_path / "runtime" / "auth_state.sqlite3").read_bytes().decode("utf-8", errors="ignore")
+
+        probe = await client.get(f"/automation/tokens/{payload['id']}")
+        assert probe.status_code == 200
+        assert probe.json() == {
+            "status": "ready",
+            "project_id": project.json()["project"]["id"],
+            "scopes": ["project:read", "project:scan", "report:read"],
+            "scopes_complete": True,
+            "expires_at": payload["expires_at"],
+        }
+        assert "token" not in probe.json()
+
+        bearer = {"Authorization": f"Bearer {plaintext}"}
+        own_project = await client.get(f"/projects/{project.json()['project']['id']}", headers=bearer)
+        all_projects = await client.get("/projects", headers=bearer)
+        create_project_denied = await client.post("/projects", json={}, headers=bearer)
+        admin_route_denied = await client.get("/automation/tokens", headers=bearer)
+        assert own_project.status_code == 200
+        assert all_projects.status_code == 403
+        assert create_project_denied.status_code == 403
+        assert admin_route_denied.status_code == 403
+
+        app.state.jobs.update(
+            project.json()["job"]["id"],
+            status="completed",
+            result={
+                "analyzer": "project_archive_basic",
+                "findings": [
+                    {
+                        "id": "automation_report_fixture",
+                        "title": "Automation report fixture",
+                        "severity": "info",
+                    }
+                ],
+            },
+            termination_reason="completed",
+        )
+        technical_report = await client.post(
+            f"/projects/{project.json()['project']['id']}/analyses/{project.json()['job']['id']}/report/markdown",
+            json={"profile": "technical", "technical_detail_confirmed": True},
+            headers=bearer,
+        )
+        assert technical_report.status_code == 200
+        assert "Technical redacted profile" in technical_report.text
+
+        ci_form = {
+            "commit_sha": "c" * 40,
+            "source_sha256": upload.json()["sha256"],
+            "branch": "feature/safe-ci",
+            "authorization_confirmed": "true",
+        }
+        first_ci = await client.post(
+            f"/projects/{project.json()['project']['id']}/ci/snapshots",
+            data=ci_form,
+            files={"file": ("snapshot.zip", archive_bytes, "application/zip")},
+            headers=bearer,
+        )
+        replay_ci = await client.post(
+            f"/projects/{project.json()['project']['id']}/ci/snapshots",
+            data={**ci_form, "branch": "another/ref"},
+            files={"file": ("snapshot.zip", archive_bytes, "application/zip")},
+            headers=bearer,
+        )
+        assert first_ci.status_code == 202
+        assert replay_ci.status_code == 202
+        assert first_ci.json()["source_digest_verified"] is True
+        assert first_ci.json()["commit_sha"] == "c" * 40
+        assert replay_ci.json()["job"]["id"] == first_ci.json()["job"]["id"]
+        assert replay_ci.json()["replayed"] is True
+        assert len(app.state.files.list(owner_id="local-admin")) == 1
+        next_archive = make_zip_bytes({"package.json": b'{"name":"next","version":"1.0.0"}'})
+        next_form = {
+            **ci_form,
+            "commit_sha": "d" * 40,
+            "source_sha256": hashlib.sha256(next_archive).hexdigest(),
+        }
+        concurrent_ci = await asyncio.gather(
+            *(
+                client.post(
+                    f"/projects/{project.json()['project']['id']}/ci/snapshots",
+                    data=next_form,
+                    files={"file": ("snapshot.zip", next_archive, "application/zip")},
+                    headers=bearer,
+                )
+                for _ in range(2)
+            )
+        )
+        assert [response.status_code for response in concurrent_ci] == [202, 202]
+        assert len({response.json()["job"]["id"] for response in concurrent_ci}) == 1
+        assert sorted(response.json()["replayed"] for response in concurrent_ci) == [False, True]
+        assert {response.json()["snapshot"]["source_channel"] for response in concurrent_ci} == {"ci"}
+        assert len(app.state.files.list(owner_id="local-admin")) == 2
+        different_archive = make_zip_bytes({"package.json": b'{"name":"different","version":"2.0.0"}'})
+        conflicting_ci = await client.post(
+            f"/projects/{project.json()['project']['id']}/ci/snapshots",
+            data={**ci_form, "source_sha256": hashlib.sha256(different_archive).hexdigest()},
+            files={"file": ("snapshot.zip", different_archive, "application/zip")},
+            headers=bearer,
+        )
+        assert conflicting_ci.status_code == 409
+        assert conflicting_ci.json() == {"detail": "Commit identity is already bound to different source content."}
+        assert len(app.state.files.list(owner_id="local-admin")) == 2
+
+        revoked = await client.delete(f"/automation/tokens/{payload['id']}", headers=browser_headers)
+        revoked_probe = await client.get(f"/automation/tokens/{payload['id']}")
+        after_revoke = await client.get(f"/projects/{project.json()['project']['id']}", headers=bearer)
+        assert revoked.status_code == 200
+        assert revoked.json()["revoked_at"] is not None
+        assert revoked_probe.status_code == 200
+        assert revoked_probe.json()["status"] == "revoked"
+        assert after_revoke.status_code == 401
+        assert after_revoke.json() == {"detail": AUTOMATION_TOKEN_INVALID_DETAIL}
+
+
+@pytest.mark.anyio
+async def test_interactive_commit_snapshot_is_server_attested_as_git_cli_and_cannot_be_spoofed(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    first_bytes = make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON})
+    next_bytes = make_zip_bytes({"package.json": b'{"name":"next","version":"2.0.0"}'})
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first = await client.post(
+            "/files/archive",
+            files={"file": ("first.zip", first_bytes, "application/zip")},
+        )
+        project = await client.post(
+            "/projects",
+            json={"name": "Interactive source", "source_file_id": first.json()["id"], "authorization_confirmed": True},
+        )
+        app.state.jobs.update(
+            project.json()["job"]["id"],
+            status="completed",
+            result={"analyzer": "project_archive_basic", "summary": {}, "findings": []},
+            termination_reason="completed",
+        )
+        response = await client.post(
+            f"/projects/{project.json()['project']['id']}/ci/snapshots",
+            data={
+                "commit_sha": "e" * 40,
+                "source_sha256": hashlib.sha256(next_bytes).hexdigest(),
+                "branch": "feature/interactive",
+                "authorization_confirmed": "true",
+                "source_channel": "ci",
+            },
+            files={"file": ("next.zip", next_bytes, "application/zip")},
+        )
+
+    assert response.status_code == 202
+    assert response.json()["snapshot"]["source_channel"] == "git_cli"
+    retained = app.state.projects.get(project.json()["project"]["id"])
+    assert retained.source_snapshots[0].source_channel == "archive_upload"
+    assert retained.source_snapshots[-1].source_channel == "git_cli"
+
+
+@pytest.mark.anyio
+async def test_go_graph_attachment_is_commit_bound_idempotent_and_visible_in_inventory_and_report(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    archive_bytes = make_zip_bytes({
+        "service/go.mod": b"module example.test/service\nrequire golang.org/x/text v0.19.0\nrequire golang.org/x/sys v0.26.0 // indirect\n",
+        "service/go.sum": b"golang.org/x/text v0.19.0 h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAA\ngolang.org/x/sys v0.26.0 h1:BBBBBBBBBBBBBBBBBBBBBBBBBBBB\ngolang.org/x/net v0.30.0 h1:CCCCCCCCCCCCCCCCCCCCCCCCCCCC\n",
+    })
+    source_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+    commit = "c" * 40
+    source_result = {
+        "analyzer": "project_archive_basic",
+        "summary": {"supported_manifests_found": 1, "lockfiles_detected": 1, "lockfiles_parsed": 1},
+        "supported_manifests": [{"path": "service/go.mod", "manifest_type": "go_mod", "status": "parsed"}],
+        "lockfiles": [{"path": "service/go.sum", "lockfile_type": "go_sum", "status": "parsed"}],
+        "parsed_manifests": [{"path": "service/go.mod", "manifest_type": "go_mod", "parsed": {"dependencies": {
+            "require": [{"name": "golang.org/x/text", "specifier": "v0.19.0", "dependency_source_type": "registry"}],
+            "indirect": [{"name": "golang.org/x/sys", "specifier": "v0.26.0", "dependency_source_type": "registry"}],
+        }}}],
+        "parsed_lockfiles": [{"path": "service/go.sum", "lockfile_type": "go_sum", "lockfile_version": "go-sum-v1", "packages": [
+            {"name": "golang.org/x/text", "version": "v0.19.0", "source_type": "unverified_registry"},
+            {"name": "golang.org/x/sys", "version": "v0.26.0", "source_type": "unverified_registry"},
+            {"name": "golang.org/x/net", "version": "v0.30.0", "source_type": "unverified_registry"},
+        ], "truncated": False}],
+        "findings": [{
+            "id": "go_graph_fixture",
+            "title": "Go graph fixture",
+            "level": "info",
+            "description": "Fixture finding for report availability.",
+            "evidence": "Bounded fixture evidence.",
+            "recommendation": "Review the graph receipt.",
+        }],
+    }
+    graph_bytes = json.dumps({
+        "contract_version": "2026-09-10.1",
+        "ecosystem": "go",
+        "producer": "go-mod-graph",
+        "source_commit_sha": commit,
+        "source_sha256": source_sha256,
+        "complete": True,
+        "truncation_reason": None,
+        "nodes": [
+            {"id": "n1", "name": "golang.org/x/text", "version": "v0.19.0"},
+            {"id": "n2", "name": "golang.org/x/sys", "version": "v0.26.0"},
+            {"id": "n3", "name": "golang.org/x/net", "version": "v0.30.0"},
+        ],
+        "roots": ["n1"],
+        "edges": [{"source": "n1", "target": "n2"}, {"source": "n2", "target": "n3"}],
+    }, sort_keys=True, separators=(",", ":")).encode()
+    graph_sha256 = hashlib.sha256(graph_bytes).hexdigest()
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        upload = await client.post("/files/archive", files={"file": ("source.zip", archive_bytes, "application/zip")})
+        created = await client.post("/projects", json={
+            "name": "Go graph fixture",
+            "source_file_id": upload.json()["id"],
+            "authorization_confirmed": True,
+        })
+        project_id = created.json()["project"]["id"]
+        analysis_id = created.json()["job"]["id"]
+        app.state.jobs.update(analysis_id, status="completed", result=source_result, termination_reason="completed")
+        attributed = await client.post(
+            f"/projects/{project_id}/ci/snapshots",
+            data={"commit_sha": commit, "source_sha256": source_sha256, "authorization_confirmed": "true"},
+            files={"file": ("snapshot.zip", archive_bytes, "application/zip")},
+        )
+        wrong_digest = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/go",
+            data={"artifact_sha256": "f" * 64},
+            files={"file": ("go-graph.json", graph_bytes, "application/json")},
+        )
+        attached = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/go",
+            data={"artifact_sha256": graph_sha256},
+            files={"file": ("go-graph.json", graph_bytes, "application/json")},
+        )
+        replay = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/go",
+            data={"artifact_sha256": graph_sha256},
+            files={"file": ("go-graph.json", graph_bytes, "application/json")},
+        )
+        different_graph = graph_bytes.replace(b'"complete":true', b'"complete":false').replace(
+            b'"truncation_reason":null', b'"truncation_reason":"producer_limit"'
+        )
+        conflicting = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/go",
+            data={"artifact_sha256": hashlib.sha256(different_graph).hexdigest()},
+            files={"file": ("go-graph.json", different_graph, "application/json")},
+        )
+        inventory = await client.get(f"/projects/{project_id}/components", params={"analysis_id": analysis_id})
+        report = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/report/markdown",
+            json={"profile": "technical", "technical_detail_confirmed": True},
+        )
+
+        app.state.project_vulnerability_intelligence_store.put(analysis_id, {})
+        after_intelligence = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/go",
+            data={"artifact_sha256": graph_sha256},
+            files={"file": ("go-graph.json", graph_bytes, "application/json")},
+        )
+
+    assert attributed.status_code == 202
+    assert attributed.json()["job"]["id"] == analysis_id
+    assert wrong_digest.status_code == 409
+    assert attached.status_code == 200
+    assert replay.status_code == 200
+    assert conflicting.status_code == 409
+    assert after_intelligence.status_code == 409
+    assert attached.json() == replay.json()
+    assert attached.json()["state"] == "accepted"
+    assert attached.json()["source_binding_verified"] is True
+    assert inventory.status_code == 200
+    assert inventory.json()["dependency_graph"]["artifact_sha256"] == graph_sha256
+    assert {item["name"] for item in inventory.json()["components"]} == {
+        "golang.org/x/text", "golang.org/x/sys", "golang.org/x/net"
+    }
+    assert report.status_code == 200
+    assert "Go Dependency Relationship Evidence" in report.text
+    assert graph_sha256 in report.text
+    retained = (app.state.settings.jobs_dir / f"{analysis_id}.json").read_text(encoding="utf-8")
+    assert '"edges"' not in retained
+    assert '"roots"' not in retained
+    with pytest.raises(HTTPException) as wrong_owner:
+        app.state.jobs.attach_go_dependency_graph(
+            analysis_id,
+            owner_id="different-owner",
+            project_id=project_id,
+            artifact=parse_go_dependency_graph_artifact(
+                graph_bytes,
+                declared_sha256=graph_sha256,
+                expected_commit_sha=commit,
+                expected_source_sha256=source_sha256,
+            )[0],
+            artifact_sha256=graph_sha256,
+        )
+    assert wrong_owner.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_cargo_graph_attachment_is_bounded_idempotent_and_never_persists_raw_dimensions(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    archive_bytes = make_zip_bytes({
+        "service/Cargo.toml": b'[dependencies]\nserde = "1"\n',
+        "service/Cargo.lock": b'version = 4\n[[package]]\nname = "serde"\nversion = "1.0.210"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n[[package]]\nname = "itoa"\nversion = "1.0.11"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n',
+    })
+    source_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+    commit = "d" * 40
+    source_result = {
+        "analyzer": "project_archive_basic",
+        "summary": {"supported_manifests_found": 1, "lockfiles_detected": 1, "lockfiles_parsed": 1},
+        "supported_manifests": [{"path": "service/Cargo.toml", "manifest_type": "cargo_toml", "status": "parsed"}],
+        "lockfiles": [{"path": "service/Cargo.lock", "lockfile_type": "cargo_lock", "status": "parsed"}],
+        "parsed_manifests": [{"path": "service/Cargo.toml", "manifest_type": "cargo_toml", "parsed": {"dependencies": {
+            "dependencies": [{"name": "serde", "specifier": "1", "dependency_source_type": "registry"}],
+        }}}],
+        "parsed_lockfiles": [{"path": "service/Cargo.lock", "lockfile_type": "cargo_lock", "lockfile_version": 4, "packages": [
+            {"name": "serde", "version": "1.0.210", "source_type": "registry"},
+            {"name": "itoa", "version": "1.0.11", "source_type": "registry"},
+        ], "truncated": False}],
+        "findings": [{
+            "id": "cargo_graph_fixture", "title": "Cargo graph fixture", "level": "info",
+            "description": "Fixture finding for report availability.",
+            "evidence": "Bounded fixture evidence.", "recommendation": "Review the graph receipt.",
+        }],
+    }
+    graph_bytes = json.dumps({
+        "contract_version": "2026-09-10.2", "ecosystem": "cargo", "producer": "cargo-metadata-graph",
+        "source_commit_sha": commit, "source_sha256": source_sha256, "target_coverage": "all_locked_targets",
+        "complete": True, "truncation_reason": None, "targets": ["linux_x86_64"],
+        "nodes": [
+            {"id": "n1", "name": "serde", "version": "1.0.210", "features": ["derive"], "targets": ["linux_x86_64"]},
+            {"id": "n2", "name": "itoa", "version": "1.0.11", "features": [], "targets": ["linux_x86_64"]},
+        ],
+        "roots": ["n1"], "edges": [{"source": "n1", "target": "n2", "targets": ["linux_x86_64"]}],
+    }, sort_keys=True, separators=(",", ":")).encode()
+    graph_sha256 = hashlib.sha256(graph_bytes).hexdigest()
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        upload = await client.post("/files/archive", files={"file": ("source.zip", archive_bytes, "application/zip")})
+        created = await client.post("/projects", json={
+            "name": "Cargo graph fixture", "source_file_id": upload.json()["id"], "authorization_confirmed": True,
+        })
+        project_id = created.json()["project"]["id"]
+        analysis_id = created.json()["job"]["id"]
+        app.state.jobs.update(analysis_id, status="completed", result=source_result, termination_reason="completed")
+        attributed = await client.post(
+            f"/projects/{project_id}/ci/snapshots",
+            data={"commit_sha": commit, "source_sha256": source_sha256, "authorization_confirmed": "true"},
+            files={"file": ("snapshot.zip", archive_bytes, "application/zip")},
+        )
+        attached = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/cargo",
+            data={"artifact_sha256": graph_sha256}, files={"file": ("cargo.json", graph_bytes, "application/json")},
+        )
+        replay = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/cargo",
+            data={"artifact_sha256": graph_sha256}, files={"file": ("cargo.json", graph_bytes, "application/json")},
+        )
+        inventory = await client.get(f"/projects/{project_id}/components", params={"analysis_id": analysis_id})
+        report = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/report/markdown",
+            json={"profile": "technical", "technical_detail_confirmed": True},
+        )
+        app.state.project_vulnerability_intelligence_store.put(analysis_id, {})
+        after_intelligence = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/cargo",
+            data={"artifact_sha256": graph_sha256}, files={"file": ("cargo.json", graph_bytes, "application/json")},
+        )
+
+    assert attributed.status_code == 202
+    assert attached.status_code == replay.status_code == 200
+    assert attached.json() == replay.json()
+    assert attached.json()["state"] == "accepted"
+    assert after_intelligence.status_code == 409
+    assert inventory.json()["cargo_dependency_graph"]["artifact_sha256"] == graph_sha256
+    assert report.status_code == 200
+    assert "Cargo Dependency Relationship Evidence" in report.text
+    assert graph_sha256 in report.text
+    serde = next(item for item in inventory.json()["components"] if item["name"] == "serde")
+    assert serde["enabled_feature_count"] == 1
+    assert serde["target_variant_count"] == 1
+    retained = (app.state.settings.jobs_dir / f"{analysis_id}.json").read_text(encoding="utf-8")
+    for withheld in ('"edges"', '"roots"', '"features"', "linux_x86_64"):
+        assert withheld not in retained
+    with pytest.raises(HTTPException) as wrong_owner:
+        app.state.jobs.attach_cargo_dependency_graph(
+            analysis_id, owner_id="different-owner", project_id=project_id,
+            artifact=parse_cargo_dependency_graph_artifact(
+                graph_bytes, declared_sha256=graph_sha256,
+                expected_commit_sha=commit, expected_source_sha256=source_sha256,
+            )[0], artifact_sha256=graph_sha256,
+        )
+    assert wrong_owner.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_composer_graph_attachment_is_source_bound_idempotent_and_reported_without_raw_edges(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    archive_bytes = make_zip_bytes({
+        "service/composer.json": b'{"require":{"vendor/root":"^1.0"}}',
+        "service/composer.lock": json.dumps({"packages": [
+            {"name": "vendor/root", "version": "1.2.3", "source": {"type": "git"}},
+            {"name": "vendor/transitive", "version": "2.3.4", "source": {"type": "git"}},
+        ], "packages-dev": []}).encode(),
+    })
+    source_sha256, commit = hashlib.sha256(archive_bytes).hexdigest(), "e" * 40
+    source_result = {
+        "analyzer": "project_archive_basic",
+        "summary": {"supported_manifests_found": 1, "lockfiles_detected": 1, "lockfiles_parsed": 1},
+        "supported_manifests": [{"path": "service/composer.json", "manifest_type": "composer_json", "status": "parsed"}],
+        "lockfiles": [{"path": "service/composer.lock", "lockfile_type": "composer_lock", "status": "parsed"}],
+        "parsed_manifests": [{"path": "service/composer.json", "manifest_type": "composer_json", "parsed": {
+            "project": {"custom_repositories_declared": False},
+            "dependencies": {"require": [{"name": "vendor/root", "specifier": "^1.0", "dependency_source_type": "registry"}]},
+        }}],
+        "parsed_lockfiles": [{"path": "service/composer.lock", "lockfile_type": "composer_lock", "packages": [
+            {"name": "vendor/root", "version": "1.2.3", "dependency_group": "require", "source_type": "unverified_registry"},
+            {"name": "vendor/transitive", "version": "2.3.4", "dependency_group": "require", "source_type": "unverified_registry"},
+        ]}], "findings": [{
+            "id": "composer_graph_fixture", "title": "Composer graph fixture", "level": "info",
+            "description": "Fixture finding for report availability.",
+            "evidence": "Bounded fixture evidence.", "recommendation": "Review the graph receipt.",
+        }],
+    }
+    graph_bytes = json.dumps({
+        "contract_version": "2026-09-10.3", "ecosystem": "composer", "producer": "composer-locked-graph",
+        "source_commit_sha": commit, "source_sha256": source_sha256, "complete": True, "truncation_reason": None,
+        "nodes": [{"id": "n1", "name": "vendor/root", "version": "1.2.3"},
+                  {"id": "n2", "name": "vendor/transitive", "version": "2.3.4"}],
+        "roots": ["n1"], "edges": [{"source": "n1", "target": "n2"}],
+    }, sort_keys=True, separators=(",", ":")).encode()
+    graph_sha256 = hashlib.sha256(graph_bytes).hexdigest()
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        upload = await client.post("/files/archive", files={"file": ("source.zip", archive_bytes, "application/zip")})
+        created = await client.post("/projects", json={"name": "Composer graph fixture", "source_file_id": upload.json()["id"], "authorization_confirmed": True})
+        project_id, analysis_id = created.json()["project"]["id"], created.json()["job"]["id"]
+        app.state.jobs.update(analysis_id, status="completed", result=source_result, termination_reason="completed")
+        attributed = await client.post(f"/projects/{project_id}/ci/snapshots", data={"commit_sha": commit, "source_sha256": source_sha256, "authorization_confirmed": "true"}, files={"file": ("snapshot.zip", archive_bytes, "application/zip")})
+        attached, replay = await asyncio.gather(*[
+            client.post(f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/composer", data={"artifact_sha256": graph_sha256}, files={"file": ("composer.json", graph_bytes, "application/json")})
+            for _ in range(2)
+        ])
+        inventory = await client.get(f"/projects/{project_id}/components", params={"analysis_id": analysis_id})
+        report = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/report/markdown",
+            json={"profile": "technical", "technical_detail_confirmed": True},
+        )
+    assert attributed.status_code == 202
+    assert attached.status_code == replay.status_code == 200 and attached.json() == replay.json()
+    assert inventory.json()["composer_dependency_graph"]["state"] == "accepted"
+    assert "Composer Dependency Relationship Evidence" in report.text
+    assert next(item for item in inventory.json()["components"] if item["name"] == "vendor/transitive")["dependency_scope"] == "transitive"
+    retained = (app.state.settings.jobs_dir / f"{analysis_id}.json").read_text(encoding="utf-8")
+    assert '"edges"' not in retained and '"roots"' not in retained
+    assert "packagist.org" not in retained
+    with pytest.raises(HTTPException) as wrong_owner:
+        app.state.jobs.attach_composer_dependency_graph(
+            analysis_id, owner_id="different-owner", project_id=project_id,
+            artifact=parse_composer_dependency_graph_artifact(graph_bytes, declared_sha256=graph_sha256, expected_commit_sha=commit, expected_source_sha256=source_sha256)[0],
+            artifact_sha256=graph_sha256,
+        )
+    assert wrong_owner.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_gradle_graph_attachment_is_bound_idempotent_and_withholds_topology(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    archive_bytes = make_zip_bytes({
+        "service/build.gradle.kts": b"// build intentionally not evaluated\n",
+        "service/gradle.lockfile": b"org.example:root:1.2.3=runtimeClasspath\norg.example:child:2.3.4=runtimeClasspath\n",
+    })
+    source_sha256, commit = hashlib.sha256(archive_bytes).hexdigest(), "f" * 40
+    source_result = {
+        "analyzer": "project_archive_basic",
+        "summary": {"supported_manifests_found": 1, "lockfiles_detected": 1, "lockfiles_parsed": 1},
+        "supported_manifests": [{"path": "service/build.gradle.kts", "manifest_type": "gradle_build", "status": "parsed"}],
+        "lockfiles": [{"path": "service/gradle.lockfile", "lockfile_type": "gradle_lock", "status": "parsed"}],
+        "parsed_manifests": [{"path": "service/build.gradle.kts", "manifest_type": "gradle_build", "parsed": {"project": {"build_dsl_not_evaluated": True}, "dependencies": {}}}],
+        "parsed_lockfiles": [{"path": "service/gradle.lockfile", "lockfile_type": "gradle_lock", "packages": [
+            {"name": "org.example:root", "version": "1.2.3", "source_type": "unverified_registry"},
+            {"name": "org.example:child", "version": "2.3.4", "source_type": "unverified_registry"},
+        ]}], "findings": [{
+            "id": "gradle_graph_fixture", "title": "Gradle graph fixture", "level": "info",
+            "description": "Fixture finding for report availability.",
+            "evidence": "Bounded fixture evidence.", "recommendation": "Review the graph receipt.",
+        }],
+    }
+    graph_bytes = json.dumps({
+        "contract_version": "2026-09-10.4", "ecosystem": "maven", "producer": "gradle-dependency-graph",
+        "source_commit_sha": commit, "source_sha256": source_sha256,
+        "scope_coverage": ["compile", "runtime"], "complete": True, "truncation_reason": None,
+        "nodes": [
+            {"id": "n1", "name": "org.example:root", "version": "1.2.3", "scopes": ["compile", "runtime"]},
+            {"id": "n2", "name": "org.example:child", "version": "2.3.4", "scopes": ["runtime"]},
+        ], "roots": ["n1"], "edges": [{"source": "n1", "target": "n2", "scopes": ["runtime"]}],
+    }, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(graph_bytes).hexdigest()
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        upload = await client.post("/files/archive", files={"file": ("source.zip", archive_bytes, "application/zip")})
+        created = await client.post("/projects", json={"name": "Gradle graph fixture", "source_file_id": upload.json()["id"], "authorization_confirmed": True})
+        project_id, analysis_id = created.json()["project"]["id"], created.json()["job"]["id"]
+        app.state.jobs.update(analysis_id, status="completed", result=source_result, termination_reason="completed")
+        attributed = await client.post(f"/projects/{project_id}/ci/snapshots", data={"commit_sha": commit, "source_sha256": source_sha256, "authorization_confirmed": "true"}, files={"file": ("snapshot.zip", archive_bytes, "application/zip")})
+        first, replay = await asyncio.gather(*[
+            client.post(f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/gradle", data={"artifact_sha256": digest}, files={"file": ("gradle.json", graph_bytes, "application/json")})
+            for _ in range(2)
+        ])
+        inventory = await client.get(f"/projects/{project_id}/components", params={"analysis_id": analysis_id})
+        report = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/report/markdown",
+            json={"profile": "technical", "technical_detail_confirmed": True},
+        )
+    assert attributed.status_code == 202
+    assert first.status_code == replay.status_code == 200 and first.json() == replay.json()
+    assert inventory.json()["gradle_dependency_graph"]["state"] == "accepted"
+    assert inventory.json()["gradle_dependency_graph"]["scope_coverage"] == ["compile", "runtime"]
+    assert "Gradle Dependency Relationship Evidence" in report.text
+    child = next(item for item in inventory.json()["components"] if item["name"] == "org.example:child")
+    assert child["dependency_scope"] == "transitive" and child["build_scope_count"] == 1
+    retained = (app.state.settings.jobs_dir / f"{analysis_id}.json").read_text(encoding="utf-8")
+    assert '"edges"' not in retained and '"roots"' not in retained and "runtimeClasspath" not in retained
+    with pytest.raises(HTTPException) as wrong_owner:
+        app.state.jobs.attach_gradle_dependency_graph(
+            analysis_id, owner_id="different-owner", project_id=project_id,
+            artifact=parse_gradle_dependency_graph_artifact(graph_bytes, declared_sha256=digest, expected_commit_sha=commit, expected_source_sha256=source_sha256)[0],
+            artifact_sha256=digest,
+        )
+    assert wrong_owner.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_nuget_graph_attachment_is_bound_idempotent_target_aware_and_withholds_topology(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    archive_bytes = make_zip_bytes({
+        "service/App.csproj": b"<Project />",
+        "service/packages.lock.json": json.dumps({"version": 1, "dependencies": {"net8.0": {}}}).encode(),
+    })
+    source_sha256, commit = hashlib.sha256(archive_bytes).hexdigest(), "9" * 40
+    source_result = {
+        "analyzer": "project_archive_basic",
+        "summary": {"supported_manifests_found": 1, "lockfiles_detected": 1, "lockfiles_parsed": 1},
+        "parsed_manifests": [{"path": "service/App.csproj", "manifest_type": "dotnet_project", "parsed": {"project": {"msbuild_not_evaluated": True}, "dependencies": {}}}],
+        "parsed_lockfiles": [{"path": "service/packages.lock.json", "lockfile_type": "nuget_packages_lock", "target_count": 2, "packages": [
+            {"name": "newtonsoft.json", "version": "13.0.3", "source_type": "unverified_registry", "dependency_scope": "direct"},
+            {"name": "system.text.encodings.web", "version": "8.0.0", "source_type": "unverified_registry", "dependency_scope": "transitive"},
+        ]}],
+        "findings": [{
+            "id": "nuget_graph_fixture", "title": "NuGet graph fixture", "level": "info",
+            "description": "Fixture finding for report availability.",
+            "evidence": "Bounded fixture evidence.", "recommendation": "Review the graph receipt.",
+        }],
+    }
+    graph_bytes = json.dumps({
+        "contract_version": "2026-09-10.5", "ecosystem": "nuget", "producer": "nuget-dependency-graph",
+        "source_commit_sha": commit, "source_sha256": source_sha256,
+        "target_coverage": "all_locked_targets", "complete": True, "truncation_reason": None,
+        "targets": ["t0", "t1"],
+        "nodes": [
+            {"id": "n1", "name": "newtonsoft.json", "version": "13.0.3", "targets": ["t0", "t1"]},
+            {"id": "n2", "name": "system.text.encodings.web", "version": "8.0.0", "targets": ["t1"]},
+        ],
+        "roots": [{"node": "n1", "targets": ["t0", "t1"]}],
+        "edges": [{"source": "n1", "target": "n2", "targets": ["t1"]}],
+    }, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(graph_bytes).hexdigest()
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        upload = await client.post("/files/archive", files={"file": ("source.zip", archive_bytes, "application/zip")})
+        created = await client.post("/projects", json={"name": "NuGet graph fixture", "source_file_id": upload.json()["id"], "authorization_confirmed": True})
+        project_id, analysis_id = created.json()["project"]["id"], created.json()["job"]["id"]
+        app.state.jobs.update(analysis_id, status="completed", result=source_result, termination_reason="completed")
+        attributed = await client.post(f"/projects/{project_id}/ci/snapshots", data={"commit_sha": commit, "source_sha256": source_sha256, "authorization_confirmed": "true"}, files={"file": ("snapshot.zip", archive_bytes, "application/zip")})
+        first, replay = await asyncio.gather(*[
+            client.post(f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/nuget", data={"artifact_sha256": digest}, files={"file": ("nuget.json", graph_bytes, "application/json")})
+            for _ in range(2)
+        ])
+        inventory = await client.get(f"/projects/{project_id}/components", params={"analysis_id": analysis_id})
+        report = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/report/markdown",
+            json={"profile": "technical", "technical_detail_confirmed": True},
+        )
+        app.state.project_vulnerability_intelligence_store.put(analysis_id, {})
+        after_intelligence = await client.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/dependency-graphs/nuget",
+            data={"artifact_sha256": digest}, files={"file": ("nuget.json", graph_bytes, "application/json")},
+        )
+    assert attributed.status_code == 202
+    assert first.status_code == replay.status_code == 200 and first.json() == replay.json()
+    assert first.json()["targets_reported"] == 2
+    assert after_intelligence.status_code == 409
+    assert inventory.json()["nuget_dependency_graph"]["state"] == "accepted"
+    assert "NuGet Dependency Relationship Evidence" in report.text
+    child = next(item for item in inventory.json()["components"] if item["name"] == "system.text.encodings.web")
+    assert child["dependency_scope"] == "transitive" and child["target_variant_count"] == 1
+    retained = (app.state.settings.jobs_dir / f"{analysis_id}.json").read_text(encoding="utf-8")
+    for withheld in ('"edges"', '"roots"', '"targets"', "net8.0"):
+        assert withheld not in retained
+    assert "nuget.org" not in retained
+    with pytest.raises(HTTPException) as wrong_owner:
+        app.state.jobs.attach_nuget_dependency_graph(
+            analysis_id, owner_id="different-owner", project_id=project_id,
+            artifact=parse_nuget_dependency_graph_artifact(
+                graph_bytes, declared_sha256=digest,
+                expected_commit_sha=commit, expected_source_sha256=source_sha256,
+            )[0], artifact_sha256=digest,
+        )
+    assert wrong_owner.value.status_code == 404
+
+
+async def preflight_sbom_import(client: AsyncClient, payload: bytes) -> str:
+    response = await client.post(
+        "/projects/import/sbom/preflight",
+        files={"file": ("private-name.json", payload, "application/json")},
+    )
+    assert response.status_code == 200
+    return response.json()["preflight_token"]
+
+
+@pytest.mark.anyio
+async def test_sbom_preflight_is_ephemeral_redacted_digest_bound_and_single_use(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    source = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "metadata": {"component": {"name": "preflight-private-canary"}},
+        "components": [
+            {"purl": "pkg:npm/react@18.3.1", "properties": [{"name": "url", "value": "https://private.example/token"}]},
+            {"purl": "pkg:npm/ambiguous@1.0.0?repository_url=https://private.example"},
+        ],
+    }
+    payload = json.dumps(source).encode()
+    changed = json.dumps({**source, "specVersion": "1.5"}).encode()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        preflight = await client.post(
+            "/projects/import/sbom/preflight",
+            files={"file": ("private-customer-name.json", payload, "application/json")},
+        )
+        token = preflight.json()["preflight_token"]
+        preflight_storage_counts = (
+            len(app.state.files.list()),
+            len(app.state.jobs.list()),
+            len(app.state.projects.list()),
+        )
+        changed_import = await client.post(
+            "/projects/import/sbom",
+            data={
+                "name": "Changed SBOM", "preflight_token": token,
+                "authorization_confirmed": "true", "public_registry_identities_confirmed": "true",
+            },
+            files={"file": ("changed-private.json", changed, "application/json")},
+        )
+        imported = await client.post(
+            "/projects/import/sbom",
+            data={
+                "name": "Preflighted SBOM", "preflight_token": token,
+                "authorization_confirmed": "true", "public_registry_identities_confirmed": "true",
+            },
+            files={"file": ("original-private.json", payload, "application/json")},
+        )
+        reused = await client.post(
+            "/projects/import/sbom",
+            data={
+                "name": "Must not exist", "preflight_token": token,
+                "authorization_confirmed": "true", "public_registry_identities_confirmed": "true",
+            },
+            files={"file": ("original-private.json", payload, "application/json")},
+        )
+
+    assert preflight.status_code == 200
+    assert preflight.json()["format"] == "cyclonedx"
+    assert preflight.json()["spec_version"] == "1.6"
+    assert preflight.json()["input_components"] == 2
+    assert preflight.json()["retained_components"] == 1
+    assert preflight.json()["rejected_or_ambiguous_components"] == 1
+    assert preflight.json()["potentially_correlatable_components"] == 1
+    assert "preflight-private-canary" not in preflight.text
+    assert "private.example" not in preflight.text
+    assert preflight_storage_counts == (0, 0, 0)
+    assert changed_import.status_code == 409
+    assert changed_import.json() == {"detail": "The selected SBOM changed after preflight. Run preflight again before importing."}
+    assert imported.status_code == 201
+    assert reused.status_code == 409
+    assert reused.json() == {"detail": "The SBOM preflight expired or is unavailable. Run it again before importing."}
+    assert len(app.state.files.list(owner_id="local-admin")) == 1
+
+
+@pytest.mark.anyio
+async def test_cyclonedx_import_creates_usable_offline_project_without_retaining_private_source_fields(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    source = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "metadata": {"component": {"name": "private-project-name"}},
+        "components": [
+            {"purl": "pkg:npm/react@18.3.1", "externalReferences": [{"url": "https://private.example/token"}]},
+            {"purl": "pkg:pypi/requests@2.32.3"},
+            {"purl": "pkg:maven/org.example/legacy@1.0.Final", "hashes": [{"content": "private-maven-hash"}]},
+            {"purl": "pkg:npm/ambiguous@1.0.0?repository_url=https://private.example"},
+            {"purl": "pkg:maven/org.private/internal@1.0-vendor#private-subpath"},
+        ],
+    }
+    source_payload = json.dumps(source).encode()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        preflight_token = await preflight_sbom_import(client, source_payload)
+        created = await client.post(
+            "/projects/import/sbom",
+            data={"name": "Imported SBOM", "preflight_token": preflight_token, "authorization_confirmed": "true", "public_registry_identities_confirmed": "true"},
+            files={"file": ("customer-private-name.cdx.json", source_payload, "application/json")},
+        )
+        assert created.status_code == 201
+        payload = created.json()
+        project_id = payload["project"]["id"]
+        analysis_id = payload["job"]["id"]
+        inventory = await client.get(f"/projects/{project_id}/components", params={"analysis_id": analysis_id})
+        intelligence = await client.get(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence")
+        rerun = await client.post(f"/projects/{project_id}/analyses")
+        comparison = await client.get(
+            f"/projects/{project_id}/comparisons",
+            params={"base_analysis_id": analysis_id, "target_analysis_id": rerun.json()["id"]},
+        )
+
+    assert payload["job"]["status"] == "completed"
+    assert payload["job"]["analysis_profile"] == "sbom_import"
+    assert payload["project"]["source_type"] == "sbom"
+    assert payload["project"]["source_snapshots"][0]["source_channel"] == "sbom"
+    assert inventory.status_code == 200
+    assert inventory.json()["state"] == "ready"
+    assert [(item["ecosystem"], item["name"]) for item in inventory.json()["components"]] == [
+        ("npm", "react"), ("pypi", "requests"), ("maven", "org.example:legacy")
+    ]
+    assert intelligence.json()["state"] == "not_requested"
+    assert rerun.status_code == 202
+    assert rerun.json()["status"] == "completed"
+    assert rerun.json()["analysis_profile"] == "sbom_import"
+    assert comparison.status_code == 200
+    assert comparison.json()["state"] == "ready"
+    assert comparison.json()["summary"] == {"new": 0, "resolved": 0, "persistent": 0}
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "uploads").glob("*sbom.json"))
+    assert b"private.example" not in retained
+    assert b"customer-private-name" not in retained
+    assert b"private-project-name" not in retained
+    assert b"private-maven-hash" not in retained
+    assert b"org.private" not in retained
+
+
+@pytest.mark.anyio
+async def test_sbom_revision_is_atomic_idempotent_comparable_and_format_bound(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    initial = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "components": [
+            {"purl": "pkg:npm/react@18.3.1"},
+            {"purl": "pkg:pypi/requests@2.31.0"},
+        ],
+    }
+    revision = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "metadata": {"component": {"name": "private-project-name"}},
+        "components": [
+            {"purl": "pkg:npm/react@19.0.0", "externalReferences": [{"url": "https://private.example/token"}]},
+            {"purl": "pkg:pypi/requests@2.32.3"},
+        ],
+    }
+    incompatible = {"spdxVersion": "SPDX-2.3", "packages": []}
+    initial_payload = json.dumps(initial).encode()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        preflight_token = await preflight_sbom_import(client, initial_payload)
+        created = await client.post(
+            "/projects/import/sbom",
+            data={"name": "Versioned SBOM", "preflight_token": preflight_token, "authorization_confirmed": "true", "public_registry_identities_confirmed": "true"},
+            files={"file": ("initial-private.json", initial_payload, "application/json")},
+        )
+        project_id = created.json()["project"]["id"]
+        initial_job_id = created.json()["job"]["id"]
+        form = {
+            "idempotency_key": "revision-request-0001",
+            "authorization_confirmed": "true",
+            "public_registry_identities_confirmed": "true",
+        }
+        imported = await client.post(
+            f"/projects/{project_id}/sbom-revisions",
+            data=form,
+            files={"file": ("customer-private.json", json.dumps(revision).encode(), "application/json")},
+        )
+        replayed = await client.post(
+            f"/projects/{project_id}/sbom-revisions",
+            data=form,
+            files={"file": ("another-private.json", json.dumps(revision).encode(), "application/json")},
+        )
+        conflict = await client.post(
+            f"/projects/{project_id}/sbom-revisions",
+            data=form,
+            files={"file": ("different.json", json.dumps(initial).encode(), "application/json")},
+        )
+        wrong_format = await client.post(
+            f"/projects/{project_id}/sbom-revisions",
+            data={**form, "idempotency_key": "revision-request-0002"},
+            files={"file": ("different.spdx.json", json.dumps(incompatible).encode(), "application/json")},
+        )
+        inventory = await client.get(
+            f"/projects/{project_id}/components",
+            params={"analysis_id": imported.json()["job"]["id"]},
+        )
+        comparison = await client.get(
+            f"/projects/{project_id}/comparisons",
+            params={"base_analysis_id": initial_job_id, "target_analysis_id": imported.json()["job"]["id"]},
+        )
+        concurrent_revision = {
+            **revision,
+            "components": [
+                {"purl": "pkg:npm/react@20.0.0"},
+                {"purl": "pkg:pypi/requests@2.32.4"},
+            ],
+        }
+        concurrent_form = {**form, "idempotency_key": "revision-request-race-01"}
+        concurrent_results = await asyncio.gather(*[
+            client.post(
+                f"/projects/{project_id}/sbom-revisions",
+                data=concurrent_form,
+                files={"file": ("private-race.json", json.dumps(concurrent_revision).encode(), "application/json")},
+            )
+            for _ in range(2)
+        ])
+        imported_job_detail = await client.get(f"/jobs/{imported.json()['job']['id']}")
+
+    assert imported.status_code == 201
+    assert imported.json()["replayed"] is False
+    assert imported.json()["project"]["analysis_count"] == 2
+    assert len(imported.json()["project"]["source_snapshots"]) == 2
+    assert replayed.status_code == 201
+    assert replayed.json()["replayed"] is True
+    assert replayed.json()["job"]["id"] == imported.json()["job"]["id"]
+    assert replayed.json()["project"]["analysis_count"] == 2
+    assert imported.json()["snapshot"]["source_channel"] == "sbom"
+    assert conflict.status_code == 409
+    assert conflict.json() == {"detail": "Idempotency key is already bound to a different SBOM revision."}
+    assert wrong_format.status_code == 409
+    assert "format must match" in wrong_format.json()["detail"]
+    assert [(item["ecosystem"], item["name"], item["exact_version"]) for item in inventory.json()["components"]] == [
+        ("npm", "react", "19.0.0"),
+        ("pypi", "requests", "2.32.3"),
+    ]
+    assert comparison.status_code == 200
+    assert comparison.json()["state"] == "ready"
+    assert [response.status_code for response in concurrent_results] == [201, 201]
+    assert sorted(response.json()["replayed"] for response in concurrent_results) == [False, True]
+    assert {response.json()["job"]["id"] for response in concurrent_results} == {concurrent_results[0].json()["job"]["id"]}
+    assert "sbom_revision_key_sha256" not in json.dumps(imported.json())
+    assert imported_job_detail.status_code == 200
+    assert "sbom_revision_key_sha256" not in json.dumps(imported_job_detail.json())
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "uploads").glob("*sbom.json"))
+    assert b"private.example" not in retained
+    assert b"customer-private" not in retained
+    assert b"private-project-name" not in retained
+    assert len(app.state.files.list(owner_id="local-admin")) == 3
+    assert len([job for job in app.state.jobs.list(owner_id="local-admin") if job.project_id == project_id]) == 3
+
+
+@pytest.mark.anyio
+async def test_failed_sbom_revision_does_not_move_project_or_leave_source_or_job(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    initial = {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}
+    revision = {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": [{"purl": "pkg:npm/react@19.0.0"}]}
+    initial_payload = json.dumps(initial).encode()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        preflight_token = await preflight_sbom_import(client, initial_payload)
+        created = await client.post(
+            "/projects/import/sbom",
+            data={"name": "Atomic SBOM", "preflight_token": preflight_token, "authorization_confirmed": "true", "public_registry_identities_confirmed": "true"},
+            files={"file": ("initial.json", initial_payload, "application/json")},
+        )
+    before_project = app.state.projects.get(created.json()["project"]["id"])
+    before_files = {item.id for item in app.state.files.list(owner_id="local-admin")}
+    before_jobs = {item.id for item in app.state.jobs.list(owner_id="local-admin")}
+
+    def fail_attachment(*_args, **_kwargs):
+        raise RuntimeError("simulated phase boundary failure")
+
+    monkeypatch.setattr(app.state.projects, "attach_sbom_revision", fail_attachment)
+    failing_transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=failing_transport, base_url="http://testserver") as client:
+        failed = await client.post(
+            f"/projects/{before_project.id}/sbom-revisions",
+            data={
+                "idempotency_key": "revision-request-failure",
+                "authorization_confirmed": "true",
+                "public_registry_identities_confirmed": "true",
+            },
+            files={"file": ("private-name.json", json.dumps(revision).encode(), "application/json")},
+        )
+
+    after_project = app.state.projects.get(before_project.id)
+    assert failed.status_code == 500
+    assert after_project.source_file_id == before_project.source_file_id
+    assert after_project.latest_job_id == before_project.latest_job_id
+    assert after_project.analysis_count == before_project.analysis_count
+    assert after_project.source_snapshots == before_project.source_snapshots
+    assert {item.id for item in app.state.files.list(owner_id="local-admin")} == before_files
+    assert {item.id for item in app.state.jobs.list(owner_id="local-admin")} == before_jobs
+
+    app.state.projects._save_unlocked(
+        after_project.model_copy(update={"owner_id": "other-operator", "organization_id": "other-operator"})
+    )
+    isolated_transport = ASGITransport(app=app)
+    async with AsyncClient(transport=isolated_transport, base_url="http://testserver") as client:
+        isolated = await client.post(
+            f"/projects/{before_project.id}/sbom-revisions",
+            data={
+                "idempotency_key": "revision-request-isolated",
+                "authorization_confirmed": "true",
+                "public_registry_identities_confirmed": "true",
+            },
+            files={"file": ("private-name.json", json.dumps(revision).encode(), "application/json")},
+        )
+    assert isolated.status_code == 404
+    assert isolated.json() == {"detail": "Project not found."}
+    assert {item.id for item in app.state.files.list()} == before_files
+    assert {item.id for item in app.state.jobs.list()} == before_jobs
+
+
+@pytest.mark.anyio
+async def test_spdx_import_is_usable_repeatable_and_discards_private_package_fields(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    source = {
+        "spdxVersion": "SPDX-2.3",
+        "name": "private-document-name",
+        "packages": [
+            {"SPDXID": "SPDXRef-Root", "externalRefs": []},
+            {
+                "SPDXID": "SPDXRef-Dependency",
+                "name": "private-package-label",
+                "downloadLocation": "git+ssh://private.example/repository",
+                "checksums": [{"algorithm": "SHA256", "checksumValue": "private-hash"}],
+                "externalRefs": [{"referenceType": "purl", "referenceLocator": "pkg:npm/lodash@4.17.21"}],
+            },
+        ],
+        "relationships": [
+            {"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES", "relatedSpdxElement": "SPDXRef-Root"},
+            {"spdxElementId": "SPDXRef-Root", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Dependency"},
+        ],
+    }
+    source_payload = json.dumps(source).encode()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        preflight_token = await preflight_sbom_import(client, source_payload)
+        created = await client.post(
+            "/projects/import/sbom",
+            data={"name": "Imported SPDX", "preflight_token": preflight_token, "authorization_confirmed": "true", "public_registry_identities_confirmed": "true"},
+            files={"file": ("private.spdx.json", source_payload, "application/json")},
+        )
+        project_id = created.json()["project"]["id"]
+        first_id = created.json()["job"]["id"]
+        inventory = await client.get(f"/projects/{project_id}/components", params={"analysis_id": first_id})
+        rerun = await client.post(f"/projects/{project_id}/analyses")
+        comparison = await client.get(
+            f"/projects/{project_id}/comparisons",
+            params={"base_analysis_id": first_id, "target_analysis_id": rerun.json()["id"]},
+        )
+
+    assert created.status_code == 201
+    assert inventory.status_code == 200
+    assert [(item["name"], item["dependency_scope"]) for item in inventory.json()["components"]] == [("lodash", "direct")]
+    assert rerun.status_code == 202
+    assert rerun.json()["status"] == "completed"
+    assert rerun.json()["analysis_profile"] == "sbom_import"
+    assert comparison.status_code == 200
+    assert comparison.json()["state"] == "ready"
+    retained = b"".join(path.read_bytes() for path in (tmp_path / "uploads").glob("*sbom.json"))
+    for forbidden in (b"private.example", b"private-document-name", b"private-package-label", b"private-hash"):
+        assert forbidden not in retained
+
+
+@pytest.mark.anyio
+async def test_product_audit_is_admin_only_paginated_scoped_and_never_persists_invitation_secrets(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as admin_client:
+        await admin_client.post("/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD_FIXTURE})
+        admin_status = await admin_client.get("/auth/status")
+        admin_headers = {ADMIN_CSRF_HEADER_NAME: admin_status.json()["csrf_token"]}
+        invitation = await admin_client.post(
+            "/organization/invitations",
+            json={"username": "audit.reader", "role": "reader"},
+            headers=admin_headers,
+        )
+
+        async with AsyncClient(transport=transport, base_url="http://testserver") as reader_client:
+            await reader_client.post(
+                "/auth/invitations/accept",
+                json={"token": invitation.json()["token"], "password": "audit-reader-password"},
+            )
+            await reader_client.post(
+                "/auth/login",
+                json={"username": "audit.reader", "password": "audit-reader-password"},
+            )
+            denied = await reader_client.get("/audit/events")
+            denied_integrity = await reader_client.get("/audit/integrity")
+            denied_export_preflight = await reader_client.get("/audit/export/preflight")
+            denied_export = await reader_client.post(
+                "/audit/export",
+                json={
+                    "period": "30d",
+                    "export_format": "json",
+                    "state_at": "2026-09-10T12:00:00Z",
+                    "snapshot_digest": "a" * 64,
+                    "redacted_export_confirmed": True,
+                },
+            )
+            denied_active_preflight = await reader_client.get("/audit/active-export/preflight")
+            denied_active_export = await reader_client.get("/audit/active-export")
+
+        first_page = await admin_client.get("/audit/events?limit=2")
+        integrity = await admin_client.get("/audit/integrity")
+        second_page = await admin_client.get(
+            "/audit/events",
+            params={"limit": 100, "cursor": first_page.json()["next_cursor"]},
+        )
+        invitation_events = await admin_client.get(
+            "/audit/events",
+            params={"action": "team.invitation_created"},
+        )
+        export_preflight = await admin_client.get(
+            "/audit/export/preflight",
+            params={"period": "30d", "action_filter": "team.invitation_created"},
+        )
+        export_manifest = export_preflight.json()
+        exported = await admin_client.post(
+            "/audit/export",
+            headers=admin_headers,
+            json={
+                "period": export_manifest["period"],
+                "export_format": "json",
+                "action_filter": export_manifest["action_filter"],
+                "state_at": export_manifest["state_at"],
+                "snapshot_digest": export_manifest["snapshot_digest"],
+                "redacted_export_confirmed": True,
+            },
+        )
+        stale_export = await admin_client.post(
+            "/audit/export",
+            headers=admin_headers,
+            json={
+                "period": export_manifest["period"],
+                "export_format": "csv",
+                "action_filter": export_manifest["action_filter"],
+                "state_at": export_manifest["state_at"],
+                "snapshot_digest": "f" * 64,
+                "redacted_export_confirmed": True,
+            },
+        )
+        export_events = await admin_client.get(
+            "/audit/events", params={"action": "audit.events_exported"}
+        )
+        created_workspace = await admin_client.post(
+            "/organizations",
+            json={"name": "Isolated audit workspace"},
+            headers=admin_headers,
+        )
+        await admin_client.post(
+            f"/organizations/{created_workspace.json()['id']}/select",
+            headers=admin_headers,
+        )
+        second_workspace_status = await admin_client.get("/auth/status")
+        second_workspace_events = await admin_client.get("/audit/events")
+
+    assert denied.status_code == 403
+    assert denied_integrity.status_code == 403
+    assert denied_export_preflight.status_code == denied_export.status_code == 403
+    assert denied.json() == {"detail": "Administrator role required."}
+    assert denied_active_preflight.status_code == denied_active_export.status_code == 403
+    assert denied_active_preflight.json() == denied_active_export.json() == {"detail": "Administrator role required."}
+    assert first_page.status_code == 200
+    assert integrity.status_code == 200
+    assert integrity.json()["state"] == "valid"
+    assert integrity.json()["retained_events"] >= 1
+    assert len(integrity.json()["head_digest"]) == 64
+    assert first_page.json()["retention_days"] == 90
+    assert first_page.json()["next_cursor"] is not None
+    combined = first_page.json()["items"] + second_page.json()["items"]
+    assert len({event["id"] for event in combined}) == len(combined)
+    assert all(event["organization_id"] == "local-admin" for event in combined)
+    assert invitation_events.json()["items"][0]["metadata"] == {"target_role": "reader"}
+    assert export_preflight.status_code == exported.status_code == 200
+    assert exported.headers["x-inspectra-snapshot-sha256"] == export_manifest["snapshot_digest"]
+    assert exported.json()["events"][0]["action"] == "team.invitation_created"
+    assert set(exported.json()["events"][0]) == {
+        "event_reference", "occurred_at", "actor_reference", "actor_role",
+        "action", "result", "resource_type", "resource_reference",
+    }
+    assert stale_export.status_code == 409
+    assert stale_export.json() == {"detail": "Audit export preflight expired or no longer matches. Prepare it again."}
+    assert export_events.json()["items"][0]["metadata"] == {
+        "event_count": 1,
+        "filter_applied": True,
+        "report_format": "json",
+        "review_period": "30d",
+    }
+    assert second_workspace_status.json()["organization_id"] == created_workspace.json()["id"]
+    assert {event["action"] for event in second_workspace_events.json()["items"]} == {"team.organization_selected"}
+
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "results" / "product_audit").glob("*/*.json")
+    )
+    for forbidden in (invitation.json()["token"], "audit-reader-password", "audit.reader", "Isolated audit workspace"):
+        assert forbidden not in persisted
+
+
+@pytest.mark.anyio
+async def test_product_audit_write_failure_does_not_break_primary_action_or_log_sensitive_context(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+
+    class FailingProductAudit:
+        def record(self, **_kwargs):
+            raise backend_main.ProductAuditError("audit_store_unavailable")
+
+    app.state.product_audit = FailingProductAudit()
+    caplog.set_level("INFO", logger="inspectra.audit")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+
+    assert response.status_code == 200
+    serialized = "\n".join(record.getMessage() for record in caplog.records)
+    assert "product_audit.persist_failed" in serialized
+    assert ADMIN_PASSWORD_FIXTURE not in serialized
+    assert "audit_store_unavailable" not in serialized
+
+
+@pytest.mark.anyio
+async def test_retention_policy_is_visible_but_manual_cleanup_is_admin_only_and_input_free(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as admin_client:
+        await admin_client.post("/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD_FIXTURE})
+        admin_status = await admin_client.get("/auth/status")
+        admin_headers = {ADMIN_CSRF_HEADER_NAME: admin_status.json()["csrf_token"]}
+        invitation = await admin_client.post(
+            "/organization/invitations",
+            json={"username": "retention.maintainer", "role": "maintainer"},
+            headers=admin_headers,
+        )
+
+        async with AsyncClient(transport=transport, base_url="http://testserver") as member_client:
+            await member_client.post(
+                "/auth/invitations/accept",
+                json={"token": invitation.json()["token"], "password": "retention-maintainer-password"},
+            )
+            await member_client.post(
+                "/auth/login",
+                json={"username": "retention.maintainer", "password": "retention-maintainer-password"},
+            )
+            member_status = await member_client.get("/auth/status")
+            member_policy = await member_client.get("/privacy/retention")
+            member_cleanup = await member_client.post(
+                "/privacy/retention/run",
+                headers={ADMIN_CSRF_HEADER_NAME: member_status.json()["csrf_token"]},
+            )
+
+        admin_policy = await admin_client.get("/privacy/retention")
+        rejected_query = await admin_client.get("/privacy/retention?project=private")
+        rejected_body = await admin_client.post(
+            "/privacy/retention/run",
+            content=b'{"path":"/private/customer"}',
+            headers={**admin_headers, "content-type": "application/json"},
+        )
+        cleanup = await admin_client.post("/privacy/retention/run", headers=admin_headers)
+        cleanup_audit = await admin_client.get("/audit/events", params={"action": "retention.cleanup_run"})
+
+    assert member_policy.status_code == 200
+    assert member_policy.json()["manual_cleanup_allowed"] is False
+    assert member_cleanup.status_code == 403
+    assert member_cleanup.json() == {"detail": "Administrator role required."}
+    assert admin_policy.status_code == 200
+    assert admin_policy.json()["manual_cleanup_allowed"] is True
+    assert admin_policy.json()["contract_version"] == "2026-09-10.7"
+    assert admin_policy.json()["data_classification_complete"] is True
+    assert admin_policy.json()["backup_contract_version"] == "2026-09-06.1"
+    assert len({item["key"] for item in admin_policy.json()["classes"]}) == 25
+    invitations_policy = next(
+        item for item in admin_policy.json()["classes"] if item["key"] == "team_invitations"
+    )
+    assert invitations_policy["retention_days"] == 30
+    assert invitations_policy["scope"] == "organization"
+    serialized_policy = json.dumps(admin_policy.json())
+    assert str(tmp_path) not in serialized_policy
+    assert "retention.maintainer" not in serialized_policy
+    assert rejected_query.status_code == 400
+    assert rejected_body.status_code == 400
+    assert cleanup.status_code == 200
+    assert cleanup.json()["state"] == "completed"
+    assert cleanup.json()["scope"] == "active_organization_plus_shared_public_cache"
+    assert [item["key"] for item in cleanup.json()["results"]] == [
+        "analysis_results",
+        "source_uploads",
+        "public_advisory_cache",
+        "automation_credentials",
+            "team_invitations",
+            "active_change_approvals",
+            "active_weekly_review_receipts",
+            "product_audit",
+        ]
+    assert [event["action"] for event in cleanup_audit.json()["items"]] == ["retention.cleanup_run"]
+
+
+def test_private_team_mode_fails_closed_without_sqlite_or_supported_bootstrap_hash(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+
+    with pytest.raises(ValueError, match="requires INSPECTRA_AUTH_STATE_STORE=sqlite"):
+        load_settings()
+
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    with pytest.raises(ValueError, match="requires a supported INSPECTRA_ADMIN_PASSWORD_HASH"):
+        load_settings()
+
+
+@pytest.mark.anyio
+async def test_private_team_workspace_switch_rotates_session_and_isolates_resources(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post("/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD_FIXTURE})
+        first_status = await client.get("/auth/status")
+        first_csrf = first_status.json()["csrf_token"]
+        first_upload = await client.post(
+            "/files/archive",
+            files={"file": ("first.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            headers={ADMIN_CSRF_HEADER_NAME: first_csrf},
+        )
+        created_workspace = await client.post(
+            "/organizations",
+            json={"name": "Isolated workspace"},
+            headers={ADMIN_CSRF_HEADER_NAME: first_csrf},
+        )
+        workspace_id = created_workspace.json()["id"]
+        selected = await client.post(
+            f"/organizations/{workspace_id}/select",
+            headers={ADMIN_CSRF_HEADER_NAME: first_csrf},
+        )
+        second_status = await client.get("/auth/status")
+        second_files = await client.get("/files")
+        old_csrf_mutation = await client.post(
+            "/organizations",
+            json={"name": "Must not exist"},
+            headers={ADMIN_CSRF_HEADER_NAME: first_csrf},
+        )
+        second_upload = await client.post(
+            "/files/archive",
+            files={"file": ("second.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            headers={ADMIN_CSRF_HEADER_NAME: second_status.json()["csrf_token"]},
+        )
+        selected_back = await client.post(
+            "/organizations/local-admin/select",
+            headers={ADMIN_CSRF_HEADER_NAME: second_status.json()["csrf_token"]},
+        )
+        first_files_again = await client.get("/files")
+        all_workspaces = await client.get("/organizations")
+
+    assert first_upload.status_code == 201
+    assert created_workspace.status_code == 201
+    assert re.fullmatch(r"[a-f0-9]{32}", workspace_id)
+    assert selected.status_code == 200
+    assert selected.json()["organization_id"] == workspace_id
+    assert second_status.json()["organization_id"] == workspace_id
+    assert second_files.json() == []
+    assert old_csrf_mutation.status_code == 403
+    assert second_upload.status_code == 201
+    assert second_upload.json()["organization_id"] == workspace_id
+    assert selected_back.status_code == 200
+    assert [item["id"] for item in first_files_again.json()] == [first_upload.json()["id"]]
+    assert {item["id"] for item in all_workspaces.json()} == {"local-admin", workspace_id}
+
+
+@pytest.mark.anyio
+async def test_team_finding_triage_validates_assignee_role_and_organization_scope(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as admin_client:
+        await admin_client.post("/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD_FIXTURE})
+        admin_status = await admin_client.get("/auth/status")
+        admin_csrf = admin_status.json()["csrf_token"]
+        admin_headers = {ADMIN_CSRF_HEADER_NAME: admin_csrf}
+        invitation = await admin_client.post(
+            "/organization/invitations",
+            json={"username": "team.reader", "role": "reader"},
+            headers=admin_headers,
+        )
+        async with AsyncClient(transport=transport, base_url="http://testserver") as reader_client:
+            await reader_client.post(
+                "/auth/invitations/accept",
+                json={"token": invitation.json()["token"], "password": "reader-password"},
+            )
+            await reader_client.post("/auth/login", json={"username": "team.reader", "password": "reader-password"})
+            reader_status = await reader_client.get("/auth/status")
+
+            members = await admin_client.get("/organization/members")
+            reader_id = next(item["user_id"] for item in members.json() if item["username"] == "team.reader")
+            archive = (
+                await admin_client.post(
+                    "/files/archive",
+                    files={"file": ("triage.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+                    headers=admin_headers,
+                )
+            ).json()
+            created = (
+                await admin_client.post(
+                    "/projects",
+                    json={"source_file_id": archive["id"], "authorization_confirmed": True},
+                    headers=admin_headers,
+                )
+            ).json()
+            analysis_id = created["job"]["id"]
+            project_id = created["project"]["id"]
+            app.state.jobs.update(
+                analysis_id,
+                status="completed",
+                result={
+                    "findings": [
+                        {
+                            "id": "team_rule",
+                            "title": "Team review",
+                            "severity": "medium",
+                            "confidence": "high",
+                        }
+                    ]
+                },
+            )
+            findings = await admin_client.get(f"/projects/{project_id}/findings?analysis_id={analysis_id}")
+            finding_id = findings.json()["findings"][0]["id"]
+            assigned = await admin_client.post(
+                f"/projects/{project_id}/findings/{finding_id}/decisions",
+                json={
+                    "analysis_id": analysis_id,
+                    "status": "in_review",
+                    "reason": "Reader will verify the context",
+                    "assignee_user_id": reader_id,
+                },
+                headers=admin_headers,
+            )
+            reader_blocked = await reader_client.post(
+                f"/projects/{project_id}/findings/{finding_id}/decisions",
+                json={"analysis_id": analysis_id, "status": "resolved", "reason": "Must be blocked"},
+                headers={ADMIN_CSRF_HEADER_NAME: reader_status.json()["csrf_token"]},
+            )
+
+        workspace = await admin_client.post(
+            "/organizations",
+            json={"name": "Other triage workspace"},
+            headers=admin_headers,
+        )
+        await admin_client.post(
+            f"/organizations/{workspace.json()['id']}/select",
+            headers=admin_headers,
+        )
+        second_status = await admin_client.get("/auth/status")
+        cross_workspace = await admin_client.post(
+            f"/projects/{project_id}/findings/{finding_id}/decisions",
+            json={"analysis_id": analysis_id, "status": "resolved", "reason": "Must not cross workspaces"},
+            headers={ADMIN_CSRF_HEADER_NAME: second_status.json()["csrf_token"]},
+        )
+
+    assert assigned.status_code == 201
+    assert assigned.json()["assignee_user_id"] == reader_id
+    assert assigned.json()["assignee_username"] == "team.reader"
+    assert reader_blocked.status_code == 403
+    assert cross_workspace.status_code == 404
 
 
 @pytest.mark.anyio
@@ -2436,6 +5585,11 @@ async def test_trusted_local_target_based_jobs_write_owner_metadata(monkeypatch,
     app.state.web_audits = NoopAuditService()
     app.state.domain_audits = NoopAuditService()
     app.state.subdomain_inventory_audits = NoopAuditService()
+    monkeypatch.setattr(
+        web_security,
+        "resolve_host_addresses",
+        lambda host, port: {web_security.ipaddress.ip_address("93.184.216.34")},
+    )
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -3174,6 +6328,3113 @@ async def test_project_archive_audit_job_creation_and_rejections(monkeypatch, tm
 
 
 @pytest.mark.anyio
+async def test_archive_backed_project_creation_lists_owned_project_and_marks_deleted_source(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    private_filename = "customer-secret-branch<script>.zip"
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": (private_filename, make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )
+        archive = archive_response.json()
+        assert archive["source_reference"] == opaque_source_reference(archive["id"])
+        created_response = await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})
+        projects_response = await client.get("/projects")
+        portfolio_response = await client.post("/projects/portfolio/search", json={})
+
+        assert created_response.status_code == 201
+        created = created_response.json()
+        assert created["project"]["name"] == f"Project {opaque_source_reference(archive['id']).removeprefix('snapshot-')[:8]}"
+        assert "source_file_id" not in created["project"]
+        assert created["project"]["source_reference"] == opaque_source_reference(archive["id"])
+        assert created["project"]["source_type"] == "archive"
+        assert "source_filename" not in created["project"]
+        assert "source_sha256" not in created["project"]
+        assert private_filename not in created_response.text
+        assert created["project"]["analysis_count"] == 1
+        assert created["job"]["audit_type"] == "project_archive_basic"
+        assert created["job"]["project_id"] == created["project"]["id"]
+        assert created["job"]["source_reference"] == opaque_source_reference(archive["id"])
+        assert "file_id" not in created["job"]
+        assert "source_sha256" not in created["job"]
+        assert created["job"]["analysis_profile"] == "project_archive_basic"
+        assert created["job"]["execution_profile"] == {
+            "contract_version": "2026-09-06.3",
+            "profile_name": "project_archive_basic",
+                "ruleset_version": EXECUTION_RULESET_VERSION,
+            "max_upload_bytes": 20 * 1024 * 1024,
+            "audit_max_concurrency": 4,
+            "audit_max_inflight_jobs": 128,
+            "audit_max_inflight_jobs_per_owner": 32,
+            "timeout_seconds": 60.0,
+            "workspace_policy": "isolated_copy_stream_worker_v1",
+            "workspace_max_bytes": 20 * 1024 * 1024,
+            "worker_contract_version": "2026-09-06.1",
+            "worker_source_transport": "inline_base64_sha256_v1",
+            "worker_lifecycle": "ephemeral_subprocess",
+            "worker_max_concurrency": 1,
+            "worker_cpu_seconds": 45,
+            "worker_memory_bytes": 402_653_184,
+            "worker_max_result_bytes": 4_194_304,
+            "worker_max_file_bytes": 33_554_432,
+            "worker_max_open_files": 64,
+            "worker_max_processes": 32,
+            "max_total_uncompressed_bytes": 200 * 1024 * 1024,
+            "max_archive_entries": 5_000,
+            "max_manifests": 25,
+            "max_manifest_bytes": 1024 * 1024,
+            "max_total_manifest_bytes": 5 * 1024 * 1024,
+            "max_lockfiles": 5,
+            "max_lockfile_packages": 2_000,
+                "max_lockfile_edges": 4_000,
+                "license_policy_contract_version": "2026-09-09.1",
+                "license_policy_denied_identifiers": [],
+            }
+        assert created["project"]["latest_job_id"] == created["job"]["id"]
+
+        assert projects_response.status_code == 200
+        assert portfolio_response.status_code == 200
+        assert portfolio_response.headers["cache-control"] == "no-store"
+        assert portfolio_response.headers["x-content-type-options"] == "nosniff"
+        portfolio = portfolio_response.json()
+        assert portfolio["contract_version"] == "2026-09-10.2"
+        assert portfolio["priority_model"] == "closed_signals_no_opaque_score"
+        assert portfolio["summary"]["total_projects"] == 1
+        assert portfolio["items"][0]["project"]["id"] == created["project"]["id"]
+        assert portfolio["items"][0]["operational_state"] == "queued"
+        assert portfolio["items"][0]["changes"]["state"] == "missing_baseline"
+        assert "no_completed_analysis" in portfolio["items"][0]["priority_reasons"]
+        assert private_filename not in portfolio_response.text
+        invalid_portfolio = await client.post(
+            "/projects/portfolio/search", json={"unknown_filter": "private-canary"}
+        )
+        assert invalid_portfolio.status_code == 422
+        listed_project = projects_response.json()[0]
+        assert listed_project["project"] == created["project"]
+        assert listed_project["latest_job"]["id"] == created["job"]["id"]
+        assert listed_project["latest_job"]["source_reference"] == opaque_source_reference(archive["id"])
+        assert "file_id" not in listed_project["latest_job"]
+        assert "source_sha256" not in listed_project["latest_job"]
+        assert private_filename not in projects_response.text
+        assert listed_project["latest_job"]["analysis_profile"] == "project_archive_basic"
+        assert listed_project["latest_job"]["execution_profile"] == created["job"]["execution_profile"]
+
+        deleted_response = await client.delete(f"/files/{archive['id']}")
+        project_response = await client.get(f"/projects/{created['project']['id']}")
+
+    assert deleted_response.status_code == 200
+    assert project_response.status_code == 200
+    assert project_response.json()["project"]["source_file_deleted_at"] is not None
+    assert project_response.json()["latest_job"]["source_file_deleted_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_project_deletion_route_requires_confirmation_and_removes_api_exports(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("private-project.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )
+        archive = archive_response.json()
+        created_response = await client.post(
+            "/projects",
+            json={"source_file_id": archive["id"], "authorization_confirmed": True},
+        )
+        created = created_response.json()
+        project_id = created["project"]["id"]
+        job_id = created["job"]["id"]
+        app.state.jobs.update(job_id, status="completed", result={"findings": []}, termination_reason="completed")
+
+        preview = await client.get(f"/projects/{project_id}/deletion")
+        missing_confirmation = await client.request("DELETE", f"/projects/{project_id}", json={})
+        declined_confirmation = await client.request(
+            "DELETE",
+            f"/projects/{project_id}",
+            json={"deletion_confirmed": False},
+        )
+        deleted = await client.request(
+            "DELETE",
+            f"/projects/{project_id}",
+            json={"deletion_confirmed": True},
+        )
+        project_after = await client.get(f"/projects/{project_id}")
+        findings_after = await client.get(f"/projects/{project_id}/findings")
+        report_after = await client.get(f"/jobs/{job_id}/export/markdown")
+        projects_after = await client.get("/projects")
+        files_after = await client.get("/files")
+        repeated = await client.request(
+            "DELETE",
+            f"/projects/{project_id}",
+            json={"deletion_confirmed": True},
+        )
+
+    assert preview.status_code == 200
+    assert preview.json()["state"] == "ready"
+    assert {item["key"]: item["disposition"] for item in preview.json()["items"]}["source_uploads"] == "retain"
+    assert missing_confirmation.status_code == 422
+    assert declined_confirmation.status_code == 422
+    assert deleted.status_code == 200
+    assert deleted.json()["state"] == "completed"
+    assert project_after.status_code == 404
+    assert findings_after.status_code == 404
+    assert report_after.status_code == 404
+    assert projects_after.json() == []
+    assert [item["id"] for item in files_after.json()] == [archive["id"]]
+    assert repeated.status_code == 200
+    assert repeated.json()["state"] == "already_absent"
+    serialized = preview.text + deleted.text + repeated.text
+    assert "private-project.zip" not in serialized
+    assert str(tmp_path) not in serialized
+
+
+@pytest.mark.anyio
+async def test_project_creation_rejects_non_archive_unowned_or_unsupported_sources(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pdf_response = await client.post("/files/pdf", files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("project.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )
+        pdf_project = await client.post("/projects", json={"source_file_id": pdf_response.json()["id"], "authorization_confirmed": True})
+        invalid_name = await client.post("/projects", json={"source_file_id": archive_response.json()["id"], "authorization_confirmed": True, "name": "bad/name"})
+        missing_authorization = await client.post("/projects", json={"source_file_id": archive_response.json()["id"]})
+        declined_authorization = await client.post(
+            "/projects", json={"source_file_id": archive_response.json()["id"], "authorization_confirmed": False}
+        )
+        unsupported_source = await client.post(
+            "/projects",
+            json={"source_file_id": archive_response.json()["id"], "authorization_confirmed": True, "repository_url": "https://example.test/owned.git"},
+        )
+
+    assert pdf_project.status_code == 400
+    assert pdf_project.json()["detail"] == "Project source must be an archive."
+    assert invalid_name.status_code == 422
+    assert missing_authorization.status_code == 422
+    assert declined_authorization.status_code == 422
+    assert unsupported_source.status_code == 422
+
+    archive = app.state.files.get(archive_response.json()["id"])
+    app.state.files._save_record(
+        archive.model_copy(update={"owner_id": "other-operator", "organization_id": "other-operator"})
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        wrong_owner = await client.post("/projects", json={"source_file_id": archive.id, "authorization_confirmed": True})
+
+    assert wrong_owner.status_code == 404
+    assert wrong_owner.json()["detail"] == "File not found."
+
+
+@pytest.mark.anyio
+async def test_project_routes_obey_auth_and_csrf_guards(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        anonymous_response = await client.get("/projects")
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        csrf_blocked = await client.post("/projects", json={"source_file_id": "a" * 32})
+
+    assert anonymous_response.status_code == 401
+    assert login_response.status_code == 200
+    assert csrf_blocked.status_code == 403
+    assert csrf_blocked.json()["detail"] == CSRF_REQUIRED_DETAIL
+
+
+@pytest.mark.anyio
+async def test_project_listing_uses_bounded_body_only_pages(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for name in ("first", "second"):
+            archive = (
+                await client.post(
+                    "/files/archive",
+                    files={
+                        "file": (
+                            f"{name}.zip",
+                            make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}),
+                            "application/zip",
+                        )
+                    },
+                )
+            ).json()
+            response = await client.post(
+                "/projects",
+                json={"source_file_id": archive["id"], "authorization_confirmed": True},
+            )
+            assert response.status_code == 201
+
+        first_page = await client.post("/projects/search", json={"page_size": 1})
+        first_document = first_page.json()
+        second_page = await client.post(
+            "/projects/search",
+            json={"page_size": 1, "cursor": first_document["next_cursor"]},
+        )
+        legacy = await client.get("/projects")
+        tampered = first_document["next_cursor"][:-1] + (
+            "A" if first_document["next_cursor"][-1] != "A" else "B"
+        )
+        invalid = await client.post(
+            "/projects/search", json={"page_size": 1, "cursor": tampered}
+        )
+
+    assert first_page.status_code == 200
+    assert first_page.headers["cache-control"] == "private, no-store"
+    assert first_document["contract_version"] == "2026-09-09.1"
+    assert first_document["returned_count"] == 1
+    assert first_document["total_count"] == 2
+    assert first_document["has_more"] is True
+    assert second_page.status_code == 200
+    assert second_page.json()["returned_count"] == 1
+    assert second_page.json()["has_more"] is False
+    assert second_page.json()["items"][0]["project"]["id"] != first_document["items"][0]["project"]["id"]
+    assert legacy.headers["deprecation"] == "true"
+    assert legacy.headers["x-inspectra-total-count"] == "2"
+    assert legacy.headers["x-inspectra-truncated"] == "false"
+    assert invalid.status_code == 400
+    assert invalid.json()["detail"] == "Project list cursor is invalid. Restart from the first page."
+
+
+def test_project_flow_mutation_routes_match_the_security_contract():
+    actual = frozenset(
+        (method, route.path)
+        for route in app.routes
+        for method in getattr(route, "methods", set())
+        if method in {"POST", "PUT", "PATCH", "DELETE"}
+        and (route.path.startswith("/projects") or route.path == "/files/{file_id}")
+    )
+
+    assert actual == PROJECT_FLOW_MUTATION_ROUTE_CONTRACT
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("POST", "/projects", {"source_file_id": "a" * 32, "authorization_confirmed": True}),
+        ("POST", f"/projects/{'a' * 32}/baseline", {"analysis_id": "b" * 32, "baseline_confirmed": True}),
+        ("POST", f"/projects/{'a' * 32}/analyses", None),
+        ("POST", f"/projects/{'a' * 32}/analyses/{'b' * 32}/cancel", None),
+        ("POST", "/projects/actions/rebuild", {"rebuild_confirmed": True}),
+        ("PUT", f"/projects/actions/{'c' * 32}/read", {"read": True}),
+        (
+            "POST",
+            f"/projects/{'a' * 32}/analyses/{'b' * 32}/report/markdown",
+            {"profile": "technical", "technical_detail_confirmed": True},
+        ),
+        ("POST", f"/projects/{'a' * 32}/analyses/{'b' * 32}/vulnerability-intelligence/osv", None),
+        (
+            "POST",
+            f"/projects/{'a' * 32}/findings/{'c' * 64}/decisions",
+            {"analysis_id": "b" * 32, "status": "in_review", "reason": "Needs review"},
+        ),
+        ("POST", f"/projects/{'a' * 32}/snapshots", {"source_file_id": "b" * 32, "authorization_confirmed": True}),
+        (
+            "PUT",
+            f"/projects/{'a' * 32}/responsibility",
+            {
+                "responsible_user_id": "local-admin",
+                "expected_updated_at": "2026-09-09T12:00:00Z",
+                "assignment_confirmed": True,
+            },
+        ),
+        ("DELETE", f"/projects/{'a' * 32}/baseline", None),
+        ("DELETE", f"/files/{'a' * 32}", None),
+    ],
+)
+async def test_project_flow_mutations_require_authentication_and_csrf(monkeypatch, tmp_path, method, path, payload):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    request_kwargs = {"json": payload} if payload is not None else {}
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        anonymous_response = await client.request(method, path, **request_kwargs)
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        csrf_blocked_response = await client.request(method, path, **request_kwargs)
+
+    assert anonymous_response.status_code == 401
+    assert anonymous_response.json() == {"detail": AUTH_REQUIRED_DETAIL}
+    assert csrf_blocked_response.status_code == 403
+    assert csrf_blocked_response.json() == {"detail": CSRF_REQUIRED_DETAIL}
+    assert login_response.status_code == 200
+    assert app.state.files.list() == []
+    assert app.state.jobs.list() == []
+    assert app.state.projects.list() == []
+
+
+@pytest.mark.anyio
+async def test_project_flow_mutations_allow_authenticated_owner_with_csrf(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login_response = await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        status_response = await client.get("/auth/status")
+        csrf_headers = {ADMIN_CSRF_HEADER_NAME: status_response.json()["csrf_token"]}
+        first_archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("first.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+                headers=csrf_headers,
+            )
+        ).json()
+        created = await client.post(
+            "/projects",
+            json={"source_file_id": first_archive["id"], "authorization_confirmed": True},
+            headers=csrf_headers,
+        )
+        project = created.json()
+        app.state.jobs.update(project["job"]["id"], status="completed", result={"analyzer": "project_archive_basic"})
+        rerun = await client.post(
+            f"/projects/{project['project']['id']}/analyses",
+            headers=csrf_headers,
+        )
+        app.state.jobs.update(rerun.json()["id"], status="completed", result={"analyzer": "project_archive_basic"})
+        second_archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("second.zip", make_zip_bytes({"package.json": b'{"name":"second","version":"1.0.0"}'}), "application/zip")},
+                headers=csrf_headers,
+            )
+        ).json()
+        snapshot = await client.post(
+            f"/projects/{project['project']['id']}/snapshots",
+            json={"source_file_id": second_archive["id"], "idempotency_key": "1" * 32, "authorization_confirmed": True},
+            headers=csrf_headers,
+        )
+        deleted_source = await client.delete(f"/files/{second_archive['id']}", headers=csrf_headers)
+
+    assert login_response.status_code == 200
+    assert status_response.status_code == 200
+    assert created.status_code == 201
+    assert rerun.status_code == 202
+    assert snapshot.status_code == 202
+    assert deleted_source.status_code == 200
+    retained_project = app.state.projects.get(project["project"]["id"])
+    assert retained_project.analysis_count == 3
+    assert retained_project.source_file_deleted_at is not None
+
+
+@pytest.mark.anyio
+async def test_project_flow_mutations_reject_extra_input_malformed_ids_and_other_owners(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    rejected_secret = "project-mutation-secret-must-not-return"
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})
+        csrf_headers = {ADMIN_CSRF_HEADER_NAME: (await client.get("/auth/status")).json()["csrf_token"]}
+        source = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("owned.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+                headers=csrf_headers,
+            )
+        ).json()
+        extra_create = await client.post(
+            "/projects",
+            json={
+                "source_file_id": source["id"],
+                "authorization_confirmed": True,
+                "unexpected": rejected_secret,
+            },
+            headers=csrf_headers,
+        )
+        created = (
+            await client.post(
+                "/projects",
+                json={"source_file_id": source["id"], "authorization_confirmed": True},
+                headers=csrf_headers,
+            )
+        ).json()
+        project_id = created["project"]["id"]
+        extra_rerun = await client.post(
+            f"/projects/{project_id}/analyses",
+            json={"unexpected": rejected_secret},
+            headers=csrf_headers,
+        )
+        extra_snapshot = await client.post(
+            f"/projects/{project_id}/snapshots",
+            json={
+                "source_file_id": source["id"],
+                "idempotency_key": "2" * 32,
+                "authorization_confirmed": True,
+                "unexpected": rejected_secret,
+            },
+            headers=csrf_headers,
+        )
+        malformed = await client.post(
+            f"/projects/not-a-project-{rejected_secret}/analyses",
+            headers=csrf_headers,
+        )
+        unowned_source = app.state.files.get(source["id"])
+        app.state.files._save_record(
+            unowned_source.model_copy(update={"owner_id": "other-operator", "organization_id": "other-operator"})
+        )
+        cross_owner_delete = await client.delete(f"/files/{source['id']}", headers=csrf_headers)
+        cross_owner_create = await client.post(
+            "/projects",
+            json={"source_file_id": source["id"], "authorization_confirmed": True},
+            headers=csrf_headers,
+        )
+        project_record = app.state.projects.get(project_id)
+        app.state.projects._save_unlocked(
+            project_record.model_copy(update={"owner_id": "other-operator", "organization_id": "other-operator"})
+        )
+        cross_owner_rerun = await client.post(f"/projects/{project_id}/analyses", headers=csrf_headers)
+        cross_owner_snapshot = await client.post(
+            f"/projects/{project_id}/snapshots",
+            json={"source_file_id": source["id"], "idempotency_key": "3" * 32, "authorization_confirmed": True},
+            headers=csrf_headers,
+        )
+
+    for response in (extra_create, extra_rerun, extra_snapshot):
+        assert response.status_code == 422
+        assert response.json() == {"detail": REQUEST_VALIDATION_DETAIL}
+        assert rejected_secret not in response.text
+    assert malformed.status_code == 400
+    assert rejected_secret not in malformed.text
+    for response in (cross_owner_delete, cross_owner_create, cross_owner_rerun, cross_owner_snapshot):
+        assert response.status_code == 404
+        assert rejected_secret not in response.text
+    assert cross_owner_delete.json() == {"detail": "File not found."}
+    assert cross_owner_create.json() == {"detail": "File not found."}
+    assert cross_owner_rerun.json() == {"detail": "Project not found."}
+    assert cross_owner_snapshot.json() == {"detail": "Project not found."}
+
+
+@pytest.mark.anyio
+async def test_project_analysis_rerun_preserves_snapshot_and_lists_project_history(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive_response = await client.post(
+            "/files/archive",
+            files={"file": ("repeatable.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )
+        archive = archive_response.json()
+        created = (await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})).json()
+        duplicate_active_response = await client.post(f"/projects/{created['project']['id']}/analyses")
+        app.state.jobs.update(created["job"]["id"], status="completed", result={"analyzer": "project_archive_basic"})
+        rerun_response = await client.post(f"/projects/{created['project']['id']}/analyses")
+        history_response = await client.get(f"/projects/{created['project']['id']}/analyses")
+        project_response = await client.get(f"/projects/{created['project']['id']}")
+        delete_response = await client.delete(f"/files/{archive['id']}")
+        deleted_source_rerun = await client.post(f"/projects/{created['project']['id']}/analyses")
+
+    assert duplicate_active_response.status_code == 409
+    assert duplicate_active_response.json()["detail"] == "Project already has an active analysis. Wait for it to finish before running the same snapshot again."
+    assert rerun_response.status_code == 202
+    rerun = rerun_response.json()
+    assert rerun["id"] != created["job"]["id"]
+    assert rerun["project_id"] == created["project"]["id"]
+    assert rerun["source_reference"] == opaque_source_reference(archive["id"])
+    assert "file_id" not in rerun
+    assert "source_sha256" not in rerun
+    assert rerun["analysis_profile"] == "project_archive_basic"
+    assert history_response.status_code == 200
+    assert {item["id"] for item in history_response.json()} == {created["job"]["id"], rerun["id"]}
+    assert {item["source_reference"] for item in history_response.json()} == {opaque_source_reference(archive["id"])}
+    assert all("source_sha256" not in item for item in history_response.json())
+    assert {item["analysis_profile"] for item in history_response.json()} == {"project_archive_basic"}
+    assert project_response.json()["project"]["analysis_count"] == 2
+    assert project_response.json()["latest_job"]["id"] == rerun["id"]
+    assert delete_response.status_code == 200
+    assert deleted_source_rerun.status_code == 409
+    assert deleted_source_rerun.json()["detail"] == "Project source is no longer retained. Upload a new archive snapshot to run another analysis."
+
+
+@pytest.mark.anyio
+async def test_project_analysis_cancel_is_idempotent_owner_scoped_and_retry_creates_new_attempt(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("cancel.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        created = (await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})).json()
+        project_id = created["project"]["id"]
+        analysis_id = created["job"]["id"]
+        cancelled = await client.post(f"/projects/{project_id}/analyses/{analysis_id}/cancel")
+        cancelled_again = await client.post(f"/projects/{project_id}/analyses/{analysis_id}/cancel")
+        retry = await client.post(
+            f"/projects/{project_id}/analyses",
+            json={"retry_of_analysis_id": analysis_id},
+        )
+
+    assert cancelled.status_code == 202
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["termination_reason"] == "cancelled_by_owner"
+    assert cancelled_again.status_code == 202
+    assert cancelled_again.json()["id"] == analysis_id
+    assert cancelled_again.json()["status"] == "cancelled"
+    assert retry.status_code == 202
+    assert retry.json()["id"] != analysis_id
+    assert retry.json()["retry_of_job_id"] == analysis_id
+    assert retry.json()["source_reference"] == opaque_source_reference(archive["id"])
+    assert "file_id" not in retry.json()
+    assert "source_sha256" not in retry.json()
+    assert app.state.jobs.get(analysis_id).status == "cancelled"
+
+
+@pytest.mark.anyio
+async def test_project_snapshot_appends_an_authorized_source_and_preserves_history(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("before.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        second_archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("after.zip", make_zip_bytes({"package.json": b'{"name":"after","version":"1.0.0"}'}), "application/zip")},
+            )
+        ).json()
+        project = (
+            await client.post("/projects", json={"source_file_id": first_archive["id"], "authorization_confirmed": True})
+        ).json()
+        project_id = project["project"]["id"]
+
+        missing_confirmation = await client.post(
+            f"/projects/{project_id}/snapshots",
+            json={"source_file_id": second_archive["id"], "idempotency_key": "4" * 32},
+        )
+        active_conflict = await client.post(
+            f"/projects/{project_id}/snapshots",
+            json={"source_file_id": second_archive["id"], "idempotency_key": "5" * 32, "authorization_confirmed": True},
+        )
+        app.state.jobs.update(project["job"]["id"], status="completed", result={"analyzer": "project_archive_basic"})
+        created_snapshot = await client.post(
+            f"/projects/{project_id}/snapshots",
+            json={"source_file_id": second_archive["id"], "idempotency_key": "6" * 32, "authorization_confirmed": True},
+        )
+        snapshot = created_snapshot.json()
+        app.state.jobs.update(snapshot["job"]["id"], status="completed", result={"analyzer": "project_archive_basic"})
+        duplicate_snapshot = await client.post(
+            f"/projects/{project_id}/snapshots",
+            json={"source_file_id": second_archive["id"], "idempotency_key": "7" * 32, "authorization_confirmed": True},
+        )
+        pdf = (await client.post("/files/pdf", files={"file": ("not-a-snapshot.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")})).json()
+        non_archive = await client.post(
+            f"/projects/{project_id}/snapshots",
+            json={"source_file_id": pdf["id"], "idempotency_key": "8" * 32, "authorization_confirmed": True},
+        )
+        unowned_archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("other-owner.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        stored_unowned_archive = app.state.files.get(unowned_archive["id"])
+        app.state.files._save_record(
+            stored_unowned_archive.model_copy(update={"owner_id": "other-operator", "organization_id": "other-operator"})
+        )
+        unowned_source = await client.post(
+            f"/projects/{project_id}/snapshots",
+            json={"source_file_id": unowned_archive["id"], "idempotency_key": "9" * 32, "authorization_confirmed": True},
+        )
+        history = await client.get(f"/projects/{project_id}/analyses")
+        delete_first_source = await client.delete(f"/files/{first_archive['id']}")
+        retained_project = await client.get(f"/projects/{project_id}")
+
+    assert missing_confirmation.status_code == 422
+    assert active_conflict.status_code == 409
+    assert active_conflict.json()["detail"] == "Project already has an active analysis. Wait for it to finish before adding a new snapshot."
+    assert created_snapshot.status_code == 202
+    assert "source_file_id" not in snapshot["snapshot"]
+    assert snapshot["snapshot"]["source_reference"] == opaque_source_reference(second_archive["id"])
+    assert "source_filename" not in snapshot["snapshot"]
+    assert "source_sha256" not in snapshot["snapshot"]
+    assert "source_file_id" not in snapshot["project"]
+    assert snapshot["project"]["analysis_count"] == 2
+    assert len(snapshot["project"]["source_snapshots"]) == 2
+    assert snapshot["job"]["project_id"] == project_id
+    assert snapshot["job"]["source_reference"] == opaque_source_reference(second_archive["id"])
+    assert "file_id" not in snapshot["job"]
+    assert "source_sha256" not in snapshot["job"]
+    assert duplicate_snapshot.status_code == 409
+    assert duplicate_snapshot.json()["detail"] == "This archive snapshot is already retained for the project. Run that snapshot again instead."
+    assert non_archive.status_code == 400
+    assert non_archive.json()["detail"] == "Project snapshot source must be an archive."
+    assert unowned_source.status_code == 404
+    assert unowned_source.json()["detail"] == "File not found."
+    assert history.status_code == 200
+    assert {analysis["source_reference"] for analysis in history.json()} == {
+        opaque_source_reference(first_archive["id"]),
+        opaque_source_reference(second_archive["id"]),
+    }
+    assert all("source_sha256" not in analysis for analysis in history.json())
+    assert delete_first_source.status_code == 200
+    retained_snapshots = retained_project.json()["project"]["source_snapshots"]
+    deleted_snapshot = next(
+        item for item in retained_snapshots if item["source_reference"] == opaque_source_reference(first_archive["id"])
+    )
+    current_snapshot = next(
+        item for item in retained_snapshots if item["source_reference"] == opaque_source_reference(second_archive["id"])
+    )
+    assert deleted_snapshot["source_file_deleted_at"] is not None
+    assert current_snapshot["source_file_deleted_at"] is None
+    assert retained_project.json()["project"]["source_file_deleted_at"] is None
+
+
+def _store_snapshot_archive(settings, *, file_id: str, owner_id: str, filename: str, payload: bytes) -> StoredFile:
+    record = StoredFile(
+        id=file_id,
+        owner_id=owner_id,
+        kind="archive",
+        original_filename=filename,
+        stored_filename=f"{file_id}.zip",
+        content_type="application/zip",
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        created_at=datetime.now(timezone.utc),
+    )
+    (settings.upload_dir / record.stored_filename).write_bytes(payload)
+    FileStore(settings)._save_record(record)
+    return record
+
+
+def test_project_snapshot_admission_is_concurrent_idempotent_and_private(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    settings.ensure_directories()
+    files = FileStore(settings)
+    jobs = JobStore(settings)
+    projects = ProjectStore(settings)
+    owner_id = DEFAULT_LOCAL_OPERATOR.id
+    first = _store_snapshot_archive(settings, file_id="1" * 32, owner_id=owner_id, filename="first.zip", payload=b"PK-first")
+    second = _store_snapshot_archive(
+        settings,
+        file_id="2" * 32,
+        owner_id=owner_id,
+        filename="private-customer-path.zip",
+        payload=b"PK-second",
+    )
+    project = projects.create(name="Idempotent", source=first, owner_id=owner_id)
+    admissions = ProjectSnapshotAdmissionStore(settings, files, projects, jobs)
+    barrier = threading.Barrier(2)
+    raw_key = "deadbeef" * 4
+
+    def admit_once():
+        barrier.wait(timeout=2)
+        return admissions.admit(
+            project_id=project.id,
+            owner_id=owner_id,
+            source_file_id=second.id,
+            idempotency_key=raw_key,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: admit_once(), range(2)))
+
+    assert {result.snapshot.id for result in results} == {results[0].snapshot.id}
+    assert {result.job.id for result in results} == {results[0].job.id}
+    assert sorted(result.replayed for result in results) == [False, True]
+    retained = projects.get(project.id)
+    assert retained.analysis_count == 1
+    assert len(retained.source_snapshots) == 2
+    assert len(jobs.list_for_project(project.id, owner_id=owner_id)) == 1
+    journal_text = next(settings.project_snapshot_admissions_dir.glob("*.json")).read_text(encoding="utf-8")
+    assert '"source_channel": "archive_upload"' in journal_text
+    assert raw_key not in journal_text
+    assert second.original_filename not in journal_text
+    assert str(settings.data_dir) not in journal_text
+
+
+def test_project_snapshot_admission_recovers_failure_between_project_and_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    settings.ensure_directories()
+    files = FileStore(settings)
+    jobs = JobStore(settings)
+    projects = ProjectStore(settings)
+    owner_id = DEFAULT_LOCAL_OPERATOR.id
+    first = _store_snapshot_archive(settings, file_id="3" * 32, owner_id=owner_id, filename="first.zip", payload=b"PK-before")
+    second = _store_snapshot_archive(settings, file_id="4" * 32, owner_id=owner_id, filename="second.zip", payload=b"PK-after")
+    project = projects.create(name="Recoverable", source=first, owner_id=owner_id)
+    admissions = ProjectSnapshotAdmissionStore(settings, files, projects, jobs)
+    original_save = jobs._save_unlocked
+    failed = False
+
+    def fail_first_job_save(record):
+        nonlocal failed
+        if record.audit_type == "project_archive_basic" and not failed:
+            failed = True
+            raise OSError("synthetic persistence interruption")
+        return original_save(record)
+
+    monkeypatch.setattr(jobs, "_save_unlocked", fail_first_job_save)
+    with pytest.raises(OSError, match="synthetic persistence interruption"):
+        admissions.admit(
+            project_id=project.id,
+            owner_id=owner_id,
+            source_file_id=second.id,
+            idempotency_key="cafebabe" * 4,
+            source_commit_sha="c" * 40,
+            source_channel="ci",
+        )
+
+    partial = projects.get(project.id)
+    reserved_job_id = partial.latest_job_id
+    assert partial.analysis_count == 1
+    assert len(partial.source_snapshots) == 2
+    assert partial.source_snapshots[-1].source_channel == "ci"
+    assert jobs.list_for_project(project.id, owner_id=owner_id) == []
+    journal = next(settings.project_snapshot_admissions_dir.glob("*.json"))
+    assert '"status": "pending"' in journal.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(jobs, "_save_unlocked", original_save)
+    recovered = ProjectSnapshotAdmissionStore(settings, files, projects, jobs).recover_pending()
+
+    assert [job.id for job in recovered] == [reserved_job_id]
+    assert projects.get(project.id).analysis_count == 1
+    assert len(projects.get(project.id).source_snapshots) == 2
+    assert projects.get(project.id).source_snapshots[-1].source_channel == "ci"
+    assert [job.id for job in jobs.list_for_project(project.id, owner_id=owner_id)] == [reserved_job_id]
+    assert '"status": "completed"' in journal.read_text(encoding="utf-8")
+    assert '"source_channel": "ci"' in journal.read_text(encoding="utf-8")
+    replayed = admissions.admit(
+        project_id=project.id,
+        owner_id=owner_id,
+        source_file_id=second.id,
+        idempotency_key="cafebabe" * 4,
+        source_commit_sha="c" * 40,
+        source_channel="git_cli",
+    )
+    assert replayed.replayed is True
+    assert replayed.snapshot.source_channel == "ci"
+
+
+def test_project_snapshot_admission_recovers_legacy_journal_without_guessing_ci_or_cli(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    settings.ensure_directories()
+    files = FileStore(settings)
+    jobs = JobStore(settings)
+    projects = ProjectStore(settings)
+    owner_id = DEFAULT_LOCAL_OPERATOR.id
+    first = _store_snapshot_archive(settings, file_id="a" * 32, owner_id=owner_id, filename="first.zip", payload=b"PK-first")
+    second = _store_snapshot_archive(settings, file_id="b" * 32, owner_id=owner_id, filename="second.zip", payload=b"PK-second")
+    project = projects.create(name="Legacy admission", source=first, owner_id=owner_id)
+    admissions = ProjectSnapshotAdmissionStore(settings, files, projects, jobs)
+    idempotency_key = "feedface" * 4
+    operation = ProjectSnapshotAdmissionRecord(
+        contract_version="2026-09-06.1",
+        id=admissions._operation_id(owner_id, project.id, idempotency_key),
+        idempotency_key_sha256=hashlib.sha256(idempotency_key.encode("ascii")).hexdigest(),
+        owner_id=owner_id,
+        project_id=project.id,
+        source_file_id=second.id,
+        source_sha256=second.sha256,
+        source_commit_sha="d" * 40,
+        source_branch="legacy/ref",
+        snapshot_id="c" * 32,
+        job_id="d" * 32,
+        status="pending",
+        created_at=datetime(2026, 9, 6, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 9, 6, tzinfo=timezone.utc),
+    )
+    admissions._save_unlocked(operation)
+    legacy_path = next(settings.project_snapshot_admissions_dir.glob("*.json"))
+    legacy_payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+    legacy_payload.pop("source_channel")
+    legacy_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    recovered = admissions.recover_pending()
+    retained = projects.get(project.id)
+    public = ProjectView.model_validate(retained)
+
+    assert [job.id for job in recovered] == [operation.job_id]
+    assert retained.source_snapshots[-1].source_channel is None
+    assert public.source_snapshots[-1].source_channel == "unknown_git_or_ci"
+    journal = json.loads(legacy_path.read_text(encoding="utf-8"))
+    assert journal["contract_version"] == "2026-09-06.1"
+    assert journal["source_channel"] is None
+
+
+def test_project_snapshot_admission_rejects_incompatible_key_and_enforces_history_cap(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_PROJECT_MAX_SOURCE_SNAPSHOTS", "2")
+    settings = load_settings()
+    settings.ensure_directories()
+    files = FileStore(settings)
+    jobs = JobStore(settings)
+    projects = ProjectStore(settings)
+    owner_id = DEFAULT_LOCAL_OPERATOR.id
+    first = _store_snapshot_archive(settings, file_id="5" * 32, owner_id=owner_id, filename="first.zip", payload=b"PK-1")
+    second = _store_snapshot_archive(settings, file_id="6" * 32, owner_id=owner_id, filename="second.zip", payload=b"PK-2")
+    third = _store_snapshot_archive(settings, file_id="7" * 32, owner_id=owner_id, filename="third.zip", payload=b"PK-3")
+    project = projects.create(name="Bounded", source=first, owner_id=owner_id)
+    admissions = ProjectSnapshotAdmissionStore(settings, files, projects, jobs)
+    key = "abcdef01" * 4
+    admitted = admissions.admit(project_id=project.id, owner_id=owner_id, source_file_id=second.id, idempotency_key=key)
+
+    with pytest.raises(HTTPException) as collision:
+        admissions.admit(project_id=project.id, owner_id=owner_id, source_file_id=third.id, idempotency_key=key)
+    assert collision.value.status_code == 409
+    assert collision.value.detail == "Idempotency key is already bound to a different snapshot request."
+    jobs.update(admitted.job.id, status="completed", result={"analyzer": "project_archive_basic"})
+    with pytest.raises(HTTPException) as capped:
+        admissions.admit(
+            project_id=project.id,
+            owner_id=owner_id,
+            source_file_id=third.id,
+            idempotency_key="1234abcd" * 4,
+        )
+    assert capped.value.status_code == 409
+    assert capped.value.detail == "Project snapshot limit reached. Preserve this history and create a new project for further snapshots."
+    assert projects.get(project.id).source_file_id == second.id
+    assert len(projects.get(project.id).source_snapshots) == 2
+    assert len(jobs.list_for_project(project.id, owner_id=owner_id)) == 1
+
+
+@pytest.mark.anyio
+async def test_project_analysis_history_exposes_safe_status_detail_not_raw_failure(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("status.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        created = (await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})).json()
+        app.state.jobs.update(
+            created["job"]["id"],
+            status="failed",
+            error="Traceback from /srv/private/project with Authorization: Bearer status-detail-test-secret",
+        )
+        history = await client.get(f"/projects/{created['project']['id']}/analyses")
+
+    assert history.status_code == 200
+    item = history.json()[0]
+    assert item["status_detail"] == {
+        "code": "failed",
+        "message": "The review did not complete. Review the retained record, then run the same snapshot again if appropriate.",
+        "next_action": "review_and_retry",
+    }
+    assert item["summary"] is None
+    serialized = json.dumps(item)
+    assert "/srv/private" not in serialized
+    assert "status-detail-test-secret" not in serialized
+
+
+@pytest.mark.anyio
+async def test_project_findings_are_owner_scoped_normalized_and_redacted(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("first.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        second_archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("second.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        first = (await client.post("/projects", json={"source_file_id": first_archive["id"], "authorization_confirmed": True})).json()
+        second = (await client.post("/projects", json={"source_file_id": second_archive["id"], "authorization_confirmed": True})).json()
+        no_completed = await client.get(f"/projects/{first['project']['id']}/findings")
+
+        app.state.jobs.update(
+            first["job"]["id"],
+            status="completed",
+            result={
+                "file_id": first_archive["id"],
+                "summary": {"truncated": True},
+                "findings": [
+                    {
+                        "id": "demo_configuration_rule",
+                        "title": "Review production setting",
+                        "category": "configuration",
+                        "severity": "high",
+                        "confidence": "high",
+                        "path": "config/settings.py",
+                        "line": 8,
+                        "evidence": "Authorization: Bearer project-findings-unit-test-secret",
+                        "recommendation": "Use a reviewed production setting.",
+                    }
+                ],
+            },
+        )
+        ready = await client.get(f"/projects/{first['project']['id']}/findings?analysis_id={first['job']['id']}")
+        wrong_project = await client.get(f"/projects/{first['project']['id']}/findings?analysis_id={second['job']['id']}")
+        malformed = await client.get(f"/projects/{first['project']['id']}/findings?analysis_id=not-an-analysis")
+
+    assert no_completed.status_code == 200
+    assert no_completed.json()["state"] == "no_completed_analysis"
+    assert ready.status_code == 200
+    payload = ready.json()
+    assert payload["state"] == "ready"
+    assert payload["analysis"]["id"] == first["job"]["id"]
+    assert payload["summary"] == {
+        "total": 1,
+        "by_severity": {"critical": 0, "high": 1, "medium": 0, "low": 0, "info": 0},
+        "by_category": {"configuration": 1},
+        "by_status": {"open": 1, "in_review": 0, "accepted": 0, "false_positive": 0, "resolved": 0},
+        "needs_review": 0,
+    }
+    assert payload["lifecycle"][payload["findings"][0]["id"]]["current_status"] == "open"
+    assert payload["lifecycle"][payload["findings"][0]["id"]]["has_decision"] is False
+    assert payload["result_truncated"] is True
+    assert payload["findings"][0]["location"] == {"path": "config/settings.py", "line": 8}
+    assert "project-findings-unit-test-secret" not in json.dumps(payload)
+    assert wrong_project.status_code == 404
+    assert wrong_project.json()["detail"] == "Analysis not found for this project."
+    assert malformed.status_code == 404
+    assert malformed.json()["detail"] == "Analysis not found for this project."
+
+
+@pytest.mark.anyio
+async def test_project_derived_views_distinguish_failed_and_cancelled_analyses(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    private_error = "terminal-state-test-secret /srv/private/project.zip"
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = await client.post(
+            "/files/archive",
+            files={"file": ("terminal.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )
+        created = await client.post(
+            "/projects",
+            json={"source_file_id": archive.json()["id"], "authorization_confirmed": True},
+        )
+        project_id = created.json()["project"]["id"]
+        analysis_id = created.json()["job"]["id"]
+
+        for job_status, response_state, termination_reason in (
+            ("failed", "analysis_failed", "runner_unavailable"),
+            ("cancelled", "analysis_cancelled", "cancelled_by_owner"),
+        ):
+            app.state.jobs.update(
+                analysis_id,
+                status=job_status,
+                result=None,
+                error=private_error,
+                termination_reason=termination_reason,
+            )
+            responses = [
+                await client.get(f"/projects/{project_id}/findings", params={"analysis_id": analysis_id}),
+                await client.get(f"/projects/{project_id}/components", params={"analysis_id": analysis_id}),
+                await client.get(
+                    f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence"
+                ),
+            ]
+            for response in responses:
+                assert response.status_code == 200
+                assert response.json()["state"] == response_state
+                assert response.json()["analysis"]["status"] == job_status
+                assert private_error not in response.text
+                assert "/srv/private" not in response.text
+
+
+@pytest.mark.anyio
+async def test_project_finding_decisions_are_immutable_redacted_and_visible_in_comparison_and_report(
+    monkeypatch,
+    tmp_path,
+):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    finding_result = {
+        "summary": {
+            "supported_manifests_found": 1,
+            "supported_manifests_parsed": 1,
+            "lockfiles_detected": 0,
+            "lockfiles_parsed": 0,
+            "total_dependencies": 0,
+        },
+        "findings": [
+            {
+                "id": "demo_configuration_rule",
+                "title": "Review production setting",
+                "category": "configuration",
+                "severity": "high",
+                "confidence": "high",
+                "path": "config/settings.py",
+                "line": 8,
+                "evidence": "DEBUG=[REDACTED]",
+                "recommendation": "Use a reviewed production setting.",
+            }
+        ],
+    }
+    exception_review_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("triage.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        created = (
+            await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})
+        ).json()
+        project_id = created["project"]["id"]
+        first_analysis_id = created["job"]["id"]
+        app.state.jobs.update(first_analysis_id, status="completed", result=finding_result)
+        initial = await client.get(f"/projects/{project_id}/findings?analysis_id={first_analysis_id}")
+        finding_id = initial.json()["findings"][0]["id"]
+
+        reviewed = await client.post(
+            f"/projects/{project_id}/findings/{finding_id}/decisions",
+            json={
+                "analysis_id": first_analysis_id,
+                "status": "in_review",
+                "reason": "Validate with the service owner",
+                "comment": "Authorization: Bearer decision-test-secret",
+            },
+        )
+        accepted = await client.post(
+            f"/projects/{project_id}/findings/{finding_id}/decisions",
+            json={
+                "analysis_id": first_analysis_id,
+                "status": "accepted",
+                "reason": "Risk accepted until the planned release",
+                "review_at": exception_review_at,
+            },
+        )
+        missing_review_date = await client.post(
+            f"/projects/{project_id}/findings/{finding_id}/decisions",
+            json={
+                "analysis_id": first_analysis_id,
+                "status": "accepted",
+                "reason": "An exception without review must fail",
+            },
+        )
+        duplicate = await client.post(
+            f"/projects/{project_id}/findings/{finding_id}/decisions",
+            json={
+                "analysis_id": first_analysis_id,
+                "status": "accepted",
+                "reason": "Must not replace the previous event",
+                "review_at": exception_review_at,
+            },
+        )
+        refreshed = await client.get(f"/projects/{project_id}/findings?analysis_id={first_analysis_id}")
+
+        second = app.state.jobs.create_project_archive_job(
+            archive["id"],
+            owner_id=created["project"]["owner_id"],
+            project_id=project_id,
+            source_sha256=archive["sha256"],
+        )
+        app.state.jobs.update(second.id, status="completed", result=finding_result)
+        comparison = await client.get(
+            f"/projects/{project_id}/comparisons",
+            params={"base_analysis_id": first_analysis_id, "target_analysis_id": second.id},
+        )
+        report = await client.post(
+            f"/projects/{project_id}/analyses/{first_analysis_id}/report/markdown",
+            json={"profile": "technical", "technical_detail_confirmed": True},
+        )
+
+    assert reviewed.status_code == 201
+    assert reviewed.json()["comment"] == "Authorization: [REDACTED]"
+    assert accepted.status_code == 201
+    assert accepted.json()["previous_decision_id"] == reviewed.json()["id"]
+    assert missing_review_date.status_code == 422
+    assert duplicate.status_code == 409
+    assert refreshed.status_code == 200
+    payload = refreshed.json()
+    assert payload["summary"]["by_status"]["accepted"] == 1
+    assert payload["summary"]["needs_review"] == 0
+    lifecycle = payload["lifecycle"][finding_id]
+    assert lifecycle["current_status"] == "accepted"
+    assert [item["status"] for item in lifecycle["history"]] == ["accepted", "in_review"]
+    assert "decision-test-secret" not in json.dumps(lifecycle)
+    assert comparison.status_code == 200
+    assert comparison.json()["comparisons"][0]["lifecycle"]["current_status"] == "accepted"
+    assert report.status_code == 200
+    assert "Finding Workflow Summary" in report.text
+    assert "`Workflow status`: `accepted`" in report.text
+    assert "Risk accepted until the planned release" in report.text
+    assert "decision-test-secret" not in report.text
+    persisted_analysis = app.state.jobs.get(first_analysis_id)
+    assert "lifecycle" not in json.dumps(persisted_analysis.result)
+
+
+@pytest.mark.anyio
+async def test_project_workflow_acceptance_is_deterministic_authorized_and_redacted(monkeypatch, tmp_path):
+    """Exercise the retained project journey without a runner or public egress.
+
+    This is deliberately one bounded acceptance flow rather than an integration
+    test that uploads a real project or awaits asynchronous infrastructure.
+    Results are deterministic fixtures written after the no-op runner queues
+    each approved snapshot.
+    """
+
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    acceptance_secret = "acceptance-project-workflow-secret"
+
+    base_result = {
+        "summary": {
+            "supported_manifests_found": 1,
+            "supported_manifests_parsed": 1,
+            "lockfiles_detected": 1,
+            "lockfiles_parsed": 1,
+            "total_dependencies": 1,
+        },
+        "findings": [
+            {
+                "id": "workflow_insecure_setting",
+                "title": "Review a production setting",
+                "category": "configuration",
+                "severity": "high",
+                "confidence": "high",
+                "path": "/srv/inspectra/customer/settings.py",
+                "line": 8,
+                "evidence": f"Authorization: Bearer {acceptance_secret}",
+                "recommendation": "Use a reviewed production setting and verify it in a new authorized snapshot.",
+                "references": [
+                    {
+                        "type": "ghsa",
+                        "id": "GHSA-abcd-1234-efgh",
+                        "url": "https://github.com/advisories/GHSA-abcd-1234-efgh",
+                    }
+                ],
+            }
+        ],
+        "parsed_manifests": [
+            {
+                "path": "package.json",
+                "manifest_type": "package_json",
+                "parsed": {
+                    "dependencies": {
+                        "dependencies": [{"name": "react", "specifier": "18.3.1", "source_type": "registry"}]
+                    }
+                },
+            }
+        ],
+        "parsed_lockfiles": [
+            {
+                "path": "package-lock.json",
+                "lockfile_type": "npm_package_lock",
+                "lockfile_version": 3,
+                "packages": [{"name": "react", "version": "18.3.1", "source_type": "registry"}],
+            }
+        ],
+    }
+    corrected_result = {
+        "summary": {
+            "supported_manifests_found": 1,
+            "supported_manifests_parsed": 1,
+            "lockfiles_detected": 1,
+            "lockfiles_parsed": 1,
+            "total_dependencies": 1,
+        },
+        "findings": [
+            {
+                "id": "workflow_new_setting",
+                "title": "Review a changed production setting",
+                "category": "configuration",
+                "severity": "medium",
+                "confidence": "medium",
+                "path": "config/settings.py",
+                "line": 12,
+                "evidence": "SETTING=[REDACTED]",
+                "recommendation": "Review the changed setting locally before deployment.",
+            }
+        ],
+    }
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        preflight = await client.get("/project-analysis-preflight")
+        first_archive = await client.post(
+            "/files/archive",
+            files={"file": ("authorized-before.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )
+        rejected_create = await client.post("/projects", json={"source_file_id": first_archive.json()["id"]})
+        created = await client.post(
+            "/projects",
+            json={"source_file_id": first_archive.json()["id"], "authorization_confirmed": True},
+        )
+        project_id = created.json()["project"]["id"]
+        first_analysis_id = created.json()["job"]["id"]
+        pending_findings = await client.get(f"/projects/{project_id}/findings")
+
+        app.state.jobs.update(first_analysis_id, status="completed", result=base_result)
+        findings = await client.get(f"/projects/{project_id}/findings?analysis_id={first_analysis_id}")
+        components = await client.get(f"/projects/{project_id}/components?analysis_id={first_analysis_id}")
+        report = await client.get(f"/projects/{project_id}/analyses/{first_analysis_id}/report/markdown")
+
+        second_archive = await client.post(
+            "/files/archive",
+            files={"file": ("authorized-after.zip", make_zip_bytes({"package.json": b'{"name":"after","version":"1.0.0"}'}), "application/zip")},
+        )
+        snapshot = await client.post(
+            f"/projects/{project_id}/snapshots",
+            json={
+                "source_file_id": second_archive.json()["id"],
+                "idempotency_key": "a" * 32,
+                "authorization_confirmed": True,
+            },
+        )
+        second_analysis_id = snapshot.json()["job"]["id"]
+        app.state.jobs.update(second_analysis_id, status="completed", result=corrected_result)
+        comparison = await client.get(
+            f"/projects/{project_id}/comparisons",
+            params={"base_analysis_id": first_analysis_id, "target_analysis_id": second_analysis_id},
+        )
+        history = await client.get(f"/projects/{project_id}/analyses")
+
+    assert preflight.status_code == 200
+    assert preflight.json()["status"] == "available"
+    assert first_archive.status_code == 201
+    assert rejected_create.status_code == 422
+    assert rejected_create.json() == {"detail": REQUEST_VALIDATION_DETAIL}
+    assert created.status_code == 201
+    assert pending_findings.status_code == 200
+    assert pending_findings.json()["state"] == "no_completed_analysis"
+
+    assert findings.status_code == 200
+    assert findings.json()["state"] == "ready"
+    assert findings.json()["findings"][0]["location_status"] == "withheld_unsafe_path"
+    assert components.status_code == 200
+    assert components.json()["state"] == "ready"
+    assert [(item["name"], item["exact_version"]) for item in components.json()["components"]] == [("react", "18.3.1")]
+    assert report.status_code == 200
+    assert report.headers["content-type"].startswith("text/markdown")
+
+    assert second_archive.status_code == 201
+    assert snapshot.status_code == 202
+    assert snapshot.json()["project"]["analysis_count"] == 2
+    assert comparison.status_code == 200
+    assert comparison.json()["state"] == "ready"
+    assert comparison.json()["summary"] == {"new": 1, "resolved": 1, "persistent": 0}
+    assert history.status_code == 200
+    assert {item["id"] for item in history.json()} == {first_analysis_id, second_analysis_id}
+
+    for payload in (findings.text, components.text, report.text, comparison.text, history.text):
+        assert acceptance_secret not in payload
+        assert "/srv/inspectra/customer" not in payload
+    assert app.state.public_advisory_egress_client.enabled is False
+
+
+@pytest.mark.anyio
+async def test_project_osv_intelligence_is_owner_scoped_persisted_and_never_sends_source_metadata(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_PUBLIC_ADVISORY_EGRESS_ENABLED", "true")
+    monkeypatch.setenv("INSPECTRA_PUBLIC_ADVISORY_NVD_ENABLED", "true")
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    captured_requests = []
+    github_payload = json.loads((Path(__file__).parent / "fixtures" / "github" / "global-advisory-valid.json").read_text(encoding="utf-8"))
+    cisa_kev_payload = json.loads((Path(__file__).parent / "fixtures" / "cisa" / "kev-valid.json").read_text(encoding="utf-8"))
+    nvd_payload = json.loads((Path(__file__).parent / "fixtures" / "nvd" / "cve-valid.json").read_text(encoding="utf-8"))
+
+    def osv_handler(request):
+        captured_requests.append(request)
+        if request.url.host == "api.github.com":
+            return Response(200, json=github_payload)
+        if request.url.host == "www.cisa.gov":
+            return Response(200, json=cisa_kev_payload)
+        if request.url.host == "services.nvd.nist.gov":
+            return Response(200, json=nvd_payload)
+        return Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "vulns": [
+                            {
+                                "id": "CVE-2025-1234",
+                                "aliases": ["GHSA-aaaa-bbbb-cccc"],
+                                "affected": [
+                                    {
+                                        "package": {"ecosystem": "npm", "name": "react"},
+                                        "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "18.3.2"}]}],
+                                    }
+                                ],
+                                "references": [{"url": "https://example.test/advisory"}],
+                                "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+
+    client = PublicAdvisoryEgressClient(
+        enabled=True,
+        nvd_enabled=True,
+        timeout_seconds=1,
+        max_response_bytes=1024 * 1024,
+        max_concurrency=1,
+        max_retries=0,
+        max_batch_components=25,
+        http_transport=MockTransport(osv_handler),
+    )
+    app.state.public_advisory_egress_client = client
+    app.state.project_vulnerability_intelligence = OsvVulnerabilityIntelligenceService(client, cache_ttl_seconds=3600)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client_http:
+        uploaded = (
+            await client_http.post(
+                "/files/archive",
+                files={"file": ("project.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        created = (
+            await client_http.post("/projects", json={"source_file_id": uploaded["id"], "authorization_confirmed": True})
+        ).json()
+        analysis_id = created["job"]["id"]
+        project_id = created["project"]["id"]
+        app.state.jobs.update(
+            analysis_id,
+            status="completed",
+            result={
+                "summary": {"supported_manifests_found": 1},
+                "normalized_findings": [],
+                "parsed_manifests": [
+                    {
+                        "path": "private/internal/package.json",
+                        "manifest_type": "package_json",
+                        "parsed": {"dependencies": {"dependencies": [{"name": "react", "specifier": "18.3.1", "source_type": "registry"}]}},
+                    }
+                ],
+                "parsed_lockfiles": [
+                    {
+                        "path": "private/internal/package-lock.json",
+                        "lockfile_type": "npm_package_lock",
+                        "packages": [{"name": "react", "version": "18.3.1", "source_type": "registry"}],
+                    }
+                ],
+                "lockfiles": [{"path": "private/internal/package-lock.json", "lockfile_type": "npm_package_lock"}],
+            },
+        )
+        initial = await client_http.get(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence")
+        completed = await client_http.post(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence/osv")
+        github_completed = await client_http.post(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence/github")
+        app.state.public_advisory_egress_client.nvd_enabled = False
+        nvd_disabled = await client_http.post(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence/nvd")
+        app.state.public_advisory_egress_client.nvd_enabled = True
+        nvd_completed = await client_http.post(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence/nvd")
+        cisa_kev_completed = await client_http.post(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence/cisa-kev")
+        persisted = await client_http.get(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence")
+        historic = await client_http.get(
+            f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence",
+            params={"snapshot_id": completed.json()["snapshot_id"]},
+        )
+        invalid_historic = await client_http.get(
+            f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence",
+            params={"snapshot_id": "../../private-source"},
+        )
+        report = await client_http.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/report/markdown",
+            json={"profile": "technical", "technical_detail_confirmed": True},
+        )
+        historic_report = await client_http.post(
+            f"/projects/{project_id}/analyses/{analysis_id}/report/markdown",
+            json={
+                "profile": "technical",
+                "technical_detail_confirmed": True,
+                "vulnerability_snapshot_id": completed.json()["snapshot_id"],
+            },
+        )
+
+    assert initial.status_code == 200
+    assert initial.json()["state"] == "not_requested"
+    assert completed.status_code == 200
+    payload = completed.json()
+    assert len(payload["snapshot_id"]) == 32
+    assert len(payload["snapshot_sha256"]) == 64
+    assert payload["snapshot_integrity_status"] == "valid"
+    assert payload["sources"][0]["evidence_count"] == 1
+    assert len(payload["sources"][0]["evidence_sha256"]) == 64
+    assert payload["is_latest_snapshot"] is True
+    assert payload["state"] == "ready"
+    assert payload["summary"]["findings"] == 1
+    assert payload["findings"][0]["component_name"] == "react"
+    assert payload["findings"][0]["fixed_versions"] == ["18.3.2"]
+    assert payload["findings"][0]["cvss_base_score"] == 9.8
+    assert payload["findings"][0]["cvss_band"] == "critical"
+    assert payload["findings"][0]["cvss_score_status"] == "derived_from_vector"
+    assert "Upgrade react" in payload["findings"][0]["recommendation"]
+    assert github_completed.status_code == 200
+    github_payload_response = github_completed.json()
+    assert github_payload_response["snapshot_id"] != payload["snapshot_id"]
+    assert github_payload_response["summary"]["github_corroborated"] == 1
+    assert github_payload_response["findings"][0]["corroborations"][0]["provider"] == "github_advisories"
+    assert github_payload_response["findings"][0]["corroborations"][0]["advisory_id"] == "GHSA-AAAA-BBBB-CCCC"
+    assert nvd_disabled.status_code == 409
+    assert nvd_disabled.json() == {"detail": "NVD enrichment is disabled for this deployment."}
+    assert nvd_completed.status_code == 200
+    nvd_payload_response = nvd_completed.json()
+    assert nvd_payload_response["snapshot_id"] not in {payload["snapshot_id"], github_payload_response["snapshot_id"]}
+    assert nvd_payload_response["summary"]["nvd_enriched"] == 1
+    assert nvd_payload_response["findings"][0]["nvd_evidence"][0]["cve_id"] == "CVE-2025-1234"
+    assert nvd_payload_response["findings"][0]["nvd_evidence"][0]["cpe_status"] == "present_unmapped"
+    assert cisa_kev_completed.status_code == 200
+    cisa_kev_payload_response = cisa_kev_completed.json()
+    assert cisa_kev_payload_response["snapshot_id"] not in {
+        payload["snapshot_id"], github_payload_response["snapshot_id"], nvd_payload_response["snapshot_id"]
+    }
+    assert cisa_kev_payload_response["summary"]["cisa_kev_known_exploited"] == 1
+    assert cisa_kev_payload_response["findings"][0]["kev_signals"][0]["status"] == "known_exploited"
+    assert cisa_kev_payload_response["findings"][0]["kev_signals"][0]["cve_id"] == "CVE-2025-1234"
+    assert persisted.json() == cisa_kev_payload_response
+    assert historic.status_code == 200
+    assert historic.json()["snapshot_id"] == payload["snapshot_id"]
+    assert historic.json()["is_latest_snapshot"] is False
+    assert historic.json()["findings"][0]["corroborations"] == []
+    assert historic.json()["findings"][0]["kev_signals"] == []
+    assert len(historic.json()["snapshot_history"]) == 4
+    assert invalid_historic.status_code == 404
+    assert invalid_historic.json() == {"detail": "Vulnerability intelligence snapshot not found for this analysis."}
+    assert report.status_code == 200
+    assert historic_report.status_code == 200
+    assert "Public Dependency Advisory 1" in report.text
+    assert "CVE-2025-1234" in report.text
+    assert "9.8 (critical; derived from provider vector)" in report.text
+    assert "GitHub corroboration" in report.text
+    assert "NVD CVE evidence" in report.text
+    assert "CPE match records present but deliberately unmapped" in report.text
+    assert "Known exploited: CVE-2025-1234" in report.text
+    assert "Public-source freshness" in report.text
+    assert "Snapshot integrity" in report.text
+    assert "valid (" in report.text
+    assert "`Retained result integrity`: `valid`" in report.text
+    assert "Component correlation outcomes" in report.text
+    assert "Latest retained intelligence" in report.text
+    assert "Historical immutable intelligence snapshot" in historic_report.text
+    assert "GitHub corroboration" not in historic_report.text
+    assert "Known exploited: CVE-2025-1234" not in historic_report.text
+    assert "private/internal" not in report.text
+    assert len(captured_requests) == 4
+    sent = json.loads(captured_requests[0].content)
+    assert sent == {"queries": [{"package": {"ecosystem": "npm", "name": "react"}, "version": "18.3.1"}]}
+    assert "project" not in json.dumps(sent).lower()
+    assert "owner" not in json.dumps(sent).lower()
+    assert "private" not in json.dumps(sent).lower()
+    github_request = captured_requests[1]
+    assert github_request.method == "GET"
+    assert dict(github_request.url.params) == {"ghsa_id": "GHSA-AAAA-BBBB-CCCC", "per_page": "1"}
+    assert github_request.content == b""
+    nvd_request = captured_requests[2]
+    assert nvd_request.method == "GET"
+    assert nvd_request.url.host == "services.nvd.nist.gov"
+    assert dict(nvd_request.url.params) == {"cveId": "CVE-2025-1234"}
+    assert nvd_request.content == b""
+    cisa_kev_request = captured_requests[3]
+    assert cisa_kev_request.method == "GET"
+    assert cisa_kev_request.url.host == "www.cisa.gov"
+    assert dict(cisa_kev_request.url.params) == {}
+    assert cisa_kev_request.content == b""
+    serialized = json.dumps(payload)
+    assert "private/internal" not in serialized
+
+
+@pytest.mark.anyio
+async def test_project_osv_intelligence_uses_an_active_offline_snapshot_without_network(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    bundle = {
+        "contract_version": "2026-09-09.1",
+        "kind": "inspectra_public_advisory_offline_bundle",
+        "created_at": (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+        "expires_at": (now + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+        "entries": [{
+            "provider": "osv",
+            "identities": [{"ecosystem": "npm", "name": "react", "version": "18.3.1"}],
+            "response": {
+                "results": [{"vulns": [{
+                    "id": "CVE-2025-1234",
+                    "affected": [{
+                        "package": {"ecosystem": "npm", "name": "react"},
+                        "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "18.3.2"}]}],
+                    }],
+                    "references": [{"url": "https://osv.dev/vulnerability/CVE-2025-1234"}],
+                }]}],
+            },
+        }],
+    }
+    bundle_path = tmp_path / "offline-public-advisories.json"
+    bundle_bytes = json.dumps(bundle, sort_keys=True, separators=(",", ":")).encode()
+    bundle_path.write_bytes(bundle_bytes)
+    imported = import_offline_advisory_bundle(
+        bundle_path,
+        app.state.settings.public_advisories_dir,
+        expected_sha256=hashlib.sha256(bundle_bytes).hexdigest(),
+        now=now,
+    )
+    assert app.state.public_advisory_egress_client.enabled is False
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        uploaded = (await client.post(
+            "/files/archive",
+            files={"file": ("offline.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )).json()
+        created = (await client.post(
+            "/projects", json={"source_file_id": uploaded["id"], "authorization_confirmed": True},
+        )).json()
+        analysis_id = created["job"]["id"]
+        project_id = created["project"]["id"]
+        app.state.jobs.update(
+            analysis_id,
+            status="completed",
+            result={
+                "summary": {"supported_manifests_found": 1},
+                "normalized_findings": [],
+                "parsed_manifests": [{
+                    "path": "private/internal/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {"dependencies": {"dependencies": [{
+                        "name": "react", "specifier": "18.3.1", "source_type": "registry",
+                    }]}},
+                }],
+                "parsed_lockfiles": [{
+                    "path": "private/internal/package-lock.json",
+                    "lockfile_type": "npm_package_lock",
+                    "packages": [{"name": "react", "version": "18.3.1", "source_type": "registry"}],
+                }],
+                "lockfiles": [{
+                    "path": "private/internal/package-lock.json", "lockfile_type": "npm_package_lock",
+                }],
+            },
+        )
+        initial = await client.get(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence")
+        completed = await client.post(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence/osv")
+        persisted = await client.get(f"/projects/{project_id}/analyses/{analysis_id}/vulnerability-intelligence")
+
+    assert initial.status_code == 200
+    assert initial.json()["state"] == "not_requested"
+    assert initial.json()["egress_enabled"] is False
+    assert initial.json()["offline_snapshot_id"] == imported["snapshot_id"]
+    assert completed.status_code == 200
+    assert completed.json()["state"] == "ready"
+    assert completed.json()["offline_snapshot_id"] == imported["snapshot_id"]
+    assert completed.json()["sources"][0]["offline_snapshot_id"] == imported["snapshot_id"]
+    assert len(completed.json()["sources"][0]["evidence_sha256"]) == 64
+    assert completed.json()["findings"][0]["fixed_versions"] == ["18.3.2"]
+    assert persisted.json() == completed.json()
+    assert "private/internal" not in completed.text
+
+
+@pytest.mark.anyio
+async def test_project_component_inventory_is_persisted_safe_and_owner_scoped(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("components.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        second_archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("other-components.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        first = (await client.post("/projects", json={"source_file_id": first_archive["id"], "authorization_confirmed": True})).json()
+        second = (await client.post("/projects", json={"source_file_id": second_archive["id"], "authorization_confirmed": True})).json()
+        no_completed = await client.get(f"/projects/{first['project']['id']}/components")
+
+        app.state.jobs.update(
+            first["job"]["id"],
+            status="completed",
+            result={
+                "summary": {"supported_manifests_found": 3, "lockfiles_parsed": 1, "lockfiles_skipped": 0, "truncated": True},
+                "parsed_manifests": [
+                    {
+                        "path": "apps/web/package.json",
+                        "manifest_type": "package_json",
+                        "parsed": {
+                            "dependencies": {
+                                "dependencies": [
+                                    {"name": "react", "specifier": "18.3.1", "source_type": "registry"},
+                                    {"name": "lodash", "specifier": "^4.17.21", "source_type": "registry"},
+                                    {
+                                        "name": "private-dependency",
+                                        "specifier": "git+https://private-user:private-token@example.test/repo.git",
+                                        "source_type": "vcs",
+                                    },
+                                ]
+                            }
+                        },
+                    },
+                    {
+                        "path": "/srv/private/project/requirements.txt",
+                        "manifest_type": "requirements_txt",
+                        "parsed": {
+                            "dependencies": {
+                                "dependencies": [{"name": "requests", "specifier": "==2.32.0", "source_type": "registry"}]
+                            }
+                        },
+                    },
+                ],
+                "parsed_lockfiles": [
+                    {
+                        "path": "apps/web/package-lock.json",
+                        "lockfile_type": "npm_package_lock",
+                        "lockfile_version": 3,
+                        "packages": [
+                            {"name": "lodash", "version": "4.17.21", "source_type": "registry"},
+                            {"name": "private-dependency", "version": "", "source_type": "workspace"},
+                        ],
+                    }
+                ],
+            },
+        )
+        ready = await client.get(f"/projects/{first['project']['id']}/components?analysis_id={first['job']['id']}")
+        wrong_project = await client.get(f"/projects/{first['project']['id']}/components?analysis_id={second['job']['id']}")
+        malformed = await client.get(f"/projects/{first['project']['id']}/components?analysis_id=not-an-analysis")
+
+    assert no_completed.status_code == 200
+    assert no_completed.json()["state"] == "no_completed_analysis"
+    assert ready.status_code == 200
+    payload = ready.json()
+    assert payload["state"] == "ready"
+    assert payload["contract_version"] == COMPONENT_INVENTORY_CONTRACT_VERSION
+    assert payload["summary"] == {
+        "total_components": 4,
+        "exact_registry_components": 2,
+        "resolved_registry_components": 1,
+        "unverified_lockfile_components": 0,
+        "transitive_registry_components": 0,
+            "optional_registry_components": 0,
+            "relationship_reported_components": 4,
+            "relationship_not_reported_components": 0,
+            "relationship_truncated_components": 0,
+            "matched_lockfile_components": 2,
+        "unmatched_lockfile_components": 0,
+        "ambiguous_lockfile_components": 0,
+        "declared_range_components": 0,
+        "not_correlatable_components": 1,
+        "parsed_manifest_count": 2,
+        "supported_manifest_count": 3,
+        "skipped_manifest_count": 1,
+        "result_truncated": True,
+        "parsed_lockfile_count": 1,
+        "skipped_lockfile_count": 0,
+        "skipped_lockfile_reasons": [],
+        "lockfile_graph_truncated": False,
+        "resolution": "declared_and_lockfile",
+    }
+    react = next(component for component in payload["components"] if component["name"] == "react")
+    assert react["exact_version"] == "18.3.1"
+    assert react["package_url"] == "pkg:npm/react@18.3.1"
+    assert react["correlation_eligible"] is True
+    lodash = next(component for component in payload["components"] if component["name"] == "lodash")
+    assert lodash["declared_version"] == "^4.17.21"
+    assert lodash["exact_version"] == "4.17.21"
+    assert lodash["version_status"] == "exact_resolved"
+    assert lodash["resolution"] == "lockfile"
+    assert lodash["lockfile_match_status"] == "matched"
+    assert lodash["package_url"] == "pkg:npm/lodash@4.17.21"
+    assert lodash["lockfile_path"] == "apps/web/package-lock.json"
+    unsafe_path_component = next(component for component in payload["components"] if component["name"] == "requests")
+    assert unsafe_path_component["manifest_path"] is None
+    assert unsafe_path_component["manifest_path_status"] == "withheld_unsafe_path"
+    assert unsafe_path_component["package_url"] == "pkg:pypi/requests@2.32.0"
+    vcs_component = next(component for component in payload["components"] if component["name"] == "private-dependency")
+    assert vcs_component["declared_version"] is None
+    assert vcs_component["exact_version"] is None
+    assert vcs_component["package_url"] is None
+    serialized = json.dumps(payload)
+    assert "private-token" not in serialized
+    assert "private-user" not in serialized
+    assert "/srv/private" not in serialized
+    assert wrong_project.status_code == 404
+    assert wrong_project.json()["detail"] == "Analysis not found for this project."
+    assert malformed.status_code == 404
+    assert malformed.json()["detail"] == "Analysis not found for this project."
+
+
+def test_component_inventory_adds_only_transitive_nodes_from_one_matched_safe_lockfile_root():
+    components, summary = build_component_inventory(
+        {
+            "summary": {"supported_manifests_found": 1, "lockfiles_parsed": 1},
+            "parsed_manifests": [
+                {
+                    "path": "apps/web/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {"project": {}, "dependencies": {"dependencies": [{"name": "direct", "specifier": "^1.0.0", "source_type": "registry"}]}},
+                }
+            ],
+            "parsed_lockfiles": [
+                {
+                    "path": "apps/web/package-lock.json",
+                    "lockfile_type": "npm_package_lock",
+                    "packages": [{"name": "direct", "version": "1.0.0", "source_type": "registry"}],
+                    "dependency_graph": {
+                        "nodes": [
+                            {"id": "a" * 24, "name": "direct", "version": "1.0.0", "source_type": "registry", "dependency_scope": "runtime_direct"},
+                            {"id": "b" * 24, "name": "transitive", "version": "2.0.0", "source_type": "registry", "dependency_scope": "transitive"},
+                            {"id": "c" * 24, "name": "linked", "version": "", "source_type": "workspace", "dependency_scope": "transitive"},
+                        ],
+                        "edges": [{"from": "a" * 24, "to": "b" * 24, "kind": "runtime"}],
+                        "nodes_truncated": False,
+                        "edges_truncated": False,
+                    },
+                }
+            ],
+            "lockfiles": [{"path": "apps/web/package-lock.json", "lockfile_type": "npm_package_lock"}],
+        }
+    )
+
+    by_name = {component["name"]: component for component in components}
+    assert by_name["direct"]["dependency_scope"] == "direct"
+    assert by_name["transitive"]["dependency_scope"] == "transitive"
+    assert by_name["transitive"]["exact_version"] == "2.0.0"
+    assert by_name["transitive"]["package_url"] == "pkg:npm/transitive@2.0.0"
+    assert "linked" not in by_name
+    assert summary["transitive_registry_components"] == 1
+    assert summary["lockfile_graph_truncated"] is False
+    assert "a" * 24 not in json.dumps(components)
+
+
+def test_component_inventory_retains_pnpm_v9_exact_direct_versions_locally_without_public_identity():
+    components, summary = build_component_inventory(
+        {
+            "summary": {"supported_manifests_found": 1, "lockfiles_parsed": 1},
+            "parsed_manifests": [
+                {
+                    "path": "apps/web/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {
+                        "project": {},
+                        "dependencies": {
+                            "dependencies": [{"name": "react", "specifier": "^18.0.0", "source_type": "registry"}],
+                        },
+                    },
+                }
+            ],
+            "parsed_lockfiles": [
+                {
+                    "path": "apps/web/pnpm-lock.yaml",
+                    "lockfile_type": "pnpm_lock",
+                    "lockfile_version": "9.0",
+                    "packages": [{"name": "react", "version": "18.3.1", "source_type": "unverified_registry"}],
+                }
+            ],
+            "lockfiles": [{"path": "apps/web/pnpm-lock.yaml", "lockfile_type": "pnpm_lock", "status": "parsed"}],
+        }
+    )
+
+    assert components == [
+        {
+            "id": components[0]["id"],
+            "ecosystem": "npm",
+            "name": "react",
+            "manifest_path": "apps/web/package.json",
+            "manifest_path_status": "reported",
+            "dependency_group": "dependencies",
+            "dependency_scope": "direct",
+            "relationship_status": "reported",
+            "source_type": "registry",
+            "declared_version": "^18.0.0",
+            "exact_version": "18.3.1",
+            "package_url": None,
+            "version_status": "exact_resolved",
+            "correlation_eligible": False,
+            "resolution": "lockfile",
+            "lockfile_match_status": "matched",
+            "manifest_type": "package_json",
+            "lockfile_path": "apps/web/pnpm-lock.yaml",
+            "lockfile_path_status": "reported",
+            "lockfile_type": "pnpm_lock",
+        }
+    ]
+    assert summary["resolved_registry_components"] == 0
+    assert summary["unverified_lockfile_components"] == 1
+    assert summary["transitive_registry_components"] == 0
+    serialized = json.dumps({"components": components, "summary": summary})
+    assert "integrity" not in serialized
+    assert "token@example.test" not in serialized
+
+
+def test_component_inventory_matches_yarn_classic_only_by_opaque_same_declaration_selector():
+    selector_id = hashlib.sha256(b"react\0^18.0.0").hexdigest()[:24]
+    components, summary = build_component_inventory(
+        {
+            "summary": {"supported_manifests_found": 1, "lockfiles_parsed": 1},
+            "parsed_manifests": [
+                {
+                    "path": "apps/web/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {
+                        "project": {},
+                        "dependencies": {
+                            "dependencies": [
+                                {"name": "react", "specifier": "^18.0.0", "source_type": "registry"},
+                                {"name": "unmatched", "specifier": "^1.0.0", "source_type": "registry"},
+                            ],
+                        },
+                    },
+                }
+            ],
+            "parsed_lockfiles": [
+                {
+                    "path": "apps/web/yarn.lock",
+                    "lockfile_type": "yarn_classic_lock",
+                    "lockfile_version": 1,
+                    "packages": [{"name": "react", "selector_id": selector_id, "version": "18.3.1", "source_type": "unverified_registry"}],
+                }
+            ],
+            "lockfiles": [{"path": "apps/web/yarn.lock", "lockfile_type": "yarn_classic_lock", "status": "parsed"}],
+        }
+    )
+
+    by_name = {component["name"]: component for component in components}
+    assert by_name["react"]["exact_version"] == "18.3.1"
+    assert by_name["react"]["lockfile_type"] == "yarn_classic_lock"
+    assert by_name["react"]["correlation_eligible"] is False
+    assert by_name["react"]["package_url"] is None
+    assert by_name["unmatched"]["exact_version"] is None
+    assert summary["unverified_lockfile_components"] == 1
+    assert "^18.0.0" not in json.dumps(summary)
+
+
+def test_component_inventory_retains_poetry_v21_direct_resolution_locally_and_withholds_ambiguous_versions():
+    components, summary = build_component_inventory(
+        {
+            "summary": {"supported_manifests_found": 1, "lockfiles_parsed": 1},
+            "parsed_manifests": [
+                {
+                    "path": "services/api/pyproject.toml",
+                    "manifest_type": "pyproject_toml",
+                    "parsed": {
+                        "project": {},
+                        "dependencies": {
+                            "poetry:dependencies": [
+                                {"name": "requests-auth", "specifier": "^2.0", "source_type": "registry"},
+                                {"name": "ambiguous-package", "specifier": "^1.0", "source_type": "registry"},
+                                {"name": "not-in-lock", "specifier": "^1.0", "source_type": "registry"},
+                            ],
+                        },
+                    },
+                }
+            ],
+            "parsed_lockfiles": [
+                {
+                    "path": "services/api/poetry.lock",
+                    "lockfile_type": "poetry_lock",
+                    "lockfile_version": "2.1",
+                    "packages": [
+                        {"name": "requests-auth", "version": "2.32.3", "source_type": "unverified_registry"},
+                        {"name": "ambiguous-package", "version": "1.0.0", "source_type": "unverified_registry"},
+                        {"name": "ambiguous-package", "version": "1.1.0", "source_type": "unverified_registry"},
+                    ],
+                }
+            ],
+            "lockfiles": [{"path": "services/api/poetry.lock", "lockfile_type": "poetry_lock", "status": "parsed"}],
+        }
+    )
+
+    by_name = {component["name"]: component for component in components}
+    poetry_component = by_name["requests-auth"]
+    assert poetry_component["exact_version"] == "2.32.3"
+    assert poetry_component["resolution"] == "lockfile"
+    assert poetry_component["lockfile_type"] == "poetry_lock"
+    assert poetry_component["correlation_eligible"] is False
+    assert poetry_component["package_url"] is None
+    for name in ("ambiguous-package", "not-in-lock"):
+        assert by_name[name]["exact_version"] is None
+        assert by_name[name]["resolution"] == "declared"
+        assert by_name[name]["correlation_eligible"] is False
+    assert summary["unverified_lockfile_components"] == 1
+    assert "private" not in json.dumps({"components": components, "summary": summary})
+
+
+def test_component_inventory_marks_manifest_and_graph_optional_dependencies_without_guessing_scope():
+    components, summary = build_component_inventory(
+        {
+            "summary": {"supported_manifests_found": 1, "lockfiles_parsed": 1},
+            "parsed_manifests": [
+                {
+                    "path": "package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {
+                        "project": {},
+                        "dependencies": {
+                            "optionalDependencies": [
+                                {"name": "optional-direct", "specifier": "^1.0.0", "source_type": "registry"}
+                            ]
+                        },
+                    },
+                }
+            ],
+            "parsed_lockfiles": [
+                {
+                    "path": "package-lock.json",
+                    "lockfile_type": "npm_package_lock",
+                    "packages": [{"name": "optional-direct", "version": "1.0.0", "source_type": "registry"}],
+                    "dependency_graph": {
+                        "nodes": [
+                            {"id": "a" * 24, "name": "optional-direct", "version": "1.0.0", "source_type": "registry", "dependency_scope": "optional"},
+                            {"id": "b" * 24, "name": "optional-transitive", "version": "2.0.0", "source_type": "registry", "dependency_scope": "optional"},
+                        ],
+                        "edges": [{"from": "a" * 24, "to": "b" * 24, "kind": "optional"}],
+                        "nodes_truncated": False,
+                        "edges_truncated": False,
+                    },
+                }
+            ],
+            "lockfiles": [{"path": "package-lock.json", "lockfile_type": "npm_package_lock"}],
+        }
+    )
+
+    by_name = {component["name"]: component for component in components}
+    assert by_name["optional-direct"]["dependency_scope"] == "optional"
+    assert by_name["optional-transitive"]["dependency_scope"] == "optional"
+    assert by_name["optional-transitive"]["resolution"] == "lockfile"
+    assert summary["optional_registry_components"] == 2
+
+
+def test_component_inventory_adds_package_urls_only_for_safe_exact_registry_identities():
+    components, _ = build_component_inventory(
+        {
+            "parsed_manifests": [
+                {
+                    "path": "package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {
+                        "dependencies": {
+                            "dependencies": [
+                                {"name": "@Scope/pkg", "specifier": "1.2.3", "source_type": "registry"},
+                                {"name": "range", "specifier": "^1.2.3", "source_type": "registry"},
+                                {"name": "private", "specifier": "git+https://operator:token@example.test/private.git", "source_type": "vcs"},
+                            ]
+                        }
+                    },
+                },
+                {
+                    "path": "requirements.txt",
+                    "manifest_type": "requirements_txt",
+                    "parsed": {
+                        "dependencies": {
+                            "dependencies": [
+                                {"name": "Django_Thing[security]", "specifier": "==1!2.0+local", "source_type": "registry"}
+                            ]
+                        }
+                    },
+                },
+            ]
+        }
+    )
+
+    by_name = {component["name"]: component for component in components}
+    assert by_name["@Scope/pkg"]["package_url"] == "pkg:npm/%40Scope/pkg@1.2.3"
+    assert by_name["range"]["package_url"] is None
+    assert by_name["private"]["package_url"] is None
+    assert by_name["django-thing"]["package_url"] == "pkg:pypi/django-thing@1%212.0+local"
+    serialized = json.dumps(components)
+    assert "operator:token" not in serialized
+    assert "example.test" not in serialized
+
+
+def test_component_inventory_pairs_lockfiles_only_with_the_same_safe_project_root():
+    components, summary = build_component_inventory(
+        {
+            "summary": {"supported_manifests_found": 2, "lockfiles_parsed": 2},
+            "parsed_manifests": [
+                {
+                    "path": "package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {"project": {}, "dependencies": {"dependencies": [{"name": "react", "specifier": "^18.0.0", "source_type": "registry"}]}},
+                },
+                {
+                    "path": "apps/web/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {"project": {}, "dependencies": {"dependencies": [{"name": "react", "specifier": "^18.0.0", "source_type": "registry"}]}},
+                },
+            ],
+            "parsed_lockfiles": [
+                {"path": "package-lock.json", "lockfile_type": "npm_package_lock", "packages": [{"name": "react", "version": "18.2.0", "source_type": "registry"}]},
+                {"path": "apps/web/package-lock.json", "lockfile_type": "npm_package_lock", "packages": [{"name": "react", "version": "18.3.1", "source_type": "registry"}]},
+            ],
+            "lockfiles": [
+                {"path": "package-lock.json", "lockfile_type": "npm_package_lock"},
+                {"path": "apps/web/package-lock.json", "lockfile_type": "npm_package_lock"},
+            ],
+        }
+    )
+
+    root_component = next(component for component in components if component["manifest_path"] == "package.json")
+    nested_component = next(component for component in components if component["manifest_path"] == "apps/web/package.json")
+    assert root_component["exact_version"] == "18.2.0"
+    assert root_component["lockfile_path"] == "package-lock.json"
+    assert nested_component["exact_version"] == "18.3.1"
+    assert nested_component["lockfile_path"] == "apps/web/package-lock.json"
+    assert {component["lockfile_match_status"] for component in components} == {"matched"}
+    assert summary["matched_lockfile_components"] == 2
+    assert summary["ambiguous_lockfile_components"] == 0
+
+
+def test_component_inventory_withholds_lockfile_resolution_for_ambiguous_or_unsafe_manifest_pairs():
+    components, summary = build_component_inventory(
+        {
+            "summary": {"supported_manifests_found": 5, "lockfiles_parsed": 3},
+            "parsed_manifests": [
+                {
+                    "path": "package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {"project": {"workspace_declared": True}, "dependencies": {"dependencies": [{"name": "workspace-package", "specifier": "^1.0.0", "source_type": "registry"}]}},
+                },
+                {
+                    "path": "apps/duplicate/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {"project": {}, "dependencies": {"dependencies": [{"name": "duplicate-package", "specifier": "^1.0.0", "source_type": "registry"}]}},
+                },
+                {
+                    "path": "apps/mixed/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {"project": {}, "dependencies": {"dependencies": [{"name": "mixed-package", "specifier": "^1.0.0", "source_type": "registry"}]}},
+                },
+                {
+                    "path": "apps/no-lock/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {"project": {}, "dependencies": {"dependencies": [{"name": "no-lock-package", "specifier": "^1.0.0", "source_type": "registry"}]}},
+                },
+                {
+                    "path": "../private/package.json",
+                    "manifest_type": "package_json",
+                    "parsed": {"project": {}, "dependencies": {"dependencies": [{"name": "unsafe-package", "specifier": "^1.0.0", "source_type": "registry"}]}},
+                },
+            ],
+            "parsed_lockfiles": [
+                {"path": "package-lock.json", "lockfile_type": "npm_package_lock", "packages": [{"name": "workspace-package", "version": "1.1.0", "source_type": "registry"}]},
+                {"path": "apps/duplicate/package-lock.json", "lockfile_type": "npm_package_lock", "packages": [{"name": "duplicate-package", "version": "1.1.0", "source_type": "registry"}]},
+                {"path": "apps/duplicate/package-lock.json", "lockfile_type": "npm_package_lock", "packages": [{"name": "duplicate-package", "version": "1.2.0", "source_type": "registry"}]},
+            ],
+            "lockfiles": [
+                {"path": "package-lock.json", "lockfile_type": "npm_package_lock"},
+                {"path": "apps/duplicate/package-lock.json", "lockfile_type": "npm_package_lock"},
+                {"path": "apps/duplicate/package-lock.json", "lockfile_type": "npm_package_lock"},
+                {"path": "apps/mixed/package-lock.json", "lockfile_type": "npm_package_lock"},
+                {"path": "apps/mixed/yarn.lock", "lockfile_type": "yarn_classic_lock"},
+                {"path": "../private/package-lock.json", "lockfile_type": "npm_package_lock"},
+            ],
+        }
+    )
+
+    by_name = {component["name"]: component for component in components}
+    for name in ("workspace-package", "duplicate-package", "mixed-package"):
+        assert by_name[name]["lockfile_match_status"] == "ambiguous"
+        assert by_name[name]["resolution"] == "declared"
+        assert by_name[name]["exact_version"] is None
+    assert by_name["no-lock-package"]["lockfile_match_status"] == "not_matched"
+    assert by_name["unsafe-package"]["manifest_path"] is None
+    assert by_name["unsafe-package"]["lockfile_match_status"] == "not_applicable"
+    assert summary["ambiguous_lockfile_components"] == 3
+    assert summary["unmatched_lockfile_components"] == 1
+    assert "../private" not in json.dumps({"components": components, "summary": summary})
+
+
+def test_project_analysis_coverage_uses_only_safe_counts_and_limitations():
+    coverage = build_project_analysis_coverage(
+        JobRecord(
+            id="a" * 32,
+            audit_type="project_archive_basic",
+            status="completed",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            source_file_deleted_at=datetime.now(timezone.utc),
+            result={"summary": {"total_entries_seen": 12, "supported_manifests_found": 3, "supported_manifests_parsed": 1, "lockfiles_detected": 2, "lockfiles_parsed": 1, "total_dependencies": 4, "truncated": True, "private_path": "/srv/private"}},
+        )
+    )
+
+    assert coverage.coverage_status == "partial"
+    assert coverage.supported_manifests_skipped == 2
+    assert coverage.lockfiles_skipped == 1
+    assert coverage.limitations == ["analysis_limit_reached", "supported_manifests_not_parsed", "lockfiles_not_parsed", "source_removed"]
+    assert "/srv/private" not in coverage.model_dump_json()
+
+
+@pytest.mark.anyio
+async def test_project_comparison_refuses_changed_coverage_without_treating_findings_as_resolved(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    safe_finding = {
+        "id": "coverage_fixture_rule",
+        "title": "Coverage fixture indicator",
+        "category": "configuration",
+        "severity": "medium",
+        "confidence": "high",
+        "path": "config/settings.py",
+        "line": 1,
+        "evidence": "COVERAGE_FIXTURE=true",
+    }
+    complete_coverage = {
+        "total_entries_seen": 8,
+        "supported_manifests_found": 2,
+        "supported_manifests_parsed": 2,
+        "unsupported_manifests_detected": 0,
+        "lockfiles_detected": 2,
+        "lockfiles_parsed": 2,
+        "total_dependencies": 4,
+        "truncated": False,
+    }
+    reduced_coverage = {**complete_coverage, "supported_manifests_parsed": 1, "lockfiles_parsed": 1}
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("coverage-comparison.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        created = (await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})).json()
+        base_id = created["job"]["id"]
+        app.state.jobs.update(base_id, status="completed", result={"summary": complete_coverage, "findings": [safe_finding]})
+        target = (await client.post(f"/projects/{created['project']['id']}/analyses")).json()
+        app.state.jobs.update(target["id"], status="completed", result={"summary": reduced_coverage, "findings": []})
+
+        reduced = await client.get(
+            f"/projects/{created['project']['id']}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": target["id"]},
+        )
+
+        app.state.jobs.update(target["id"], status="completed", result={"summary": complete_coverage, "findings": [safe_finding]})
+        app.state.jobs.save(
+            app.state.jobs.get(base_id).model_copy(update={"source_file_deleted_at": datetime.now(timezone.utc)})
+        )
+        retained_source = await client.get(
+            f"/projects/{created['project']['id']}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": target["id"]},
+        )
+
+    assert reduced.status_code == 200
+    reduced_payload = reduced.json()
+    assert reduced_payload["state"] == "not_comparable"
+    assert reduced_payload["summary"] == {"new": 0, "resolved": 0, "persistent": 0}
+    assert reduced_payload["comparisons"] == []
+    assert reduced_payload["coverage_comparison"]["status"] == "changed"
+    assert reduced_payload["coverage_comparison"]["changed_metrics"] == [
+        "supported_manifests_parsed",
+        "lockfiles_parsed",
+    ]
+    assert reduced_payload["coverage_comparison"]["base"]["source_retained"] is True
+    assert "cannot be classified as resolved or new" in reduced_payload["limitations"][0]
+
+    assert retained_source.status_code == 200
+    retained_payload = retained_source.json()
+    assert retained_payload["state"] == "ready"
+    assert retained_payload["summary"] == {"new": 0, "resolved": 0, "persistent": 1}
+    assert retained_payload["coverage_comparison"]["status"] == "equivalent"
+    assert retained_payload["coverage_comparison"]["base"]["source_retained"] is False
+    assert retained_payload["coverage_comparison"]["target"]["source_retained"] is True
+    assert retained_payload["limitations"] == [
+        "At least one source archive is no longer retained; this comparison uses retained redacted results only."
+    ]
+
+
+@pytest.mark.anyio
+async def test_project_analysis_comparison_is_owner_scoped_redacted_and_tracks_changes(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("comparison.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        project = (await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})).json()
+        base_id = project["job"]["id"]
+        app.state.jobs.update(
+            base_id,
+            status="completed",
+            result={
+                "summary": {
+                    "total_entries_seen": 4,
+                    "supported_manifests_found": 1,
+                    "supported_manifests_parsed": 1,
+                    "unsupported_manifests_detected": 0,
+                    "lockfiles_detected": 1,
+                    "lockfiles_parsed": 1,
+                    "total_dependencies": 2,
+                    "truncated": False,
+                },
+                "findings": [
+                    {
+                        "id": "persistent_setting",
+                        "title": "Production setting needs review",
+                        "category": "configuration",
+                        "severity": "medium",
+                        "confidence": "high",
+                        "path": "config/settings.py",
+                        "line": 8,
+                        "evidence": "Authorization: Bearer comparison-base-secret",
+                    },
+                    {
+                        "id": "moved_setting",
+                        "title": "Configuration moved",
+                        "category": "configuration",
+                        "severity": "low",
+                        "path": "legacy/settings.py",
+                        "line": 3,
+                        "evidence": "ENABLE_FEATURE=True",
+                    },
+                    {
+                        "id": "resolved_setting",
+                        "title": "Resolved setting",
+                        "category": "configuration",
+                        "severity": "low",
+                        "path": "config/old.py",
+                        "line": 1,
+                        "evidence": "OLD_SETTING=True",
+                    },
+                ],
+            },
+        )
+        target = (await client.post(f"/projects/{project['project']['id']}/analyses")).json()
+        app.state.jobs.update(
+            target["id"],
+            status="completed",
+            result={
+                "summary": {
+                    "total_entries_seen": 4,
+                    "supported_manifests_found": 1,
+                    "supported_manifests_parsed": 1,
+                    "unsupported_manifests_detected": 0,
+                    "lockfiles_detected": 1,
+                    "lockfiles_parsed": 1,
+                    "total_dependencies": 2,
+                    "truncated": False,
+                },
+                "findings": [
+                    {
+                        "id": "persistent_setting",
+                        "title": "Production setting needs review",
+                        "category": "configuration",
+                        "severity": "high",
+                        "confidence": "high",
+                        "path": "config/settings.py",
+                        "line": 8,
+                        "evidence": "Authorization: Bearer comparison-target-secret",
+                    },
+                    {
+                        "id": "moved_setting",
+                        "title": "Configuration moved",
+                        "category": "configuration",
+                        "severity": "low",
+                        "path": "config/settings.py",
+                        "line": 3,
+                        "evidence": "ENABLE_FEATURE=True",
+                    },
+                    {
+                        "id": "new_setting",
+                        "title": "New setting",
+                        "category": "configuration",
+                        "severity": "medium",
+                        "path": "config/new.py",
+                        "line": 6,
+                        "evidence": "NEW_SETTING=True",
+                    },
+                ],
+            },
+        )
+        comparison = await client.get(
+            f"/projects/{project['project']['id']}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": target["id"]},
+        )
+        same_analysis = await client.get(
+            f"/projects/{project['project']['id']}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": base_id},
+        )
+        malformed = await client.get(
+            f"/projects/{project['project']['id']}/comparisons",
+            params={"base_analysis_id": "not-an-analysis", "target_analysis_id": target["id"]},
+        )
+
+    assert comparison.status_code == 200
+    payload = comparison.json()
+    assert payload["state"] == "ready"
+    assert payload["summary"] == {"new": 2, "resolved": 2, "persistent": 1}
+    assert payload["limitations"] == []
+    assert payload["coverage_comparison"]["status"] == "equivalent"
+    assert payload["coverage_comparison"]["changed_metrics"] == []
+    persistent = next(item for item in payload["comparisons"] if item["status"] == "persistent")
+    assert persistent["changed_fields"] == ["severity"]
+    assert persistent["finding"]["severity"] == "high"
+    assert persistent["previous_finding"]["severity"] == "medium"
+    assert "comparison-base-secret" not in json.dumps(payload)
+    assert "comparison-target-secret" not in json.dumps(payload)
+    assert any(item["status"] == "new" and item["finding"]["location"]["path"] == "config/settings.py" for item in payload["comparisons"])
+    assert any(item["status"] == "resolved" and item["finding"]["location"]["path"] == "legacy/settings.py" for item in payload["comparisons"])
+    assert same_analysis.status_code == 400
+    assert malformed.status_code == 404
+    assert malformed.json()["detail"] == "Analysis not found for this project."
+
+    foreign = app.state.jobs.create_project_archive_job(
+        archive["id"],
+        owner_id="other-operator",
+        project_id=project["project"]["id"],
+        source_sha256=archive["sha256"],
+    )
+    app.state.jobs.update(foreign.id, status="completed", result={"findings": []})
+    app.state.jobs.save(app.state.jobs.get(target["id"]).model_copy(update={"analysis_profile": "another_profile"}))
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        foreign_owner = await client.get(
+            f"/projects/{project['project']['id']}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": foreign.id},
+        )
+        incompatible = await client.get(
+            f"/projects/{project['project']['id']}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": target["id"]},
+        )
+
+    assert foreign_owner.status_code == 404
+    assert foreign_owner.json()["detail"] == "Analysis not found for this project."
+    assert incompatible.status_code == 200
+    assert incompatible.json()["state"] == "not_comparable"
+    assert incompatible.json()["comparisons"] == []
+
+
+@pytest.mark.anyio
+async def test_project_comparison_keeps_public_vulnerability_snapshots_separate_and_conservative(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    coverage = {
+        "total_entries_seen": 4,
+        "supported_manifests_found": 1,
+        "supported_manifests_parsed": 1,
+        "unsupported_manifests_detected": 0,
+        "lockfiles_detected": 1,
+        "lockfiles_parsed": 1,
+        "total_dependencies": 2,
+        "truncated": False,
+    }
+    local_finding = {
+        "id": "comparison_fixture",
+        "title": "Comparison fixture",
+        "category": "configuration",
+        "severity": "low",
+        "confidence": "high",
+        "path": "config/settings.py",
+        "line": 1,
+        "evidence": "SAFE_FIXTURE=true",
+    }
+
+    def public_finding(
+        identifier: str,
+        advisory_id: str,
+        component: str,
+        version: str,
+        *,
+        fixed_version: str,
+        score: float,
+        with_nvd: bool = False,
+    ) -> dict[str, object]:
+        finding: dict[str, object] = {
+            "id": identifier,
+            "fingerprint_version": PUBLIC_VULNERABILITY_FINDING_FINGERPRINT_VERSION,
+            "provider": "osv",
+            "advisory_id": advisory_id,
+            "aliases": [advisory_id],
+            "ecosystem": "pypi",
+            "component_name": component,
+            "component_version": version,
+            "package_url": f"pkg:pypi/{component}@{version}",
+            "component_identity_provenance": "operator_attested_public_pypi",
+            "dependency_scope": "direct",
+            "fixed_versions": [fixed_version],
+            "cvss_base_score": score,
+            "cvss_band": "high",
+            "cvss_score_status": "source_provided",
+            "recommendation": f"Upgrade {component} to {fixed_version} or later.",
+            "evidence_digest": "a" * 64,
+        }
+        if with_nvd:
+            finding["nvd_evidence"] = [{
+                "provider": "nvd",
+                "contract_version": "2026-09-09.1",
+                "cve_id": advisory_id,
+                "status": "analyzed",
+                "severity": [],
+                "cwes": ["CWE-79"],
+                "cpe_status": "present_unmapped",
+                "cpe_match_count": 1,
+                "references": [{"type": "source", "url": f"https://nvd.nist.gov/vuln/detail/{advisory_id}"}],
+                "published_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-09-09T00:00:00Z",
+                "evidence_digest": "b" * 64,
+            }]
+        return finding
+
+    def snapshot(findings: list[dict[str, object]], *, state: str = "ready", osv_state: str = "fresh") -> dict[str, object]:
+        return {
+            "state": state,
+            "sources": [{"provider": "osv", "state": osv_state, "reason": "network_refreshed", "as_of": "2026-09-06T10:00:00Z", "expires_at": "2026-09-06T11:00:00Z"}],
+            "findings": findings,
+            "summary": {"findings": len(findings)},
+        }
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("public-comparison.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        created = (await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})).json()
+        base_id = created["job"]["id"]
+        app.state.jobs.update(base_id, status="completed", result={"summary": coverage, "findings": [local_finding]})
+        target = (await client.post(f"/projects/{created['project']['id']}/analyses")).json()
+        app.state.jobs.update(target["id"], status="completed", result={"summary": coverage, "findings": [local_finding]})
+
+        app.state.project_vulnerability_intelligence_store.put(
+            base_id,
+            snapshot(
+                [
+                    public_finding("pvf_persistent", "CVE-2026-0001", "requests", "2.32.3", fixed_version="2.32.4", score=8.0),
+                    public_finding("pvf_resolved", "CVE-2026-0002", "urllib3", "2.2.2", fixed_version="2.2.3", score=7.5),
+                ]
+            ),
+        )
+        app.state.project_vulnerability_intelligence_store.put(
+            target["id"],
+            snapshot(
+                [
+                    public_finding("pvf_persistent", "CVE-2026-0001", "requests", "2.32.3", fixed_version="2.32.5", score=8.5, with_nvd=True),
+                    public_finding("pvf_new", "CVE-2026-0003", "idna", "3.7", fixed_version="3.8", score=7.0),
+                ]
+            ),
+        )
+        ready = await client.get(
+            f"/projects/{created['project']['id']}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": target["id"]},
+        )
+
+        app.state.project_vulnerability_intelligence_store.put(target["id"], snapshot([], state="stale", osv_state="stale"))
+        stale = await client.get(
+            f"/projects/{created['project']['id']}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": target["id"]},
+        )
+
+    assert ready.status_code == 200
+    ready_payload = ready.json()["public_vulnerability_comparison"]
+    assert ready_payload["state"] == "ready"
+    assert ready_payload["summary"] == {"new": 1, "resolved": 1, "persistent": 1}
+    persistent = next(item for item in ready_payload["comparisons"] if item["status"] == "persistent")
+    assert persistent["changed_fields"] == ["fixed_versions", "cvss_base_score", "nvd_evidence", "recommendation"]
+    assert persistent["finding"]["component_identity_provenance"] == "operator_attested_public_pypi"
+    assert persistent["finding"]["nvd_evidence"][0]["cpe_status"] == "present_unmapped"
+    assert "private/internal" not in json.dumps(ready_payload)
+    assert "secret" not in json.dumps(ready_payload).lower()
+
+    assert stale.status_code == 200
+    stale_payload = stale.json()["public_vulnerability_comparison"]
+    assert stale_payload["state"] == "not_comparable"
+    assert stale_payload["comparisons"] == []
+    assert "stale" in stale_payload["limitations"][0]
+
+
+@pytest.mark.anyio
+async def test_project_comparison_rejects_changed_execution_profile_without_exposing_configuration(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path, max_upload_bytes=123_456)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("profile-comparison.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        created = (await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})).json()
+        base_id = created["job"]["id"]
+        baseline_result = {
+            "findings": [
+                {
+                    "id": "baseline_fixture_rule",
+                    "title": "Baseline fixture indicator",
+                    "category": "configuration",
+                    "severity": "low",
+                    "confidence": "high",
+                    "path": "config/settings.py",
+                    "line": 1,
+                    "evidence": "BASELINE_FIXTURE=True",
+                    "recommendation": "Keep the reviewed configuration.",
+                }
+            ]
+        }
+        app.state.jobs.update(base_id, status="completed", result=baseline_result)
+
+        # Simulate an intentional configuration rollout between two analyses.
+        # The second job obtains its profile at admission; the comparison must
+        # not silently treat distinct effective limits as equivalent.
+        app.state.jobs = JobStore(
+            replace(
+                app.state.settings,
+                max_upload_bytes=654_321,
+                audit_max_concurrency=2,
+            )
+        )
+        rerun = (await client.post(f"/projects/{created['project']['id']}/analyses")).json()
+        app.state.jobs.update(rerun["id"], status="completed", result=baseline_result)
+        comparison = await client.get(
+            f"/projects/{created['project']['id']}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": rerun["id"]},
+        )
+
+    assert comparison.status_code == 200
+    payload = comparison.json()
+    assert payload["state"] == "not_comparable"
+    assert payload["comparisons"] == []
+    assert payload["limitations"] == ["The selected analyses have different recorded execution profiles and are not comparable."]
+    assert payload["target_analysis"]["execution_profile"]["max_upload_bytes"] == 654_321
+    assert str(tmp_path) not in comparison.text
+    assert "INSPECTRA_" not in comparison.text
+    assert "token" not in comparison.text.lower()
+
+
+@pytest.mark.anyio
+async def test_project_baseline_is_owner_scoped_versioned_and_preserves_coverage_limitations(monkeypatch, tmp_path, caplog):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    caplog.set_level("INFO", logger="inspectra.audit")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("baseline-source.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        created = (await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})).json()
+        project_id = created["project"]["id"]
+        base_id = created["job"]["id"]
+        baseline_result = {
+            "findings": [
+                {
+                    "id": "baseline_fixture_rule",
+                    "title": "Baseline fixture indicator",
+                    "category": "configuration",
+                    "severity": "low",
+                    "confidence": "high",
+                    "path": "config/settings.py",
+                    "line": 1,
+                    "evidence": "BASELINE_FIXTURE=True",
+                    "recommendation": "Keep the reviewed configuration.",
+                }
+            ]
+        }
+        app.state.jobs.update(base_id, status="completed", result=baseline_result)
+        legacy = app.state.jobs.create_project_archive_job(
+            archive["id"],
+            owner_id="local-admin",
+            project_id=project_id,
+            source_sha256=archive["sha256"],
+        )
+        # Model an old on-disk record written before execution profiles existed.
+        # JobStore.save intentionally restores an immutable profile for new jobs,
+        # so a legacy fixture must omit the field at the serialized boundary.
+        legacy_path = app.state.settings.jobs_dir / f"{legacy.id}.json"
+        legacy_payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+        legacy_payload.update({"status": "completed", "result": baseline_result, "error": None})
+        legacy_payload.pop("execution_profile", None)
+        legacy_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+        # This fixture deliberately bypasses JobStore's atomic persistence to
+        # model a restored pre-profile record. Production restore/startup
+        # rebuilds the derived index; mirror that boundary before exercising
+        # indexed admission so stale queued metadata cannot affect the test.
+        app.state.jobs.active_index.sync_after_save(app.state.jobs.get(legacy.id))
+        legacy_baseline = await client.post(
+            f"/projects/{project_id}/baseline",
+            json={"analysis_id": legacy.id, "baseline_confirmed": True},
+        )
+
+        saved = await client.post(
+            f"/projects/{project_id}/baseline",
+            json={"analysis_id": base_id, "baseline_confirmed": True},
+        )
+        repeated = await client.post(
+            f"/projects/{project_id}/baseline",
+            json={"analysis_id": base_id, "baseline_confirmed": True},
+        )
+        rerun = (await client.post(f"/projects/{project_id}/analyses")).json()
+        app.state.jobs.update(rerun["id"], status="completed", result=baseline_result)
+        report = await client.post(
+            f"/projects/{project_id}/analyses/{rerun['id']}/report/markdown",
+            json={"profile": "technical", "technical_detail_confirmed": True},
+        )
+        comparison = await client.get(
+            f"/projects/{project_id}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": rerun["id"]},
+        )
+        deleted_source = await client.delete(f"/files/{archive['id']}")
+        retained_comparison = await client.get(
+            f"/projects/{project_id}/comparisons",
+            params={"base_analysis_id": base_id, "target_analysis_id": rerun["id"]},
+        )
+        moved = await client.post(
+            f"/projects/{project_id}/baseline",
+            json={"analysis_id": rerun["id"], "baseline_confirmed": True},
+        )
+        deleted_baseline_job = await client.delete(f"/jobs/{rerun['id']}")
+        after_job_delete = await client.get(f"/projects/{project_id}")
+
+        foreign = app.state.jobs.create_project_archive_job(
+            archive["id"],
+            owner_id="other-operator",
+            project_id=project_id,
+            source_sha256=archive["sha256"],
+        )
+        app.state.jobs.update(foreign.id, status="completed", result={"findings": []})
+        foreign_baseline = await client.post(
+            f"/projects/{project_id}/baseline",
+            json={"analysis_id": foreign.id, "baseline_confirmed": True},
+        )
+        absent_clear = await client.delete(f"/projects/{project_id}/baseline")
+
+    assert legacy_baseline.status_code == 409
+    assert legacy_baseline.json()["detail"] == (
+        "This legacy analysis has no recorded execution profile. Run its retained snapshot again before setting a baseline."
+    )
+    assert saved.status_code == 200
+    assert saved.json()["baseline_analysis_id"] == base_id
+    assert saved.json()["baseline_version"] == 1
+    assert repeated.status_code == 200
+    assert repeated.json()["baseline_version"] == 1
+    assert report.status_code == 200
+    assert "Regression baseline" in report.text
+    assert "Configured (policy version 1)" in report.text
+    assert base_id not in report.text
+    assert comparison.status_code == 200
+    assert comparison.json()["uses_saved_baseline"] is True
+    assert deleted_source.status_code == 200
+    assert retained_comparison.status_code == 200
+    assert "source archive is no longer retained" in retained_comparison.text
+    assert moved.status_code == 200
+    assert moved.json()["baseline_version"] == 2
+    assert deleted_baseline_job.status_code == 200
+    assert after_job_delete.json()["project"]["baseline_analysis_id"] is None
+    assert after_job_delete.json()["project"]["baseline_version"] == 3
+    assert foreign_baseline.status_code == 404
+    assert foreign_baseline.json() == {"detail": "Analysis not found for this project."}
+    assert absent_clear.status_code == 409
+    assert absent_clear.json()["detail"] == "This project has no saved baseline to clear."
+    audit_events = [json.loads(record.getMessage()) for record in caplog.records if "project.baseline" in record.getMessage()]
+    assert {event["event"] for event in audit_events} == {"project.baseline.set", "project.baseline.cleared"}
+    assert "baseline-source.zip" not in "\n".join(record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_project_report_exports_owner_scoped_normalized_redacted_content(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("private-source.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        project = (await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True, "name": "Client <script> project"})).json()
+        assigned = await client.put(
+            f"/projects/{project['project']['id']}/responsibility",
+            json={
+                "responsible_user_id": "local-admin",
+                "expected_updated_at": project["project"]["updated_at"],
+                "assignment_confirmed": True,
+            },
+        )
+        assert assigned.status_code == 200
+        pending = await client.get(
+            f"/projects/{project['project']['id']}/analyses/{project['job']['id']}/report/markdown"
+        )
+        app.state.jobs.update(
+            project["job"]["id"],
+            status="completed",
+            result={
+                "summary": {"truncated": True},
+                "findings": [
+                    {
+                        "id": "project_report_rule",
+                        "title": "Production setting needs review",
+                        "category": "configuration",
+                        "severity": "high",
+                        "confidence": "high",
+                        "path": "/srv/inspectra/client/settings.py",
+                        "line": 8,
+                        "evidence": "Authorization: Bearer project-report-unit-test-secret",
+                        "recommendation": "Use a reviewed production setting.",
+                        "references": [
+                            {
+                                "type": "ghsa",
+                                "id": "GHSA-abcd-1234-efgh",
+                                "url": "https://github.com/advisories/GHSA-abcd-1234-efgh",
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+        project_job_detail = await client.get(f"/jobs/{project['job']['id']}")
+        minimal_exports = {
+            report_format: await client.get(
+                f"/projects/{project['project']['id']}/analyses/{project['job']['id']}/report/{report_format}"
+            )
+            for report_format in ("markdown", "html", "pdf")
+        }
+        unconfirmed_technical = await client.post(
+            f"/projects/{project['project']['id']}/analyses/{project['job']['id']}/report/markdown",
+            json={"profile": "technical", "technical_detail_confirmed": False},
+        )
+        technical_exports = {
+            report_format: await client.post(
+                f"/projects/{project['project']['id']}/analyses/{project['job']['id']}/report/{report_format}",
+                json={"profile": "technical", "technical_detail_confirmed": True},
+            )
+            for report_format in ("markdown", "html", "pdf")
+        }
+        query_bypass = await client.get(
+            f"/projects/{project['project']['id']}/analyses/{project['job']['id']}/report/markdown",
+            params={"profile": "technical", "technical_detail_confirmed": "true"},
+        )
+        unsupported_json = await client.get(
+            f"/projects/{project['project']['id']}/analyses/{project['job']['id']}/report/json"
+        )
+        unsupported_sarif = await client.post(
+            f"/projects/{project['project']['id']}/analyses/{project['job']['id']}/report/sarif",
+            json={"profile": "technical", "technical_detail_confirmed": True},
+        )
+        absent_public_link = await client.get(
+            f"/projects/{project['project']['id']}/analyses/{project['job']['id']}/report/public"
+        )
+        report_audit = await client.get("/audit/events?action=project.report_exported")
+        other_archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("other-source.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        other_project = (await client.post("/projects", json={"source_file_id": other_archive["id"], "authorization_confirmed": True})).json()
+        cross_project = await client.get(
+            f"/projects/{project['project']['id']}/analyses/{other_project['job']['id']}/report/markdown"
+        )
+
+    assert pending.status_code == 409
+    assert pending.json()["detail"] == "A project report is available after the selected analysis completes."
+    assert all(response.status_code == 200 for response in minimal_exports.values())
+    assert all(response.status_code == 200 for response in technical_exports.values())
+    assert all(response.headers["cache-control"] == "private, no-store" for response in minimal_exports.values())
+    assert all(response.headers["cache-control"] == "private, no-store" for response in technical_exports.values())
+    assert unconfirmed_technical.status_code == 422
+    assert unsupported_json.status_code == 422
+    assert unsupported_sarif.status_code == 422
+    assert absent_public_link.status_code == 422
+    assert report_audit.status_code == 200
+    assert {item["metadata"]["report_profile"] for item in report_audit.json()["items"]} == {
+        "minimal",
+        "technical",
+    }
+    assert all(
+        set(item["metadata"]) == {"project_id", "report_format", "report_profile"}
+        for item in report_audit.json()["items"]
+    )
+    assert project_job_detail.status_code == 200
+    serialized_detail = project_job_detail.text
+    assert archive["sha256"] not in serialized_detail
+    assert "private-source.zip" not in serialized_detail
+    assert "source_sha256" not in serialized_detail
+    assert '"file_id"' not in serialized_detail
+    assert project_job_detail.json()["source_reference"] == opaque_source_reference(archive["id"])
+    assert minimal_exports["markdown"].headers["content-type"].startswith("text/markdown")
+    assert minimal_exports["html"].headers["content-type"].startswith("text/html")
+    assert minimal_exports["pdf"].headers["content-type"] == "application/pdf"
+    assert minimal_exports["pdf"].content.startswith(b"%PDF-1.4")
+    minimal_combined = "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in minimal_exports.items()
+    )
+    assert "Minimal redacted profile" in minimal_combined
+    for withheld in (
+        "Client", "local-admin", "project_archive_basic", "Technical Finding", "GHSA-abcd-1234-efgh",
+        "settings.py", "project-report-unit-test-secret", opaque_source_reference(archive["id"]), project["job"]["id"],
+    ):
+        assert withheld not in minimal_combined
+    assert query_bypass.text == minimal_exports["markdown"].text
+    assert all(
+        response.headers["content-disposition"].endswith(f'filename="inspectra-project-report.{"md" if report_format == "markdown" else report_format}"')
+        for report_format, response in minimal_exports.items()
+    )
+    combined = "\n".join(
+        response.text if report_format != "pdf" else response.content.decode("latin1", errors="ignore")
+        for report_format, response in technical_exports.items()
+    )
+    assert "Technical redacted profile" in combined
+    assert "Inspectra Project Report" in combined
+    assert "Executive Summary" in combined
+    assert "Execution profile" in combined
+    assert "Project accountable member" in combined
+    assert "local-admin" in combined
+    assert "Project responsibility state" in combined
+    assert "project_archive_basic" in combined
+    assert "Risk Summary" in combined
+    assert "Coverage And Limitations" in combined
+    assert "Technical Finding 1" in combined
+    assert "GHSA-abcd-1234-efgh" in combined
+    assert "Withheld: location is not a safe project-relative path." in combined
+    assert "project-report-unit-test-secret" not in combined
+    assert "/srv/inspectra/client/settings.py" not in combined
+    assert "INSPECTRA_" not in combined
+    assert "private-source.zip" not in combined
+    assert archive["sha256"] not in combined
+    assert "Source snapshot reference" in combined
+    assert "Source admission channel" in combined
+    assert "archive upload" in combined
+    assert opaque_source_reference(archive["id"]) in combined
+    assert "<script>" not in technical_exports["html"].text
+    assert "&lt;script&gt;" in technical_exports["html"].text
+    assert all("private-source.zip" not in response.headers["content-disposition"] for response in technical_exports.values())
+    assert not (tmp_path / "results" / "reports").exists()
+    assert cross_project.status_code == 404
+    assert cross_project.json()["detail"] == "Analysis not found for this project."
+
+
+@pytest.mark.anyio
+async def test_team_reader_can_export_only_the_minimal_project_report(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as admin_client:
+        await admin_client.post(
+            "/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD_FIXTURE}
+        )
+        admin_csrf = (await admin_client.get("/auth/status")).json()["csrf_token"]
+        admin_headers = {ADMIN_CSRF_HEADER_NAME: admin_csrf}
+        invitation = await admin_client.post(
+            "/organization/invitations",
+            json={"username": "report.reader", "role": "reader"},
+            headers=admin_headers,
+        )
+        archive = (
+            await admin_client.post(
+                "/files/archive",
+                files={"file": ("team-source.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+                headers=admin_headers,
+            )
+        ).json()
+        created = (
+            await admin_client.post(
+                "/projects",
+                json={"source_file_id": archive["id"], "authorization_confirmed": True, "name": "Private team project"},
+                headers=admin_headers,
+            )
+        ).json()
+        app.state.jobs.update(
+            created["job"]["id"],
+            status="completed",
+            result={
+                "findings": [
+                    {
+                        "id": "reader_report_rule",
+                        "title": "Private technical title",
+                        "severity": "medium",
+                        "path": "private/settings.py",
+                        "evidence": "PRIVATE_VALUE=[REDACTED]",
+                    }
+                ]
+            },
+        )
+        async with AsyncClient(transport=transport, base_url="http://testserver") as reader_client:
+            await reader_client.post(
+                "/auth/invitations/accept",
+                json={"token": invitation.json()["token"], "password": "reader-password"},
+            )
+            await reader_client.post(
+                "/auth/login", json={"username": "report.reader", "password": "reader-password"}
+            )
+            reader_csrf = (await reader_client.get("/auth/status")).json()["csrf_token"]
+            path = f"/projects/{created['project']['id']}/analyses/{created['job']['id']}/report/markdown"
+            minimal = await reader_client.get(path)
+            technical = await reader_client.post(
+                path,
+                json={"profile": "technical", "technical_detail_confirmed": True},
+                headers={ADMIN_CSRF_HEADER_NAME: reader_csrf},
+            )
+            actions = await reader_client.get("/projects/actions")
+            marked = await reader_client.put(
+                f"/projects/actions/{actions.json()['items'][0]['id']}/read",
+                json={"read": True},
+                headers={ADMIN_CSRF_HEADER_NAME: reader_csrf},
+            )
+            rebuild = await reader_client.post(
+                "/projects/actions/rebuild",
+                json={"rebuild_confirmed": True},
+                headers={ADMIN_CSRF_HEADER_NAME: reader_csrf},
+            )
+
+    assert minimal.status_code == 200
+    assert "Minimal redacted profile" in minimal.text
+    assert "Private team project" not in minimal.text
+    assert "Private technical title" not in minimal.text
+    assert "private/settings.py" not in minimal.text
+    assert technical.status_code == 403
+    assert technical.json() == {"detail": "This role cannot modify workspace data."}
+    assert actions.status_code == 200
+    assert actions.json()["privacy"] == "closed_reasons_opaque_ids_no_evidence_or_free_text"
+    assert marked.status_code == 200
+    assert marked.json()["unread"] == actions.json()["unread"] - 1
+    assert rebuild.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_passive_project_action_inbox_reconciles_reads_rebuilds_and_audits(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("private-action-source.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        created = (
+            await client.post(
+                "/projects",
+                json={"source_file_id": archive["id"], "authorization_confirmed": True, "name": "Action project"},
+            )
+        ).json()
+        app.state.jobs.update(
+            created["job"]["id"],
+            status="failed",
+            error="Authorization: Bearer action-inbox-secret",
+            termination_reason="runner_unavailable",
+        )
+        first = await client.get("/projects/actions", params={"unread_only": True, "limit": 10})
+        assert first.status_code == 200, first.text
+        selected = first.json()["items"][0]
+        marked = await client.put(f"/projects/actions/{selected['id']}/read", json={"read": True})
+        unread = await client.get("/projects/actions", params={"unread_only": True})
+        invalid_rebuild = await client.post("/projects/actions/rebuild", json={"rebuild_confirmed": False})
+        rebuilt = await client.post("/projects/actions/rebuild", json={"rebuild_confirmed": True})
+        audit = await client.get("/audit/events")
+
+    assert first.status_code == 200
+    assert first.headers["cache-control"] == "private, no-store"
+    assert first.json()["source_complete"] is True
+    assert selected["project_name"] == "Action project"
+    assert selected["reason"] == "latest_analysis_failed"
+    assert selected["destination"] == "analysis"
+    assert "action-inbox-secret" not in first.text
+    assert "private-action-source.zip" not in first.text
+    assert archive["sha256"] not in first.text
+    assert marked.status_code == 200
+    assert marked.json()["unread"] == first.json()["unread"] - 1
+    assert all(item["id"] != selected["id"] for item in unread.json()["items"])
+    assert invalid_rebuild.status_code == 422
+    assert rebuilt.status_code == 200
+    assert rebuilt.json()["unread"] == rebuilt.json()["total"]
+    assert {item["action"] for item in audit.json()["items"]}.issuperset(
+        {"project.action_read", "project.action_inbox_rebuilt"}
+    )
+    stored = (tmp_path / "results" / "project_action_inbox" / "local-admin.json").read_text(encoding="utf-8")
+    assert "Action project" not in stored
+    assert "action-inbox-secret" not in stored
+
+
+def test_retention_marks_archive_backed_project_source_without_retaining_upload(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 9, 5, tzinfo=timezone.utc)
+    source = StoredFile(
+        id="a" * 32,
+        owner_id=DEFAULT_LOCAL_OPERATOR.id,
+        kind="archive",
+        original_filename="retained-history.zip",
+        stored_filename=f"{'a' * 32}.zip",
+        content_type="application/zip",
+        size_bytes=8,
+        sha256="b" * 64,
+        created_at=now - timedelta(days=31),
+    )
+    (tmp_path / "uploads" / source.stored_filename).write_bytes(b"PK\x03\x04")
+    app.state.files._save_record(source)
+    project = app.state.projects.create(name="retained-history", source=source, owner_id=DEFAULT_LOCAL_OPERATOR.id)
+
+    result = run_retention_cleanup(
+        app.state.settings,
+        app.state.files,
+        app.state.jobs,
+        app.state.projects,
+        now=now,
+    )
+
+    assert result == {
+        "jobs_deleted": 0,
+        "files_deleted": 1,
+        "jobs_marked_source_deleted": 0,
+        "projects_marked_source_deleted": 1,
+    }
+    assert not (tmp_path / "uploads" / source.stored_filename).exists()
+    assert app.state.projects.get(project.id).source_file_deleted_at is not None
+
+
+@pytest.mark.anyio
 async def test_django_config_audit_job_creation_and_rejections(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     noop = NoopAuditService()
@@ -3241,7 +9502,8 @@ async def test_docker_config_service_calls_runner_endpoint(monkeypatch, tmp_path
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -3326,7 +9588,8 @@ async def test_secrets_review_service_calls_runner_endpoint(monkeypatch, tmp_pat
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -3411,7 +9674,8 @@ async def test_node_package_config_service_calls_runner_endpoint(monkeypatch, tm
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -3499,7 +9763,8 @@ async def test_ci_cd_config_service_calls_runner_endpoint(monkeypatch, tmp_path)
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -3607,7 +9872,8 @@ async def test_k8s_config_service_calls_runner_endpoint(monkeypatch, tmp_path):
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -3703,7 +9969,8 @@ async def test_terraform_config_service_calls_runner_endpoint(monkeypatch, tmp_p
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -3805,7 +10072,8 @@ async def test_nginx_config_service_calls_runner_endpoint(monkeypatch, tmp_path)
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -3916,7 +10184,8 @@ async def test_compose_config_service_calls_runner_endpoint(monkeypatch, tmp_pat
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -4025,7 +10294,8 @@ async def test_database_config_service_calls_runner_endpoint(monkeypatch, tmp_pa
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -4136,7 +10406,8 @@ async def test_sql_database_config_service_calls_runner_endpoint_and_redacts(mon
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -4208,7 +10479,8 @@ async def test_sql_database_config_api_background_job_stores_and_exposes_redacte
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -4321,7 +10593,8 @@ async def test_sql_database_config_service_records_runner_failure(monkeypatch, t
     job = app.state.jobs.create_sql_database_config_job(archive.id)
 
     class FailingAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -4385,7 +10658,8 @@ async def test_redis_config_service_calls_runner_endpoint_and_redacts(monkeypatc
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -4464,7 +10738,8 @@ async def test_redis_config_api_background_job_stores_and_exposes_redacted_resul
     calls: list[dict] = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -4579,7 +10854,8 @@ async def test_redis_config_service_records_runner_failure(monkeypatch, tmp_path
     job = app.state.jobs.create_redis_config_job(archive.id)
 
     class FailingAsyncClient:
-        def __init__(self, timeout: float) -> None:
+        def __init__(self, timeout: float, trust_env: bool) -> None:
+            assert trust_env is False
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -5001,16 +11277,25 @@ def mocked_nmap_completed_xml() -> str:
 
 
 def make_active_tools_health_payload(**overrides) -> dict:
+    capabilities = {
+        capability: {
+            "status": "disabled_no_scan",
+            "execution_enabled": False,
+            "target_input_allowed": False,
+        }
+        for capability in (
+            "active_nmap_basic",
+            "active_dns_inventory",
+            "active_dns_osint",
+            "active_http_basic_header_review",
+            "active_tls_basic",
+            "active_asset_verification",
+        )
+    }
     payload = {
         "service": "active-tools",
         "status": "scaffold_ready",
-        "capabilities": {
-            "active_nmap_basic": {
-                "status": "disabled_no_scan",
-                "execution_enabled": False,
-                "target_input_allowed": False,
-            }
-        },
+        "capabilities": capabilities,
         "network_requests_sent": 0,
         "nmap_executed": False,
     }
@@ -5019,6 +11304,24 @@ def make_active_tools_health_payload(**overrides) -> dict:
     if active_nmap_basic is not None:
         payload["capabilities"]["active_nmap_basic"].update(active_nmap_basic)
     return payload
+
+
+def make_empty_active_tools_health_capabilities() -> dict:
+    return {
+        capability: {
+            "status": None,
+            "execution_enabled": None,
+            "target_input_allowed": None,
+        }
+        for capability in (
+            "active_dns_inventory",
+            "active_dns_osint",
+            "active_http_basic_header_review",
+            "active_nmap_basic",
+            "active_tls_basic",
+            "active_asset_verification",
+        )
+    }
 
 
 def make_active_tools_nmap_basic_request(**overrides) -> dict:
@@ -5559,6 +11862,7 @@ async def test_active_tools_health_client_unconfigured_returns_controlled_error(
     assert result == {
         "available": False,
         "status": None,
+        "capabilities": make_empty_active_tools_health_capabilities(),
         "active_nmap_basic_status": None,
         "execution_enabled": None,
         "target_input_allowed": None,
@@ -5607,6 +11911,7 @@ async def test_active_tools_health_client_valid_fake_health_returns_available_tr
     assert result == {
         "available": True,
         "status": "scaffold_ready",
+        "capabilities": make_active_tools_health_payload()["capabilities"],
         "active_nmap_basic_status": "disabled_no_scan",
         "execution_enabled": False,
         "target_input_allowed": False,
@@ -5725,6 +12030,64 @@ async def test_active_tools_health_client_only_calls_health_not_nmap_basic():
     assert result["available"] is True
     assert paths == ["/health"]
     assert "/active/nmap-basic" not in paths
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_does_not_follow_redirects_or_accept_oversized_bodies():
+    redirect_paths = []
+
+    def redirect_handler(request):
+        redirect_paths.append((request.url.host, request.url.path))
+        return Response(307, headers={"location": "https://example.test/private"})
+
+    redirected = await check_active_tools_health(
+        "http://active-tools:8080",
+        transport=MockTransport(redirect_handler),
+    )
+
+    def oversized_handler(_request):
+        return Response(200, content=b"{" + b" " * 4_096 + b"}")
+
+    oversized = await check_active_tools_health(
+        "http://active-tools:8080",
+        transport=MockTransport(oversized_handler),
+    )
+
+    assert redirect_paths == [("active-tools", "/health")]
+    assert redirected["available"] is False
+    assert redirected["error_code"] == "active_tools_unavailable"
+    assert oversized["available"] is False
+    assert oversized["error_code"] == "active_tools_invalid_response"
+
+
+@pytest.mark.anyio
+async def test_active_tools_health_client_rejects_missing_or_misaligned_capability_contract():
+    missing = make_active_tools_health_payload()
+    missing["capabilities"].pop("active_tls_basic")
+    misaligned = make_active_tools_health_payload()
+    misaligned["capabilities"]["active_dns_inventory"].update(
+        {"status": "ready_bounded_execution", "execution_enabled": False}
+    )
+    wrong_service = make_active_tools_health_payload()
+    wrong_service["service"] = "unexpected-runner"
+    responses = iter((missing, misaligned, wrong_service))
+
+    def handler(_request):
+        return Response(200, json=next(responses))
+
+    first = await check_active_tools_health("http://active-tools:8080", transport=MockTransport(handler))
+    second = await check_active_tools_health("http://active-tools:8080", transport=MockTransport(handler))
+    third = await check_active_tools_health("http://active-tools:8080", transport=MockTransport(handler))
+
+    assert first["available"] is False and first["error_code"] == "active_tools_unexpected_fields"
+    assert second["available"] is False and second["error_code"] == "active_tools_not_ready"
+    assert second["capabilities"]["active_dns_inventory"] == {
+        "status": "ready_bounded_execution",
+        "execution_enabled": False,
+        "target_input_allowed": False,
+    }
+    assert third["available"] is False and third["error_code"] == "active_tools_not_ready"
+    assert "unexpected-runner" not in json.dumps(third)
 
 
 @pytest.mark.anyio
@@ -11752,13 +18115,18 @@ async def test_web_basic_audit_redacts_sensitive_query_params_in_stored_job(monk
     configure_test_state(monkeypatch, tmp_path)
     web_service = CapturingWebAuditService()
     app.state.web_audits = web_service
+    monkeypatch.setattr(
+        web_security,
+        "resolve_host_addresses",
+        lambda host, port: {web_security.ipaddress.ip_address("93.184.216.34")},
+    )
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
             "/audits/web/basic",
             json={
-                "url": "https://example.test/callback?token=supersecret&page=1&token=second",
+                "url": "https://example.test/callback?token=supersecret&page=1&token=second-sensitive-query-token",
                 "authorization_confirmed": True,
             },
         )
@@ -11767,17 +18135,22 @@ async def test_web_basic_audit_redacts_sensitive_query_params_in_stored_job(monk
     assert response.status_code == 202
     payload = response.json()
     assert "supersecret" not in json.dumps(payload)
-    assert "second" not in json.dumps(payload)
+    assert "second-sensitive-query-token" not in json.dumps(payload)
     assert payload["target_url"] == "https://example.test/callback?token=REDACTED&page=1&token=REDACTED"
     assert list_response.json()[0]["target_url"] == payload["target_url"]
     assert web_service.calls
-    assert web_service.calls[0][1] == "https://example.test/callback?token=supersecret&page=1&token=second"
+    assert web_service.calls[0][1] == "https://example.test/callback?token=supersecret&page=1&token=second-sensitive-query-token"
 
 
 @pytest.mark.anyio
 async def test_web_basic_audit_leaves_url_without_query_unchanged(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     app.state.web_audits = NoopAuditService()
+    monkeypatch.setattr(
+        web_security,
+        "resolve_host_addresses",
+        lambda host, port: {web_security.ipaddress.ip_address("93.184.216.34")},
+    )
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -12452,7 +18825,12 @@ async def test_list_jobs_returns_recent_first_with_summary(monkeypatch, tmp_path
     assert response.status_code == 200
     payload = response.json()
     assert [item["id"] for item in payload] == ["b" * 32, "a" * 32]
-    assert payload[0]["summary"] == {"error": "runner unavailable"}
+    assert payload[0]["summary"] is None
+    assert payload[0]["status_detail"] == {
+        "code": "failed",
+        "message": "The review did not complete. Review the retained record, then run the same snapshot again if appropriate.",
+        "next_action": "review_and_retry",
+    }
     assert payload[1]["summary"]["sha256"] == "abc"
 
 
@@ -12882,6 +19260,630 @@ async def test_list_jobs_includes_compose_config_summary_and_sparse_payload(monk
 
 
 @pytest.mark.anyio
+async def test_lifespan_marks_jobs_interrupted_by_restart_as_failed(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    settings.ensure_directories()
+    previous_process_jobs = JobStore(settings)
+    queued = previous_process_jobs.create_web_job("https://example.test/queued")
+    running = previous_process_jobs.create_web_job("https://example.test/running")
+    previous_process_jobs.update(
+        running.id,
+        status="running",
+        result={"partial": "result_should_not_survive_restart"},
+        error="partial error should not survive restart",
+    )
+    completed = previous_process_jobs.create_web_job("https://example.test/completed")
+    previous_process_jobs.update(completed.id, status="completed", result={"summary": {}})
+
+    caplog.set_level("INFO", logger="inspectra.audit")
+    async with app.router.lifespan_context(app):
+        recovered_ids = {job.id for job in app.state.interrupted_jobs}
+        recovered_queued = app.state.jobs.get(queued.id)
+        recovered_running = app.state.jobs.get(running.id)
+        preserved_completed = app.state.jobs.get(completed.id)
+
+    assert recovered_ids == {queued.id, running.id}
+    for record in (recovered_queued, recovered_running):
+        assert record.status == "failed"
+        assert record.result is None
+        assert record.error == "Audit interrupted by application restart. Run it again."
+    assert preserved_completed.status == "completed"
+    assert preserved_completed.result == {"summary": {}}
+    assert "result_should_not_survive_restart" not in (tmp_path / "results" / "jobs" / f"{running.id}.json").read_text(encoding="utf-8")
+    restart_events = [json.loads(record.getMessage()) for record in caplog.records if "job.interrupted_after_restart" in record.getMessage()]
+    assert {event["job_id"] for event in restart_events} == {queued.id, running.id}
+
+
+@pytest.mark.anyio
+async def test_lifespan_purges_old_terminal_team_invitations_without_exposing_tokens(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    settings = load_settings()
+    old_clock = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    identity = TeamIdentityStore(
+        settings.resolved_auth_state_db_path,
+        organization_name="Startup retention",
+        bootstrap_admin_password_hash=settings.admin_password_hash or "",
+        invitation_ttl_seconds=60,
+        now_func=lambda: old_clock,
+    )
+    admin = identity.authenticate("admin", ADMIN_PASSWORD_FIXTURE)
+    assert admin is not None
+    invitation = identity.create_invitation(principal=admin, username="startup.old", role="reader")
+    token_hash = hash_invitation_token(invitation.token)
+
+    async with app.router.lifespan_context(app):
+        assert app.state.retention_cleanup["team_invitations_deleted"] == 1
+
+    with sqlite3.connect(settings.resolved_auth_state_db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM team_invitations WHERE token_hash = ?",
+            (token_hash,),
+        ).fetchone()[0] == 0
+
+
+@pytest.mark.anyio
+async def test_lifespan_requeues_only_a_valid_never_started_project_analysis(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    settings.ensure_directories()
+    source_bytes = b"PK\x03\x04bounded synthetic archive"
+    source = StoredFile(
+        id="a" * 32,
+        owner_id="owner-a",
+        kind="archive",
+        original_filename="project.zip",
+        stored_filename=f"{'a' * 32}.zip",
+        content_type="application/zip",
+        size_bytes=len(source_bytes),
+        sha256=hashlib.sha256(source_bytes).hexdigest(),
+        created_at=datetime.now(timezone.utc),
+    )
+    (settings.upload_dir / source.stored_filename).write_bytes(source_bytes)
+    previous_files = FileStore(settings)
+    previous_files._save_record(source)
+    previous_projects = ProjectStore(settings)
+    project = previous_projects.create(name="Recoverable project", source=source, owner_id=source.owner_id)
+    previous_jobs = JobStore(settings)
+    queued = previous_jobs.create_project_archive_job(
+        source.id,
+        owner_id=source.owner_id,
+        project_id=project.id,
+        source_sha256=source.sha256,
+    )
+    previous_projects.attach_job(project.id, queued.id)
+    completed = asyncio.Event()
+
+    async def complete_recovered_job(service, job_id):
+        assert job_id == queued.id
+        service.jobs.update(job_id, status="running")
+        service.jobs.update(
+            job_id,
+            status="completed",
+            result={"analyzer": "project_archive_basic", "file_id": source.id, "summary": {}, "findings": []},
+        )
+        completed.set()
+
+    monkeypatch.setattr(ProjectArchiveAuditService, "run_project_archive_analysis", complete_recovered_job)
+    caplog.set_level("INFO", logger="inspectra.audit")
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(completed.wait(), timeout=1)
+        recovered = app.state.jobs.get(queued.id)
+        assert {job.id for job in app.state.recovered_queued_jobs} == {queued.id}
+        assert recovered.status == "completed"
+        assert recovered.recovery_count == 1
+        assert recovered.last_recovered_at is not None
+        assert recovered.execution_profile == queued.execution_profile
+
+    recovery_events = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if "project.analysis.requeued_after_restart" in record.getMessage()
+    ]
+    assert len(recovery_events) == 1
+    assert recovery_events[0]["job_id"] == queued.id
+    assert recovery_events[0]["recovery_count"] == 1
+    assert recovery_events[0]["execution_contract"] == queued.execution_profile.contract_version
+
+
+@pytest.mark.anyio
+async def test_lifespan_recovers_an_interrupted_snapshot_admission_before_dispatch(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    settings.ensure_directories()
+    owner_id = "owner-snapshot-recovery"
+    files = FileStore(settings)
+    jobs = JobStore(settings)
+    projects = ProjectStore(settings)
+    first = _store_snapshot_archive(settings, file_id="8" * 32, owner_id=owner_id, filename="first.zip", payload=b"PK-first")
+    second = _store_snapshot_archive(settings, file_id="9" * 32, owner_id=owner_id, filename="second.zip", payload=b"PK-second")
+    project = projects.create(name="Startup recovery", source=first, owner_id=owner_id)
+    admissions = ProjectSnapshotAdmissionStore(settings, files, projects, jobs)
+    original_save = jobs._save_unlocked
+
+    def interrupt_job_save(record):
+        if record.audit_type == "project_archive_basic":
+            raise OSError("synthetic crash before job commit")
+        return original_save(record)
+
+    monkeypatch.setattr(jobs, "_save_unlocked", interrupt_job_save)
+    with pytest.raises(OSError, match="synthetic crash"):
+        admissions.admit(
+            project_id=project.id,
+            owner_id=owner_id,
+            source_file_id=second.id,
+            idempotency_key="facefeed" * 4,
+        )
+    reserved_job_id = projects.get(project.id).latest_job_id
+    completed = asyncio.Event()
+
+    async def complete_recovered_snapshot(service, job_id):
+        service.jobs.update(job_id, status="running")
+        service.jobs.update(
+            job_id,
+            status="completed",
+            result={"analyzer": "project_archive_basic", "file_id": second.id, "summary": {}, "findings": []},
+        )
+        completed.set()
+
+    monkeypatch.setattr(ProjectArchiveAuditService, "run_project_archive_analysis", complete_recovered_snapshot)
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(completed.wait(), timeout=1)
+        assert [job.id for job in app.state.recovered_snapshot_admissions] == [reserved_job_id]
+        assert [job.id for job in app.state.recovered_queued_jobs] == [reserved_job_id]
+        assert app.state.jobs.get(reserved_job_id).status == "completed"
+        assert app.state.projects.get(project.id).analysis_count == 1
+        assert len(app.state.projects.get(project.id).source_snapshots) == 2
+
+    journal = next(settings.project_snapshot_admissions_dir.glob("*.json")).read_text(encoding="utf-8")
+    assert '"status": "completed"' in journal
+    assert "facefeed" * 4 not in journal
+
+
+@pytest.mark.anyio
+async def test_lifespan_rejects_a_queued_project_when_retained_source_integrity_changed(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    settings.ensure_directories()
+    source_bytes = b"PK\x03\x04original"
+    source = StoredFile(
+        id="b" * 32,
+        owner_id="owner-b",
+        kind="archive",
+        original_filename="private-customer-secret.zip",
+        stored_filename=f"{'b' * 32}.zip",
+        content_type="application/zip",
+        size_bytes=len(source_bytes),
+        sha256=hashlib.sha256(source_bytes).hexdigest(),
+        created_at=datetime.now(timezone.utc),
+    )
+    (settings.upload_dir / source.stored_filename).write_bytes(b"PK\x03\x04tampered")
+    previous_files = FileStore(settings)
+    previous_files._save_record(source)
+    previous_projects = ProjectStore(settings)
+    project = previous_projects.create(name="Private customer", source=source, owner_id=source.owner_id)
+    previous_jobs = JobStore(settings)
+    queued = previous_jobs.create_project_archive_job(
+        source.id,
+        owner_id=source.owner_id,
+        project_id=project.id,
+        source_sha256=source.sha256,
+    )
+    previous_projects.attach_job(project.id, queued.id)
+    called = False
+
+    async def must_not_run(_service, _job_id):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(ProjectArchiveAuditService, "run_project_archive_analysis", must_not_run)
+    caplog.set_level("INFO", logger="inspectra.audit")
+    async with app.router.lifespan_context(app):
+        rejected = app.state.jobs.get(queued.id)
+        assert app.state.recovered_queued_jobs == []
+        assert rejected.status == "failed"
+        assert rejected.termination_reason == "recovery_rejected"
+        assert rejected.recovery_count == 0
+        assert "retained source or execution contract" in app.state.jobs.get_list_item(queued.id).status_detail.message
+
+    assert called is False
+    combined_logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "retained_source_integrity_failed" in combined_logs
+    assert source.original_filename not in combined_logs
+    assert str(settings.upload_dir) not in combined_logs
+
+
+@pytest.mark.anyio
+async def test_lifespan_marks_a_running_project_failed_instead_of_resuming_it(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    settings.ensure_directories()
+    previous_jobs = JobStore(settings)
+    running = previous_jobs.create_project_archive_job(
+        "c" * 32,
+        owner_id="owner-c",
+        project_id="d" * 32,
+        source_sha256="e" * 64,
+    )
+    previous_jobs.update(running.id, status="running", result={"partial": "must-be-removed"})
+
+    async with app.router.lifespan_context(app):
+        recovered = app.state.jobs.get(running.id)
+        assert {job.id for job in app.state.interrupted_jobs} == {running.id}
+        assert recovered.status == "failed"
+        assert recovered.termination_reason == "application_restart"
+        assert recovered.result is None
+        assert app.state.recovered_queued_jobs == []
+
+
+@pytest.mark.anyio
+async def test_lifespan_shutdown_cancels_tracked_recovery_and_records_public_cause(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    settings.ensure_directories()
+    source_bytes = b"PK\x03\x04shutdown fixture"
+    source = StoredFile(
+        id="f" * 32,
+        owner_id="owner-f",
+        kind="archive",
+        original_filename="shutdown.zip",
+        stored_filename=f"{'f' * 32}.zip",
+        content_type="application/zip",
+        size_bytes=len(source_bytes),
+        sha256=hashlib.sha256(source_bytes).hexdigest(),
+        created_at=datetime.now(timezone.utc),
+    )
+    (settings.upload_dir / source.stored_filename).write_bytes(source_bytes)
+    previous_files = FileStore(settings)
+    previous_files._save_record(source)
+    previous_projects = ProjectStore(settings)
+    project = previous_projects.create(name="Shutdown project", source=source, owner_id=source.owner_id)
+    previous_jobs = JobStore(settings)
+    queued = previous_jobs.create_project_archive_job(
+        source.id,
+        owner_id=source.owner_id,
+        project_id=project.id,
+        source_sha256=source.sha256,
+    )
+    previous_projects.attach_job(project.id, queued.id)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def wait_until_shutdown(service, job_id):
+        service.jobs.update(job_id, status="running")
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(ProjectArchiveAuditService, "run_project_archive_analysis", wait_until_shutdown)
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert app.state.jobs.get(queued.id).status == "running"
+
+    assert cancelled.is_set()
+    stopped = JobStore(settings).get(queued.id)
+    assert stopped.status == "failed"
+    assert stopped.termination_reason == "application_shutdown"
+    assert stopped.error == "Audit interrupted during application shutdown. Run it again."
+    assert stopped.result is None
+    assert "application shutdown" in JobStore(settings).get_list_item(queued.id).status_detail.message
+    assert {job.id for job in app.state.shutdown_interrupted_jobs} == {queued.id}
+    assert list(settings.execution_workspaces_dir.iterdir()) == []
+
+
+def test_retention_cleanup_removes_expired_data_and_preserves_active_sources(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("INSPECTRA_UPLOAD_RETENTION_DAYS", "1")
+    monkeypatch.setenv("INSPECTRA_JOB_RETENTION_DAYS", "1")
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 9, 5, tzinfo=timezone.utc)
+    expired_at = now - timedelta(days=2)
+    recent_at = now - timedelta(hours=12)
+
+    def store_file(file_id, created_at):
+        stored_filename = f"{file_id}.pdf"
+        record = StoredFile(
+            id=file_id,
+            kind="pdf",
+            original_filename="retention.pdf",
+            stored_filename=stored_filename,
+            content_type="application/pdf",
+            size_bytes=8,
+            sha256="a" * 64,
+            created_at=created_at,
+        )
+        (tmp_path / "uploads" / stored_filename).write_bytes(b"%PDF-1.")
+        app.state.files._save_record(record)
+        return record
+
+    expired_file = store_file("a" * 32, expired_at)
+    source_for_recent_job = store_file("b" * 32, expired_at)
+    source_for_running_job = store_file("c" * 32, expired_at)
+    expired_job = JobRecord(
+        id="d" * 32,
+        audit_type="pdf_basic",
+        status="completed",
+        created_at=expired_at,
+        updated_at=expired_at,
+    )
+    retained_job = JobRecord(
+        id="e" * 32,
+        audit_type="pdf_basic",
+        file_id=source_for_recent_job.id,
+        status="completed",
+        created_at=expired_at,
+        updated_at=recent_at,
+    )
+    running_job = JobRecord(
+        id="f" * 32,
+        audit_type="pdf_basic",
+        file_id=source_for_running_job.id,
+        status="running",
+        created_at=expired_at,
+        updated_at=expired_at,
+    )
+    app.state.jobs.save(expired_job)
+    app.state.jobs.save(retained_job)
+    app.state.jobs.save(running_job)
+
+    caplog.set_level("INFO", logger="inspectra.audit")
+    result = run_retention_cleanup(app.state.settings, app.state.files, app.state.jobs, now=now)
+
+    assert result == {"jobs_deleted": 1, "files_deleted": 2, "jobs_marked_source_deleted": 1}
+    assert not (tmp_path / "uploads" / expired_file.stored_filename).exists()
+    assert not (tmp_path / "uploads" / source_for_recent_job.stored_filename).exists()
+    assert (tmp_path / "uploads" / source_for_running_job.stored_filename).exists()
+    with pytest.raises(HTTPException, match="Job not found"):
+        app.state.jobs.get(expired_job.id)
+    assert app.state.jobs.get(retained_job.id).source_file_deleted_at is not None
+    assert app.state.jobs.get(running_job.id).status == "running"
+    retention_log = next(json.loads(record.getMessage()) for record in caplog.records if "retention.cleanup" in record.getMessage())
+    assert retention_log["correlation_id"] == "retention:2026-09-05"
+    assert retention_log["files_deleted"] == 2
+
+
+def test_job_store_redacts_payloads_before_persistence_and_logs_safe_metadata(monkeypatch, tmp_path, caplog):
+    configure_test_state(monkeypatch, tmp_path)
+    caplog.set_level("INFO", logger="inspectra.audit")
+
+    job = app.state.jobs.create_web_job("https://example.test/callback?token=unit-test-secret")
+    stored = app.state.jobs.update(
+        job.id,
+        status="failed",
+        result={"password": "unit-test-secret", "authorization": "Bearer unit-test-secret"},
+        error="Authorization: Bearer unit-test-secret",
+    )
+    persisted = (tmp_path / "results" / "jobs" / f"{job.id}.json").read_text(encoding="utf-8")
+    audit_messages = "\n".join(record.getMessage() for record in caplog.records)
+
+    assert "unit-test-secret" not in persisted
+    assert stored.target_url.endswith("token=REDACTED")
+    assert stored.result == {"password": "[REDACTED]", "authorization": "[REDACTED]"}
+    assert stored.error == "Authorization: [REDACTED]"
+    assert f'"correlation_id":"job:{job.id}"' in audit_messages
+    assert "unit-test-secret" not in audit_messages
+
+
+def test_job_store_adds_conservative_normalized_findings_before_redaction(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = app.state.jobs.create_project_archive_job(
+        "a" * 32,
+        project_id="b" * 32,
+        source_sha256="c" * 64,
+    )
+
+    updated = app.state.jobs.update(
+        job.id,
+        status="completed",
+        result={
+            "findings": [
+                {
+                    "id": "demo_rule",
+                    "title": "Demo rule",
+                    "category": "configuration",
+                    "severity": "high",
+                    "confidence": "unsupported",
+                    "description": "Review this configuration.",
+                    "evidence": "config/settings.py:12 Authorization: Bearer unit-test-secret",
+                    "path": "config/settings.py",
+                    "line": 12,
+                    "recommendation": "Use a safe setting.",
+                    "references": [
+                        {"type": "cve", "id": "CVE-2026-0001", "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-0001"},
+                        {"type": "custom", "id": "not-normalized", "url": "https://example.test/"},
+                    ],
+                }
+            ]
+        },
+    )
+
+    normalized = updated.result["normalized_findings"]
+    assert updated.result["normalized_findings_contract_version"] == "2026-09-05.1"
+    assert normalized[0]["rule_id"] == "demo_rule"
+    assert normalized[0]["severity"] == "high"
+    assert normalized[0]["confidence"] == "unknown"
+    assert normalized[0]["location"] == {"path": "config/settings.py", "line": 12}
+    assert normalized[0]["location_status"] == "reported"
+    assert normalized[0]["references"] == [
+        {"type": "cve", "id": "CVE-2026-0001", "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-0001"}
+    ]
+    assert "unit-test-secret" not in json.dumps(updated.result)
+
+
+def test_job_store_normalizes_manifest_findings_with_safe_locations_and_references(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    job = app.state.jobs.create_project_archive_job(
+        "a" * 32,
+        project_id="b" * 32,
+        source_sha256="c" * 64,
+    )
+    result = {
+        "findings": [
+            {
+                "id": "dependency_not_exactly_pinned",
+                "title": "Dependency is not exactly pinned",
+                "severity": "medium",
+                "evidence": "services/api/requirements.txt: requests>=2 Authorization: Bearer nested-unit-test-secret",
+            }
+        ],
+        "parsed_manifests": [
+            {
+                "path": "services/api/requirements.txt",
+                "findings": [
+                    {
+                        "id": "dependency_not_exactly_pinned",
+                        "title": "Dependency is not exactly pinned",
+                        "category": "dependency_hygiene",
+                        "severity": "medium",
+                        "confidence": "medium",
+                        "evidence": "requests>=2 Authorization: Bearer nested-unit-test-secret",
+                        "recommendation": "Use an exact, reviewed version.",
+                        "references": [
+                            {
+                                "type": "ghsa",
+                                "id": "GHSA-abcd-1234-efgh",
+                                "url": "https://github.com/advisories/GHSA-abcd-1234-efgh",
+                            },
+                            {
+                                "type": "cve",
+                                "id": "CVE-2026-0002",
+                                "url": "https://example.test/CVE-2026-0002",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    first = app.state.jobs.update(job.id, status="completed", result=result)
+    second = app.state.jobs.update(job.id, status="completed", result=result)
+    normalized = first.result["normalized_findings"]
+
+    assert len(normalized) == 1
+    assert normalized[0]["location"] == {"path": "services/api/requirements.txt", "line": None}
+    assert normalized[0]["location_status"] == "reported"
+    assert normalized[0]["references"] == [
+        {"type": "ghsa", "id": "GHSA-abcd-1234-efgh", "url": "https://github.com/advisories/GHSA-abcd-1234-efgh"}
+    ]
+    assert first.result["normalized_findings_summary"] == {
+        "total": 1,
+        "by_severity": {"critical": 0, "high": 0, "medium": 1, "low": 0, "info": 0},
+        "by_category": {"dependency_hygiene": 1},
+    }
+    assert normalized[0]["id"] == second.result["normalized_findings"][0]["id"]
+    assert "nested-unit-test-secret" not in json.dumps(first.result)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_location", "expected_status"),
+    [
+        ("services\\api\\settings.py", {"path": "services/api/settings.py", "line": 7}, "reported"),
+        ("/srv/inspectra/settings.py", None, "withheld_unsafe_path"),
+        ("C:\\inspectra\\settings.py", None, "withheld_unsafe_path"),
+        ("\\\\server\\share\\settings.py", None, "withheld_unsafe_path"),
+        ("../settings.py", None, "withheld_unsafe_path"),
+        ("https://internal.example/settings.py", None, "withheld_unsafe_path"),
+        ("config/\x00settings.py", None, "withheld_unsafe_path"),
+    ],
+)
+def test_job_store_normalizes_only_safe_project_relative_finding_locations(
+    monkeypatch,
+    tmp_path,
+    path,
+    expected_location,
+    expected_status,
+):
+    configure_test_state(monkeypatch, tmp_path)
+    job = app.state.jobs.create_project_archive_job(
+        "a" * 32,
+        project_id="b" * 32,
+        source_sha256="c" * 64,
+    )
+
+    updated = app.state.jobs.update(
+        job.id,
+        status="completed",
+        result={
+            "findings": [
+                {
+                    "id": "location_rule",
+                    "title": "Location review",
+                    "path": path,
+                    "line": 7,
+                    "evidence": "setting present",
+                }
+            ]
+        },
+    )
+
+    normalized = updated.result["normalized_findings"][0]
+    assert normalized["location"] == expected_location
+    assert normalized["location_status"] == expected_status
+    assert path not in json.dumps(normalized)
+
+
+@pytest.mark.anyio
+async def test_project_result_views_withhold_unsafe_legacy_normalized_locations(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (
+            await client.post(
+                "/files/archive",
+                files={"file": ("legacy.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+            )
+        ).json()
+        project = (await client.post("/projects", json={"source_file_id": archive["id"], "authorization_confirmed": True})).json()
+        legacy_result = {
+            "normalized_findings_contract_version": "2026-09-05",
+            "normalized_findings": [
+                {
+                    "id": "f" * 64,
+                    "rule_id": "legacy_location_rule",
+                    "source_audit_type": "project_archive_basic",
+                    "title": "Legacy location",
+                    "category": "configuration",
+                    "severity": "high",
+                    "confidence": "high",
+                    "description": "Legacy record.",
+                    "evidence": "[REDACTED]",
+                    "location": {"path": "/srv/inspectra/customer/settings.py", "line": 9},
+                    "recommendation": "Review this setting.",
+                    "references": [],
+                }
+            ],
+        }
+        app.state.jobs.update(project["job"]["id"], status="completed", result=legacy_result)
+        findings_response = await client.get(
+            f"/projects/{project['project']['id']}/findings?analysis_id={project['job']['id']}"
+        )
+        rerun = (await client.post(f"/projects/{project['project']['id']}/analyses")).json()
+        app.state.jobs.update(rerun["id"], status="completed", result=legacy_result)
+        comparison_response = await client.get(
+            f"/projects/{project['project']['id']}/comparisons",
+            params={"base_analysis_id": project["job"]["id"], "target_analysis_id": rerun["id"]},
+        )
+
+    assert findings_response.status_code == 200
+    finding = findings_response.json()["findings"][0]
+    assert finding["location"] is None
+    assert finding["location_status"] == "withheld_unsafe_path"
+    assert "/srv/inspectra/customer/settings.py" not in findings_response.text
+    assert comparison_response.status_code == 200
+    assert comparison_response.json()["state"] == "not_comparable"
+    assert comparison_response.json()["coverage_comparison"]["status"] == "unknown"
+    assert comparison_response.json()["comparisons"] == []
+    assert "/srv/inspectra/customer/settings.py" not in comparison_response.text
+
+
+@pytest.mark.anyio
 async def test_delete_file_removes_source_and_marks_jobs(monkeypatch, tmp_path):
     configure_test_state(monkeypatch, tmp_path)
     transport = ASGITransport(app=app)
@@ -13085,7 +20087,7 @@ async def test_delete_job_is_owner_scoped_and_rejects_nonterminal_jobs(monkeypat
     assert wrong_owner_response.json()["detail"] == "Job not found."
     for response in (queued_response, running_response):
         assert response.status_code == 409
-        assert response.json()["detail"] == "Job deletion is only available for completed or failed jobs."
+        assert response.json()["detail"] == "Job deletion is only available for completed, failed, or cancelled jobs."
     for job_id in (wrong_owner_job.id, queued_job.id, running_job.id):
         assert (app.state.settings.jobs_dir / f"{job_id}.json").exists()
 
@@ -13129,6 +20131,21 @@ def test_storage_lockfile_is_created_inside_data(monkeypatch, tmp_path):
     lock_path = tmp_path / ".locks" / "storage.lock"
     assert lock_path.exists()
     assert lock_path.resolve().is_relative_to(tmp_path.resolve())
+    assert lock_path.parent.stat().st_mode & 0o777 == 0o700
+    assert lock_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_storage_lock_rejects_a_symlinked_lock_directory(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    existing_lock = tmp_path / ".locks" / "storage.lock"
+    existing_lock.unlink(missing_ok=True)
+    (tmp_path / ".locks").rmdir()
+    target = tmp_path / "redirected-locks"
+    target.mkdir()
+    (tmp_path / ".locks").symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(OSError, match="Storage lock directory is invalid"):
+        app.state.jobs.create_pdf_job("1" * 32)
 
 
 def test_job_save_preserves_existing_source_deleted_marker(monkeypatch, tmp_path):
@@ -16263,6 +23280,44 @@ def test_sbom_helpers_normalize_npm_dependencies():
     assert find_cyclonedx_property(react_component, "inspectra:dependency_source_type") == "registry"
 
 
+def test_sbom_exports_declared_root_license_unknown_dependency_licenses_and_deduplicates():
+    now = datetime(2026, 5, 26, tzinfo=timezone.utc)
+    job = JobRecord(
+        id="d" * 32,
+        audit_type="manifest_basic",
+        file_id="6" * 32,
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        result={
+            "analyzer": "manifest_basic",
+            "manifest_type": "package_json",
+            "file_identification": {"original_filename": "package.json"},
+            "parsed": {
+                "project": {"name": "demo", "version": "1.0.0", "license": "MIT", "license_status": "declared"},
+                "dependencies": {
+                    "dependencies": [
+                        {"name": "react", "specifier": "18.3.1"},
+                        {"name": "react", "specifier": "18.3.1"},
+                    ]
+                },
+            },
+            "findings": [],
+            "errors": [],
+        },
+    )
+
+    cyclonedx = json.loads(generate_cyclonedx_json(job))
+    spdx = json.loads(generate_spdx_json(job))
+
+    assert cyclonedx["metadata"]["component"]["licenses"] == [{"expression": "MIT"}]
+    assert len(cyclonedx["components"]) == 1
+    assert find_cyclonedx_property(cyclonedx["components"][0], "inspectra:license_status") == "unknown_not_observed"
+    assert spdx_package_by_name(spdx, "demo")["licenseDeclared"] == "MIT"
+    assert spdx_package_by_name(spdx, "react")["licenseDeclared"] == "NOASSERTION"
+    assert spdx_package_by_name(spdx, "react")["licenseConcluded"] == "NOASSERTION"
+
+
 def test_sbom_helpers_omit_purl_for_ambiguous_npm_sources():
     job = save_standalone_job(
         manifest_type="package_json",
@@ -16270,10 +23325,10 @@ def test_sbom_helpers_omit_purl_for_ambiguous_npm_sources():
             "dependencies": [
                 {"name": "local-lib", "specifier": "file:../local-lib"},
                 {"name": "workspace-lib", "specifier": "workspace:*"},
-                {"name": "git-lib", "specifier": "git+https://example.invalid/git-lib.git"},
-                {"name": "tarball-lib", "specifier": "https://example.invalid/tarball-lib.tgz"},
+                {"name": "git-lib", "specifier": "git+https://operator:token@example.invalid/private-git-lib.git"},
+                {"name": "tarball-lib", "specifier": "https://operator:token@example.invalid/private-tarball-lib.tgz"},
                 {"name": "repo-lib", "specifier": "github:user/repo"},
-                {"name": "alias-lib", "specifier": "npm:real-package@1.2.3"},
+                {"name": "alias-lib", "specifier": "npm:actual-private-package@1.2.3"},
             ]
         },
         original_filename="package.json",
@@ -16281,6 +23336,7 @@ def test_sbom_helpers_omit_purl_for_ambiguous_npm_sources():
 
     components = {component.name: component for component in extract_components_from_job(job)}
     cyclonedx = json.loads(generate_cyclonedx_json(job))
+    spdx = json.loads(generate_spdx_json(job))
 
     expected_sources = {
         "local-lib": "local",
@@ -16298,6 +23354,12 @@ def test_sbom_helpers_omit_purl_for_ambiguous_npm_sources():
         assert "purl" not in cyclonedx_component
         assert find_cyclonedx_property(cyclonedx_component, "inspectra:dependency_source_type") == source_type
         assert find_cyclonedx_property(cyclonedx_component, "inspectra:purl_omitted_reason")
+        assert component.version_or_range == ""
+        assert component.declared_requirement == f"{name}: non-registry reference withheld ({source_type})"
+
+    rendered = json.dumps({"cyclonedx": cyclonedx, "spdx": spdx})
+    for withheld in ("operator:token", "example.invalid", "private-git-lib", "private-tarball-lib", "actual-private-package", "../local-lib", "github:user/repo"):
+        assert withheld not in rendered
 
 
 def test_sbom_helpers_normalize_python_requirements():
@@ -18517,6 +25579,519 @@ def save_redis_config_export_fixture_job() -> JobRecord:
     )
     app.state.jobs.save(job)
     return job
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "secret"),
+    [
+        ("Authorization: Bearer bearer_token_should_not_render", "bearer_token_should_not_render"),
+        ("Cookie: session=cookie_should_not_render; theme=dark", "cookie_should_not_render"),
+        ("X-Api-Key: api_key_should_not_render", "api_key_should_not_render"),
+        ("X-Auth-Token: auth_token_should_not_render", "auth_token_should_not_render"),
+        ("X-CSRF-Token: csrf_token_should_not_render", "csrf_token_should_not_render"),
+        ("GitHub ghp_abcdefghijklmnopqrstuvwxyz1234567890", "ghp_abcdefghijklmnopqrstuvwxyz1234567890"),
+        ("GitLab glpat-abcdefghijklmnopqrstuvwxyz123456", "glpat-abcdefghijklmnopqrstuvwxyz123456"),
+        (
+            "Provider A " + "sk_" + "live_" + ("a" * 32),
+            "sk_" + "live_" + ("a" * 32),
+        ),
+        (
+            "Provider B " + "xox" + "b-" + ("1" * 10) + "-" + ("a" * 26),
+            "xox" + "b-" + ("1" * 10) + "-" + ("a" * 26),
+        ),
+        ("AWS AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
+        ("https://operator:password_should_not_render@example.test/path", "operator:password_should_not_render"),
+        ("https://operator:@example.test/malformed", "operator"),
+    ],
+)
+def test_active_secret_redaction_covers_headers_known_formats_and_malformed_urls(raw_value, secret):
+    redacted = redact_active_secret_text(raw_value)
+
+    assert secret not in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_storage_redaction_treats_api_headers_and_legacy_url_userinfo_as_sensitive():
+    payload = {
+        "x-api-key": "api_key_should_not_render",
+        "authorization_header": "Bearer bearer_token_should_not_render",
+        "set-cookie": "session=cookie_should_not_render",
+        "safe_count": 2,
+        "nested": {"url": "https://operator:password_should_not_render@example.test/?token=query_should_not_render"},
+    }
+    redacted = redact_job_value_for_storage(payload)
+    record = JobRecord(
+        id="f" * 32,
+        audit_type="web_basic",
+        target_url="https://operator:@example.test/?api_key=query_should_not_render",
+        status="failed",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    sanitized_record = sanitize_job_record_for_storage(record)
+    serialized = json.dumps({"payload": redacted, "target_url": sanitized_record.target_url}, sort_keys=True)
+
+    for secret in (
+        "api_key_should_not_render",
+        "bearer_token_should_not_render",
+        "cookie_should_not_render",
+        "operator",
+        "password_should_not_render",
+        "query_should_not_render",
+    ):
+        assert secret not in serialized
+    assert redacted["safe_count"] == 2
+    assert sanitized_record.target_url.startswith("https://[REDACTED]@example.test/")
+
+
+@pytest.mark.anyio
+async def test_job_history_api_is_bounded_filterable_and_deprecates_legacy_list(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    now = datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
+    source = StoredFile(
+        id="d" * 32,
+        owner_id="local-admin",
+        kind="archive",
+        original_filename="history.zip",
+        stored_filename=f"{'d' * 32}.zip",
+        content_type="application/zip",
+        size_bytes=2,
+        sha256="e" * 64,
+        created_at=now,
+    )
+    project_id = app.state.projects.create(name="History", source=source, owner_id="local-admin").id
+    for index in range(105):
+        app.state.jobs.save(
+            JobRecord(
+                id=f"{index + 1:032x}",
+                owner_id="local-admin",
+                project_id=project_id if index < 70 else None,
+                audit_type="manifest_basic" if index % 2 else "pdf_basic",
+                status="failed" if index % 3 == 0 else "completed",
+                created_at=now + timedelta(microseconds=index),
+                updated_at=now + timedelta(microseconds=index),
+            )
+        )
+    app.state.jobs.save(
+        JobRecord(
+            id=f"{106:032x}",
+            owner_id="f" * 32,
+            project_id=project_id,
+            audit_type="manifest_basic",
+            status="completed",
+            created_at=now + timedelta(microseconds=106),
+            updated_at=now + timedelta(microseconds=106),
+        )
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first = await client.post("/jobs/search", json={"page_size": 60})
+        first_payload = first.json()
+        second = await client.post(
+            "/jobs/search",
+            json={"page_size": 60, "cursor": first_payload["next_cursor"]},
+        )
+        filtered = await client.post(
+            "/jobs/search",
+            json={"page_size": 100, "project_id": project_id, "status": "failed"},
+        )
+        changed_filter = await client.post(
+            "/jobs/search",
+            json={"page_size": 60, "cursor": first_payload["next_cursor"], "status": "failed"},
+        )
+        project_first = await client.post(
+            f"/projects/{project_id}/analyses/search", json={"page_size": 50}
+        )
+        oldest_project_analysis = await client.get(
+            f"/projects/{project_id}/analyses/{1:032x}"
+        )
+        unrelated_analysis = await client.get(
+            f"/projects/{project_id}/analyses/{105:032x}"
+        )
+        foreign_analysis = await client.get(
+            f"/projects/{project_id}/analyses/{106:032x}"
+        )
+        mismatched_project_filter = await client.post(
+            f"/projects/{project_id}/analyses/search",
+            json={"project_id": "f" * 32},
+        )
+        legacy = await client.get("/jobs")
+
+    assert first.status_code == 200
+    assert first_payload["returned_count"] == 60
+    assert first_payload["total_count"] == 105
+    assert first_payload["has_more"] is True
+    assert second.status_code == 200
+    assert second.json()["returned_count"] == 45
+    assert second.json()["has_more"] is False
+    assert not ({item["id"] for item in first_payload["items"]} & {item["id"] for item in second.json()["items"]})
+    assert filtered.status_code == 200
+    assert filtered.json()["total_count"] == 24
+    assert all(item["project_id"] == project_id and item["status"] == "failed" for item in filtered.json()["items"])
+    assert changed_filter.status_code == 400
+    assert "cursor" in changed_filter.json()["detail"].lower()
+    assert project_first.status_code == 200
+    assert project_first.json()["returned_count"] == 50
+    assert project_first.json()["total_count"] == 70
+    assert oldest_project_analysis.status_code == 200
+    assert oldest_project_analysis.json()["id"] == f"{1:032x}"
+    assert oldest_project_analysis.json()["project_id"] == project_id
+    assert "result" not in oldest_project_analysis.json()
+    assert unrelated_analysis.status_code == 404
+    assert foreign_analysis.status_code == 404
+    assert mismatched_project_filter.status_code == 400
+    assert legacy.status_code == 200
+    assert len(legacy.json()) == 100
+    assert legacy.headers["deprecation"] == "true"
+    assert legacy.headers["cache-control"] == "no-store"
+    assert "/jobs/search" in legacy.headers["link"]
+
+
+@pytest.mark.anyio
+async def test_remediation_api_groups_and_atomically_records_current_findings(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    finding = {
+        "id": "7" * 64,
+        "rule_id": "configuration_debug_enabled",
+        "source_audit_type": "project_archive_basic",
+        "title": "Debug mode is enabled",
+        "category": "configuration",
+        "severity": "high",
+        "confidence": "high",
+        "recommendation": "Disable debug mode and run a comparable analysis.",
+    }
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        archive = (await client.post(
+            "/files/archive",
+            files={"file": ("private-customer.zip", make_zip_bytes({"package.json": SAMPLE_PACKAGE_JSON}), "application/zip")},
+        )).json()
+        created = (await client.post(
+            "/projects",
+            json={"source_file_id": archive["id"], "authorization_confirmed": True},
+        )).json()
+        app.state.jobs.update(
+            created["job"]["id"],
+            status="completed",
+            result={
+                "normalized_findings": [finding],
+                "summary": {
+                    "total_entries_seen": 1,
+                    "supported_manifests_found": 1,
+                    "supported_manifests_parsed": 1,
+                    "unsupported_manifests_detected": 0,
+                    "lockfiles_detected": 0,
+                    "lockfiles_parsed": 0,
+                    "total_dependencies": 0,
+                    "truncated": False,
+                },
+            },
+        )
+        public_finding_id = "pvf_" + "8" * 64
+        app.state.project_vulnerability_intelligence_store.put(created["job"]["id"], {
+            "state": "ready",
+            "expires_at": "2099-09-09T10:00:00Z",
+            "sources": [{"provider": "osv", "state": "fresh", "reason": "fresh_cache"}],
+            "findings": [{
+                "id": public_finding_id,
+                "fingerprint_version": PUBLIC_VULNERABILITY_FINDING_FINGERPRINT_VERSION,
+                "provider": "osv",
+                "advisory_id": "GHSA-AAAA-BBBB-CCCC",
+                "aliases": ["CVE-2026-1000", "GHSA-AAAA-BBBB-CCCC"],
+                "ecosystem": "npm",
+                "component_name": "public-package",
+                "component_version": "1.0.0",
+                "package_url": "pkg:npm/public-package@1.0.0",
+                "component_identity_provenance": "npm_registry_lockfile",
+                "dependency_scope": "direct",
+                "affected_ranges": [{"type": "SEMVER", "introduced": "0", "fixed": "2.0.0"}],
+                "fixed_versions": ["2.0.0"],
+                "cvss_base_score": 9.8,
+                "cvss_band": "critical",
+                "cvss_score_status": "source_provided",
+                "recommendation": "Upgrade using the project dependency workflow and reanalyze.",
+                "evidence_digest": "9" * 64,
+            }],
+            "summary": {"findings": 1},
+        })
+        searched = await client.post("/remediation/search", json={})
+        group = next(item for item in searched.json()["items"] if item["evidence_kind"] == "local_finding")
+        public_group = next(item for item in searched.json()["items"] if item["evidence_kind"] == "public_vulnerability")
+        applied_payload = {
+            "group_id": group["id"],
+            "idempotency_key": "local-batch-action-0001",
+            "expected_revision": group["revision"],
+            "selections": [{
+                "project_id": created["project"]["id"],
+                "analysis_id": created["job"]["id"],
+                "finding_id": finding["id"],
+            }],
+            "status": "in_review",
+            "reason": "Assigned for owner review",
+            "comment": None,
+            "assignee_user_id": None,
+            "review_at": None,
+            "confirmation": True,
+        }
+        applied = await client.post("/remediation/actions", json=applied_payload)
+        applied_replay = await client.post("/remediation/actions", json=applied_payload)
+        public_applied = await client.post("/remediation/actions", json={
+            "group_id": public_group["id"],
+            "idempotency_key": "public-batch-action-0001",
+            "expected_revision": public_group["revision"],
+            "selections": [{
+                "project_id": created["project"]["id"],
+                "analysis_id": created["job"]["id"],
+                "finding_id": public_finding_id,
+            }],
+            "status": "in_review",
+            "reason": "Public advisory assigned for review",
+            "comment": None,
+            "assignee_user_id": None,
+            "review_at": None,
+            "confirmation": True,
+        })
+        refreshed = await client.post("/remediation/search", json={})
+        report = await client.post("/remediation/report", json={
+            "filters": {},
+            "report_format": "json",
+            "project_metadata_confirmed": True,
+        })
+        csv_report = await client.post("/remediation/report", json={
+            "filters": {"evidence_kind": "public_vulnerability"},
+            "report_format": "csv",
+            "project_metadata_confirmed": True,
+        })
+        durable_plan = await client.post("/remediation/plans", json={
+            "filters": {},
+            "idempotency_key": "durable-remediation-plan-0001",
+            "project_metadata_confirmed": True,
+        })
+        durable_plan_replay = await client.post("/remediation/plans", json={
+            "filters": {},
+            "idempotency_key": "durable-remediation-plan-0001",
+            "project_metadata_confirmed": True,
+        })
+        durable_plans = await client.get("/remediation/plans")
+        durable_json = await client.get(
+            f"/remediation/plans/{durable_plan.json()['id']}/download?format=json"
+        )
+        durable_csv = await client.get(
+            f"/remediation/plans/{durable_plan.json()['id']}/download?format=csv"
+        )
+        stale_replay = await client.post("/remediation/actions", json={
+            "group_id": group["id"],
+            "idempotency_key": "stale-batch-action-0001",
+            "expected_revision": group["revision"],
+            "selections": [{
+                "project_id": created["project"]["id"],
+                "analysis_id": created["job"]["id"],
+                "finding_id": finding["id"],
+            }],
+            "status": "accepted",
+            "reason": "Must not apply with a stale revision",
+            "comment": None,
+            "assignee_user_id": None,
+            "review_at": None,
+            "confirmation": True,
+        })
+
+    assert searched.status_code == 200
+    assert searched.headers["cache-control"] == "no-store"
+    assert searched.headers["x-content-type-options"] == "nosniff"
+    assert applied.status_code == 201
+    assert applied.json()["applied_count"] == 1
+    assert applied.json()["history_mode"] == "append_only_recoverable_batch"
+    assert applied.json()["replayed"] is False
+    assert applied_replay.status_code == 201
+    assert applied_replay.json()["replayed"] is True
+    assert applied_replay.json()["decisions"] == applied.json()["decisions"]
+    assert public_applied.status_code == 201
+    assert public_applied.json()["decisions"][0]["finding_id"] == public_finding_id
+    assert all(item["workflow_counts"]["in_review"] == 1 for item in refreshed.json()["items"])
+    assert report.status_code == 200
+    assert report.headers["cache-control"] == "no-store"
+    assert re.fullmatch(r"[a-f0-9]{64}", report.headers["x-inspectra-snapshot-sha256"])
+    assert report.json()["privacy"] == {
+        "actor_identifiers_included": False,
+        "decision_comments_included": False,
+        "project_names_included": True,
+        "source_content_included": False,
+        "source_paths_included": False,
+    }
+    assert "private-customer.zip" not in report.text
+    assert csv_report.status_code == 200
+    assert csv_report.headers["content-type"].startswith("text/csv")
+    assert "known_exploited" in csv_report.text
+    assert "public-package" in csv_report.text
+    assert "private-customer.zip" not in csv_report.text
+    assert durable_plan.status_code == 202
+    assert durable_plan.json()["status"] == "queued"
+    assert "request_digest" not in durable_plan.json()
+    assert "idempotency_digest" not in durable_plan.json()
+    assert "project_revision" not in durable_plan.json()
+    assert durable_plan_replay.status_code == 202
+    assert durable_plan_replay.json()["id"] == durable_plan.json()["id"]
+    assert durable_plan_replay.json()["replayed"] is True
+    assert durable_plan_replay.json()["status"] == "completed"
+    assert durable_plan_replay.json()["processed_projects"] == 1
+    assert durable_plans.status_code == 200
+    assert durable_plans.json()["items"][0]["status"] == "completed"
+    assert durable_json.status_code == 200
+    assert durable_csv.status_code == 200
+    assert durable_json.headers["x-inspectra-snapshot-sha256"] == durable_csv.headers["x-inspectra-snapshot-sha256"]
+    assert durable_json.json()["processed_projects"] == int(durable_csv.text.splitlines()[1].split(",")[3])
+    assert "private-customer.zip" not in durable_json.text + durable_csv.text
+    assert stale_replay.status_code == 409
+    assert "private-customer.zip" not in searched.text + applied.text + refreshed.text
+
+
+@pytest.mark.anyio
+async def test_remediation_saved_views_are_private_shareable_and_reader_self_service(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+    private_canary = "Admin private queue"
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as admin:
+        assert (await admin.post(
+            "/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD_FIXTURE}
+        )).status_code == 200
+        admin_csrf = (await admin.get("/auth/status")).json()["csrf_token"]
+        admin_headers = {ADMIN_CSRF_HEADER_NAME: admin_csrf}
+        shared = await admin.post("/remediation/views", headers=admin_headers, json={
+            "name": "Organization urgent",
+            "visibility": "organization",
+            "make_default": True,
+            "filters": {"priority": "urgent", "ecosystem": "npm", "sort": "priority"},
+        })
+        private = await admin.post("/remediation/views", headers=admin_headers, json={
+            "name": private_canary,
+            "visibility": "private",
+            "filters": {"workflow_state": "in_review", "sort": "projects"},
+        })
+        invitation = await admin.post(
+            "/organization/invitations",
+            headers=admin_headers,
+            json={"username": "saved.reader", "role": "reader"},
+        )
+
+        async with AsyncClient(transport=transport, base_url="http://testserver") as reader:
+            assert (await reader.post("/auth/invitations/accept", json={
+                "token": invitation.json()["token"], "password": "reader-saved-password",
+            })).status_code == 200
+            assert (await reader.post("/auth/login", json={
+                "username": "saved.reader", "password": "reader-saved-password",
+            })).status_code == 200
+            reader_status = (await reader.get("/auth/status")).json()
+            reader_csrf = reader_status["csrf_token"]
+            reader_headers = {ADMIN_CSRF_HEADER_NAME: reader_csrf}
+            listed = await reader.get("/remediation/views")
+            own = await reader.post("/remediation/views", headers=reader_headers, json={
+                "name": "My review queue",
+                "visibility": "private",
+                "filters": {"evidence_kind": "local_finding", "sort": "component"},
+            })
+            denied_share = await reader.post("/remediation/views", headers=reader_headers, json={
+                "name": "Must not share",
+                "visibility": "organization",
+                "filters": {"priority": "high"},
+            })
+            selected_default = await reader.put(
+                "/remediation/views/default",
+                headers=reader_headers,
+                json={"view_id": own.json()["id"], "confirmation": True},
+            )
+            denied_delete = await reader.delete(
+                f"/remediation/views/{shared.json()['id']}", headers=reader_headers
+            )
+            deleted = await reader.delete(
+                f"/remediation/views/{own.json()['id']}", headers=reader_headers
+            )
+            offboarding_view = await reader.post("/remediation/views", headers=reader_headers, json={
+                "name": "Remove on offboarding",
+                "visibility": "private",
+                "filters": {"priority": "review"},
+            })
+
+        admin_list = await admin.get("/remediation/views")
+        audit = await admin.get("/audit/events", params={"action": "remediation.view_created"})
+        revoked = await admin.delete(
+            f"/organization/members/{reader_status['operator_id']}", headers=admin_headers
+        )
+
+    assert shared.status_code == 201 and private.status_code == 201
+    assert listed.status_code == 200
+    assert listed.headers["cache-control"] == "private, no-store"
+    assert [item["name"] for item in listed.json()["items"]] == ["Organization urgent"]
+    assert own.status_code == 201
+    assert denied_share.status_code == 403
+    assert selected_default.json()["default_view_id"] == own.json()["id"]
+    assert denied_delete.status_code == 404
+    assert deleted.status_code == 204
+    assert offboarding_view.status_code == 201
+    assert revoked.status_code == 204
+    assert {item["name"] for item in admin_list.json()["items"]} == {
+        private_canary, "Organization urgent",
+    }
+    assert private_canary not in audit.text
+    retained_views = (tmp_path / "results" / "remediation_saved_views" / "local-admin.json").read_text()
+    assert "Remove on offboarding" not in retained_views
+    assert reader_status["operator_id"] not in retained_views
+
+
+@pytest.mark.anyio
+async def test_project_risk_trends_api_and_reports_share_a_bounded_empty_projection(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        pending = await client.post("/projects/trends", json={"period_days": 30, "bucket_days": 7})
+        trend = await client.post("/projects/trends", json={"period_days": 30, "bucket_days": 7})
+        retry = await client.post("/projects/trends/refresh", json={"period_days": 30, "bucket_days": 7})
+        refreshed = await client.post("/projects/trends", json={"period_days": 30, "bucket_days": 7})
+        json_report = await client.post("/projects/trends/report", json={
+            "filters": {"period_days": 30, "bucket_days": 7},
+            "profile": "security",
+            "report_format": "json",
+            "project_metadata_confirmed": True,
+        })
+        csv_report = await client.post("/projects/trends/report", json={
+            "filters": {"period_days": 30, "bucket_days": 7},
+            "profile": "executive",
+            "report_format": "csv",
+            "project_metadata_confirmed": True,
+        })
+
+    assert pending.status_code == 202
+    assert pending.headers["retry-after"] == "1"
+    assert pending.json()["materialization"]["state"] == "rebuilding"
+    assert pending.json()["materialization"]["data_state"] == "unavailable"
+    assert pending.json()["trend"] is None
+    assert trend.status_code == 200
+    assert trend.headers["cache-control"] == "no-store"
+    assert trend.json()["contract_version"] == "2026-09-10.2"
+    assert trend.json()["materialization"]["state"] == "ready"
+    assert trend.json()["materialization"]["data_state"] == "current"
+    assert trend.json()["trend"]["summary"]["projects_in_scope"] == 0
+    assert trend.json()["trend"]["denominators"]["local_comparable_transitions"] == 0
+    assert retry.status_code == 200
+    assert retry.headers["retry-after"] == "1"
+    assert retry.json()["materialization"]["state"] == "rebuilding"
+    assert retry.json()["materialization"]["data_state"] == "current"
+    assert refreshed.json()["materialization"]["state"] == "ready"
+    assert json_report.status_code == 200
+    assert json_report.headers["content-disposition"] == 'attachment; filename="inspectra-risk-trends-security.json"'
+    assert len(json_report.headers["x-inspectra-snapshot-sha256"]) == 64
+    assert json_report.json()["facts"]["summary"] == trend.json()["trend"]["summary"]
+    assert csv_report.status_code == 200
+    assert csv_report.text.startswith("contract_version,profile,period_start")
+    assert "private-source" not in json_report.text + csv_report.text
 
 
 def make_zip_bytes(entries: dict[str, bytes]) -> bytes:

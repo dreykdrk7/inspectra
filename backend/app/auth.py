@@ -10,10 +10,12 @@ import secrets
 ADMIN_PASSWORD_HASH_SCHEME = "pbkdf2_sha256"
 MIN_ADMIN_PASSWORD_HASH_ITERATIONS = 600_000
 ADMIN_SESSION_COOKIE_NAME = "inspectra_session"
-ADMIN_SESSION_COOKIE_SAMESITE = "lax"
+ADMIN_SESSION_COOKIE_SAMESITE = "strict"
 ADMIN_SESSION_ID_BYTES = 32
 ADMIN_CSRF_HEADER_NAME = "X-CSRF-Token"
 ADMIN_CSRF_TOKEN_BYTES = 32
+MIN_TEAM_PASSWORD_LENGTH = 12
+MAX_TEAM_PASSWORD_LENGTH = 256
 _ADMIN_PASSWORD_HASH_PATTERN = re.compile(
     r"^pbkdf2_sha256\$(?P<iterations>[1-9][0-9]*)\$(?P<salt>[A-Za-z0-9_.-]{16,128})\$(?P<digest>[A-Fa-f0-9]{64})$"
 )
@@ -27,6 +29,8 @@ class AdminSession:
     created_at: datetime
     expires_at: datetime
     auth_mode: str = "self_hosted_single_admin"
+    organization_id: str | None = None
+    role: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,7 +60,14 @@ class AdminSessionStore:
         self._csrf_token_factory = csrf_token_factory or _new_csrf_token
         self._sessions: dict[str, AdminSession] = {}
 
-    def create_admin_session(self, operator_id: str, auth_mode: str = "self_hosted_single_admin") -> AdminSession:
+    def create_admin_session(
+        self,
+        operator_id: str,
+        auth_mode: str = "self_hosted_single_admin",
+        *,
+        organization_id: str | None = None,
+        role: str | None = None,
+    ) -> AdminSession:
         now = self._now()
         session = AdminSession(
             session_id=self._unique_session_id(),
@@ -65,6 +76,8 @@ class AdminSessionStore:
             created_at=now,
             expires_at=now + timedelta(seconds=self.ttl_seconds),
             auth_mode=auth_mode,
+            organization_id=organization_id,
+            role=role,
         )
         self._sessions[session.session_id] = session
         return session
@@ -103,6 +116,16 @@ class AdminSessionStore:
         for session_id in expired_session_ids:
             self._sessions.pop(session_id, None)
         return len(expired_session_ids)
+
+    def invalidate_operator_sessions(self, operator_id: str) -> int:
+        session_ids = [
+            session_id
+            for session_id, session in self._sessions.items()
+            if session.operator_id == operator_id
+        ]
+        for session_id in session_ids:
+            self._sessions.pop(session_id, None)
+        return len(session_ids)
 
     def _now(self) -> datetime:
         current = self._now_func()
@@ -290,6 +313,25 @@ def verify_admin_password(password: str | None, password_hash: str | None) -> bo
         return False
 
     return hmac.compare_digest(actual_digest, expected_digest)
+
+
+def hash_password(password: str, *, iterations: int = MIN_ADMIN_PASSWORD_HASH_ITERATIONS) -> str:
+    """Hash a team password using the existing supported verifier contract."""
+
+    if not isinstance(password, str) or not MIN_TEAM_PASSWORD_LENGTH <= len(password) <= MAX_TEAM_PASSWORD_LENGTH:
+        raise ValueError(
+            f"Password must be between {MIN_TEAM_PASSWORD_LENGTH} and {MAX_TEAM_PASSWORD_LENGTH} characters."
+        )
+    if iterations < MIN_ADMIN_PASSWORD_HASH_ITERATIONS:
+        raise ValueError("Password hash iterations are below the supported minimum.")
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations,
+    ).hex()
+    return f"{ADMIN_PASSWORD_HASH_SCHEME}${iterations}${salt}${digest}"
 
 
 def verify_admin_csrf_token(token: str | None, session: AdminSession | None) -> bool:

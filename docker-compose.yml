@@ -8,10 +8,54 @@ services:
         active_runner: ./tools/active_runner
     container_name: inspectra-backend
     environment:
-      INSPECTRA_CORS_ORIGINS: http://localhost:5173
+      INSPECTRA_CORS_ORIGINS: ${INSPECTRA_CORS_ORIGINS:-http://localhost:${INSPECTRA_FRONTEND_HOST_PORT:-5173}}
+      INSPECTRA_CORS_ALLOWED_METHODS: ${INSPECTRA_CORS_ALLOWED_METHODS:-GET,POST,PUT,DELETE}
+      INSPECTRA_CORS_ALLOWED_HEADERS: ${INSPECTRA_CORS_ALLOWED_HEADERS:-Content-Type,X-CSRF-Token}
+      INSPECTRA_AUDIT_MAX_CONCURRENCY: ${INSPECTRA_AUDIT_MAX_CONCURRENCY:-4}
+      INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS: ${INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS:-128}
+      INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS_PER_OWNER: ${INSPECTRA_AUDIT_MAX_INFLIGHT_JOBS_PER_OWNER:-32}
+      INSPECTRA_PROJECT_ARCHIVE_TIMEOUT_SECONDS: ${INSPECTRA_PROJECT_ARCHIVE_TIMEOUT_SECONDS:-60}
+      INSPECTRA_EXECUTION_WORKSPACE_MAX_BYTES: ${INSPECTRA_EXECUTION_WORKSPACE_MAX_BYTES:-20971520}
+      INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES: ${INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES:-209715200}
+      INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES: ${INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES:-5000}
+      INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS: ${INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFESTS:-25}
+      INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES: ${INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES:-1048576}
+      INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES: ${INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES:-5242880}
+      INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILES: ${INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILES:-5}
+      INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES: ${INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES:-2000}
+      INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILE_EDGES: ${INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILE_EDGES:-4000}
+      INSPECTRA_LICENSE_REVIEW_DENIED_IDENTIFIERS: ${INSPECTRA_LICENSE_REVIEW_DENIED_IDENTIFIERS:-}
+      INSPECTRA_PROJECT_MAX_SOURCE_SNAPSHOTS: ${INSPECTRA_PROJECT_MAX_SOURCE_SNAPSHOTS:-100}
+      INSPECTRA_READINESS_TIMEOUT_SECONDS: ${INSPECTRA_READINESS_TIMEOUT_SECONDS:-2}
       INSPECTRA_DATA_DIR: /app/data
+      INSPECTRA_TEAM_ORGANIZATION_NAME: ${INSPECTRA_TEAM_ORGANIZATION_NAME:-Inspectra team}
+      INSPECTRA_TEAM_INVITATION_TTL_SECONDS: ${INSPECTRA_TEAM_INVITATION_TTL_SECONDS:-86400}
+      INSPECTRA_TEAM_INVITATION_RETENTION_DAYS: ${INSPECTRA_TEAM_INVITATION_RETENTION_DAYS:-30}
+      INSPECTRA_PRODUCT_AUDIT_RETENTION_DAYS: ${INSPECTRA_PRODUCT_AUDIT_RETENTION_DAYS:-90}
+      INSPECTRA_AUTOMATION_TOKEN_RETENTION_DAYS: ${INSPECTRA_AUTOMATION_TOKEN_RETENTION_DAYS:-30}
+      INSPECTRA_PRODUCT_AUDIT_MAX_EVENTS: ${INSPECTRA_PRODUCT_AUDIT_MAX_EVENTS:-50000}
+      INSPECTRA_ADOPTION_METRICS_ENABLED: ${INSPECTRA_ADOPTION_METRICS_ENABLED:-false}
       INSPECTRA_MAX_UPLOAD_BYTES: "20971520"
       INSPECTRA_TOOL_RUNNER_URL: http://audit-tools:8081
+      INSPECTRA_NETWORK_TOOL_RUNNER_URL: http://network-tools:8081
+      # Active traffic is fail-closed and leaves the backend only through the
+      # optional, internal active-tools service. All flags remain off by default.
+      INSPECTRA_ACTIVE_TOOLS_URL: ${INSPECTRA_ACTIVE_TOOLS_URL:-}
+      INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED: ${INSPECTRA_ACTIVE_NMAP_BASIC_ENABLED:-false}
+      INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED: ${INSPECTRA_ACTIVE_DNS_INVENTORY_ENABLED:-false}
+      INSPECTRA_ACTIVE_DNS_OSINT_ENABLED: ${INSPECTRA_ACTIVE_DNS_OSINT_ENABLED:-false}
+      INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED: ${INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_ENABLED:-false}
+      INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED: ${INSPECTRA_ACTIVE_HTTP_BASIC_HEADER_REVIEW_LIVE_HEAD_ENABLED:-false}
+      INSPECTRA_ACTIVE_TLS_BASIC_ENABLED: ${INSPECTRA_ACTIVE_TLS_BASIC_ENABLED:-false}
+      INSPECTRA_ACTIVE_ASSET_VERIFICATION_ENABLED: ${INSPECTRA_ACTIVE_ASSET_VERIFICATION_ENABLED:-false}
+      INSPECTRA_ACTIVE_RECURRENCE_ENABLED: ${INSPECTRA_ACTIVE_RECURRENCE_ENABLED:-false}
+      INSPECTRA_ACTIVE_FOUR_EYES_ENABLED: ${INSPECTRA_ACTIVE_FOUR_EYES_ENABLED:-false}
+      # Persisted Active admission quotas are enforced atomically across
+      # backend workers. Responses never disclose tenant or queue counts.
+      INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS: ${INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS:-16}
+      INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS_PER_ORGANIZATION: ${INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS_PER_ORGANIZATION:-4}
+      INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS_PER_ASSET: ${INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS_PER_ASSET:-2}
+      INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS_PER_CAPABILITY: ${INSPECTRA_ACTIVE_MAX_INFLIGHT_JOBS_PER_CAPABILITY:-4}
       INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS: "false"
       INSPECTRA_WEB_TIMEOUT_SECONDS: "10"
       INSPECTRA_WEB_MAX_RESPONSE_BYTES: "1048576"
@@ -21,6 +65,31 @@ services:
       INSPECTRA_SUBDOMAIN_MAX_CANDIDATES: "100"
       INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS: "2"
       INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS: "30"
+      # Public advisory egress remains opt-in. Its destinations are fixed in
+      # backend code; no operator URL, proxy, token, project metadata, or source
+      # contents are passed to it.
+      INSPECTRA_PUBLIC_ADVISORY_EGRESS_ENABLED: "false"
+      INSPECTRA_PUBLIC_ADVISORY_NVD_ENABLED: "false"
+      INSPECTRA_PUBLIC_ADVISORY_TIMEOUT_SECONDS: "5"
+      INSPECTRA_PUBLIC_ADVISORY_MAX_RESPONSE_BYTES: "2097152"
+      INSPECTRA_PUBLIC_ADVISORY_MAX_CONCURRENCY: "2"
+      INSPECTRA_PUBLIC_ADVISORY_MAX_RETRIES: "1"
+      INSPECTRA_PUBLIC_ADVISORY_CACHE_TTL_SECONDS: "86400"
+      INSPECTRA_PUBLIC_ADVISORY_CACHE_RETENTION_SECONDS: "604800"
+      INSPECTRA_PUBLIC_ADVISORY_MAX_BATCH_COMPONENTS: "25"
+      # Optional local-only package-name exclusions. Never place URLs, registry
+      # hosts, credentials, paths, or wildcards here.
+      INSPECTRA_PUBLIC_ADVISORY_PRIVATE_PACKAGE_RULES: ""
+      # PyPI egress additionally requires an explicit, exact operator
+      # attestation of public package names. Keep empty unless each name is
+      # known public; never put an index URL, path, credential, or wildcard.
+      INSPECTRA_PUBLIC_ADVISORY_PUBLIC_PYPI_PACKAGES: ""
+      # Go module paths also require an exact operator attestation; go.mod and
+      # go.sum alone never prove that a namespace is public.
+      INSPECTRA_PUBLIC_ADVISORY_PUBLIC_GO_MODULES: ""
+      INSPECTRA_PUBLIC_ADVISORY_PUBLIC_COMPOSER_PACKAGES: ""
+      INSPECTRA_PUBLIC_ADVISORY_PUBLIC_MAVEN_PACKAGES: ""
+      INSPECTRA_PUBLIC_ADVISORY_PUBLIC_NUGET_PACKAGES: ""
       INSPECTRA_DJANGO_CONFIG_MAX_FILES: "100"
       INSPECTRA_DJANGO_CONFIG_MAX_FILE_BYTES: "524288"
       INSPECTRA_DJANGO_CONFIG_MAX_TOTAL_BYTES: "2097152"
@@ -54,22 +123,29 @@ services:
     volumes:
       - ./data:/app/data
     ports:
-      - "${INSPECTRA_BACKEND_HOST_PORT:-8000}:8000"
+      - "127.0.0.1:${INSPECTRA_BACKEND_HOST_PORT:-8000}:8000"
     depends_on:
       audit-tools:
+        condition: service_healthy
+      network-tools:
         condition: service_healthy
     networks:
       - inspectra_internal
       - inspectra_host_access
     read_only: true
+    init: true
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 256
+    stop_grace_period: 15s
     tmpfs:
-      - /tmp
+      - /tmp:size=67108864,mode=1777
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -80,7 +156,17 @@ services:
       context: ./tools
     container_name: inspectra-audit-tools
     environment:
-      INSPECTRA_DATA_DIR: /app/data
+      INSPECTRA_FILE_ANALYSIS_ENABLED: "true"
+      INSPECTRA_NETWORK_ANALYSIS_ENABLED: "false"
+      INSPECTRA_TOOL_WORKER_ROOT: /var/lib/inspectra-workers
+      INSPECTRA_TOOL_WORKER_MAX_SOURCE_BYTES: "20971520"
+      INSPECTRA_TOOL_WORKER_TIMEOUT_SECONDS: "55"
+      INSPECTRA_TOOL_WORKER_CPU_SECONDS: "45"
+      INSPECTRA_TOOL_WORKER_MEMORY_BYTES: "402653184"
+      INSPECTRA_TOOL_WORKER_MAX_RESULT_BYTES: "4194304"
+      INSPECTRA_TOOL_WORKER_MAX_FILE_BYTES: "33554432"
+      INSPECTRA_TOOL_WORKER_MAX_OPEN_FILES: "64"
+      INSPECTRA_TOOL_WORKER_MAX_PROCESSES: "32"
       INSPECTRA_TOOL_TIMEOUT_SECONDS: "10"
       INSPECTRA_ARCHIVE_MAX_ENTRIES: "5000"
       INSPECTRA_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES: "209715200"
@@ -91,6 +177,10 @@ services:
       INSPECTRA_PROJECT_ARCHIVE_MAX_MANIFEST_BYTES: "1048576"
       INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_MANIFEST_BYTES: "5242880"
       INSPECTRA_PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES: "5000"
+      INSPECTRA_PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES: "209715200"
+      INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILES: "5"
+      INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES: "2000"
+      INSPECTRA_PROJECT_ARCHIVE_MAX_LOCKFILE_EDGES: "4000"
       INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS: "false"
       INSPECTRA_WEB_TIMEOUT_SECONDS: "10"
       INSPECTRA_WEB_MAX_RESPONSE_BYTES: "1048576"
@@ -130,16 +220,18 @@ services:
       INSPECTRA_DATABASE_CONFIG_MAX_FILES: "100"
       INSPECTRA_DATABASE_CONFIG_MAX_FILE_BYTES: "524288"
       INSPECTRA_DATABASE_CONFIG_MAX_TOTAL_BYTES: "2097152"
-    volumes:
-      - ./data:/app/data:ro
     expose:
       - "8081"
     networks:
       - inspectra_internal
-      - inspectra_web_egress
     read_only: true
+    init: true
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 128
+    stop_grace_period: 15s
     tmpfs:
-      - /tmp
+      - /var/lib/inspectra-workers:size=67108864,mode=0700,uid=1000,gid=1000
     cap_drop:
       - ALL
     security_opt:
@@ -151,22 +243,104 @@ services:
       retries: 3
       start_period: 10s
 
+  network-tools:
+    build:
+      context: ./tools
+    container_name: inspectra-network-tools
+    environment:
+      INSPECTRA_FILE_ANALYSIS_ENABLED: "false"
+      INSPECTRA_NETWORK_ANALYSIS_ENABLED: "true"
+      INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS: "false"
+      INSPECTRA_WEB_TIMEOUT_SECONDS: "10"
+      INSPECTRA_WEB_MAX_RESPONSE_BYTES: "1048576"
+      INSPECTRA_WEB_MAX_REDIRECTS: "5"
+      INSPECTRA_WEB_ALLOWED_PORTS: "80,443"
+      INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS: "5"
+      INSPECTRA_SUBDOMAIN_MAX_CANDIDATES: "100"
+      INSPECTRA_SUBDOMAIN_WILDCARD_CHECKS: "2"
+      INSPECTRA_SUBDOMAIN_GLOBAL_DEADLINE_SECONDS: "30"
+    expose:
+      - "8081"
+    networks:
+      - inspectra_internal
+      - inspectra_web_egress
+    read_only: true
+    init: true
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 64
+    stop_grace_period: 15s
+    tmpfs:
+      - /tmp:size=33554432,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  active-tools:
+    profiles: ["active"]
+    build:
+      context: .
+      dockerfile: docker/active-tools/Dockerfile
+    container_name: inspectra-active-tools
+    command: ["python", "-m", "uvicorn", "active_runner.app:app", "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers"]
+    environment:
+      INSPECTRA_ACTIVE_TOOLS_NMAP_BASIC_EXECUTION_ENABLED: ${INSPECTRA_ACTIVE_TOOLS_NMAP_BASIC_EXECUTION_ENABLED:-false}
+      INSPECTRA_ACTIVE_TOOLS_DNS_INVENTORY_EXECUTION_ENABLED: ${INSPECTRA_ACTIVE_TOOLS_DNS_INVENTORY_EXECUTION_ENABLED:-false}
+      INSPECTRA_ACTIVE_TOOLS_DNS_OSINT_EXECUTION_ENABLED: ${INSPECTRA_ACTIVE_TOOLS_DNS_OSINT_EXECUTION_ENABLED:-false}
+      INSPECTRA_ACTIVE_TOOLS_HTTP_HEADERS_EXECUTION_ENABLED: ${INSPECTRA_ACTIVE_TOOLS_HTTP_HEADERS_EXECUTION_ENABLED:-false}
+      INSPECTRA_ACTIVE_TOOLS_TLS_BASIC_EXECUTION_ENABLED: ${INSPECTRA_ACTIVE_TOOLS_TLS_BASIC_EXECUTION_ENABLED:-false}
+    expose:
+      - "8080"
+    networks:
+      - inspectra_internal
+      - inspectra_active_egress
+    read_only: true
+    init: true
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 64
+    stop_grace_period: 10s
+    tmpfs:
+      - /tmp:size=33554432,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
   frontend:
     build:
       context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:${INSPECTRA_BACKEND_HOST_PORT:-8000}}
     container_name: inspectra-frontend
-    environment:
-      VITE_API_BASE_URL: http://localhost:8000
     ports:
-      - "${INSPECTRA_FRONTEND_HOST_PORT:-5173}:5173"
+      - "127.0.0.1:${INSPECTRA_FRONTEND_HOST_PORT:-5173}:5173"
     depends_on:
       backend:
         condition: service_healthy
     networks:
       - inspectra_host_access
     read_only: true
+    init: true
+    cpus: 0.5
+    mem_limit: 128m
+    pids_limit: 64
+    stop_grace_period: 10s
     tmpfs:
-      - /tmp
+      - /tmp:size=33554432,mode=1777
     cap_drop:
       - ALL
     security_opt:
@@ -177,3 +351,4 @@ networks:
     internal: true
   inspectra_host_access:
   inspectra_web_egress:
+  inspectra_active_egress:
