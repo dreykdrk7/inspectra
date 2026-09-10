@@ -8,6 +8,7 @@ import { ApiError } from "./api";
 // App exercises several independently loaded panels. Keep transition assertions
 // tolerant of CI worker contention without relaxing the timeout for every test.
 const APP_TRANSITION_TIMEOUT = { timeout: 5_000 } as const;
+const APP_TRANSITION_TEST_TIMEOUT_MS = 10_000;
 
 function jsonResponse(payload: unknown, status = 200, headers: HeadersInit = {}): Response {
   const responseHeaders = new Headers(headers);
@@ -1361,7 +1362,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Acme security" }, APP_TRANSITION_TIMEOUT)).toBeInTheDocument();
     expect(screen.getByText("Acme security · administrator")).toBeInTheDocument();
     expect(screen.getByText("Projects, analyses and exports use this workspace as their isolation boundary. Roles never bypass authorization, redaction or analysis limits.")).toBeInTheDocument();
-  });
+  }, APP_TRANSITION_TEST_TIMEOUT_MS);
 
   it("shows controlled unavailable auth state without configuration guidance", async () => {
     vi.stubGlobal(
@@ -1741,7 +1742,7 @@ describe("App", () => {
     expect(screen.getByRole("link", { name: "4. Review result" })).toHaveAttribute("aria-current", "step");
     expect(document.activeElement).toHaveAttribute("id", "results");
     expect(window.location.hash).toBe("#job=job-pdf-1");
-  });
+  }, APP_TRANSITION_TEST_TIMEOUT_MS);
 
   it("clears an unavailable job link and gives a recoverable next step", async () => {
     window.history.replaceState({}, "", "/#job=missing-job");
@@ -1993,7 +1994,7 @@ describe("App", () => {
       expect(rendered).not.toContain(secret);
     }
     expect(rendered).toContain("[REDACTED]");
-  });
+  }, APP_TRANSITION_TEST_TIMEOUT_MS);
 
   it("renders Active HTTP header probe jobs with redacted target table and report payload", async () => {
     const activeJob = {
@@ -2132,7 +2133,7 @@ describe("App", () => {
       expect(rendered).not.toContain(secret);
     }
     expect(rendered).toContain("[REDACTED]");
-  });
+  }, APP_TRANSITION_TEST_TIMEOUT_MS);
 
   it("renders Active Nmap basic jobs with redacted target table, report payload, and no archive action", async () => {
     const activeJob = {

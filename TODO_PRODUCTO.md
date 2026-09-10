@@ -3890,6 +3890,10 @@ las pruebas indicadas y se sincronicen ambos backlogs.
   la sesión autenticada, pero una transición secundaria superó el segundo
   implícito. Cuatro aserciones de transición usan ahora un presupuesto local de
   5 s, sin relajar el resto de la suite; dos repeticiones completas pasaron
+  420/420. El segundo CI confirmó que la aserción ya no expiraba, pero el límite
+  total predeterminado de Vitest (5 s) competía con esa espera y detuvo el test
+  de enlace restaurado. Los cuatro tests afectados tienen ahora 10 s totales y
+  mantienen 5 s para la transición; la repetición completa volvió a pasar
   420/420, build 302,7/322 KiB y `npm audit` cero vulnerabilidades. Pendiente
   repetir todas las puertas en CI; no se promoverá una ejecución parcial. No
   hubo tag, release, publicación ni despliegue; `SEC-012` sigue bloqueada hasta
