@@ -3907,7 +3907,14 @@ las pruebas indicadas y se sincronicen ambos backlogs.
   validado y el PR #1 permanecía abierto y draft. No
   hubo merge, tag, release, publicación ni despliegue. `SEC-012` quedó completada
   con esta evidencia; la advertencia no bloqueante de runtime Node de las
-  acciones se conserva como `SEC-021` en el backlog general.
+  acciones se conserva como `SEC-021` en el backlog general. Un tip documental
+  posterior reveló que el benchmark de 100.000 análisis medía conjuntamente el
+  rebuild y el sobrecoste de `tracemalloc`: dos pasadas remotas marcaron
+  63,83/63,94 s frente al límite de 60 s, mientras la repetición aislada local
+  dio 52,28 s. La regresión separa ahora la guarda de memoria `<64 MiB` de una
+  segunda medición de rebuild sin instrumentación que conserva `<60 s`; la
+  prueba completa dirigida pasó offline/read-only sin relajar ninguno de los
+  dos límites.
 
 ## Ciclo 6 — Expansión funcional para desarrolladores y empresas
 

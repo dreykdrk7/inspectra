@@ -537,7 +537,10 @@ class _SyntheticJobs:
         project, count = self.by_prefix[job_id[0]]
         sequence = int(job_id[1:], 16)
         when = NOW - timedelta(seconds=count - sequence + 1)
-        return JobRecord(
+        # The corpus generator is outside the materializer under test. Build an
+        # already-valid record without charging 100,000 repeated Pydantic input
+        # validations to the index rebuild budget.
+        return JobRecord.model_construct(
             id=job_id,
             owner_id=project.owner_id,
             project_id=project.id,
@@ -607,7 +610,6 @@ def test_materialized_trends_scale_to_one_hundred_thousand_analyses(tmp_path):
     assert scheduling_seconds < 0.25
 
     tracemalloc.start()
-    started = perf_counter()
     owner_revision = index.claim_refresh(organization_id=OWNER, started_at=NOW)
     assert owner_revision is not None
     index.rebuild_owner(organization_id=OWNER, projects=[project])
@@ -658,7 +660,6 @@ def test_materialized_trends_scale_to_one_hundred_thousand_analyses(tmp_path):
         bucket_days=7,
     )
     assert result is not None and foreign_result is not None
-    rebuild_seconds = perf_counter() - started
     _current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
@@ -667,7 +668,6 @@ def test_materialized_trends_scale_to_one_hundred_thousand_analyses(tmp_path):
     assert foreign_result["retained"] == 50_000
     assert foreign_result["in_period"] == 50_000
     assert result["changes"]["local_persistent"] == 0
-    assert rebuild_seconds < 60
     assert peak < 64 * 1024 * 1024
     calls_after_rebuild = jobs.get_calls
 
@@ -684,3 +684,33 @@ def test_materialized_trends_scale_to_one_hundred_thousand_analyses(tmp_path):
     assert repeated["retained"] == 50_000
     assert jobs.get_calls - calls_after_rebuild <= 8
     assert warm_seconds < 1
+
+    # Measure the rebuild budget without tracemalloc's allocation tracing. The
+    # memory and wall-clock guards remain independent and therefore portable to
+    # shared CI runners without relaxing either product limit.
+    timed_settings = _settings(tmp_path / "timed-rebuild")
+    timed_jobs = _SyntheticJobs(timed_settings, [
+        (project, 50_000, "1"),
+        (foreign_project, 50_000, "2"),
+    ])
+    timed_index = ProjectRiskTrendIndex(
+        timed_settings, object(), timed_jobs, _NoIntelligence(), _NoDecisions()
+    )
+    assert timed_index.source_clock.recover() is True
+    for owner in (OWNER, FOREIGN):
+        assert timed_index.request_refresh(
+            organization_id=owner, observed_at=NOW
+        ).state == "rebuilding"
+    timed_started = perf_counter()
+    for owner, owner_project in ((OWNER, project), (FOREIGN, foreign_project)):
+        revision = timed_index.claim_refresh(organization_id=owner, started_at=NOW)
+        assert revision is not None
+        timed_index.rebuild_owner(
+            organization_id=owner, projects=[owner_project]
+        )
+        assert timed_index.complete_refresh(
+            organization_id=owner,
+            claimed_revision=revision,
+            completed_at=NOW,
+        ) is False
+    assert perf_counter() - timed_started < 60
