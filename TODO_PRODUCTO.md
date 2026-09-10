@@ -3919,7 +3919,13 @@ las pruebas indicadas y se sincronicen ambos backlogs.
   5 s específicos. Solo ese caso usa ahora 10 s de espera/15 s totales; los
   demás presupuestos y el timeout global siguen intactos. En Node 22/Vitest
   4.1.11 y cuatro CPU pasaron 59/59 archivos, 420/420 pruebas, build y bundle
-  302,7/322 KiB.
+  302,7/322 KiB. La ejecución remota del tip funcional
+  [34524924443](https://github.com/dreykdrk7/inspectra/actions/runs/34524924443)
+  validó conjuntamente el tip `7f7614cc2c2024aaa90506841bf05b576c4bdb38`:
+  Python 2.094/2.094 y CLI 65/65 con cinco auditorías sin vulnerabilidades
+  conocidas; frontend 59/59 y 420/420, build y auditoría npm; Compose; e
+  historial Gitleaks de 366 commits más canario. Los cuatro jobs terminaron
+  verdes, sin pasos esenciales omitidos ni artefactos publicados.
 
 ## Ciclo 6 — Expansión funcional para desarrolladores y empresas
 
