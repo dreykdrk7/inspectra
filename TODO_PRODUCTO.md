@@ -3842,8 +3842,8 @@ las pruebas indicadas y se sincronicen ambos backlogs.
   `pip check`, guardas y diff-check. Las cinco auditorías Python quedaron
   limpias. `CVE-2026-84373 / GHSA-82fw-gwwq-j7x9` se corrigió actualizando
   Vitest/`@vitest/mocker` a 4.1.11; instalación limpia Node 22 y auditoría npm
-  quedaron a cero. Dos builds dieron los mismos SHA-256: wheel `52b38e9a…`,
-  sdist `a326e512…`, SBOM `666a5b90…` y checksums `c869b31b…`; el wheel se
+  quedaron a cero. Dos builds dieron los mismos SHA-256: wheel `fd3012ef…`,
+  sdist `b35c7287…`, SBOM `666a5b90…` y checksums `aef8d96d…`; el wheel se
   instaló offline fuera del repo. El smoke TLS sintético pasó en 1.296,506 ms
   con auth, análisis, privacidad, egress apagado, informes y cleanup; ningún
   proveedor fue contactado. La degradación mantuvo health 200/readiness 503 y

@@ -2776,8 +2776,8 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
   `CVE-2026-84373 / GHSA-82fw-gwwq-j7x9` con Vitest y `@vitest/mocker` 4.1.11;
   instalación limpia Node 22, pruebas y auditoría posterior quedaron verdes.
   Dos construcciones independientes produjeron los mismos SHA-256:
-  wheel `52b38e9a…`, sdist `a326e512…`, SBOM `666a5b90…` y `SHA256SUMS`
-  `c869b31b…`; el wheel se instaló y verificó offline fuera del repositorio.
+  wheel `fd3012ef…`, sdist `b35c7287…`, SBOM `666a5b90…` y `SHA256SUMS`
+  `aef8d96d…`; el wheel se instaló y verificó offline fuera del repositorio.
   El smoke TLS sintético del commit candidato terminó en 1.296,506 ms con
   salud/readiness, cabeceras, auth/cookie/CSRF, análisis, privacidad, egress
   apagado, 25 clases de retención, informes y cleanup; no contactó proveedores.
