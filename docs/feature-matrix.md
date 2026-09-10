@@ -1,13 +1,14 @@
 # Matriz de funcionalidades de Inspectra 0.3.0-beta.1
 
-Esta matriz describe la candidatura local no publicada `0.3.0-beta.1`. Los
-estados se refieren a evidencia disponible, no a una promesa comercial.
+Esta matriz describe la candidatura `0.3.0-beta.1`, validada técnicamente en un
+PR borrador pero todavía sin tag, release ni publicación. Los estados se
+refieren a evidencia disponible, no a una promesa comercial.
 
 | Área | Estado | Evidencia disponible | Límite operativo |
 | --- | --- | --- | --- |
 | Archivo autorizado → proyecto → análisis | Beta candidata | Suites, smoke TLS y aceptación real | No ejecuta contenido ni acepta ruta del servidor |
 | Snapshot Git con CLI | Beta candidata | Repositorios sintéticos, Gitleaks y reproducción byte a byte | Solo objetos rastreados del commit; no worktree |
-| CI con credencial acotada | Beta candidata local | Contratos y E2E local | CI remota pendiente; sin push/PR autorizado |
+| CI con credencial acotada | Beta candidata validada | Contratos, E2E local y CI remota verde sobre el commit candidato | PR borrador; no implica merge, tag, release ni despliegue |
 | SBOM CycloneDX/SPDX | Beta candidata | Fixtures hostiles, aislamiento y UI | Solo versiones/formas cerradas; metadata libre descartada |
 | Reglas pasivas de configuración | Beta candidata | Backend/runner/frontend y fixtures | Señales para revisión; no prueba de explotabilidad |
 | Inventario npm/PyPI/Go/Cargo/Composer/Gradle/NuGet | Beta candidata | Parsers acotados y cobertura explícita | Formatos no soportados quedan no correlacionables |
@@ -24,7 +25,7 @@ estados se refieren a evidencia disponible, no a una promesa comercial.
 | Active: registro/operación | Experimental | Flujos semanales sintéticos, auditoría e informes | Requiere activos propios/autorizados; apagado por defecto |
 | Active: ejecución | Experimental | Runners aislados y capacidades cerradas | Sin flags libres, explotación ni objetivos públicos arbitrarios |
 | Backup/restore e integridad | Beta candidata | Drill, corrupción, revocación y restore a ruta nueva | El operador aporta almacenamiento cifrado y copias externas |
-| Despliegue privado TLS | Candidatura controlada | Compose, smoke y acta local | Sin CI remota ni declaración estable; single-host |
+| Despliegue privado TLS | Candidatura controlada | Compose, smoke, acta local y CI remota verde | Sin declaración estable; single-host |
 | macOS/Windows | Bloqueado | Ninguna aceptación real | Linux es la única plataforma acreditada |
 
 ## Convenciones

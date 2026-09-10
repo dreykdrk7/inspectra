@@ -615,6 +615,15 @@ y consolidar el árbol Git de Inspectra, elegir una versión posterior coherente
 actualizar la documentación canónica, obtener CI remoto verde y resolver
 `SEC-012` con autorización explícita.
 
+Actualización del corte `0.3.0-beta.1` (2026-09-10): la consolidación local,
+reescritura mínima del historial inédito, publicación de rama y PR borrador
+fueron autorizadas posteriormente. `SEC-012` y `PROD-130` quedaron completadas
+tras la ejecución CI verde
+[34520803043](https://github.com/dreykdrk7/inspectra/actions/runs/34520803043)
+sobre `ef046a1fe2d8468aed6bfa83315ab7ae687bf922`. El veredicto sigue limitado a
+una candidatura técnicamente validada: no hubo merge, tag, release, publicación
+de paquetes ni despliegue.
+
 ## Configuración segura mínima
 
 - Host Linux dedicado o aislado, Docker Engine y Compose compatibles con

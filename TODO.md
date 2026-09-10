@@ -1,7 +1,7 @@
 # TODO — seguridad, calidad técnica y frontend
 
 Fuente de verdad operativa derivada de `PLAN_MEJORAS_SEGURIDAD_Y_FRONTEND.md`.
-Actualizado: 2026-09-06.
+Actualizado: 2026-09-10.
 
 ## Reglas de prioridad
 
@@ -347,14 +347,26 @@ ya correlacionado.
 ### SEC-012 — Anclar las acciones de GitHub Actions por SHA verificado
 
 - **Prioridad:** P2
-- **Estado:** bloqueada
+- **Estado:** completada
 - **Descripción y motivo:** La nueva CI usa etiquetas móviles de acciones de terceros y de GitHub. Aunque las etiquetas facilitan actualizaciones, no fijan el contenido exacto que ejecuta la cadena de suministro.
 - **Archivos o áreas implicadas:** `.github/workflows/ci.yml`, documentación de contribución y proceso de actualización de acciones.
 - **Criterios de aceptación verificables:** cada acción externa se referencia por SHA de commit completo y conserva un comentario con su versión legible; existe un procedimiento documentado para renovar y verificar esos SHA; el workflow sigue validando en GitHub Actions.
 - **Riesgo de no resolverla:** una modificación comprometida o inesperada de una etiqueta puede ejecutar código distinto en CI sin cambiar el repositorio.
 - **Estimación:** S
 - **Dependencias:** SEC-005 completada.
-- **Evidencia de validación al completarla:** 2026-09-05: las etiquetas oficiales se verificaron contra sus repositorios: checkout v4.4.0 → `11d5960a326750d5838078e36cf38b85af677262`, setup-python v5.6.0 → `a26af69be951a213d495a4c3e4e4022e16d87065` y setup-node v4.4.0 → `49933ea5288caeca8642d1e84afbd3f7d6820020`. El workflow usa solo SHA completos con comentarios de versión y una prueba estática prohíbe referencias `@v*`. La antigua Action Gitleaks se eliminó en SEC-015; el escaneo usa ahora la imagen CLI v8.30.1 fijada por digest, por lo que no añade otra Action mutable. Las guardas estáticas y `git diff --check` pasaron. Bloqueo externo: falta la primera ejecución real en GitHub Actions (push o PR) para confirmar que el runner remoto acepta todas las acciones e imagen ancladas; no se creó un push ni se disparó un workflow desde este entorno.
+- **Evidencia de validación al completarla:** 2026-09-10: las etiquetas oficiales se verificaron contra sus repositorios: checkout v4.4.0 → `11d5960a326750d5838078e36cf38b85af677262`, setup-python v5.6.0 → `a26af69be951a213d495a4c3e4e4022e16d87065` y setup-node v4.4.0 → `49933ea5288caeca8642d1e84afbd3f7d6820020`. El workflow referencia solo SHA completos, tiene permisos globales `contents: read`, no usa `pull_request_target`, secretos ni OIDC, y Gitleaks se ejecuta desde una imagen v8.30.1 fijada por digest. La ejecución real [34520803043](https://github.com/dreykdrk7/inspectra/actions/runs/34520803043) sobre `ef046a1fe2d8468aed6bfa83315ab7ae687bf922` completó correctamente checkout/setup en los cuatro jobs, las pruebas, auditorías, dos perfiles Compose, historial Gitleaks y canario. Todos los pasos terminaron y no se publicaron artefactos. GitHub avisó que fuerza Node 24 para estas revisiones de acciones basadas en Node 20; `SEC-021` registra la actualización posterior sin invalidar que los SHA auditados se ejecutaron correctamente.
+
+### SEC-021 — Migrar las acciones fijadas a revisiones con runtime Node 24 nativo
+
+- **Prioridad:** P2
+- **Estado:** pendiente
+- **Descripción y motivo:** GitHub Actions ejecutó correctamente los SHA fijados de checkout/setup, pero emitió una advertencia de deprecación porque esas revisiones declaran Node 20 y el runner las fuerza a Node 24. Una actualización revisada evita depender de la compatibilidad temporal del runner.
+- **Archivos o áreas implicadas:** `.github/workflows/ci.yml`, pruebas estáticas de CI y documentación de renovación de acciones.
+- **Criterios de aceptación verificables:** seleccionar versiones oficiales que declaren runtime Node 24; verificar cada tag contra su SHA completo en el repositorio oficial; conservar permisos mínimos y comentarios de versión; ejecutar todas las puertas en un PR sin advertencias de runtime y registrar los enlaces de CI.
+- **Riesgo de no resolverla:** una futura retirada de la compatibilidad Node 20 puede romper CI aunque el código de Inspectra no cambie; actualizar sin verificar podría debilitar el anclaje de suministro.
+- **Estimación:** S
+- **Dependencias:** `SEC-012` completada; requiere un ciclo remoto autorizado independiente para verificar los nuevos SHA.
+- **Evidencia de validación al completarla:** pendiente; advertencia observada en los cuatro jobs de la ejecución `34520803043`. No se actualizan acciones durante este corte.
 
 ### SEC-013 — Hacer reproducibles los paquetes del sistema instalados en imágenes
 
@@ -372,7 +384,7 @@ ya correlacionado.
 
 ## Evolución de producto
 
-Este bloque convierte la base pasiva ya reforzada en un producto de análisis de proyectos. Se parte de la arquitectura actual: archivos subidos y trabajos pasivos acotados, con propiedad por operador y retención. La primera vía admitida será un archivo de proyecto subido por el usuario; no se aceptarán rutas arbitrarias del servidor ni se clonarán repositorios o se pedirán credenciales hasta que exista un diseño de aislamiento específico. `SEC-012` se conserva bloqueada y queda fuera de cualquier cambio de esta línea sin autorización explícita.
+Este bloque convirtió la base pasiva ya reforzada en un producto de análisis de proyectos. Se partió de la arquitectura disponible entonces: archivos subidos y trabajos pasivos acotados, con propiedad por operador y retención. La primera vía admitida fue un archivo de proyecto subido por el usuario; no se aceptaron rutas arbitrarias del servidor ni se clonaron repositorios o se pidieron credenciales sin un diseño de aislamiento específico. `SEC-012` permaneció bloqueada durante esta línea y se completó posteriormente, el 2026-09-10, con autorización explícita y evidencia CI remota.
 
 ### P0 — verticales de producto utilizables
 
@@ -680,7 +692,7 @@ no equivale a cobertura de proyectos analizados.
 | PROD-127 | P0 | completada | S | PROD-026, PROD-090 y validación real de PROD-117 |
 | PROD-128 | P0 | completada | S | PROD-113, PROD-126 y revisión visual de PROD-117 |
 | PROD-129 | P1 | completada | L | PROD-117/127/128 completadas; consolidación local autorizada el 2026-09-10 |
-| PROD-130 | P1 | en progreso | M | PROD-129 y SEC-012; autorización remota limitada concedida, PR borrador abierto y CI remoto en corrección tras un fallo frontend reproducible |
+| PROD-130 | P1 | completada | M | PROD-129 y SEC-012 completadas; rama remota, PR borrador y CI verde verificables |
 | PROD-131 | P1 | completada | L | PROD-043, PROD-073 y flujo archive-backed completados |
 | PROD-132 | P1 | completada | M | PROD-131 completada |
 | PROD-133 | P1 | completada | L | PROD-012, PROD-013; implementa PROD-067 |
@@ -2792,7 +2804,7 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 ### PROD-130 — Validar CI remoto y cerrar la puerta de release
 
 - **Prioridad:** P1
-- **Estado:** en progreso
+- **Estado:** completada
 - **Descripción y motivo:** una candidatura destinada a equipos necesita que
   sus comprobaciones se reproduzcan en CI sobre el commit exacto y que las
   acciones de terceros estén ancladas antes de autorizar cualquier publicación.
@@ -2809,10 +2821,10 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 - **Dependencias:** `PROD-129` y `SEC-012`; requiere autorización explícita para
   cambiar `SEC-012` y para cualquier push/PR. Ambas autorizaciones fueron
   concedidas el 2026-09-10 para este ciclo remoto limitado.
-- **Evidencia de validación al completarla:** en progreso; con autorización
+- **Evidencia de validación al completarla:** 2026-09-10: con autorización
   explícita se reescribió exclusivamente la serie local inédita, sin bypass ni
-  force-push. La rama remota y el PR borrador #1 apuntan al commit exacto
-  `3d912d2e8196c5185b8e378fd3e04ca692b99a01`. El primer CI remoto dejó verdes
+  force-push. La rama remota y el PR borrador #1 se publicaron inicialmente
+  sobre `3d912d2e8196c5185b8e378fd3e04ca692b99a01`. El primer CI remoto dejó verdes
   Compose, Gitleaks (historial y canario) y Python; frontend instaló sin
   vulnerabilidades y ejecutó las 420 pruebas, pero cuatro esperas asíncronas de
   `App.test.tsx` fallaron bajo carga antes de permitir build/audit. El caso se
@@ -2824,10 +2836,19 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
   total predeterminado de Vitest (5 s) competía con esa espera y detuvo el test
   de enlace restaurado. Los cuatro tests afectados tienen ahora 10 s totales y
   mantienen 5 s para la transición; la repetición completa volvió a pasar
-  420/420, build 302,7/322 KiB y `npm audit` cero vulnerabilidades. Pendiente
-  repetir todas las puertas en CI; no se promoverá una ejecución parcial. No
-  hubo tag, release, publicación ni despliegue; `SEC-012` sigue bloqueada hasta
-  disponer de evidencia remota completa.
+  420/420, build 302,7/322 KiB y `npm audit` cero vulnerabilidades. La ejecución
+  real [34520803043](https://github.com/dreykdrk7/inspectra/actions/runs/34520803043)
+  terminó verde sobre `ef046a1fe2d8468aed6bfa83315ab7ae687bf922`:
+  Python 2.094/2.094 + CLI 65/65 y cinco auditorías sin vulnerabilidades
+  conocidas; frontend 59/59 archivos y 420/420, build y auditoría; Compose base
+  y privado; Gitleaks 363 commits sin fugas y canario activo. Los cuatro jobs y
+  todos sus pasos terminaron, se publicaron cero artefactos y los logs no
+  incluyeron nombres de las fuentes privadas de aceptación ni rutas locales.
+  Tras los commits correctivos ordinarios, la rama remota coincidía con el tip
+  validado y el PR #1 permanecía abierto y draft. No
+  hubo merge, tag, release, publicación ni despliegue. `SEC-012` quedó completada
+  con esta evidencia; `SEC-021` conserva como P2 la advertencia no bloqueante de
+  runtime Node de las acciones.
 
 ### PROD-179 — Readiness efectivo del runner por capacidad
 

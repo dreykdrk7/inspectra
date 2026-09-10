@@ -1,10 +1,10 @@
 # Archive-backed projects
 
-Este es el flujo principal de la candidatura local no publicada
-`0.3.0-beta.1`: fuente autorizada → snapshot inmutable → ejecución limitada →
-inventario/cobertura → hallazgos → comparación e informe. Ningún canal ejecuta
-el proyecto ni acepta una ruta del servidor o URL de repositorio aportada por el
-usuario.
+Este es el flujo principal de la candidatura `0.3.0-beta.1`, técnicamente
+validada en un PR borrador pero todavía sin tag, release ni publicación: fuente
+autorizada → snapshot inmutable → ejecución limitada → inventario/cobertura →
+hallazgos → comparación e informe. Ningún canal ejecuta el proyecto ni acepta
+una ruta del servidor o URL de repositorio aportada por el usuario.
 
 ## Cartera global y priorización explicable
 

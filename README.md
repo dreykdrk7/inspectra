@@ -6,11 +6,12 @@ inventario de dependencias, reglas pasivas, inteligencia pública de
 vulnerabilidades, triage, comparación, informes, automatización y una superficie
 Active acotada en una sola experiencia.
 
-> **Estado actual:** `0.3.0-beta.1` es una candidatura **local**, no publicada y
-> no estable. La aceptación controlada validó OSV y CISA KEV con identidades npm
-> públicas exactas; GitHub Security Advisories y NVD continúan validados solo con
-> fixtures. El egress y todas las capacidades Active están deshabilitados por
-> defecto.
+> **Estado actual:** `0.3.0-beta.1` es una candidatura técnicamente validada en
+> un [PR borrador](https://github.com/dreykdrk7/inspectra/pull/1), no una versión
+> estable ni publicada. La aceptación controlada validó OSV y CISA KEV con
+> identidades npm públicas exactas; GitHub Security Advisories y NVD continúan
+> validados solo con fixtures. El egress y todas las capacidades Active están
+> deshabilitados por defecto.
 
 ## Qué aporta
 
@@ -41,7 +42,7 @@ Active acotada en una sola experiencia.
 | CISA KEV | Validación real acotada | Solo enriquecimiento por CVE exacto ya correlacionado |
 | GHSA y NVD | Fixtures únicamente | Deshabilitados; sin credenciales GitHub ni consulta real acreditada |
 | Triage, comparación e informes | Beta candidata | Evidencia sensible redactada; export técnico requiere confirmación |
-| CLI y CI | Beta candidata | Python 3.12; CI remoto aún pendiente de autorización |
+| CLI y CI | Beta candidata validada | Python 3.12; CI remota verde sobre el commit candidato, sin publicar artefactos |
 | Equipos privados | Experimental | No es SaaS multi-tenant ni alta disponibilidad |
 | Active | Experimental/deshabilitado | Solo activos propios/autorizados y controles opt-in independientes |
 
@@ -197,7 +198,7 @@ operativa y `TODO_PRODUCTO.md` mantiene el roadmap funcional sincronizado.
 - [Equipos y permisos](docs/team-permission-matrix.md)
 - [Backup y restore](docs/backup-restore.md)
 - [Aceptación de despliegue](DEPLOYMENT_ACCEPTANCE.md)
-- [Notas de la candidatura local](docs/releases/0.3.0-beta.1-local.md)
+- [Notas de la candidatura](docs/releases/0.3.0-beta.1-local.md)
 
 El historial técnico detallado se conserva en `docs/future/`, `docs/audits/`,
 las actas de aceptación y los backlogs; el README describe únicamente el

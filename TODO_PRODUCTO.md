@@ -5,8 +5,8 @@ pueden usarse, probarse y operar con seguridad. `TODO.md` sigue siendo la fuente
 de verdad general: al cambiar una tarea `PROD-*`, se actualizan en el mismo
 cambio su prioridad, estado, dependencias y evidencia aquí y allí. Si hubiese
 una discrepancia, prevalece el estado registrado en `TODO.md` hasta corregir la
-sincronización. `SEC-012` es una tarea interna bloqueada y queda fuera de este
-backlog: no debe modificarse ni desbloquearse sin autorización explícita.
+sincronización. `SEC-012` es una tarea interna fuera de este backlog: quedó
+completada el 2026-09-10 tras autorización explícita y ejecución remota verde.
 
 ## Base observada y principios de alcance
 
@@ -200,7 +200,7 @@ integración con esos proveedores.
 | PROD-127 | P0 | completada | Compatibilidad estricta con respuestas resumidas de OSV |
 | PROD-128 | P0 | completada | Presentación móvil e indicadores semánticos de inteligencia |
 | PROD-129 | P1 | completada | Preparar un corte local coherente y revisable |
-| PROD-130 | P1 | en progreso | Validar CI remoto y cerrar la puerta de release |
+| PROD-130 | P1 | completada | Validar CI remoto y cerrar la puerta de release |
 | PROD-131 | P1 | completada | CLI: snapshot Git seguro, preflight y dry-run |
 | PROD-132 | P1 | completada | CLI: subida, seguimiento y resultado end-to-end |
 | PROD-133 | P1 | completada | Tokens de automatización con alcance y revocación |
@@ -374,8 +374,9 @@ registrados en `TODO.md` y no cuentan como prueba superada.
 
 Este control no sustituye las fichas ni la evidencia de las tareas: acredita que
 cada ronda se ejecutó sobre código, contratos y pruebas reales. La quinta ronda
-no es un cierre de producto ni de despliegue. `SEC-012` continúa bloqueada y no
-se incluye en este ciclo.
+no fue un cierre de producto ni de despliegue. `SEC-012` estaba bloqueada y no
+se incluyó en aquel ciclo; quedó completada después, el 2026-09-10, con
+autorización y evidencia CI remota independiente.
 
 ### Ronda 1 — flujo de proyecto y resultados
 
@@ -3856,7 +3857,7 @@ las pruebas indicadas y se sincronicen ambos backlogs.
 ### PROD-130 — Validar CI remoto y cerrar la puerta de release
 
 - **Prioridad:** P1
-- **Estado:** en progreso
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** empresas y mantenedores necesitan
   evidencia independiente de que el commit candidato supera las mismas puertas
   en CI y de que su cadena de acciones no depende de referencias mutables.
@@ -3879,10 +3880,10 @@ las pruebas indicadas y se sincronicen ambos backlogs.
 - **Estrategia de pruebas:** revisión de permisos y SHAs, validadores estáticos,
   ejecución remota sobre el commit candidato y comparación con la matriz local;
   ninguna consulta real a proveedores forma parte de la suite ordinaria.
-- **Evidencia de validación al completarse:** en progreso; con autorización
+- **Evidencia de validación al completarse:** 2026-09-10: con autorización
   explícita se reescribió exclusivamente la serie local inédita, sin bypass ni
-  force-push. La rama remota y el PR borrador #1 apuntan al commit exacto
-  `3d912d2e8196c5185b8e378fd3e04ca692b99a01`. El primer CI remoto dejó verdes
+  force-push. La rama remota y el PR borrador #1 se publicaron inicialmente
+  sobre `3d912d2e8196c5185b8e378fd3e04ca692b99a01`. El primer CI remoto dejó verdes
   Compose, Gitleaks (historial y canario) y Python; frontend instaló sin
   vulnerabilidades y ejecutó las 420 pruebas, pero cuatro esperas asíncronas de
   `App.test.tsx` fallaron bajo carga antes de permitir build/audit. El caso se
@@ -3894,17 +3895,27 @@ las pruebas indicadas y se sincronicen ambos backlogs.
   total predeterminado de Vitest (5 s) competía con esa espera y detuvo el test
   de enlace restaurado. Los cuatro tests afectados tienen ahora 10 s totales y
   mantienen 5 s para la transición; la repetición completa volvió a pasar
-  420/420, build 302,7/322 KiB y `npm audit` cero vulnerabilidades. Pendiente
-  repetir todas las puertas en CI; no se promoverá una ejecución parcial. No
-  hubo tag, release, publicación ni despliegue; `SEC-012` sigue bloqueada hasta
-  disponer de evidencia remota completa.
+  420/420, build 302,7/322 KiB y `npm audit` cero vulnerabilidades. La ejecución
+  real [34520803043](https://github.com/dreykdrk7/inspectra/actions/runs/34520803043)
+  terminó verde sobre `ef046a1fe2d8468aed6bfa83315ab7ae687bf922`:
+  Python 2.094/2.094 + CLI 65/65 y cinco auditorías sin vulnerabilidades
+  conocidas; frontend 59/59 archivos y 420/420, build y auditoría; Compose base
+  y privado; Gitleaks 363 commits sin fugas y canario activo. Los cuatro jobs y
+  todos sus pasos terminaron, se publicaron cero artefactos y los logs no
+  incluyeron nombres de las fuentes privadas de aceptación ni rutas locales.
+  Tras los commits correctivos ordinarios, la rama remota coincidía con el tip
+  validado y el PR #1 permanecía abierto y draft. No
+  hubo merge, tag, release, publicación ni despliegue. `SEC-012` quedó completada
+  con esta evidencia; la advertencia no bloqueante de runtime Node de las
+  acciones se conserva como `SEC-021` en el backlog general.
 
 ## Ciclo 6 — Expansión funcional para desarrolladores y empresas
 
-Este ciclo prioriza capacidades utilizables. `SEC-012` y `PROD-130` permanecen
-bloqueadas; la autorización remota limitada de `PROD-130` no abarca reescribir
-la serie local inédita tras el rechazo de Push Protection. `PROD-129`
-quedó completada tras su autorización local. Las tareas
+Este ciclo prioriza capacidades utilizables. En su apertura, `SEC-012` y
+`PROD-130` permanecían bloqueadas y `PROD-129` acababa de completarse tras su
+autorización local. La autorización extraordinaria posterior permitió sanear y
+publicar la serie inédita sin bypass ni force-push; `SEC-012` y `PROD-130`
+quedaron completadas el 2026-09-10 con PR borrador y CI remota verde. Las tareas
 que materializan trabajo ya previsto indican
 la ficha anterior que deben reconciliar al completarse; no crean un segundo
 estado funcional para la misma capacidad.

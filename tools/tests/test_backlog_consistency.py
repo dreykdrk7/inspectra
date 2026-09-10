@@ -82,18 +82,15 @@ def test_detects_summary_detail_priority_or_status_conflict(valid_backlogs, fiel
     assert any("PROD-001 contradice resumen" in error for error in errors)
 
 
-@pytest.mark.parametrize("task_id", ["SEC-012", "PROD-167"])
-def test_protected_task_must_remain_blocked(valid_backlogs, task_id) -> None:
+def test_protected_task_must_remain_blocked(valid_backlogs) -> None:
+    task_id = "PROD-167"
     todo, product = valid_backlogs
-    target = todo if task_id == "SEC-012" else product
+    target = product
     current = target.read_text(encoding="utf-8")
-    if task_id == "SEC-012":
-        mutated = current.replace("- **Estado:** bloqueada", "- **Estado:** pendiente")
-    else:
-        mutated = current.replace(
-            f"| {task_id} | " + ("P2" if task_id == "PROD-167" else "P1") + " | bloqueada |",
-            f"| {task_id} | " + ("P2" if task_id == "PROD-167" else "P1") + " | pendiente |",
-        )
+    mutated = current.replace(
+        f"| {task_id} | P2 | bloqueada |",
+        f"| {task_id} | P2 | pendiente |",
+    )
     target.write_text(
         mutated,
         encoding="utf-8",
@@ -102,6 +99,22 @@ def test_protected_task_must_remain_blocked(valid_backlogs, task_id) -> None:
     assert any(
         task_id in error and "debe seguir bloqueada" in error for error in errors
     )
+
+
+def test_authorized_action_pin_task_may_complete(valid_backlogs) -> None:
+    todo, product = valid_backlogs
+    todo.write_text(
+        todo.read_text(encoding="utf-8").replace(
+            "### SEC-012 — Protected\n"
+            "- **Prioridad:** P2\n"
+            "- **Estado:** bloqueada",
+            "### SEC-012 — Protected\n"
+            "- **Prioridad:** P2\n"
+            "- **Estado:** completada",
+        ),
+        encoding="utf-8",
+    )
+    assert validate_backlogs(todo, product) == []
 
 
 def test_authorized_release_cut_may_progress_when_both_backlogs_agree(
