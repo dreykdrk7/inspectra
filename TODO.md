@@ -680,7 +680,7 @@ no equivale a cobertura de proyectos analizados.
 | PROD-127 | P0 | completada | S | PROD-026, PROD-090 y validación real de PROD-117 |
 | PROD-128 | P0 | completada | S | PROD-113, PROD-126 y revisión visual de PROD-117 |
 | PROD-129 | P1 | completada | L | PROD-117/127/128 completadas; consolidación local autorizada el 2026-09-10 |
-| PROD-130 | P1 | en progreso | M | PROD-129 y SEC-012; autorización remota limitada concedida el 2026-09-10 |
+| PROD-130 | P1 | bloqueada | M | PROD-129 y SEC-012; GitHub bloqueó dos canarios sintéticos presentes en historial local inédito; requiere autorización para reescritura acotada |
 | PROD-131 | P1 | completada | L | PROD-043, PROD-073 y flujo archive-backed completados |
 | PROD-132 | P1 | completada | M | PROD-131 completada |
 | PROD-133 | P1 | completada | L | PROD-012, PROD-013; implementa PROD-067 |
@@ -2792,7 +2792,7 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 ### PROD-130 — Validar CI remoto y cerrar la puerta de release
 
 - **Prioridad:** P1
-- **Estado:** en progreso
+- **Estado:** bloqueada
 - **Descripción y motivo:** una candidatura destinada a equipos necesita que
   sus comprobaciones se reproduzcan en CI sobre el commit exacto y que las
   acciones de terceros estén ancladas antes de autorizar cualquier publicación.
@@ -2809,9 +2809,15 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 - **Dependencias:** `PROD-129` y `SEC-012`; requiere autorización explícita para
   cambiar `SEC-012` y para cualquier push/PR. Ambas autorizaciones fueron
   concedidas el 2026-09-10 para este ciclo remoto limitado.
-- **Evidencia de validación al completarla:** en progreso; la identidad local y
-  remota coincide y la revisión pre-push detectó metadatos privados que deben
-  redactarse antes de publicar la rama. No hubo todavía push, PR, tag ni despliegue.
+- **Evidencia de validación al completarla:** en progreso; la identidad inicial
+  coincidió y la revisión pre-push redactó los metadatos privados antes de todo
+  intento remoto. GitHub Push Protection rechazó el primer push, sin crear la
+  rama remota, al reconocer dos canarios sintéticos con forma Stripe/Slack en el
+  commit local inédito `61533ec`. El árbol actual ya construye ambos valores
+  únicamente en memoria y conserva 12/12 casos de redacción verdes, pero un
+  commit posterior no retira el blob histórico. No se usó el bypass: continuar
+  requiere autorización explícita para reescribir solo la serie local inédita.
+  No hubo PR, tag, release, publicación ni despliegue; `SEC-012` sigue bloqueada.
 
 ### PROD-179 — Readiness efectivo del runner por capacidad
 
