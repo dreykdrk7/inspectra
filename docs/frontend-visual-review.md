@@ -473,10 +473,10 @@ Automated checks: make test-frontend build-frontend
   build y presupuesto 317,4/322 KiB en 7,77 s; la regresión incluye axe para
   dashboard, lifecycle, inteligencia y estados de error/vacío.
 
-## Registro — 2026-09-06: aceptación real Eventora (`PROD-117`/`PROD-128`)
+## Registro — 2026-09-06: aceptación real de la fuente autorizada B (`PROD-117`/`PROD-128`)
 
 - **Alcance:** copia efímera de la candidatura y de los datos normalizados de la
-  aceptación Eventora, con el egress de la copia visual deshabilitado. Se
+  aceptación de la fuente autorizada B, con el egress de la copia visual deshabilitado. Se
   recorrieron dashboard, workspace e historial, inventario/cobertura,
   correlaciones retenidas, inteligencia actual y degradada, búsqueda/filtros,
   detalle público, hallazgos y triage, comparación e informes. La copia no

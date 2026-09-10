@@ -82,7 +82,7 @@ def test_detects_summary_detail_priority_or_status_conflict(valid_backlogs, fiel
     assert any("PROD-001 contradice resumen" in error for error in errors)
 
 
-@pytest.mark.parametrize("task_id", ["SEC-012", "PROD-130", "PROD-167"])
+@pytest.mark.parametrize("task_id", ["SEC-012", "PROD-167"])
 def test_protected_task_must_remain_blocked(valid_backlogs, task_id) -> None:
     todo, product = valid_backlogs
     target = todo if task_id == "SEC-012" else product
@@ -113,6 +113,21 @@ def test_authorized_release_cut_may_progress_when_both_backlogs_agree(
             path.read_text(encoding="utf-8").replace(
                 "| PROD-129 | P1 | bloqueada |",
                 "| PROD-129 | P1 | en progreso |",
+            ),
+            encoding="utf-8",
+        )
+    assert validate_backlogs(todo, product) == []
+
+
+def test_authorized_remote_ci_may_progress_when_both_backlogs_agree(
+    valid_backlogs,
+) -> None:
+    todo, product = valid_backlogs
+    for path in (todo, product):
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "| PROD-130 | P1 | bloqueada |",
+                "| PROD-130 | P1 | en progreso |",
             ),
             encoding="utf-8",
         )

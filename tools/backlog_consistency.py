@@ -14,7 +14,7 @@ from typing import Iterable
 TASK_ID_PATTERN = r"(?:PROD-\d{3}|SEC-\d{3})"
 PRIORITIES = frozenset({"P0", "P1", "P2", "P3"})
 STATUSES = frozenset({"pendiente", "en progreso", "bloqueada", "completada"})
-PROTECTED_BLOCKED_TASKS = frozenset({"SEC-012", "PROD-130", "PROD-167"})
+PROTECTED_BLOCKED_TASKS = frozenset({"SEC-012", "PROD-167"})
 
 _SUMMARY_ROW = re.compile(
     rf"^\| (?P<id>{TASK_ID_PATTERN}) \| (?P<priority>P[0-3]) \| "

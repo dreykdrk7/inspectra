@@ -11,7 +11,7 @@ estados se refieren a evidencia disponible, no a una promesa comercial.
 | SBOM CycloneDX/SPDX | Beta candidata | Fixtures hostiles, aislamiento y UI | Solo versiones/formas cerradas; metadata libre descartada |
 | Reglas pasivas de configuración | Beta candidata | Backend/runner/frontend y fixtures | Señales para revisión; no prueba de explotabilidad |
 | Inventario npm/PyPI/Go/Cargo/Composer/Gradle/NuGet | Beta candidata | Parsers acotados y cobertura explícita | Formatos no soportados quedan no correlacionables |
-| OSV para npm público exacto | Validación real acotada | Aceptación Eventora, caída/recuperación y caché | Egress explícito; solo identidad mínima |
+| OSV para npm público exacto | Validación real acotada | Aceptación de la fuente autorizada B, caída/recuperación y caché | Egress explícito; solo identidad mínima |
 | OSV para PyPI/Go/Cargo/Composer/Maven/NuGet | Implementado con fixtures | Suite determinista y política de procedencia | Falta aceptación real específica; atestaciones adicionales |
 | CISA KEV | Validación real acotada | Catálogo oficial durante aceptación | Enriquecimiento por CVE exacto; nunca crea vulnerabilidad |
 | GitHub Security Advisories | Adaptador con fixtures | Normalización/correlación simulada | Egress real y token GitHub no autorizados |

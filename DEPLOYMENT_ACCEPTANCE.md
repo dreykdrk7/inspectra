@@ -1,7 +1,7 @@
 # Candidatura de despliegue y aceptación de Inspectra
 
 Estado: **aceptación real ejecutada; NO-GO para despliegue**. El 2026-09-06 se
-ejecutó `PROD-117` con el proyecto `urlbreve` expresamente autorizado, dentro de
+ejecutó `PROD-117` con la fuente A expresamente autorizada, dentro de
 una pila local aislada y limitada al loopback. La aplicación completó el flujo
 local y su limpieza, pero el `HEAD` autorizado no contiene un lockfile ni una
 versión npm/PyPI exacta. La política impidió correctamente cualquier consulta:
@@ -258,12 +258,12 @@ smoke.
 
 ### Fuente autorizada y preflight
 
-La búsqueda no destructiva encontró una sola copia denominada `urlbreve`. Se
-eligió `/home/edward/proyectos_web/urlbreve` porque es la raíz Git más interna y
+La búsqueda no destructiva encontró una sola copia de la fuente autorizada A. Se
+eligió `[ruta local autorizada A redactada]` porque es la raíz Git más interna y
 coincide exactamente con ese directorio; no se tomó como proyecto el repositorio
-Git padre de `/home/edward`. Antes y después de la aceptación el worktree tuvo
+Git padre de `[directorio local redactado]`. Antes y después de la aceptación el worktree tuvo
 cero cambios y el commit fue
-`15ced48c93071a5a8ae19869a227b498a73bf083`.
+`[commit autorizado A redactado]`.
 
 `git ls-tree` enumeró 65 entradas rastreadas. Dos entradas `.env*` rastreadas se
 excluyeron expresamente. La instantánea final tuvo 63 archivos regulares, cero
@@ -271,7 +271,7 @@ symlinks y ninguna entrada `.env` o `.git`; no incorporó ignorados, no
 rastreados, dependencias instaladas ni artefactos del worktree. Dos archivos TAR
 generados independientemente desde `HEAD`, con orden, propietario y marcas de
 tiempo normalizados, midieron 450.560 bytes y produjeron el mismo SHA-256:
-`f5c442f9185b49cde08a7d2d57f92afbec3c2f1b84c7a36eba914abaf3090e49`.
+`[SHA-256 de snapshot A redactado]`.
 
 El preflight efectivo de secretos encontró 20 coincidencias, revisadas sin
 copiar sus valores al acta: 18 pertenecían a datos repetidos de pruebas y dos a
@@ -281,7 +281,7 @@ GitHub. Una dirección de contacto en contenido documental se mantuvo local. El
 preflight descubrió que la configuración anterior de Gitleaks no cargaba sus
 reglas por defecto; `SEC-020` activó las reglas, añadió un canario bloqueante y
 allowlists por huella revisada antes de volver a crear la instantánea. No se
-ejecutó código, script, instalador ni gestor de paquetes de `urlbreve`.
+ejecutó código, script, instalador ni gestor de paquetes de `fuente autorizada A`.
 
 ### Candidatura y flujo ejercitado
 
@@ -397,15 +397,15 @@ soportado con versiones exactas, o para un SBOM/artefacto de resolución exacta,
 inmutable y previamente revisado. Hasta entonces la tarea queda bloqueada y
 ningún proveedor debe activarse.
 
-## Segunda aceptación real `PROD-117`: Eventora — 2026-09-06
+## Segunda aceptación real `PROD-117`: fuente autorizada B — 2026-09-06
 
 ### Fuente inmutable y preflight
 
 La fuente autorizada fue exclusivamente el objeto Git
-`1368a0ca3d8f6b0ddefaf411ae809875f2767105` de
-`/home/edward/proyectos_web/eventora`. Git confirmó el objeto `commit`, el árbol
-`3c7db5ee35e45b0eddf4ee796dc8fd72744d03f8` y el blob
-`8923d263953f7fff61fc0b5bede44b6e24efab2f` para
+`[commit autorizado B redactado]` de
+`[ruta local autorizada B redactada]`. Git confirmó el objeto `commit`, el árbol
+`[árbol Git autorizado redactado]` y el blob
+`[blob Git autorizado redactado]` para
 `apps/web/package-lock.json`; el JSON retenido en el commit declaró
 `lockfileVersion: 3`. No se usó el checkout, `git stash`, dependencias
 instaladas, ignorados, no rastreados ni `.git`, y no se ejecutó código, script,
@@ -418,7 +418,7 @@ resultado tuvo 1.417 archivos regulares, cero symlinks y cero nombres `.env*` o
 `.git`. Dos TAR canónicos de 12.871.680 bytes fueron idénticos:
 
 ```text
-SHA-256 01f512bd5278883fdb845c287f34d697cd905d33142a3111f994f24a9d262924
+SHA-256 [SHA-256 de snapshot B redactado]
 ```
 
 Gitleaks, con sus reglas completas y sin red, terminó con código 0 y cero
@@ -429,17 +429,17 @@ textual de palabras parecidas a credenciales produjo falsos positivos y no se
 usó como sustituto de Gitleaks ni se declaró aprobada. No se expuso ninguno de
 sus valores en esta acta.
 
-El worktree de Eventora sí recibió actividad concurrente ajena a esta
+El worktree de la fuente autorizada B sí recibió actividad concurrente ajena a esta
 aceptación. Antes de la tercera pasada registraba `HEAD`
-`dc4ee3e7bbbbe110f348575fa694984a7c8531c4`, 9 entradas de estado, digest de
-estado `998ee9ab1b563b38bbb9ba158f4cd4d827478017ed59edca2c64d3076fdba622`
+`[HEAD previo redactado]`, 9 entradas de estado, digest de
+estado `[digest de estado previo redactado]`
 y digest de diff rastreado
-`42c38ddfe44170a0f23ce22840f653f0913973fa809604b096aadba8a2c161a8`.
+`[digest de diff previo redactado]`.
 Durante la prueba pasó a `HEAD`
-`648ad3bb5989e8fa112705dd3b8e695a5ea6a8b0`, 9 entradas, digest
-`d2c31a30b0dfec0d8a67605e04c8c77f4e6abbe587992ac0383db03f17151e4e`
+`[HEAD posterior redactado]`, 9 entradas, digest
+`[digest de estado posterior redactado]`
 y diff
-`2e4249b294ece3ed6955331c1eabe269279575292c381d9be72e842257a8b7d4`;
+`[digest de diff posterior redactado]`;
 el índice permaneció vacío (`e3b0c442…`). Inspectra no escribió ni leyó esos
 cambios: todos los bytes analizados procedían del commit autorizado. El
 checkpoint inmediatamente anterior a la limpieza y el posterior fueron
@@ -449,20 +449,20 @@ fuente analizada y que la aceptación no tocó el repositorio.
 
 Una verificación documental posterior, todavía sin leer ni mostrar el contenido
 de los cambios, observó nueva actividad concurrente: `HEAD` seguía en
-`648ad3bb5989e8fa112705dd3b8e695a5ea6a8b0`, pero el estado pasó a 17 entradas
+`[HEAD posterior redactado]`, pero el estado pasó a 17 entradas
 con digest
-`f346982bfc74899c68a73b70541657025304ec321a78f8b593663b32bcc3e86f` y el
+`[digest de estado intermedio redactado]` y el
 diff rastreado a
-`d61f0ce898d6b88c2bae802e52b4c6e53fcebe16e8be17d8520c46d2856e16b3`; el
+`[digest de diff intermedio redactado]`; el
 índice continuó vacío. Esto ocurrió después del par de checkpoints idénticos de
 la aceptación. No se intentó revertir, guardar ni interpretar esa actividad
 ajena.
 
 En el corte final, dos checkpoints consecutivos volvieron a coincidir entre sí:
-`HEAD` `648ad3bb5989e8fa112705dd3b8e695a5ea6a8b0`, 21 entradas, digest de
-estado `e32ca4b3f05d1a61b1b297924660238a9ee2eb69648fc875a24bacfcce026151`,
+`HEAD` `[HEAD posterior redactado]`, 21 entradas, digest de
+estado `[digest de estado final redactado]`,
 digest de diff rastreado
-`ac38c4114a990ae26461b8cf3de24c351d269d0d71e03fca723e065fe4bb545c` e
+`[digest de diff final redactado]` e
 índice vacío. La evolución de 9 a 17 y después 21 entradas acredita que el
 checkout estaba siendo modificado en paralelo, no que Inspectra lo usara: la
 fuente y todos sus controles siguieron referidos al commit/tree/blob anteriores.
@@ -597,14 +597,14 @@ credencial, copia visual y tres raíces temporales. Un primer borrado no pudo
 retirar el venv propiedad de `root`; se eliminó exclusivamente ese directorio
 desde un contenedor sin red y la comprobación final dio 0 contenedores, 0
 volúmenes, 0 redes, 0 tags y 0 rutas temporales con el prefijo de aceptación.
-No se alteró Eventora. No se promete borrado físico forense en almacenamiento
+No se alteró la fuente autorizada B. No se promete borrado físico forense en almacenamiento
 copy-on-write/SSD.
 
 La auditoría de cierre detectó después un ayudante de captura ya detenido
-(`inspectra-prod117-eventora-egress-capture`, salida 0) que no aparecía en la
+(`[contenedor temporal de captura redactado]`, salida 0) que no aparecía en la
 comprobación anterior. Se identificó por nombre/estado, se eliminó de forma
 explícita y se repitió el inventario: 0 contenedores, volúmenes, redes, imágenes
-o rutas temporales asociados a Eventora/aceptación.
+o rutas temporales asociados a la fuente autorizada B o a su aceptación.
 
 **Veredicto: GO para desplegar esta candidatura de Inspectra en un entorno
 controlado y repetir una aceptación autorizada.** OSV y CISA KEV quedan
@@ -801,7 +801,7 @@ iniciarán los servicios. Los criterios mínimos son:
 
 ## Proyecto real autorizado
 
-`urlbreve` fue autorizado expresamente por su propietario el 2026-09-06. Se usó
+La fuente autorizada A fue autorizada expresamente por su propietario el 2026-09-06. Se usó
 el commit y la instantánea reproducible identificados en el acta anterior, tras
 excluir `.env*` y revisar localmente las 63 entradas admitidas. La autorización
 permitía OSV solo para npm/PyPI exactos y CISA KEV únicamente por CVE ya

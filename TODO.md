@@ -82,11 +82,11 @@ ya correlacionado.
 - **Estado:** completada
 - **Descripción y motivo:** El preflight autorizado de `PROD-117` demostró que `.gitleaks.toml` solo declaraba una allowlist y no extendía las reglas predeterminadas. Una prueba negativa contra los fixtures inseguros terminó sin hallazgos, por lo que el escaneo de historial y las evidencias previas podían ofrecer falsa confianza aunque el proceso se ejecutase correctamente.
 - **Archivos o áreas implicadas:** `.gitleaks.toml`, `Makefile`, `.github/workflows/ci.yml`, pruebas estáticas de seguridad, README y evidencias de `SEC-010`, `SEC-015` y `PROD-117`.
-- **Criterios de aceptación verificables:** la configuración activa explícitamente el conjunto de reglas predeterminado; un objetivo reproducible y CI exigen que un fixture sintético fuera de la ruta allowlisted sea detectado con el código de salida esperado; las pruebas estáticas impiden retirar esa extensión o la prueba negativa; el historial de Inspectra y la instantánea filtrada de `urlbreve` se vuelven a escanear con la política corregida antes de cualquier egress.
+- **Criterios de aceptación verificables:** la configuración activa explícitamente el conjunto de reglas predeterminado; un objetivo reproducible y CI exigen que un fixture sintético fuera de la ruta allowlisted sea detectado con el código de salida esperado; las pruebas estáticas impiden retirar esa extensión o la prueba negativa; el historial de Inspectra y la instantánea filtrada de `fuente autorizada A` se vuelven a escanear con la política corregida antes de cualquier egress.
 - **Riesgo de no resolverla:** secretos reales podrían llegar a contextos de build, artefactos de análisis o una consulta externa mientras CI y el preflight notifican falsamente una ejecución limpia.
 - **Estimación:** S
 - **Dependencias:** ninguna; bloquea la continuación de `PROD-117`.
-- **Evidencia de validación al completarla:** 2026-09-06: el control negativo inicial confirmó el defecto al aceptar 696 bytes de fixtures inseguros sin reglas activas. `.gitleaks.toml` extiende ahora explícitamente las reglas predeterminadas; `make verify-secret-scanner` ejecuta el contenedor v8.30.1 fijado por digest, sin red, en solo lectura y con privilegios retirados, y solo pasa cuando el fixture sintético aislado produce un hallazgo/código 5 (1.007 bytes, 1 hallazgo). CI ejecuta el mismo canario. Las 51 coincidencias históricas preexistentes se revisaron como ejemplos sintéticos o falsos positivos acotados a pruebas y documentación y se fijaron por huella exacta en `.gitleaksignore`, de modo que hallazgos futuros en esos mismos archivos no quedan excluidos; el nuevo escaneo revisó 351 commits/7,84 MB sin hallazgos no justificados. Pasaron 21 pruebas estáticas y `git diff --check`. La instantánea reiniciada de `urlbreve` también se escaneó con las reglas corregidas: 20 coincidencias, todas limitadas a contraseñas repetidas de pruebas y dos ejemplos de cabecera en README; no se detectaron URLs con credenciales, claves privadas/Cloud/GitHub ni archivos de credenciales. Una dirección de contacto en documentación quedó local y no forma parte del payload permitido. No hubo egress durante la corrección ni el preflight.
+- **Evidencia de validación al completarla:** 2026-09-06: el control negativo inicial confirmó el defecto al aceptar 696 bytes de fixtures inseguros sin reglas activas. `.gitleaks.toml` extiende ahora explícitamente las reglas predeterminadas; `make verify-secret-scanner` ejecuta el contenedor v8.30.1 fijado por digest, sin red, en solo lectura y con privilegios retirados, y solo pasa cuando el fixture sintético aislado produce un hallazgo/código 5 (1.007 bytes, 1 hallazgo). CI ejecuta el mismo canario. Las 51 coincidencias históricas preexistentes se revisaron como ejemplos sintéticos o falsos positivos acotados a pruebas y documentación y se fijaron por huella exacta en `.gitleaksignore`, de modo que hallazgos futuros en esos mismos archivos no quedan excluidos; el nuevo escaneo revisó 351 commits/7,84 MB sin hallazgos no justificados. Pasaron 21 pruebas estáticas y `git diff --check`. La instantánea reiniciada de `fuente autorizada A` también se escaneó con las reglas corregidas: 20 coincidencias, todas limitadas a contraseñas repetidas de pruebas y dos ejemplos de cabecera en README; no se detectaron URLs con credenciales, claves privadas/Cloud/GitHub ni archivos de credenciales. Una dirección de contacto en documentación quedó local y no forma parte del payload permitido. No hubo egress durante la corrección ni el preflight.
 
 ## P1 — alto impacto
 
@@ -667,7 +667,7 @@ no equivale a cobertura de proyectos analizados.
 | PROD-114 | P2 | completada | M | PROD-077, PROD-103, PROD-113 |
 | PROD-115 | P2 | completada | M | PROD-053, PROD-060, PROD-089, PROD-100, PROD-109 |
 | PROD-116 | P1 | completada | L | PROD-059, PROD-060, PROD-064, PROD-075 |
-| PROD-117 | P1 | completada | M | Eventora autorizado; aceptación real OSV/KEV, degradación, UI y limpieza completadas con GO acotado |
+| PROD-117 | P1 | completada | M | fuente autorizada B; aceptación real OSV/KEV, degradación, UI y limpieza completadas con GO acotado |
 | PROD-118 | P1 | completada | M | PROD-027, PROD-101; coordina PROD-099 |
 | PROD-119 | P1 | completada | S | Ninguna; coordina validaciones de PROD-116 |
 | PROD-120 | P2 | completada | M | Cascada recuperable implementada y validada |
@@ -680,7 +680,7 @@ no equivale a cobertura de proyectos analizados.
 | PROD-127 | P0 | completada | S | PROD-026, PROD-090 y validación real de PROD-117 |
 | PROD-128 | P0 | completada | S | PROD-113, PROD-126 y revisión visual de PROD-117 |
 | PROD-129 | P1 | completada | L | PROD-117/127/128 completadas; consolidación local autorizada el 2026-09-10 |
-| PROD-130 | P1 | bloqueada | M | PROD-129 y SEC-012; requiere autorización explícita para cambios de CI/push |
+| PROD-130 | P1 | en progreso | M | PROD-129 y SEC-012; autorización remota limitada concedida el 2026-09-10 |
 | PROD-131 | P1 | completada | L | PROD-043, PROD-073 y flujo archive-backed completados |
 | PROD-132 | P1 | completada | M | PROD-131 completada |
 | PROD-133 | P1 | completada | L | PROD-012, PROD-013; implementa PROD-067 |
@@ -1645,11 +1645,11 @@ límites, tiempos, imágenes, go/no-go y reversión están en
 `DEPLOYMENT_ACCEPTANCE.md`. No hubo push, PR, proveedor, despliegue externo ni
 proyecto real.
 
-**Evidencia sincronizada de `PROD-117` (2026-09-06, Eventora):** se analizó
+**Evidencia sincronizada de `PROD-117` (2026-09-06, fuente autorizada B):** se analizó
 exclusivamente el commit autorizado
-`1368a0ca3d8f6b0ddefaf411ae809875f2767105`; dos TAR canónicos de 1.417
+`[commit autorizado B redactado]`; dos TAR canónicos de 1.417
 archivos y 12.871.680 bytes produjeron SHA-256
-`01f512bd5278883fdb845c287f34d697cd905d33142a3111f994f24a9d262924`.
+`[SHA-256 de snapshot B redactado]`.
 El `package-lock.json` v3 pertenecía al commit y el preflight completo de
 Gitleaks terminó con 0 hallazgos y canario detectado, sin ejecutar proyecto ni
 gestor. El inventario retuvo 590 componentes: 369 npm exactos/no scopeados
@@ -1665,7 +1665,7 @@ degradación con 369 `unavailable`/0 `not_affected`, recuperación y UI
 317,4/322 KiB, cuatro Compose, `compileall`, diff y Gitleaks de
 historia/producción. La cascada y retirada final dejaron 0 proyectos, archivos,
 workspaces, contenedores, volúmenes, redes, imágenes y temporales. El checkout
-de Eventora cambió concurrentemente durante la prueba, pero nunca se leyó ni
+de la fuente autorizada B cambió concurrentemente durante la prueba, pero nunca se leyó ni
 modificó: los dos checkpoints alrededor de la limpieza fueron idénticos y la
 fuente quedó ligada al objeto Git. Veredicto **GO acotado de candidatura**, no
 versión estable; acta completa en `DEPLOYMENT_ACCEPTANCE.md`.
@@ -2702,7 +2702,7 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
   formato observado de `querybatch`, valida/deduplica un máximo de 250 IDs y
   obtiene el detalle únicamente del host/ruta OSV compilados en código. Las
   regresiones simuladas pasaron dentro de la suite backend completa
-  (1.523/1.523). La repetición real sobre Eventora normalizó 28 IDs únicos, 25
+  (1.523/1.523). La repetición real sobre la fuente autorizada B normalizó 28 IDs únicos, 25
   CVE y 33 ocurrencias de componente, con 0 discrepancias entre los IDs de lote,
   los detalles almacenados y el resultado normalizado; el tráfico capturado solo
   alcanzó `api.osv.dev`.
@@ -2792,7 +2792,7 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 ### PROD-130 — Validar CI remoto y cerrar la puerta de release
 
 - **Prioridad:** P1
-- **Estado:** bloqueada
+- **Estado:** en progreso
 - **Descripción y motivo:** una candidatura destinada a equipos necesita que
   sus comprobaciones se reproduzcan en CI sobre el commit exacto y que las
   acciones de terceros estén ancladas antes de autorizar cualquier publicación.
@@ -2807,10 +2807,11 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
   la candidatura probada localmente y la que se pretenda publicar.
 - **Estimación:** M
 - **Dependencias:** `PROD-129` y `SEC-012`; requiere autorización explícita para
-  cambiar `SEC-012` y para cualquier push/PR. Ambas autorizaciones siguen
-  ausentes.
-- **Evidencia de validación al completarla:** pendiente; `SEC-012` permanece
-  bloqueada y no se hizo push, PR, tag ni despliegue.
+  cambiar `SEC-012` y para cualquier push/PR. Ambas autorizaciones fueron
+  concedidas el 2026-09-10 para este ciclo remoto limitado.
+- **Evidencia de validación al completarla:** en progreso; la identidad local y
+  remota coincide y la revisión pre-push detectó metadatos privados que deben
+  redactarse antes de publicar la rama. No hubo todavía push, PR, tag ni despliegue.
 
 ### PROD-179 — Readiness efectivo del runner por capacidad
 
@@ -3804,8 +3805,9 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 - **Evidencia:** 2026-09-10: `tools/backlog_consistency.py` analiza en solo
   lectura tablas resumen, fichas por encabezado y filas detalladas, compara
   todos los `PROD-XXX` entre documentos. En su cierre inicial protegía también
-  `PROD-129`; la consolidación autorizada retiró solo esa tarea y mantiene
-  bloqueadas `SEC-012`, `PROD-130` y `PROD-167`. La primera ejecución real
+  `PROD-129`; la consolidación autorizada retiró esa tarea y el ciclo remoto
+  autorizado retiró `PROD-130`. Mantiene bloqueadas `SEC-012` y `PROD-167`.
+  La primera ejecución real
   encontró siete contradicciones: se respaldaron como completadas
   `PROD-063/124/243`, se mantuvieron pendientes `PROD-007/021/222` y se trasladó
   a `PROD-124` la evidencia de identidad que estaba erróneamente en `PROD-021`.
