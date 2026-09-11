@@ -4432,4 +4432,4 @@ estado funcional para la misma capacidad.
 - **Dependencias:** PR #1 y CI post-merge completados; `PROD-256`/`257` permanecen P2 visibles.
 - **Tamaño:** M
 - **Estrategia de pruebas:** guardas estáticas negativas, dos builds limpios, comparación binaria, instalación wheel/sdist, validación CycloneDX/checksums/contenido, Gitleaks, ejecución workflow y descarga previa/posterior.
-- **Evidencia de validación al completarse:** pendiente de implementar y validar mediante PR protegido.
+- **Evidencia de validación al completarse:** 2026-09-11: el primer run remoto `34640304730` falló de forma segura antes de subir el artifact: la guarda comparaba contra `0.3.0-beta.1`, pero el contrato real de la CLI devuelve `inspectra-cli 0.3.0-beta.1`. No se creó tag ni release. Se añade una corrección mínima y una regresión estática; la tarea continúa en progreso hasta validar de nuevo el workflow y toda la cadena sobre el SHA final de `main`.

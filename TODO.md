@@ -4705,4 +4705,4 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 - **Riesgo:** etiquetar bytes no reproducibles o artefactos construidos desde otro commit puede publicar material no revisado, privado o imposible de auditar.
 - **Estimación:** M
 - **Dependencias:** PR #1 fusionado por protección y CI `main` verde en `d443a5a1a100f2708268cc04dcdfbf1ceb745e3f`; `PROD-256`/`257` continúan aceptadas sin cerrarse.
-- **Evidencia:** pendiente de implementar y validar mediante PR protegido.
+- **Evidencia:** 2026-09-11: el primer run remoto `34640304730` quedó detenido antes de publicar el artifact porque la guarda esperaba `0.3.0-beta.1`, mientras que el contrato real y probado de `inspectra --version` devuelve `inspectra-cli 0.3.0-beta.1`. No se creó tag ni release. Se prepara una corrección mínima con regresión estática; la tarea permanece en progreso hasta repetir la cadena completa sobre el nuevo SHA verde de `main`.

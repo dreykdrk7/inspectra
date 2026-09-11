@@ -73,12 +73,12 @@ jobs:
           set -euo pipefail
           python -m venv /tmp/inspectra-wheel
           /tmp/inspectra-wheel/bin/python -m pip install --no-deps release-dist/*.whl
-          test "$(/tmp/inspectra-wheel/bin/inspectra --version)" = "0.3.0-beta.1"
+          test "$(/tmp/inspectra-wheel/bin/inspectra --version)" = "inspectra-cli 0.3.0-beta.1"
           /tmp/inspectra-wheel/bin/inspectra --help >/dev/null
           python -m venv /tmp/inspectra-sdist
           /tmp/inspectra-sdist/bin/python -m pip install -r cli/requirements-build.lock
           /tmp/inspectra-sdist/bin/python -m pip install --no-deps --no-build-isolation release-dist/*.tar.gz
-          test "$(/tmp/inspectra-sdist/bin/inspectra --version)" = "0.3.0-beta.1"
+          test "$(/tmp/inspectra-sdist/bin/inspectra --version)" = "inspectra-cli 0.3.0-beta.1"
           /tmp/inspectra-sdist/bin/inspectra --help >/dev/null
       - name: Scan packaged material with Gitleaks
         run: |
