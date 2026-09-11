@@ -1,0 +1,11 @@
+# The active-tools Dockerfile builds from the repository root. Keep its
+# context allowlisted: it only needs the Dockerfile, its lockfile and the
+# isolated active runner package.
+*
+!docker/
+!docker/active-tools/
+!docker/active-tools/Dockerfile
+!docker/active-tools/requirements.lock
+!tools/
+!tools/active_runner/
+!tools/active_runner/**

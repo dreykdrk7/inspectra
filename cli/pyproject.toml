@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=75,<76"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inspectra-cli"
+dynamic = ["version"]
+description = "Local, reproducible source snapshot client for Inspectra"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Inspectra contributors" }]
+dependencies = []
+
+[project.scripts]
+inspectra = "inspectra_cli.commands:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = { attr = "inspectra_cli.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["inspectra_cli*"]
+
+[tool.setuptools.package-data]
+inspectra_cli = ["data/gitleaks.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

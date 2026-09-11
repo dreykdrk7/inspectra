@@ -4,19 +4,59 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .venv/
+.venv-*/
 venv/
 node_modules/
 dist/
-*.tsbuildinfo
+build/
+*.egg-info/
 *.tsbuildinfo
 frontend/vite.config.d.ts
 frontend/vite.config.js
+coverage/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+junit*.xml
 
 data/uploads/*
 data/results/*
 data/runtime/*
+data/.locks/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
 !data/uploads/.gitkeep
 !data/results/.gitkeep
 !data/runtime/.gitkeep
 
 *.log
+
+# Local screenshots can contain rendered audit metadata and must be reviewed
+# through the change process instead of being committed by default.
+visual-review/
+
+# Local configuration and credentials belong outside the repository. Existing
+# synthetic fixtures remain tracked intentionally and are allowlisted only for
+# their exact paths in .gitleaks.toml.
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.cookie
+cookies.txt
+
+# Editor and operating-system metadata are local-only and reproducible.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

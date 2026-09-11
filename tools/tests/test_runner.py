@@ -1,3 +1,6 @@
+import asyncio
+import base64
+import hashlib
 import io
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -69,6 +72,175 @@ def test_run_command_records_timeout(monkeypatch):
     assert result["timed_out"] is True
     assert result["exit_code"] is None
     assert result["timeout_seconds"] == 0.01
+
+
+def isolated_source_payload(raw: bytes, *, filename: str = "package.json") -> dict[str, object]:
+    return {
+        "file_id": "f" * 32,
+        "original_filename": filename,
+        "source_base64": base64.b64encode(raw).decode("ascii"),
+        "source_sha256": hashlib.sha256(raw).hexdigest(),
+        "source_size_bytes": len(raw),
+    }
+
+
+@pytest.mark.anyio
+async def test_inline_source_runs_in_ephemeral_worker_and_cleans_bytes(monkeypatch, tmp_path):
+    worker_root = tmp_path / "workers"
+    monkeypatch.setattr(runner, "ISOLATED_WORKER_ROOT", worker_root)
+    raw = b'{"name":"isolated-demo","version":"1.0.0","dependencies":{"react":"18.2.0"}}'
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/analyze/manifest", json=isolated_source_payload(raw))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["hashes"]["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert payload["execution_isolation"] == runner.isolated_worker_attestation()
+    assert payload["execution_isolation"]["max_concurrent_source_workers"] == 1
+    assert list(worker_root.iterdir()) == []
+    serialized = response.text
+    assert "source_base64" not in serialized
+    assert str(worker_root) not in serialized
+
+
+@pytest.mark.anyio
+async def test_two_inline_sources_cannot_share_workspace_or_result(monkeypatch, tmp_path):
+    worker_root = tmp_path / "workers"
+    monkeypatch.setattr(runner, "ISOLATED_WORKER_ROOT", worker_root)
+    first = b'{"name":"owner-a","version":"1.0.0","dependencies":{}}'
+    second = b'{"name":"owner-b","version":"1.0.0","dependencies":{}}'
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_response, second_response = await asyncio.gather(
+            client.post("/analyze/manifest", json=isolated_source_payload(first)),
+            client.post("/analyze/manifest", json=isolated_source_payload(second)),
+        )
+
+    assert first_response.status_code == second_response.status_code == 200
+    assert first_response.json()["hashes"]["sha256"] == hashlib.sha256(first).hexdigest()
+    assert second_response.json()["hashes"]["sha256"] == hashlib.sha256(second).hexdigest()
+    assert "owner-b" not in first_response.text
+    assert "owner-a" not in second_response.text
+    assert list(worker_root.iterdir()) == []
+
+
+@pytest.mark.anyio
+async def test_inline_source_rejects_integrity_mismatch_before_worker(monkeypatch, tmp_path):
+    worker_root = tmp_path / "workers"
+    monkeypatch.setattr(runner, "ISOLATED_WORKER_ROOT", worker_root)
+    payload = isolated_source_payload(b'{"name":"demo"}')
+    payload["source_sha256"] = "0" * 64
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/analyze/manifest", json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "The isolated source integrity check failed."
+    assert not worker_root.exists()
+
+
+@pytest.mark.anyio
+async def test_inline_source_validation_never_echoes_rejected_source():
+    marker = b"DO-NOT-ECHO-SOURCE-MARKER"
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/manifest",
+            json={"file_id": "f" * 32, "source_base64": base64.b64encode(marker).decode("ascii")},
+        )
+
+    assert response.status_code == 422
+    assert base64.b64encode(marker).decode("ascii") not in response.text
+    assert "source_base64" not in response.text
+
+
+@pytest.mark.anyio
+async def test_isolated_worker_timeout_kills_process_and_cleans_workspace(monkeypatch, tmp_path):
+    worker_root = tmp_path / "workers"
+    monkeypatch.setattr(runner, "ISOLATED_WORKER_ROOT", worker_root)
+    monkeypatch.setattr(runner, "ISOLATED_WORKER_TIMEOUT_SECONDS", 0.001)
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/manifest",
+            json=isolated_source_payload(b'{"name":"timeout-demo","version":"1.0.0"}'),
+        )
+
+    assert response.status_code == 504
+    assert response.json()["detail"] == "The isolated analysis reached its time limit."
+    assert list(worker_root.iterdir()) == []
+
+
+@pytest.mark.anyio
+async def test_cancelling_isolated_worker_kills_group_and_cleans_workspace(monkeypatch, tmp_path):
+    worker_root = tmp_path / "workers"
+    monkeypatch.setattr(runner, "ISOLATED_WORKER_ROOT", worker_root)
+    started = asyncio.Event()
+
+    class FakeProcess:
+        pid = 999_999_999
+        returncode = None
+
+        async def communicate(self, _payload):
+            started.set()
+            await asyncio.Event().wait()
+
+        async def wait(self):
+            self.returncode = -9
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    request = runner.ManifestAnalysisRequest.model_validate(isolated_source_payload(b'{"name":"cancel-demo"}'))
+    task = asyncio.create_task(runner.run_isolated_file_analysis("manifest", request))
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert list(worker_root.iterdir()) == []
+
+
+def test_worker_root_cleanup_does_not_follow_symlinks(monkeypatch, tmp_path):
+    worker_root = tmp_path / "workers"
+    worker_root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("retain", encoding="utf-8")
+    (worker_root / "job-link").symlink_to(outside)
+    (worker_root / "unexpected-leftover").mkdir()
+    (worker_root / "unexpected-leftover" / "source").write_text("remove", encoding="utf-8")
+    monkeypatch.setattr(runner, "ISOLATED_WORKER_ROOT", worker_root)
+
+    assert runner._clean_isolated_worker_root() == 2
+    assert outside.read_text(encoding="utf-8") == "retain"
+    assert list(worker_root.iterdir()) == []
+
+
+@pytest.mark.anyio
+async def test_runner_roles_fail_closed_for_file_and_network_capabilities(monkeypatch, tmp_path):
+    raw = b'{"name":"role-demo","version":"1.0.0"}'
+    transport = ASGITransport(app=runner.app)
+
+    monkeypatch.setattr(runner, "FILE_ANALYSIS_ENABLED", False)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        file_response = await client.post("/analyze/manifest", json=isolated_source_payload(raw))
+    assert file_response.status_code == 404
+    assert file_response.json()["detail"] == "File analysis is not available on this runner."
+
+    monkeypatch.setattr(runner, "FILE_ANALYSIS_ENABLED", True)
+    monkeypatch.setattr(runner, "NETWORK_ANALYSIS_ENABLED", False)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        network_response = await client.post("/analyze/domain-basic", json={"domain": "example.com"})
+    assert network_response.status_code == 404
+    assert network_response.json()["detail"] == "Network analysis is not available on this runner."
 
 
 @pytest.mark.anyio
@@ -161,11 +333,82 @@ async def test_analyze_manifest_requirements_detects_unpinned_and_custom_sources
     dependencies = {item["name"]: item for item in payload["parsed"]["dependencies"]["dependencies"]}
     assert dependencies["fastapi"]["source_type"] == "registry"
     assert dependencies["demo"]["source_type"] == "editable"
-    assert dependencies["demo"]["declared_requirement"].startswith("-e git+https://")
+    assert dependencies["demo"]["declared_requirement"] == "demo: editable reference withheld"
+    assert dependencies["demo"]["specifier"] == ""
     assert "requirements_dependency_not_exactly_pinned" in finding_ids
     assert "requirements_editable_install" in finding_ids
     assert "requirements_custom_index" in finding_ids
     assert "dependency_external_or_local_source" in finding_ids
+
+
+def test_requirements_hash_summary_handles_continuations_without_retaining_hashes_or_sources():
+    first_hash = "a" * 64
+    second_hash = "b" * 64
+    parsed, findings, errors = runner.analyze_requirements_manifest(
+        "requests==2.32.3 \\\n"
+        f"  --hash=sha256:{first_hash} \\\n"
+        f"  --hash sha256:{second_hash}\n"
+        "httpx==0.27.2\n"
+        "demo @ git+https://operator:canary@example.test/private.git --hash=sha256:"
+        + "c" * 64
+        + "\n--index-url https://operator:canary@example.test/simple\n"
+    )
+
+    assert errors == []
+    assert parsed["integrity_summary"] == {
+        "contract_version": "requirements-hash-summary-v1",
+        "status": "missing",
+        "exact_pins": 2,
+        "exact_pins_with_hashes": 1,
+        "exact_pins_missing_hashes": 1,
+        "hash_entries_for_exact_pins": 2,
+        "non_registry_entries_excluded": 1,
+    }
+    by_name = {item["name"]: item for item in parsed["dependencies"]["dependencies"]}
+    assert by_name["requests"]["specifier"] == "==2.32.3"
+    assert by_name["demo"]["source_type"] == "vcs"
+    assert by_name["demo"]["specifier"] == ""
+    assert "requirements_exact_pins_missing_hashes" in {finding["id"] for finding in findings}
+    serialized = json.dumps({"parsed": parsed, "findings": findings})
+    for withheld in (first_hash, second_hash, "operator:canary", "example.test", "private.git", "--hash"):
+        assert withheld not in serialized
+
+
+def test_requirements_hash_summary_does_not_credit_malformed_hashes_or_non_exact_requirements():
+    malformed_hash = "d" * 63
+    parsed, findings, errors = runner.analyze_requirements_manifest(
+        f"flask==3.0.3 --hash=sha256:{malformed_hash}\n"
+        "starlette>=0.38 --hash=sha256:" + "e" * 64 + "\n"
+        "local @ file:///operator/private/package.whl --hash=sha256:" + "f" * 64 + "\n"
+    )
+
+    assert errors == []
+    assert parsed["integrity_summary"] == {
+        "contract_version": "requirements-hash-summary-v1",
+        "status": "missing",
+        "exact_pins": 1,
+        "exact_pins_with_hashes": 0,
+        "exact_pins_missing_hashes": 1,
+        "hash_entries_for_exact_pins": 0,
+        "non_registry_entries_excluded": 1,
+    }
+    serialized = json.dumps({"parsed": parsed, "findings": findings})
+    for withheld in (malformed_hash, "e" * 64, "f" * 64, "/operator/private", "file://", "--hash"):
+        assert withheld not in serialized
+
+
+def test_requirements_hash_summary_is_not_applicable_without_exact_registry_pins():
+    parsed, findings, errors = runner.analyze_requirements_manifest(
+        "fastapi>=0.110\n-e git+ssh://private.example/repo.git#egg=demo\n"
+    )
+
+    assert errors == []
+    assert parsed["integrity_summary"]["status"] == "not_applicable"
+    assert parsed["integrity_summary"]["exact_pins"] == 0
+    assert parsed["integrity_summary"]["non_registry_entries_excluded"] == 1
+    serialized = json.dumps({"parsed": parsed, "findings": findings})
+    assert "private.example" not in serialized
+    assert "git+ssh" not in serialized
 
 
 @pytest.mark.anyio
@@ -194,6 +437,26 @@ async def test_analyze_manifest_pyproject_extracts_dependencies_and_findings(mon
     assert "dependency_not_exactly_pinned" in finding_ids
     assert "dependency_external_or_local_source" in finding_ids
     assert "dependency_broad_range" in finding_ids
+
+
+def test_manifest_license_inventory_retains_only_supported_spdx_expressions():
+    parsed, _findings, errors = runner.analyze_package_json_manifest(
+        json.dumps({"name": "demo", "license": "mit OR Apache-2.0"})
+    )
+    withheld, _findings, withheld_errors = runner.analyze_package_json_manifest(
+        json.dumps({"name": "private-demo", "license": "private-canary-license@example.invalid"})
+    )
+    poetry, _findings, poetry_errors = runner.analyze_pyproject_manifest(
+        '[project]\nname = "demo"\n[tool.poetry]\nlicense = "BSD-3-Clause"\n'
+    )
+
+    assert errors == withheld_errors == poetry_errors == []
+    assert parsed["project"]["license"] == "MIT OR Apache-2.0"
+    assert parsed["project"]["license_status"] == "declared"
+    assert withheld["project"]["license_status"] == "unrecognized_withheld"
+    assert "license" not in withheld["project"]
+    assert "private-canary-license" not in json.dumps(withheld)
+    assert poetry["project"]["license"] == "BSD-3-Clause"
 
 
 @pytest.mark.anyio
@@ -399,12 +662,1197 @@ async def test_analyze_project_archive_zip_parses_package_json(monkeypatch, tmp_
     assert payload["analyzer"] == "project_archive_basic"
     assert payload["summary"]["supported_manifests_found"] == 1
     assert payload["summary"]["supported_manifests_parsed"] == 1
-    assert payload["summary"]["unsupported_manifests_detected"] == 1
+    assert payload["summary"]["unsupported_manifests_detected"] == 0
+    assert payload["summary"]["lockfiles_detected"] == 1
+    assert payload["summary"]["lockfiles_parsed"] == 0
+    assert payload["summary"]["lockfiles_skipped"] == 1
     assert payload["summary"]["total_dependencies"] == 4
     assert payload["parsed_manifests"][0]["manifest_type"] == "package_json"
     assert payload["parsed_manifests"][0]["parsed"]["project"]["name"] == "demo-app"
     assert "package_sensitive_lifecycle_script" in finding_ids
     assert "dependency_external_or_local_source" in finding_ids
+
+
+@pytest.mark.anyio
+async def test_project_archive_includes_bounded_redacted_sensitive_data_review(monkeypatch, tmp_path):
+    canary = "inspectra-private-canary-value-987654"
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "package.json": b'{"name":"demo","version":"1.0.0"}',
+            "config/settings.py": f"API_KEY={canary}\n".encode("utf-8"),
+            ".env": f"API_KEY={canary}\n".encode("utf-8"),
+            "assets/blob.bin": b"\x00API_KEY=" + canary.encode("ascii"),
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    findings = {finding["id"]: finding for finding in payload["findings"]}
+    assert payload["passive_reviews"]["contract_version"] == "2026-09-09.1"
+    assert payload["passive_reviews"]["sensitive_data"]["status"] == "completed"
+    assert payload["summary"]["sensitive_data_files_reviewed"] == 2
+    assert payload["summary"]["sensitive_files_detected"] == 1
+    assert findings["secret_like_assignment"]["file_path"] == "config/settings.py"
+    assert findings["secret_like_assignment"]["line"] == 1
+    assert findings["secret_like_assignment"]["evidence"] == "API_KEY=[REDACTED]"
+    assert findings["real_env_file_present_not_read"]["file_path"] == ".env"
+    serialized = json.dumps(payload)
+    assert canary not in serialized
+    assert "assets/blob.bin" not in serialized
+
+
+@pytest.mark.anyio
+async def test_project_archive_includes_bounded_infrastructure_reviews(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "Dockerfile": b"FROM ubuntu:latest\nUSER root\n",
+            "compose.yml": b"services:\n  web:\n    image: nginx:latest\n    privileged: true\n",
+            "k8s/deployment.yaml": b"apiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n      - name: web\n        image: nginx:latest\n        securityContext:\n          privileged: true\n",
+            "infra/main.tf": b'terraform { backend "s3" {} }\nprovider "aws" {}\n',
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert set(payload["passive_reviews"]) == {"contract_version", "sensitive_data", "docker", "compose", "kubernetes", "terraform"}
+    for review in ("docker", "compose", "kubernetes", "terraform"):
+        assert payload["passive_reviews"][review]["status"] == "completed"
+        assert payload["passive_reviews"][review]["limits"]["max_files"] == 100
+        assert payload["summary"][f"{review}_findings"] >= 1
+    assert {finding.get("project_review") for finding in payload["findings"]} >= {"docker", "compose", "kubernetes", "terraform"}
+
+
+@pytest.mark.anyio
+async def test_project_archive_rejects_backend_runner_limit_drift(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {"package.json": PACKAGE_JSON.encode("utf-8")})
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={
+                "file_id": "f" * 32,
+                "relative_path": str(archive_path.relative_to(tmp_path)),
+                "original_filename": "project.zip",
+                "max_archive_entries": runner.PROJECT_ARCHIVE_MAX_ARCHIVE_ENTRIES + 1,
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Project analysis limit contract does not match the runner configuration."
+
+
+@pytest.mark.anyio
+async def test_project_archive_stops_at_declared_uncompressed_byte_limit(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "PROJECT_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES", 5)
+    archive_path = write_zip_archive(
+        tmp_path,
+        {"README.md": b"more than five bytes", "package.json": PACKAGE_JSON.encode("utf-8")},
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["limits"]["max_total_uncompressed_bytes"] == 5
+    assert payload["summary"]["truncated"] is True
+    assert payload["summary"]["total_declared_uncompressed_bytes"] > 5
+    assert "project_archive_uncompressed_size_limit_reached" in {finding["id"] for finding in payload["findings"]}
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_uses_only_supported_npm_lockfile_resolutions(monkeypatch, tmp_path):
+    package_json = json.dumps({"dependencies": {"react": "^18.0.0", "lodash": "^4.0.0"}})
+    package_lock = json.dumps(
+        {
+            "name": "demo",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"dependencies": {"react": "^18.0.0", "lodash": "^4.0.0"}},
+                "node_modules/react": {"version": "18.3.1", "resolved": "https://registry.npmjs.org/react/-/react-18.3.1.tgz"},
+                "node_modules/lodash": {"version": "4.17.21"},
+                "node_modules/local": {"link": True, "resolved": "file:../private"},
+            },
+        }
+    )
+    archive_path = write_zip_archive(
+        tmp_path,
+        {"apps/web/package.json": package_json.encode("utf-8"), "apps/web/package-lock.json": package_lock.encode("utf-8")},
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["lockfiles_parsed"] == 1
+    parsed_lockfile = payload["parsed_lockfiles"][0]
+    assert {key: parsed_lockfile[key] for key in ("path", "lockfile_type", "lockfile_version", "truncated", "packages")} == {
+        "path": "apps/web/package-lock.json",
+        "lockfile_type": "npm_package_lock",
+        "lockfile_version": 3,
+        "truncated": False,
+        "packages": [
+            {"name": "react", "version": "18.3.1", "source_type": "registry"},
+                {"name": "lodash", "version": "", "source_type": "unknown"},
+            {"name": "local", "version": "", "source_type": "workspace"},
+        ],
+    }
+    graph = parsed_lockfile["dependency_graph"]
+    assert graph["edges"] == []
+    assert graph["nodes_truncated"] is False
+    assert graph["edges_truncated"] is False
+    assert {(node["name"], node["source_type"], node["dependency_scope"]) for node in graph["nodes"]} == {
+        ("react", "registry", "direct"),
+            ("lodash", "unknown", "direct"),
+        ("local", "workspace", "transitive"),
+    }
+    assert all(len(node["id"]) == 24 for node in graph["nodes"])
+    serialized = json.dumps(payload)
+    assert "registry.npmjs.org" not in serialized
+    assert "../private" not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_parses_go_module_and_sum_without_executing_or_retaining_sources(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "services/api/go.mod": b"module private.example.test/app\nrequire golang.org/x/text v0.19.0\nreplace golang.org/x/text => ../private/text\n",
+            "services/api/go.sum": b"golang.org/x/text v0.19.0 h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["parsed_manifests"][0]["manifest_type"] == "go_mod"
+    assert payload["parsed_manifests"][0]["parsed"]["dependencies"]["require"][0]["dependency_source_type"] == "unknown"
+    assert payload["parsed_lockfiles"][0]["lockfile_type"] == "go_sum"
+    assert payload["parsed_lockfiles"][0]["packages"] == [
+        {"name": "golang.org/x/text", "version": "v0.19.0", "source_type": "unverified_registry"}
+    ]
+    serialized = json.dumps(payload)
+    for withheld in ("../private/text", "h1:", "AAAAAAAA"):
+        assert withheld not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_parses_supported_cargo_lock_without_retaining_locators_or_checksums(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "services/rust/Cargo.toml": b'[dependencies]\nserde = "1.0"\nprivate_alias = { package = "internal", version = "1.0.0" }\n',
+            "services/rust/Cargo.lock": b'''version = 4
+[[package]]
+name = "serde"
+version = "1.0.210"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "private-checksum-canary"
+[[package]]
+name = "private-crate"
+version = "9.9.9"
+source = "registry+https://token@private.example.test/index"
+''',
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["parsed_manifests"][0]["manifest_type"] == "cargo_toml"
+    assert payload["parsed_lockfiles"][0]["lockfile_type"] == "cargo_lock"
+    assert payload["parsed_lockfiles"][0]["packages"] == [
+        {"name": "serde", "version": "1.0.210", "source_type": "registry"},
+        {"name": "private-crate", "version": "", "source_type": "unknown"},
+    ]
+    serialized = json.dumps(payload)
+    for withheld in ("private-checksum-canary", "token@", "private.example.test", "internal"):
+        assert withheld not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_parses_composer_without_retaining_repository_or_dist_metadata(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "services/php/composer.json": json.dumps({"require": {"symfony/http-foundation": "^7.1"}}).encode(),
+            "services/php/composer.lock": json.dumps({
+                "content-hash": "private-content-hash",
+                "packages": [{
+                    "name": "symfony/http-foundation", "version": "v7.1.3",
+                    "source": {"type": "git", "url": "https://token@private.example.test/repo", "reference": "private-ref"},
+                    "dist": {"url": "https://private.example.test/archive.zip", "shasum": "private-sha"},
+                }],
+                "packages-dev": [],
+            }).encode(),
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["parsed_manifests"][0]["manifest_type"] == "composer_json"
+    assert payload["parsed_lockfiles"][0]["lockfile_type"] == "composer_lock"
+    assert payload["parsed_lockfiles"][0]["packages"] == [{
+        "name": "symfony/http-foundation", "version": "7.1.3", "dependency_group": "require", "source_type": "unverified_registry",
+    }]
+    serialized = json.dumps(payload)
+    for withheld in ("private-content-hash", "token@", "private.example.test", "private-ref", "private-sha"):
+        assert withheld not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_parses_gradle_lock_without_evaluating_build_or_retaining_configurations(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {
+        "services/jvm/build.gradle.kts": b'repositories { maven { url = uri("https://token@private.example.test") } }\ndependencies { implementation("org.example:demo:1.2.3") }',
+        "services/jvm/gradle.lockfile": b'# lock\norg.apache.commons:commons-lang3:3.14.0=compileClasspath,runtimeClasspath\nOrg.Private:Secret:1.0.0=privateConfiguration\n',
+    })
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/analyze/project-archive", json={
+            "file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip",
+        })
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["parsed_manifests"][0]["parsed"]["project"] == {"build_dsl_not_evaluated": True}
+    assert payload["parsed_lockfiles"][0]["packages"] == [{
+        "name": "org.apache.commons:commons-lang3", "version": "3.14.0", "source_type": "unverified_registry",
+    }]
+    serialized = json.dumps(payload)
+    for withheld in ("token@", "private.example.test", "compileClasspath", "runtimeClasspath", "privateConfiguration", "Org.Private"):
+        assert withheld not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_parses_nuget_lock_without_evaluating_project_or_retaining_target_metadata(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(tmp_path, {
+        "services/dotnet/App.csproj": b'<Project><ItemGroup><PackageReference Include="Private.Canary" /></ItemGroup></Project>',
+        "services/dotnet/packages.lock.json": json.dumps({
+            "version": 1,
+            "dependencies": {
+                "net8.0-private-target-canary": {
+                    "Newtonsoft.Json": {"type": "Direct", "requested": "[13.0.3, )", "resolved": "13.0.3", "contentHash": "private-hash-canary"},
+                    "System.Text.Encodings.Web": {"type": "Transitive", "resolved": "8.0.0", "dependencies": {"Private.Dependency": "1.0.0"}},
+                }
+            },
+        }).encode(),
+    })
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post("/analyze/project-archive", json={
+            "file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip",
+        })
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["parsed_manifests"][0]["manifest_type"] == "dotnet_project"
+    assert payload["parsed_manifests"][0]["parsed"]["project"] == {"msbuild_not_evaluated": True}
+    assert payload["parsed_lockfiles"][0]["packages"] == [
+        {"name": "newtonsoft.json", "version": "13.0.3", "source_type": "unverified_registry", "dependency_scope": "direct"},
+        {"name": "system.text.encodings.web", "version": "8.0.0", "source_type": "unverified_registry", "dependency_scope": "transitive"},
+    ]
+    serialized = json.dumps(payload)
+    for withheld in ("Private.Canary", "net8.0-private-target-canary", "private-hash-canary", "Private.Dependency", "requested"):
+        assert withheld not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_parses_same_root_pipfile_v6_without_private_metadata(monkeypatch, tmp_path):
+    pipfile = '''[[source]]
+url = "https://operator:canary@example.test/simple"
+[packages]
+requests = ">=2"
+[dev-packages]
+pytest = "*"
+'''
+    lockfile = json.dumps({
+        "_meta": {
+            "pipfile-spec": 6,
+            "hash": {"sha256": "private-lock-hash"},
+            "sources": [{"url": "https://operator:canary@example.test/simple"}],
+        },
+        "default": {"requests": {"version": "==2.32.3", "hashes": ["sha256:private-package-hash"]}},
+        "develop": {"pytest": {"version": "==8.3.2"}},
+    })
+    archive_path = write_zip_archive(
+        tmp_path,
+        {"services/api/Pipfile": pipfile.encode(), "services/api/Pipfile.lock": lockfile.encode()},
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["parsed_manifests"][0]["manifest_type"] == "pipfile"
+    assert payload["parsed_lockfiles"][0]["lockfile_type"] == "pipfile_lock"
+    assert payload["parsed_lockfiles"][0]["lockfile_version"] == 6
+    assert payload["parsed_lockfiles"][0]["packages"] == [
+        {"name": "requests", "version": "2.32.3", "dependency_group": "packages", "source_type": "unverified_registry"},
+        {"name": "pytest", "version": "8.3.2", "dependency_group": "dev-packages", "source_type": "unverified_registry"},
+    ]
+    serialized = json.dumps(payload)
+    for withheld in ("operator:canary", "example.test", "private-lock-hash", "private-package-hash", "[[source]]"):
+        assert withheld not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_retains_only_safe_pnpm_v9_direct_versions(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "apps/web/package.json": json.dumps({"dependencies": {"react": "^18.0.0"}}).encode("utf-8"),
+            "apps/web/pnpm-lock.yaml": b"""lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      react:
+        specifier: ^18.0.0
+        version: 18.3.1
+packages:
+  react@18.3.1:
+    resolution:
+      integrity: sha512-private-fixture-integrity
+      tarball: https://token@example.test/react.tgz
+""",
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["lockfiles_detected"] == 1
+    assert payload["summary"]["lockfiles_parsed"] == 1
+    assert payload["summary"]["lockfiles_skipped"] == 0
+    assert payload["parsed_lockfiles"] == [
+        {
+            "path": "apps/web/pnpm-lock.yaml",
+            "lockfile_type": "pnpm_lock",
+            "lockfile_version": "9.0",
+            "packages": [{"name": "react", "version": "18.3.1", "source_type": "unverified_registry"}],
+            "truncated": False,
+        }
+    ]
+    serialized = json.dumps(payload["parsed_lockfiles"])
+    for withheld in ("integrity", "token@example.test", "specifier"):
+        assert withheld not in serialized
+
+
+@pytest.mark.anyio
+async def test_analyze_project_archive_retains_only_safe_yarn_classic_v1_direct_versions(monkeypatch, tmp_path):
+    archive_path = write_zip_archive(
+        tmp_path,
+        {
+            "apps/web/package.json": json.dumps({"dependencies": {"react": "^18.0.0"}}).encode("utf-8"),
+            "apps/web/yarn.lock": b'''# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
+# yarn lockfile v1
+
+react@^18.0.0:
+  version "18.3.1"
+  resolved "https://token@example.test/react.tgz"
+  integrity sha512-private-fixture-integrity
+''',
+        },
+    )
+    monkeypatch.setattr(runner, "DATA_DIR", tmp_path.resolve())
+    transport = ASGITransport(app=runner.app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/analyze/project-archive",
+            json={"file_id": "f" * 32, "relative_path": str(archive_path.relative_to(tmp_path)), "original_filename": "project.zip"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["lockfiles_detected"] == 1
+    assert payload["summary"]["lockfiles_parsed"] == 1
+    assert payload["summary"]["lockfiles_skipped"] == 0
+    assert payload["parsed_lockfiles"] == [
+        {
+            "path": "apps/web/yarn.lock",
+            "lockfile_type": "yarn_classic_lock",
+            "lockfile_version": 1,
+            "packages": [
+                {
+                    "name": "react",
+                    "selector_id": runner.yarn_classic_selector_id("react", "^18.0.0"),
+                    "version": "18.3.1",
+                    "source_type": "unverified_registry",
+                }
+            ],
+            "truncated": False,
+        }
+    ]
+    serialized = json.dumps(payload["parsed_lockfiles"])
+    for withheld in ("integrity", "token@example.test", "^18.0.0"):
+        assert withheld not in serialized
+
+
+def test_supported_npm_lockfile_graph_is_bounded_and_uses_opaque_node_ids(monkeypatch):
+    monkeypatch.setattr(runner, "PROJECT_ARCHIVE_MAX_LOCKFILE_EDGES", 1)
+    parsed, errors = runner.parse_project_lockfile_text(
+        "npm_package_lock",
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"dependencies": {"app": "1.0.0"}},
+                    "node_modules/app": {
+                        "version": "1.0.0",
+                        "dependencies": {"nested": "1.0.0"},
+                        "optionalDependencies": {"optional": "1.0.0"},
+                    },
+                    "node_modules/app/node_modules/nested": {"version": "1.0.0", "resolved": "https://token@example.test/nested.tgz"},
+                    "node_modules/app/node_modules/optional": {"version": "1.0.0"},
+                },
+            }
+        ),
+    )
+
+    assert errors == []
+    graph = parsed["dependency_graph"]
+    by_name = {node["name"]: node for node in graph["nodes"]}
+    assert by_name["app"]["dependency_scope"] == "direct"
+    assert by_name["nested"]["dependency_scope"] == "transitive"
+    assert graph["edges"] == [{"from": by_name["app"]["id"], "to": by_name["nested"]["id"], "kind": "runtime"}]
+    assert graph["edges_truncated"] is True
+    assert "node_modules/app" not in json.dumps(graph)
+    assert "token@example.test" not in json.dumps(graph)
+
+
+def test_npm_graph_scope_marks_only_proven_optional_paths_optional():
+    assert runner.npm_graph_component_scope("optional_direct", set()) == "optional"
+    assert runner.npm_graph_component_scope("transitive", {"optional"}) == "optional"
+    assert runner.npm_graph_component_scope("optional_direct", {"runtime"}) == "transitive"
+    assert runner.npm_graph_component_scope("transitive", {"runtime", "optional"}) == "transitive"
+    assert runner.npm_graph_component_scope("peer_direct", set()) == "direct"
+
+
+def test_package_manifest_marks_workspace_presence_without_retaining_workspace_paths():
+    parsed, findings, errors = runner.analyze_package_json_manifest(
+        json.dumps(
+            {
+                "name": "workspace-root",
+                "workspaces": ["apps/*", "packages/private-*"],
+                "dependencies": {"react": "^18.0.0"},
+            }
+        )
+    )
+
+    assert errors == []
+    assert findings
+    assert parsed["project"]["workspace_declared"] is True
+    assert "apps/*" not in json.dumps(parsed)
+    assert "packages/private-*" not in json.dumps(parsed)
+
+
+def test_project_archive_dependency_sanitizer_withholds_non_registry_specifiers_and_finding_evidence():
+    parsed, findings, errors = runner.analyze_package_json_manifest(
+        json.dumps(
+            {
+                "dependencies": {
+                    "react": "18.3.1",
+                    "alias-declaration": "npm:actual-private-package@1.2.3",
+                    "workspace-declaration": "workspace:*",
+                    "local-declaration": "file:../private-local",
+                    "vcs-declaration": "git+https://token@example.test/private.git",
+                    "url-declaration": "https://token@example.test/private.tgz",
+                }
+            }
+        )
+    )
+
+    sanitized = runner.sanitize_project_archive_dependency_references(parsed)
+    dependencies = {item["name"]: item for item in sanitized["dependencies"]["dependencies"]}
+
+    assert errors == []
+    assert dependencies["react"]["specifier"] == "18.3.1"
+    for name, source_type in {
+        "alias-declaration": "alias",
+        "workspace-declaration": "workspace",
+        "local-declaration": "local",
+        "vcs-declaration": "vcs",
+        "url-declaration": "url",
+    }.items():
+        assert dependencies[name] == {"name": name, "source_type": source_type}
+    serialized = json.dumps({"parsed": sanitized, "findings": findings})
+    for withheld in ("actual-private-package", "private-local", "token@example.test", "private.git", "private.tgz"):
+        assert withheld not in serialized
+    assert "non-registry dependency reference detected; source withheld" in serialized
+
+
+@pytest.mark.parametrize("lockfile_version", [2, 3])
+def test_parse_supported_npm_lockfile_versions_is_bounded_and_does_not_retain_urls(monkeypatch, lockfile_version):
+    monkeypatch.setattr(runner, "PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES", 1)
+    payload = json.dumps(
+        {
+            "lockfileVersion": lockfile_version,
+            "packages": {
+                "node_modules/react": {"version": "18.3.1", "resolved": "https://registry.npmjs.org/react/-/react-18.3.1.tgz"},
+                "node_modules/lodash": {"version": "4.17.21"},
+            },
+        }
+    )
+
+    parsed, errors = runner.parse_project_lockfile_text("npm_package_lock", payload)
+    unsupported, unsupported_errors = runner.parse_project_lockfile_text("npm_package_lock", '{"lockfileVersion": 1, "packages": {}}')
+
+    assert errors == []
+    assert parsed["lockfile_version"] == lockfile_version
+    assert parsed["truncated"] is True
+    assert parsed["packages"] == [{"name": "react", "version": "18.3.1", "source_type": "registry"}]
+    assert "registry.npmjs.org" not in json.dumps(parsed)
+    assert unsupported == {}
+    assert unsupported_errors == ["npm_package_lock_version_not_supported"]
+
+
+def test_parse_supported_pnpm_v9_lockfile_keeps_only_exact_direct_versions_without_resolution_metadata():
+    parsed, errors = runner.parse_project_lockfile_text(
+        "pnpm_lock",
+        """lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      react:
+        specifier: ^18.0.0
+        version: 18.3.1
+      peer-suffixed:
+        specifier: ^1.0.0
+        version: 1.0.0(peer@2.0.0)
+    optionalDependencies:
+      fsevents:
+        specifier: ^2.3.3
+        version: 2.3.3
+packages:
+  react@18.3.1:
+    resolution:
+      integrity: sha512-private-fixture-integrity
+  fsevents@2.3.3:
+    resolution:
+      tarball: https://token@example.test/fsevents.tgz
+""",
+    )
+
+    assert errors == []
+    assert parsed == {
+        "lockfile_version": "9.0",
+        "packages": [
+            {"name": "fsevents", "version": "2.3.3", "source_type": "unverified_registry"},
+            {"name": "react", "version": "18.3.1", "source_type": "unverified_registry"},
+        ],
+        "truncated": False,
+    }
+    serialized = json.dumps(parsed)
+    for withheld in ("integrity", "token@example.test", "peer-suffixed", "specifier"):
+        assert withheld not in serialized
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "expected_error"),
+    [
+        ("lockfileVersion: '9.0'\nbase: &shared {}\nimporters: *shared\npackages: {}\n", "pnpm_lockfile_yaml_feature_not_allowed"),
+        ("lockfileVersion: '9.0'\nimporters: {}\nimporters: {}\npackages: {}\n", "pnpm_lockfile_yaml_parse_error"),
+        ("!custom {lockfileVersion: '9.0', importers: {}, packages: {}}\n", "pnpm_lockfile_yaml_feature_not_allowed"),
+        ("lockfileVersion: '8.0'\nimporters: {'.': {}}\npackages: {}\n", "pnpm_lockfile_version_not_supported"),
+    ],
+)
+def test_pnpm_lockfile_rejects_yaml_features_duplicates_and_unsupported_versions(raw_text, expected_error):
+    parsed, errors = runner.parse_project_lockfile_text("pnpm_lock", raw_text)
+
+    assert parsed == {}
+    assert errors == [expected_error]
+
+
+def test_pnpm_lockfile_token_budget_is_bounded(monkeypatch):
+    monkeypatch.setattr(runner, "PROJECT_ARCHIVE_MAX_PNPM_YAML_TOKENS", 1)
+
+    parsed, errors = runner.parse_project_lockfile_text(
+        "pnpm_lock",
+        "lockfileVersion: '9.0'\nimporters: {'.': {}}\npackages: {}\n",
+    )
+
+    assert parsed == {}
+    assert errors == ["pnpm_lockfile_yaml_token_limit"]
+
+
+def test_parse_yarn_classic_v1_lockfile_retains_only_exact_versions_and_opaque_selector_ids():
+    parsed, errors = runner.parse_project_lockfile_text(
+        "yarn_classic_lock",
+        """# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
+# yarn lockfile v1
+
+"react@^18.0.0", react@~18.0.0:
+  version "18.3.1"
+  resolved "https://token@example.test/react.tgz"
+  integrity sha512-private-fixture-integrity
+  dependencies:
+    scheduler "^0.23.0"
+
+@scope/pkg@^1.0.0:
+  version "1.2.3"
+
+alias@npm:private-package@^1.0.0:
+  version "1.0.0"
+""",
+    )
+
+    assert errors == []
+    assert parsed == {
+        "lockfile_version": 1,
+        "packages": [
+            {
+                "name": "@scope/pkg",
+                "selector_id": runner.yarn_classic_selector_id("@scope/pkg", "^1.0.0"),
+                "version": "1.2.3",
+                "source_type": "unverified_registry",
+            },
+            {
+                "name": "react",
+                "selector_id": runner.yarn_classic_selector_id("react", "^18.0.0"),
+                "version": "18.3.1",
+                "source_type": "unverified_registry",
+            },
+            {
+                "name": "react",
+                "selector_id": runner.yarn_classic_selector_id("react", "~18.0.0"),
+                "version": "18.3.1",
+                "source_type": "unverified_registry",
+            },
+        ],
+        "truncated": False,
+    }
+    serialized = json.dumps(parsed)
+    for withheld in ("token@example.test", "integrity", "scheduler", "private-package", "npm:"):
+        assert withheld not in serialized
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "expected_error"),
+    [
+        ("__metadata:\n  version: 8\n", "yarn_lockfile_berry_not_supported"),
+        ("react@^1.0.0:\n  version \"1.0.0\"\n", "yarn_classic_lockfile_version_not_supported"),
+        ("# yarn lockfile v1\nreact@^1.0.0\n  version \"1.0.0\"\n", "yarn_classic_lockfile_grammar_not_supported"),
+        ("# yarn lockfile v1\nreact@^1.0.0:\n\tversion \"1.0.0\"\n", "yarn_classic_lockfile_grammar_not_supported"),
+    ],
+)
+def test_yarn_classic_lockfile_rejects_berry_and_invalid_grammar(raw_text, expected_error):
+    parsed, errors = runner.parse_project_lockfile_text("yarn_classic_lock", raw_text)
+
+    assert parsed == {}
+    assert errors == [expected_error]
+
+
+def test_yarn_classic_lockfile_line_budget_is_bounded(monkeypatch):
+    monkeypatch.setattr(runner, "PROJECT_ARCHIVE_MAX_YARN_CLASSIC_LINES", 2)
+
+    parsed, errors = runner.parse_project_lockfile_text(
+        "yarn_classic_lock",
+        "# yarn lockfile v1\n\nreact@^1.0.0:\n  version \"1.0.0\"\n",
+    )
+
+    assert parsed == {}
+    assert errors == ["yarn_classic_lockfile_line_limit"]
+
+
+def test_parse_poetry_v21_lockfile_keeps_only_normalized_name_and_exact_version_without_source_metadata():
+    parsed, errors = runner.parse_project_lockfile_text(
+        "poetry_lock",
+        '''# generated by Poetry
+[[package]]
+name = "Requests_Auth"
+version = "1!2.3.4.post1"
+groups = ["main"]
+files = [{file = "requests_auth-2.3.4.whl", hash = "sha256:private-fixture-hash"}]
+
+[package.source]
+type = "legacy"
+url = "https://token@example.test/private/simple"
+reference = "internal"
+
+[metadata]
+lock-version = "2.1"
+content-hash = "private-content-hash"
+''',
+    )
+
+    assert errors == []
+    assert parsed == {
+        "lockfile_version": "2.1",
+        "packages": [{"name": "requests-auth", "version": "1!2.3.4.post1", "source_type": "unverified_registry"}],
+        "truncated": False,
+    }
+    serialized = json.dumps(parsed)
+    for withheld in ("token@example.test", "private-fixture-hash", "private-content-hash", "legacy", "groups", "files", "reference"):
+        assert withheld not in serialized
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "expected_error"),
+    [
+        ("[metadata]\nlock-version = \"2.0\"\n", "poetry_lockfile_version_not_supported"),
+        ("[metadata]\nlock-version = \"2.1\"\n", "poetry_lockfile_packages_not_array"),
+        ("[metadata]\nlock-version = \"2.1\"\n[[package]\n", "poetry_lockfile_toml_parse_error"),
+    ],
+)
+def test_poetry_lockfile_rejects_unsupported_or_malformed_formats(raw_text, expected_error):
+    parsed, errors = runner.parse_project_lockfile_text("poetry_lock", raw_text)
+
+    assert parsed == {}
+    assert errors == [expected_error]
+
+
+def test_poetry_lockfile_package_budget_and_invalid_package_identity_are_bounded(monkeypatch):
+    monkeypatch.setattr(runner, "PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES", 1)
+    parsed, errors = runner.parse_project_lockfile_text(
+        "poetry_lock",
+        '''[[package]]
+name = "valid-package"
+version = "1.0.0"
+[[package]]
+name = "https://token@example.test/not-a-package"
+version = "2.0.0"
+[metadata]
+lock-version = "2.1"
+''',
+    )
+
+    assert errors == []
+    assert parsed["packages"] == [{"name": "valid-package", "version": "1.0.0", "source_type": "unverified_registry"}]
+    assert parsed["truncated"] is True
+
+
+def test_pipfile_and_v6_lock_keep_only_grouped_exact_local_resolution():
+    manifest, findings, manifest_errors = runner.parse_manifest_text_by_type(
+        "pipfile",
+        '''[[source]]
+url = "https://operator:canary@example.test/simple"
+[packages]
+Requests_Auth = ">=1"
+private-package = {version = "==2.0.0", index = "private-index"}
+[dev-packages]
+pytest = "*"
+''',
+    )
+    parsed, errors = runner.parse_project_lockfile_text(
+        "pipfile_lock",
+        json.dumps({
+            "_meta": {
+                "pipfile-spec": 6,
+                "hash": {"sha256": "private-lock-hash"},
+                "sources": [{"url": "https://operator:canary@example.test/simple"}],
+            },
+            "default": {
+                "requests_auth": {"version": "==1.2.3", "hashes": ["sha256:private-package-hash"]},
+                "private-package": {"version": "==2.0.0", "index": "private-index"},
+                "unbounded": {"version": ">=3"},
+            },
+            "develop": {"pytest": {"version": "==8.3.2", "markers": "python_version >= '3.12'"}},
+        }),
+    )
+
+    assert manifest_errors == errors == []
+    manifest_packages = {item["name"]: item for item in manifest["dependencies"]["packages"]}
+    assert manifest_packages["requests-auth"]["specifier"] == ">=1"
+    assert manifest_packages["private-package"] == {
+        "name": "private-package", "specifier": "", "declared_requirement": "private-package", "source_type": "unknown"
+    }
+    assert findings
+    assert parsed == {
+        "lockfile_version": 6,
+        "packages": [
+            {"name": "requests-auth", "version": "1.2.3", "dependency_group": "packages", "source_type": "unverified_registry"},
+            {"name": "pytest", "version": "8.3.2", "dependency_group": "dev-packages", "source_type": "unverified_registry"},
+        ],
+        "excluded": {"ambiguous_source": 1, "invalid_version": 1, "invalid_name": 0},
+        "truncated": False,
+    }
+    serialized = json.dumps({"manifest": manifest, "lock": parsed, "findings": findings})
+    for withheld in ("operator:canary", "example.test", "private-index", "private-lock-hash", "private-package-hash", "python_version"):
+        assert withheld not in serialized
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "expected_error"),
+    [
+        ('{"_meta":{"pipfile-spec":5},"default":{},"develop":{}}', "pipfile_lock_version_not_supported"),
+        ('{"_meta":{"pipfile-spec":6},"default":[],"develop":{}}', "pipfile_lock_dependency_group_not_object"),
+        ('{"_meta":{"pipfile-spec":6},"default":{},"default":{}}', "pipfile_lock_json_parse_error"),
+        ('{"_meta":', "pipfile_lock_json_parse_error"),
+    ],
+)
+def test_pipfile_lock_rejects_unsupported_ambiguous_or_malformed_formats(raw_text, expected_error):
+    parsed, errors = runner.parse_project_lockfile_text("pipfile_lock", raw_text)
+
+    assert parsed == {}
+    assert errors == [expected_error]
+
+
+def test_pipfile_lock_entry_budget_counts_rejected_entries(monkeypatch):
+    monkeypatch.setattr(runner, "PROJECT_ARCHIVE_MAX_LOCKFILE_PACKAGES", 1)
+    parsed, errors = runner.parse_project_lockfile_text(
+        "pipfile_lock",
+        json.dumps({
+            "_meta": {"pipfile-spec": 6},
+            "default": {
+                "a-private": {"version": "==1.0.0", "index": "private"},
+                "z-public": {"version": "==2.0.0"},
+            },
+            "develop": {},
+        }),
+    )
+
+    assert errors == []
+    assert parsed["packages"] == []
+    assert parsed["excluded"]["ambiguous_source"] == 1
+    assert parsed["truncated"] is True
+
+
+def test_go_module_and_sum_parsers_are_passive_bounded_and_redact_sensitive_sources():
+    parsed_manifest, findings, errors = runner.parse_manifest_text_by_type(
+        "go_mod",
+        """
+module private.example.test/application
+go 1.23
+require (
+  golang.org/x/text v0.19.0
+  github.com/public/module v0.0.0-20240102030405-abcdef123456 // indirect
+  private.example.test/team/module v1.2.3
+)
+replace private.example.test/team/module => ../private/module
+replace golang.org/x/text => https://token@example.test/private.git
+""",
+    )
+    parsed_sum, sum_errors = runner.parse_project_lockfile_text(
+        "go_sum",
+        "\n".join(
+            [
+                "golang.org/x/text v0.19.0 h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "golang.org/x/text v0.19.0/go.mod h1:BBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                "github.com/public/module v0.0.0-20240102030405-abcdef123456 h1:CCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+                "private.example.test/team/module v1.2.3 h1:DDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            ]
+        ),
+    )
+
+    assert findings == []
+    assert errors == []
+    assert sum_errors == []
+    assert parsed_manifest["dependencies"]["require"] == [
+        {"name": "golang.org/x/text", "specifier": "", "dependency_source_type": "unknown"},
+        {"name": "private.example.test/team/module", "specifier": "", "dependency_source_type": "unknown"},
+    ]
+    assert parsed_manifest["dependencies"]["indirect"] == [
+        {
+            "name": "github.com/public/module",
+            "specifier": "v0.0.0-20240102030405-abcdef123456",
+            "dependency_source_type": "registry",
+        }
+    ]
+    assert parsed_sum["lockfile_version"] == "go-sum-v1"
+    assert len(parsed_sum["packages"]) == 3
+    rendered = json.dumps({"manifest": parsed_manifest, "sum": parsed_sum})
+    for withheld in ("../private/module", "token@example.test", "private.git", "h1:"):
+        assert withheld not in rendered
+
+
+@pytest.mark.parametrize(
+    ("kind", "raw_text"),
+    [
+        ("go_sum", "golang.org/x/text v0.19.0 not-a-checksum"),
+        ("go_mod", "require https://token@example.test/module v1.0.0"),
+    ],
+)
+def test_go_ambiguous_inputs_never_become_correlatable_identities(kind, raw_text):
+    if kind == "go_mod":
+        parsed, _findings, errors = runner.parse_manifest_text_by_type(kind, raw_text)
+        assert parsed["dependencies"] == {"require": [], "indirect": []}
+    else:
+        parsed, errors = runner.parse_project_lockfile_text(kind, raw_text)
+        assert parsed["packages"] == []
+    assert errors == []
+
+
+def test_cargo_parsers_accept_only_v3_v4_and_withhold_ambiguous_or_private_identity_data():
+    manifest, findings, errors = runner.parse_manifest_text_by_type(
+        "cargo_toml",
+        '''[dependencies]
+serde = "1.0"
+workspace-crate = { workspace = true }
+git-crate = { git = "https://token@private.example.test/repo" }
+renamed = { package = "private-real-name", version = "2.0.0" }
+''',
+    )
+    lockfile, lock_errors = runner.parse_project_lockfile_text(
+        "cargo_lock",
+        '''version = 3
+[[package]]
+name = "serde"
+version = "1.0.210"
+source = "sparse+https://index.crates.io/"
+checksum = "secret-hash"
+[[package]]
+name = "git-crate"
+version = "2.0.0"
+source = "git+https://token@private.example.test/repo#deadbeef"
+[[package]]
+name = "workspace-crate"
+version = "0.1.0"
+''',
+    )
+
+    assert findings == []
+    assert errors == []
+    assert lock_errors == []
+    assert manifest["dependencies"]["dependencies"] == [
+        {"name": "git-crate", "specifier": "", "dependency_source_type": "vcs"},
+        {"name": "renamed", "specifier": "", "dependency_source_type": "alias"},
+        {"name": "serde", "specifier": "1.0", "dependency_source_type": "registry"},
+        {"name": "workspace-crate", "specifier": "", "dependency_source_type": "workspace"},
+    ]
+    assert lockfile["lockfile_version"] == 3
+    assert lockfile["packages"] == [
+        {"name": "serde", "version": "1.0.210", "source_type": "registry"},
+        {"name": "git-crate", "version": "", "source_type": "unknown"},
+        {"name": "workspace-crate", "version": "", "source_type": "workspace"},
+    ]
+    rendered = json.dumps({"manifest": manifest, "lockfile": lockfile})
+    for withheld in ("private-real-name", "token@", "private.example.test", "secret-hash", "deadbeef"):
+        assert withheld not in rendered
+
+    unsupported, unsupported_errors = runner.parse_project_lockfile_text(
+        "cargo_lock", '[metadata]\nversion = 2\n',
+    )
+    assert unsupported == {}
+    assert unsupported_errors == ["cargo_lockfile_version_not_supported"]
+
+
+def test_composer_parsers_are_bounded_and_custom_repositories_fail_closed_without_locators():
+    manifest, findings, errors = runner.parse_manifest_text_by_type(
+        "composer_json",
+        json.dumps({
+            "repositories": [{"type": "composer", "url": "https://token@private.example.test"}],
+            "require": {"symfony/http-foundation": "^7.1", "php": ">=8.2"},
+            "require-dev": {"phpunit/phpunit": "11.0.0"},
+        }),
+    )
+    lockfile, lock_errors = runner.parse_project_lockfile_text(
+        "composer_lock",
+        json.dumps({
+            "packages": [{"name": "symfony/http-foundation", "version": "v7.1.3", "dist": {"url": "https://token@private.example.test/a"}}],
+            "packages-dev": [{"name": "phpunit/phpunit", "version": "11.0.0", "source": {"url": "git@private.example.test:x"}}],
+            "aliases": [{"package": "private/alias", "alias": "1.0.0"}],
+        }),
+    )
+
+    assert findings == []
+    assert errors == []
+    assert lock_errors == []
+    assert manifest["project"] == {"custom_repositories_declared": True}
+    assert manifest["dependencies"] == {
+        "require": [{"name": "symfony/http-foundation", "specifier": "", "dependency_source_type": "unknown"}],
+        "require-dev": [{"name": "phpunit/phpunit", "specifier": "", "dependency_source_type": "unknown"}],
+    }
+    assert lockfile["packages"] == [
+        {"name": "symfony/http-foundation", "version": "7.1.3", "dependency_group": "require", "source_type": "unverified_registry"},
+        {"name": "phpunit/phpunit", "version": "11.0.0", "dependency_group": "require-dev", "source_type": "unverified_registry"},
+    ]
+    rendered = json.dumps({"manifest": manifest, "lockfile": lockfile})
+    for withheld in ("token@", "private.example.test", "git@", "private/alias", "dist", "aliases"):
+        assert withheld not in rendered
+
+    for raw in ("[]", '{"packages": {}}', "not-json"):
+        parsed, parse_errors = runner.parse_project_lockfile_text("composer_lock", raw)
+        assert parsed == {}
+        assert parse_errors
+
+
+def test_gradle_lock_parser_accepts_reviewed_maven_versions_and_discards_configuration_names():
+    parsed, errors = runner.parse_project_lockfile_text("gradle_lock", """
+# This is a Gradle generated file.
+org.springframework:spring-core:6.1.12=compileClasspath,runtimeClasspath
+org.example:preview:2.0.0-rc.1=testRuntimeClasspath
+org.example:legacy:1.0.Final=runtimeClasspath
+org.example:service-pack:1.2-sp1=runtimeClasspath
+org.example:dynamic:1.+=compileClasspath
+org.example:vendor:1.0-vendor=runtimeClasspath
+Org.Example:mixed:1.0.0=compileClasspath
+empty=
+""")
+    assert errors == []
+    assert parsed["lockfile_version"] == "gradle-lockfile-v1"
+    assert parsed["packages"] == [
+        {"name": "org.springframework:spring-core", "version": "6.1.12", "source_type": "unverified_registry"},
+        {"name": "org.example:preview", "version": "2.0.0-rc.1", "source_type": "unverified_registry"},
+        {"name": "org.example:legacy", "version": "1.0.Final", "source_type": "unverified_registry"},
+        {"name": "org.example:service-pack", "version": "1.2-sp1", "source_type": "unverified_registry"},
+    ]
+    rendered = json.dumps(parsed)
+    for withheld in ("compileClasspath", "runtimeClasspath", "testRuntimeClasspath", "1.+", "1.0-vendor", "Org.Example"):
+        assert withheld not in rendered
+
+
+def test_nuget_lock_parser_reconciles_targets_and_fails_closed_for_ambiguous_or_local_packages():
+    parsed, errors = runner.parse_project_lockfile_text("nuget_packages_lock", json.dumps({
+        "version": 1,
+        "dependencies": {
+            "net8.0-secret-target": {
+                "Public.Package": {"type": "Direct", "resolved": "01.2.3.0+private-build", "contentHash": "secret-hash"},
+                "Legacy.Package": {"type": "Transitive", "resolved": "2"},
+                "Ambiguous.Package": {"type": "Transitive", "resolved": "2.0.0"},
+                "Local.Project": {"type": "Project", "resolved": "1.0.0", "path": "../private"},
+            },
+            "net9.0-secret-target": {
+                "Public.Package": {"type": "Direct", "resolved": "1.2.3"},
+                "Legacy.Package": {"type": "Transitive", "resolved": "2.0"},
+                "Ambiguous.Package": {"type": "Transitive", "resolved": "2.1.0"},
+                "Local.Project": {"type": "Project", "resolved": "1.0.0"},
+            },
+        },
+    }))
+    assert errors == []
+    assert parsed["lockfile_version"] == "nuget-packages-lock-json-v1"
+    assert parsed["target_count"] == 2
+    assert parsed["ambiguous_packages"] == 1
+    assert parsed["packages"] == [
+        {"name": "ambiguous.package", "source_type": "unknown", "dependency_scope": "unknown"},
+        {"name": "legacy.package", "version": "2.0.0", "source_type": "unverified_registry", "dependency_scope": "transitive"},
+        {"name": "local.project", "version": "1.0.0", "source_type": "local", "dependency_scope": "unknown"},
+        {"name": "public.package", "version": "1.2.3", "source_type": "unverified_registry", "dependency_scope": "direct"},
+    ]
+    rendered = json.dumps(parsed)
+    for withheld in ("net8.0-secret-target", "net9.0-secret-target", "secret-hash", "../private", "contentHash", "private-build"):
+        assert withheld not in rendered
+
+    for invalid_version in ("1.0.0.0.1", "1.0.0-alpha..1", "2147483648"):
+        rejected_version, version_errors = runner.parse_project_lockfile_text(
+            "nuget_packages_lock",
+            json.dumps({"version": 1, "dependencies": {"private-target": {"Public.Package": {"type": "Direct", "resolved": invalid_version}}}}),
+        )
+        assert version_errors == []
+        assert rejected_version["packages"] == [
+            {"name": "public.package", "source_type": "unknown", "dependency_scope": "unknown"}
+        ]
+
+    for raw in ("[]", '{"version":2,"dependencies":{}}', '{"version":1,"dependencies":{}}', "not-json"):
+        rejected, rejection_errors = runner.parse_project_lockfile_text("nuget_packages_lock", raw)
+        assert rejected == {}
+        assert rejection_errors
+
+    for duplicate_key_lock in (
+        '{"version":1,"version":2,"dependencies":{"net8.0":{}}}',
+        '{"version":1,"dependencies":{"net8.0":{"Public.Package":{"type":"Direct","resolved":"1.2.3"},"Public.Package":{"type":"Direct","resolved":"9.9.9"}}}}',
+    ):
+        rejected, rejection_errors = runner.parse_project_lockfile_text("nuget_packages_lock", duplicate_key_lock)
+        assert rejected == {}
+        assert rejection_errors == ["nuget_lockfile_json_parse_error"]
+
+
+def test_npm_lockfile_non_registry_nodes_remain_categories_without_locators_or_alias_targets():
+    parsed, errors = runner.parse_project_lockfile_text(
+        "npm_package_lock",
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "node_modules/public-package": {"version": "1.2.3", "resolved": "https://registry.npmjs.org/public-package/-/public-package-1.2.3.tgz"},
+                    "node_modules/alias-package": {"name": "actual-package", "version": "2.0.0", "resolved": "https://registry.npmjs.org/actual-package/-/actual-package-2.0.0.tgz"},
+                    "node_modules/workspace-package": {"version": "3.0.0", "link": True, "resolved": "file:../packages/private-workspace"},
+                    "node_modules/local-package": {"version": "4.0.0", "resolved": "file:../private-local-package"},
+                    "node_modules/vcs-package": {"version": "5.0.0", "resolved": "git+https://token@example.test/private-repository.git"},
+                    "node_modules/url-package": {"version": "6.0.0", "resolved": "https://token@example.test/private-tarball.tgz"},
+                },
+            }
+        ),
+    )
+
+    assert errors == []
+    assert parsed["packages"] == [
+        {"name": "public-package", "version": "1.2.3", "source_type": "registry"},
+        {"name": "alias-package", "version": "", "source_type": "alias"},
+        {"name": "workspace-package", "version": "", "source_type": "workspace"},
+        {"name": "local-package", "version": "", "source_type": "local"},
+        {"name": "vcs-package", "version": "", "source_type": "vcs"},
+        {"name": "url-package", "version": "", "source_type": "url"},
+    ]
+    assert {node["name"]: node["source_type"] for node in parsed["dependency_graph"]["nodes"]} == {
+        "public-package": "registry",
+        "alias-package": "alias",
+        "workspace-package": "workspace",
+        "local-package": "local",
+        "vcs-package": "vcs",
+        "url-package": "url",
+    }
+    serialized = json.dumps(parsed)
+    for withheld in ("actual-package", "private-workspace", "private-local-package", "private-repository", "private-tarball", "token@example.test", "registry.npmjs.org"):
+        assert withheld not in serialized
 
 
 @pytest.mark.anyio
@@ -3898,6 +5346,21 @@ def test_web_query_redaction_helpers_preserve_safe_params_and_redact_sensitive_v
     assert "secret" not in redacted
 
 
+@pytest.mark.parametrize(
+    ("raw_url", "forbidden"),
+    [
+        ("https://operator:password_should_not_render@example.test/path?token=query_should_not_render", "operator:password_should_not_render"),
+        ("https://operator:@example.test/path?token=query_should_not_render", "operator"),
+        ("https://:password_should_not_render@example.test/path", "password_should_not_render"),
+    ],
+)
+def test_web_query_redaction_helpers_remove_url_userinfo_even_when_malformed(raw_url, forbidden):
+    redacted = runner.redact_url_query(raw_url)
+
+    assert forbidden not in redacted
+    assert "[REDACTED]@example.test" in redacted
+
+
 @pytest.mark.anyio
 async def test_analyze_web_basic_redacts_sensitive_query_params_in_result():
     server = start_test_http_server()
@@ -4054,6 +5517,132 @@ async def test_analyze_web_basic_enforces_allowed_ports(monkeypatch):
     assert "port 8443 is not allowed" in rejected.value.detail
 
     runner.validate_web_url_allowed("https://example.test:8443", allow_private_targets=False, allowed_ports=(80, 443, 8443))
+
+
+@pytest.mark.parametrize(
+    ("scheme", "address", "port"),
+    [
+        ("http", "93.184.216.34", 80),
+        ("https", "2606:2800:220:1:248:1893:25c8:1946", 443),
+    ],
+)
+def test_fetch_http_once_pins_dns_validated_address_and_preserves_hostname(monkeypatch, scheme, address, port):
+    class StubResponse:
+        status = 200
+        reason = "OK"
+
+        def getheaders(self):
+            return []
+
+        def read(self, _size):
+            return b""
+
+    class CapturingConnection:
+        instances = []
+        default_connection_attempts = []
+
+        def __init__(self, host, port=None, timeout=None, **_kwargs):
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+            self.__class__.instances.append(self)
+
+        @staticmethod
+        def _create_connection(connection_address, _timeout=None, _source_address=None):
+            CapturingConnection.default_connection_attempts.append(connection_address)
+            return object()
+
+        def request(self, _method, _target, headers=None):
+            self.request_headers = headers
+            self.connected_socket = self._create_connection((self.host, self.port), self.timeout)
+
+        def getresponse(self):
+            return StubResponse()
+
+        def close(self):
+            return None
+
+    resolver_calls = []
+    pinned_connection_attempts = []
+
+    def changing_resolver(host, resolved_port):
+        resolver_calls.append((host, resolved_port))
+        if len(resolver_calls) > 1:
+            return {runner.ipaddress.ip_address("169.254.169.254")}
+        return {runner.ipaddress.ip_address(address)}
+
+    def capture_pinned_connection(connection_address, timeout=None, source_address=None):
+        pinned_connection_attempts.append((connection_address, timeout, source_address))
+        return object()
+
+    connection_name = "HTTPSConnection" if scheme == "https" else "HTTPConnection"
+    monkeypatch.setattr(runner, "resolve_web_host", changing_resolver)
+    monkeypatch.setattr(runner.socket, "create_connection", capture_pinned_connection)
+    monkeypatch.setattr(runner.http.client, connection_name, CapturingConnection)
+
+    response = runner.fetch_http_once(
+        f"{scheme}://rebind.example/",
+        allow_private_targets=False,
+        timeout_seconds=1,
+        max_response_bytes=1024,
+        allowed_ports=(80, 443),
+    )
+
+    connection = CapturingConnection.instances[0]
+    assert response["status_code"] == 200
+    assert resolver_calls == [("rebind.example", port)]
+    assert pinned_connection_attempts[0][0] == (address, port)
+    assert CapturingConnection.default_connection_attempts == []
+    assert connection.host == "rebind.example"
+    assert connection.port == port
+
+
+def test_inspect_tls_pins_validated_address_and_preserves_sni_hostname(monkeypatch):
+    class StubRawSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class StubTlsSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def getpeercert(self):
+            return {}
+
+        def version(self):
+            return "TLSv1.3"
+
+        def cipher(self):
+            return ("TLS_AES_256_GCM_SHA384", "TLSv1.3", 256)
+
+    class StubTlsContext:
+        def wrap_socket(self, _raw_socket, *, server_hostname):
+            sni_hostnames.append(server_hostname)
+            return StubTlsSocket()
+
+    connection_attempts = []
+    sni_hostnames = []
+
+    monkeypatch.setattr(runner, "resolve_web_host", lambda host, port: {runner.ipaddress.ip_address("93.184.216.34")})
+    monkeypatch.setattr(runner.socket, "create_connection", lambda address, timeout=None: connection_attempts.append((address, timeout)) or StubRawSocket())
+    monkeypatch.setattr(runner.ssl, "create_default_context", StubTlsContext)
+
+    tls = runner.inspect_tls(
+        "https://tls-rebind.example/",
+        allow_private_targets=False,
+        timeout_seconds=1,
+        allowed_ports=(443,),
+    )
+
+    assert tls["version"] == "TLSv1.3"
+    assert connection_attempts == [(("93.184.216.34", 443), 1)]
+    assert sni_hostnames == ["tls-rebind.example"]
 
 
 @pytest.mark.anyio

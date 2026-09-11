@@ -15,10 +15,16 @@ class ProjectArchiveFindingMetadata:
 PROJECT_ARCHIVE_ECOSYSTEM_LABELS = {
     "python_requirements": "Python / requirements",
     "node_package": "Node / package.json",
+    "rust_package": "Rust / Cargo",
+    "php_package": "PHP / Composer",
+    "jvm_package": "JVM / Gradle",
+    "dotnet_package": ".NET / NuGet",
     "docker_compose": "Docker / Compose",
     "ci_cd": "CI/CD",
     "framework_config": "Framework/config",
     "generic_project_metadata": "Generic project metadata",
+    "kubernetes": "Kubernetes",
+    "infrastructure_as_code": "Infrastructure as code",
     "unknown_ecosystem": "Unknown ecosystem",
 }
 
@@ -29,6 +35,22 @@ DEPENDENCY_PINNING_THEME_BY_ID = {
     "dependency_not_exactly_pinned": ("not_exactly_pinned", "Dependency not exactly pinned"),
     "requirements_dependency_not_exactly_pinned": ("not_exactly_pinned", "Dependency not exactly pinned"),
     "dependency_broad_range": ("broad_range", "Dependency broad range"),
+}
+
+SENSITIVE_DATA_FINDING_IDS = {
+    "real_env_file_present_not_read",
+    "private_key_block_detected",
+    "secret_like_assignment",
+    "weak_placeholder_secret",
+    "ci_secret_exposed_inline",
+    "secret_in_docker_build_arg",
+    "secret_in_compose_environment",
+    "secret_in_k8s_manifest_plaintext",
+    "secret_in_terraform_variable_default",
+    "database_url_with_credentials",
+    "redis_url_with_credentials",
+    "basic_auth_url",
+    "jwt_like_value",
 }
 
 
@@ -43,6 +65,21 @@ def project_archive_finding_metadata_record(
         ecosystem=ecosystem,
         ecosystem_label=PROJECT_ARCHIVE_ECOSYSTEM_LABELS[ecosystem],
     )
+
+
+SENSITIVE_DATA_FINDING_METADATA = project_archive_finding_metadata_record(
+    "sensitive_data_review",
+    "Sensitive data review",
+    GENERIC_PROJECT_METADATA_ECOSYSTEM,
+)
+
+PROJECT_CONFIGURATION_REVIEW_METADATA = {
+    "docker": project_archive_finding_metadata_record("container_configuration", "Container configuration", "docker_compose"),
+    "compose": project_archive_finding_metadata_record("container_configuration", "Container configuration", "docker_compose"),
+    "kubernetes": project_archive_finding_metadata_record("kubernetes_configuration", "Kubernetes configuration", "kubernetes"),
+    "terraform": project_archive_finding_metadata_record("infrastructure_as_code", "Infrastructure as code", "infrastructure_as_code"),
+    "license": project_archive_finding_metadata_record("license_review", "License review", GENERIC_PROJECT_METADATA_ECOSYSTEM),
+}
 
 
 UNCATEGORIZED_PROJECT_ARCHIVE_FINDING = ProjectArchiveFindingMetadata(
@@ -190,12 +227,18 @@ def project_archive_finding_metadata(
     path: str | None = None,
     manifest_type: str | None = None,
 ) -> ProjectArchiveFindingMetadata:
-    if finding_id:
+    sensitive_data_finding = bool(
+        finding_id
+        and (finding_id in SENSITIVE_DATA_FINDING_IDS or finding_id.startswith("secrets_review_"))
+    )
+    if sensitive_data_finding:
+        metadata = SENSITIVE_DATA_FINDING_METADATA
+    elif finding_id:
         metadata = PROJECT_ARCHIVE_FINDING_METADATA.get(finding_id, UNCATEGORIZED_PROJECT_ARCHIVE_FINDING)
     else:
         metadata = UNCATEGORIZED_PROJECT_ARCHIVE_FINDING
 
-    if finding_id not in CONTEXTUAL_ECOSYSTEM_FINDING_IDS:
+    if finding_id not in CONTEXTUAL_ECOSYSTEM_FINDING_IDS and not sensitive_data_finding:
         return metadata
 
     ecosystem = infer_project_archive_ecosystem(evidence=evidence, path=path, manifest_type=manifest_type)
@@ -213,11 +256,10 @@ def categorize_project_archive_finding(
     if not isinstance(value, dict):
         return value
     finding = dict(value)
-    metadata = project_archive_finding_metadata(
-        str(finding.get("id") or ""),
-        evidence=str(finding.get("evidence") or ""),
-        path=context_path,
-        manifest_type=context_manifest_type,
+    review_metadata = PROJECT_CONFIGURATION_REVIEW_METADATA.get(str(finding.get("project_review") or ""))
+    metadata = review_metadata or project_archive_finding_metadata(
+        str(finding.get("id") or ""), evidence=str(finding.get("evidence") or ""),
+        path=context_path or str(finding.get("file_path") or ""), manifest_type=context_manifest_type,
     )
     finding["category"] = metadata.category
     finding["category_label"] = metadata.category_label
@@ -268,6 +310,14 @@ def infer_project_archive_ecosystem(
         return "node_package"
     if any(marker in normalized for marker in ("requirements.txt", "requirements_txt", "pyproject.toml", "pyproject_toml")):
         return "python_requirements"
+    if any(marker in normalized for marker in ("cargo.toml", "cargo.lock", "cargo_toml", "cargo_lock")):
+        return "rust_package"
+    if any(marker in normalized for marker in ("composer.json", "composer.lock", "composer_json", "composer_lock")):
+        return "php_package"
+    if any(marker in normalized for marker in ("build.gradle", "build.gradle.kts", "gradle.lockfile", "gradle_build", "gradle_lock")):
+        return "jvm_package"
+    if any(marker in normalized for marker in (".csproj", "packages.lock.json", "dotnet_project", "nuget_packages_lock")):
+        return "dotnet_package"
     if any(marker in normalized for marker in ("docker-compose.yml", "docker-compose.yaml", "compose.yaml", "compose.yml")):
         return "docker_compose"
     if any(marker in normalized for marker in (".github/workflows/", ".gitlab-ci.yml", "circleci/config.yml", "jenkinsfile")):
@@ -404,7 +454,7 @@ def project_archive_manifest_path_for_finding(record: dict[str, Any], context_pa
 
 def is_project_archive_manifest_path(value: str) -> bool:
     normalized = value.replace("\\", "/").lower()
-    return normalized.endswith(("package.json", "package-lock.json", "requirements.txt", "pyproject.toml"))
+    return normalized.endswith(("package.json", "package-lock.json", "requirements.txt", "pyproject.toml", "go.mod", "go.sum", "cargo.toml", "cargo.lock", "composer.json", "composer.lock", "build.gradle", "build.gradle.kts", "gradle.lockfile"))
 
 
 def as_dict(value: Any) -> dict[str, Any]:

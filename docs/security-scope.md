@@ -2,11 +2,17 @@
 
 ## Intended Use
 
-Inspectra is for defensive, educational, and authorized security audits. It is open-source, local-first, and self-hosted-first, not a commercial SaaS, subscription platform, enterprise multi-tenant service, or scan-as-a-service product. The MVP is limited to files that the user intentionally uploads plus controlled single-target web and domain baseline checks, starting with PDF/image metadata checks, dependency manifest review, passive archive inspection, bounded manifest analysis inside archives, passive Docker/Django/Node package configuration review, passive CI/CD configuration review, passive Kubernetes/Terraform/Nginx/Compose/Database/SQL DB/Redis configuration review, redaction-first secrets review, passive HTTP/HTTPS configuration review, and bounded DNS baseline review.
+Inspectra `0.3.0-beta.1` is for defensive, educational and authorized security
+audits. It is open-source, local-first and self-hosted-first, not a public SaaS
+or scan-as-a-service product. Passive inputs are intentionally uploaded files,
+immutable Git snapshots, closed CI evidence or normalized SBOMs. Network work is
+separate, bounded and requires explicit authorization/opt-in. Public advisory
+egress and every Active capability are disabled by default. The evidence state
+of each capability is listed in `docs/feature-matrix.md`.
 
 Use Inspectra only on files, domains, systems, or services that you own or are explicitly authorized to assess.
 
-## Current MVP Scope
+## Supported scope
 
 Allowed in this phase:
 
@@ -206,7 +212,7 @@ For manifests, Inspectra uses local Python parsing. It does not install dependen
 
 For archives, Inspectra uses local Python metadata parsing. It does not extract archives broadly to the filesystem, follow symlinks, execute files, install dependencies, or call external services. Findings are extraction-risk and review indicators, not proof that a package is malicious.
 
-For project archives, Inspectra may read supported internal manifests (`package.json`, `requirements.txt`, and `pyproject.toml`) into bounded memory buffers and parse them with the same local manifest parser used for standalone manifests. It detects other manifest filenames but does not parse them in this phase.
+For project archives, Inspectra may read supported internal manifests (`package.json`, `requirements.txt`, `pyproject.toml`, and the bounded `Pipfile` subset) into bounded memory buffers and parse them with the same local manifest parser used for standalone manifests. For exact registry pins in `requirements.txt`, it retains only aggregate supported-hash counts and a `hashes_present`, `missing`, or `not_applicable` state; actual digests, option values, private URLs, VCS/local locators and credentials are discarded. Hash presence is evidence of declared integrity metadata, not proof that an artifact was fetched or verified. It detects other manifest filenames but does not parse unsupported content.
 
 For Django config audits, Inspectra reads only bounded text from Django-related files inside uploaded archives and reports heuristic indicators for manual review. It does not execute Python, import settings modules, run `manage.py`, install dependencies, connect to databases, read real `.env` files, extract the project broadly, follow symlinks or hardlinks, query CVEs, or call the internet. Real `.env` and `.env.*` files are detected but not read; explicit environment templates and samples may be read within limits. Secret-like evidence is redacted.
 
@@ -226,7 +232,7 @@ For Docker Compose config audits, Inspectra reads only bounded text from Docker 
 
 For Redis config audits, Inspectra reads only bounded text from Redis and Sentinel config candidates inside uploaded archives and reports heuristic indicators for manual review. It detects real `.env`, `.env.*`, `.envrc`, ACL, RDB, AOF, appendonly, dump, and backup files as sensitive files present without reading their content, and records Redis include directives without resolving them. It does not execute Redis or Sentinel; run `redis-server`, `redis-cli`, `redis-sentinel`, `redis-benchmark`, or similar tools; open sockets; connect to Redis or Sentinel; validate credentials; resolve includes; read host paths; read sensitive adjacent file contents; query CVEs/advisories; or call the internet. Redis passwords, Sentinel auth values, Redis URLs with credentials, ACL-like values, private key blocks, exports, and errors are redacted best-effort.
 
-For SBOM export, Inspectra uses only declared dependencies already present in completed `manifest_basic` or `project_archive_basic` job results. It does not execute package managers, install packages, resolve transitive dependencies, infer licenses, query CVEs, verify URL/VCS identities, or call package registries. Version ranges remain ranges unless the manifest declares an exact local pin that can be represented as such. Package URLs are generated only for dependencies that look like clear npm or PyPI registry packages; URL, VCS, local, editable, workspace, and alias declarations are preserved without inferred package URLs.
+For SBOM export, Inspectra uses only declared dependencies already present in completed `manifest_basic` or `project_archive_basic` job results. It does not execute package managers, install packages, resolve transitive dependencies, infer dependency licenses, query CVEs, verify URL/VCS identities, or call package registries. Version ranges remain ranges unless the manifest declares an exact local pin that can be represented as such. Package URLs are generated only for dependencies that look like clear npm or PyPI registry packages; URL, VCS, local, editable, workspace, and alias declarations are preserved without inferred package URLs. Supported root-project SPDX declarations are normalized through a closed identifier catalog; arbitrary text is withheld. An optional deployment-owned exact deny list emits a review finding but never a legal conclusion. Dependency licenses remain explicitly unknown in both CycloneDX and SPDX output.
 
 For web baseline audits, Inspectra makes bounded HTTP/HTTPS requests only to the authorized URL, validated redirects, and common same-origin `robots.txt`/`security.txt` paths. It does not execute JavaScript, render HTML, crawl links, fuzz, brute-force, exploit, scan ports, use Nmap, query CVEs, or call third-party reputation APIs. Missing headers and exposed metadata are reported as indicators for manual review, not confirmed vulnerabilities.
 
@@ -611,7 +617,7 @@ The MVP does not include:
 - Running Nmap or network scanners outside the explicitly enabled, bounded Active Nmap Basic path through internal `active-tools`.
 - Image rendering, conversion, detonation, or embedded-content execution.
 - Installing dependencies from uploaded manifests.
-- Running npm, pip, Poetry, pnpm, yarn, or package lifecycle scripts against uploaded manifests.
+- Running npm, pip, Pipenv, Poetry, pnpm, yarn, or package lifecycle scripts against uploaded manifests.
 - Running npm, pnpm, yarn, bun, npx, Node lifecycle scripts, JavaScript, TypeScript, or package config files for Node package config review.
 - Downloading Node packages, querying registries, running `npm audit`, querying advisories/CVEs, resolving transitive dependencies, or making malicious-package verdicts for Node package config review.
 - Executing workflows, emulating CI/CD runners, evaluating provider expressions dynamically, calling provider APIs, validating tokens, downloading actions/images, resolving remote reusable workflows/includes, querying advisories/CVEs, or claiming pipeline exploitability for CI/CD config review.
@@ -690,16 +696,28 @@ Subdomain inventory results can include hostnames, CNAME targets, IP addresses, 
 
 ## Container Boundary
 
-External audit tools run in the `audit-tools` container, not on the host and not in the backend container. The MVP also avoids mounting the Docker socket into the backend.
+External file-audit tools run in the `audit-tools` container, not on the host
+and not in the backend container. Passive web/DNS work runs in the separate
+`network-tools` container. Neither runner mounts the Docker socket or `data/`.
 
 The container boundary reduces host exposure, but it is not a perfect sandbox. Parser bugs in file tooling are still possible, so the tool container is constrained with:
 
-- Internal Compose networking for backend-to-runner traffic; the runner also has a separate egress-capable network for explicit `web_basic` HTTP/HTTPS requests and bounded `domain_basic`/`subdomain_inventory_basic` DNS queries.
+- Internal Compose networking for backend-to-runner traffic. Only
+  `network-tools` joins the egress-capable network for explicit `web_basic`
+  HTTP/HTTPS requests and bounded `domain_basic`/`subdomain_inventory_basic`
+  DNS queries; it rejects every file endpoint.
 - Read-only root filesystem.
-- Read-only access to `data/`.
+- No access to the persisted `data/` volume. The backend transports exactly one
+  size/SHA-256-verified source without owner, project or path metadata.
 - Dropped Linux capabilities.
 - `no-new-privileges`.
-- Temporary storage limited to `/tmp`.
+- One source-bearing request at a time. Each uses a new subprocess, a mode
+  `0400` source in a mode `0700` directory, an allowlisted environment and a
+  dedicated 64 MiB tmpfs that is cleaned after success, failure, timeout or
+  cancellation.
+- Worker ceilings of 55 s wall time, 45 s CPU per process, 384 MiB address
+  space, 32 MiB file size, 64 open files, 32 processes, 20 MiB source and 4 MiB
+  result, plus service-level CPU/memory/PID limits.
 - Per-tool command timeouts through `INSPECTRA_TOOL_TIMEOUT_SECONDS`, defaulting to 10 seconds.
 - Web audit timeouts, response byte limits, redirect limits, allowed-port controls, and anti-SSRF checks through `INSPECTRA_WEB_TIMEOUT_SECONDS`, `INSPECTRA_WEB_MAX_RESPONSE_BYTES`, `INSPECTRA_WEB_MAX_REDIRECTS`, `INSPECTRA_WEB_ALLOWED_PORTS`, and `INSPECTRA_WEB_ALLOW_PRIVATE_TARGETS`.
 - Domain DNS query timeouts through `INSPECTRA_DOMAIN_DNS_TIMEOUT_SECONDS`; the backend gives the runner a larger calculated call timeout for the full bounded DNS baseline.
@@ -729,3 +747,14 @@ The container boundary reduces host exposure, but it is not a perfect sandbox. P
 - Prefer passive checks.
 - Add timeouts to every external command.
 - Do not add network scanners or exploit frameworks in this phase.
+### Isolated Active verification boundary
+
+DNS TXT and public HTTP well-known control verification are double opt-in and
+execute only inside `active-tools`. The backend accepts no verification target,
+URL, resolver or redirect input, has no live network fallback, and retains only
+the challenge digest and closed outcome. The runner pins a globally routable
+address after one bounded resolution, follows no redirect, reads at most 512
+bytes within three seconds and returns no target, token or raw provider data.
+Manual attestation remains local; managed-private verification still requires a
+deployment-owned adapter. Verification is a control signal, never authorization
+or proof of legal ownership.

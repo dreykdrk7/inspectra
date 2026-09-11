@@ -1,9 +1,10 @@
-import { ChangeEvent, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, lazy, ReactNode, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Download,
   Eye,
   FilePlus2,
+  FolderPlus,
   Globe2,
   LogOut,
   Network,
@@ -14,25 +15,19 @@ import {
   UploadCloud
 } from "lucide-react";
 
-import { ApiError, api } from "./api";
-import { ActiveDryRunJobReport } from "./ActiveDryRunJobReport";
+import { ApiError, api, apiBaseUrl } from "./api";
 import { redactActiveDryRunText } from "./activeDryRunReport";
-import { ActiveDnsInventoryJobReport } from "./ActiveDnsInventoryJobReport";
 import { ActiveDnsInventoryPanel } from "./ActiveDnsInventoryPanel";
 import { redactActiveDnsInventoryText } from "./activeDnsInventoryReport";
-import { ActiveDnsOsintJobReport } from "./ActiveDnsOsintJobReport";
 import { ActiveDnsOsintPanel } from "./ActiveDnsOsintPanel";
 import { redactActiveDnsOsintText } from "./activeDnsOsintReport";
-import { ActiveHttpHeaderProbeJobReport } from "./ActiveHttpHeaderProbeJobReport";
 import { redactActiveHttpHeaderProbeText } from "./activeHttpHeaderProbeReport";
-import { ActiveHttpBasicHeaderReviewJobReport } from "./ActiveHttpBasicHeaderReviewJobReport";
 import { ActiveHttpBasicHeaderReviewPanel } from "./ActiveHttpBasicHeaderReviewPanel";
 import { redactActiveHttpBasicHeaderReviewText } from "./activeHttpBasicHeaderReviewReport";
-import { ActiveNmapBasicJobReport } from "./ActiveNmapBasicJobReport";
 import { ActiveNmapBasicPanel } from "./ActiveNmapBasicPanel";
 import { redactActiveNmapBasicText } from "./activeNmapBasicReport";
-import { ActiveTlsBasicJobReport } from "./ActiveTlsBasicJobReport";
 import { ActiveTlsBasicPanel } from "./ActiveTlsBasicPanel";
+import { ProjectArchivePreflight } from "./ProjectArchivePreflight";
 import { redactActiveTlsBasicText } from "./activeTlsBasicReport";
 import {
   auditTypeCategoryLabel,
@@ -47,26 +42,6 @@ import {
   type JobStatusFilter,
   type JobTypeFilter
 } from "./dashboardFilters";
-import { ArchiveJobReport } from "./ArchiveJobReport";
-import { CiCdConfigJobReport } from "./CiCdConfigJobReport";
-import { ComposeConfigJobReport } from "./ComposeConfigJobReport";
-import { DatabaseConfigJobReport } from "./DatabaseConfigJobReport";
-import { DjangoConfigJobReport } from "./DjangoConfigJobReport";
-import { DomainJobReport } from "./DomainJobReport";
-import { DockerConfigJobReport } from "./DockerConfigJobReport";
-import { ImageJobReport } from "./ImageJobReport";
-import { K8sConfigJobReport } from "./K8sConfigJobReport";
-import { ManifestJobReport } from "./ManifestJobReport";
-import { NginxConfigJobReport } from "./NginxConfigJobReport";
-import { NodePackageConfigJobReport } from "./NodePackageConfigJobReport";
-import { PdfJobReport } from "./PdfJobReport";
-import { ProjectArchiveJobReport } from "./ProjectArchiveJobReport";
-import { RedisConfigJobReport } from "./RedisConfigJobReport";
-import { SecretsReviewJobReport } from "./SecretsReviewJobReport";
-import { SqlDatabaseConfigJobReport } from "./SqlDatabaseConfigJobReport";
-import { SubdomainJobReport } from "./SubdomainJobReport";
-import { TerraformConfigJobReport } from "./TerraformConfigJobReport";
-import { WebJobReport } from "./WebJobReport";
 import type {
   ActiveDryRunRequest,
   ActiveHttpHeaderProbeRequest,
@@ -75,10 +50,71 @@ import type {
   HealthResponse,
   JobListItem,
   JobRecord,
+  ProjectDeletionResponse,
+  ProjectSummary,
   ReportFormat,
   SbomFormat
 } from "./types";
 import { inspectWebUrlQuery } from "./webUrl";
+
+const JobResultReport = lazy(() => import("./JobResultReport"));
+const ProjectComponentInventoryPanel = lazy(() =>
+  import("./ProjectComponentInventoryPanel").then((module) => ({ default: module.ProjectComponentInventoryPanel }))
+);
+const ProjectComparisonPanel = lazy(() =>
+  import("./ProjectComparisonPanel").then((module) => ({ default: module.ProjectComparisonPanel }))
+);
+const ProjectFindingsPanel = lazy(() =>
+  import("./ProjectFindingsPanel").then((module) => ({ default: module.ProjectFindingsPanel }))
+);
+const ProjectSnapshotForm = lazy(() =>
+  import("./ProjectSnapshotForm").then((module) => ({ default: module.ProjectSnapshotForm }))
+);
+const ProjectWorkspacePanel = lazy(() =>
+  import("./ProjectWorkspacePanel").then((module) => ({ default: module.ProjectWorkspacePanel }))
+);
+const ProjectDeletionPanel = lazy(() =>
+  import("./ProjectDeletionPanel").then((module) => ({ default: module.ProjectDeletionPanel }))
+);
+const TeamInvitationAcceptance = lazy(() =>
+  import("./TeamInvitationAcceptance").then((module) => ({ default: module.TeamInvitationAcceptance }))
+);
+const TeamWorkspacePanel = lazy(() =>
+  import("./TeamWorkspacePanel").then((module) => ({ default: module.TeamWorkspacePanel }))
+);
+const ProductAuditPanel = lazy(() =>
+  import("./ProductAuditPanel").then((module) => ({ default: module.ProductAuditPanel }))
+);
+const RetentionPolicyPanel = lazy(() =>
+  import("./RetentionPolicyPanel").then((module) => ({ default: module.RetentionPolicyPanel }))
+);
+const AutomationTokensPanel = lazy(() =>
+  import("./AutomationTokensPanel").then((module) => ({ default: module.AutomationTokensPanel }))
+);
+const SbomImportPanel = lazy(() =>
+  import("./SbomImportPanel").then((module) => ({ default: module.SbomImportPanel }))
+);
+const ProjectStartGuide = lazy(() =>
+  import("./ProjectStartGuide").then((module) => ({ default: module.ProjectStartGuide }))
+);
+const RepositoryImportSetupPanel = lazy(() =>
+  import("./RepositoryImportSetupPanel").then((module) => ({ default: module.RepositoryImportSetupPanel }))
+);
+const ProjectPortfolioPanel = lazy(() =>
+  import("./ProjectPortfolioPanel").then((module) => ({ default: module.ProjectPortfolioPanel }))
+);
+const ProjectActionInboxPanel = lazy(() =>
+  import("./ProjectActionInboxPanel").then((module) => ({ default: module.ProjectActionInboxPanel }))
+);
+const RemediationCenterPanel = lazy(() =>
+  import("./RemediationCenterPanel").then((module) => ({ default: module.RemediationCenterPanel }))
+);
+const ProjectRiskTrendsPanel = lazy(() =>
+  import("./ProjectRiskTrendsPanel").then((module) => ({ default: module.ProjectRiskTrendsPanel }))
+);
+const ActiveOperationsCenter = lazy(() =>
+  import("./ActiveOperationsCenter").then((module) => ({ default: module.ActiveOperationsCenter }))
+);
 
 type LoadState = {
   loading: boolean;
@@ -87,11 +123,11 @@ type LoadState = {
 
 const initialLoadState: LoadState = { loading: false, error: null };
 const ARCHIVE_ACTION_SCOPE_COPY =
-  "Archive reviews are passive and bounded. Inspectra reports review indicators; it does not execute the project, contact live services, validate credentials, or query CVEs for config checks.";
+  "Passive review: no execution, traffic, credential checks, or CVE query.";
 const LOCAL_ALPHA_DEMO_COPY =
-  "Local alpha demo: use the synthetic fixtures under tests/fixtures/demo/passive-alpha/ to smoke uploads, grouped archive actions, reports, exports, and redaction. Do not upload real secrets or production archives for demos.";
+  "Optional local demo: manually select one synthetic archive from the synthetic fixtures in tests/fixtures/demo/passive-alpha/ to try the archive flow. Inspectra never reads or uploads a fixture automatically. Do not upload real secrets or production archives for demos.";
 const LOCAL_ALPHA_DEMO_REDACTION_COPY =
-  "Results, exports, and Raw JSON are redacted with [REDACTED]; this does not sanitize the original uploaded file.";
+  "Expect passive review indicators and [REDACTED], not a CVE or exploitability claim. Results redact [REDACTED]; original upload unchanged until you delete it. When finished, delete the uploaded fixture from Files and any demo jobs you do not need; retained project metadata follows its documented retention policy.";
 const ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT = "I confirm I own or am authorized to test this target.";
 const ACTIVE_HTTP_HEADER_PROBE_LIVE_TRAFFIC_STATEMENT = "I understand this will send one HTTP HEAD request to the target.";
 const AUTH_SESSION_EXPIRED_MESSAGE = "Session expired. Sign in again.";
@@ -105,8 +141,14 @@ const initialAuthStatus: AuthStatusResponse = {
   trusted_local: true,
   default_operator_id: "local-admin",
   login_available: false,
+  federated_login_available: false,
+  federated_login_path: null,
   authenticated: false,
   operator_id: null,
+  username: null,
+  organization_id: null,
+  organization_name: null,
+  role: null,
   csrf_required: false,
   csrf_token: null
 };
@@ -114,6 +156,7 @@ const initialAuthStatus: AuthStatusResponse = {
 type ArchiveAction = {
   label: string;
   onClick: () => void;
+  disabled?: boolean;
 };
 
 type ArchiveActionGroup = {
@@ -121,24 +164,40 @@ type ArchiveActionGroup = {
   actions: ArchiveAction[];
 };
 
+type WorkflowStage = "prepare" | "run" | "monitor" | "review";
+
 export function App() {
   const authFailureHandlerRef = useRef<(status: number) => void>(() => undefined);
   const [authStatus, setAuthStatus] = useState<AuthStatusResponse>(initialAuthStatus);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [files, setFiles] = useState<FileRecord[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [projectsTotalCount, setProjectsTotalCount] = useState(0);
+  const [projectsNextCursor, setProjectsNextCursor] = useState<string | null>(null);
   const [jobs, setJobs] = useState<JobListItem[]>([]);
+  const [jobsTotalCount, setJobsTotalCount] = useState(0);
+  const [jobsNextCursor, setJobsNextCursor] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<JobRecord | null>(null);
+  const [selectedProject, setSelectedProject] = useState<ProjectSummary | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [authState, setAuthState] = useState<LoadState>(initialLoadState);
   const [uploadKind, setUploadKind] = useState<FileRecord["kind"]>("pdf");
   const [healthState, setHealthState] = useState<LoadState>(initialLoadState);
   const [filesState, setFilesState] = useState<LoadState>(initialLoadState);
+  const [projectsState, setProjectsState] = useState<LoadState>(initialLoadState);
   const [jobsState, setJobsState] = useState<LoadState>(initialLoadState);
   const [uploadState, setUploadState] = useState<LoadState>(initialLoadState);
   const [loginPassword, setLoginPassword] = useState("");
+  const [loginUsername, setLoginUsername] = useState("");
   const [loginState, setLoginState] = useState<LoadState>(initialLoadState);
   const [logoutState, setLogoutState] = useState<LoadState>(initialLoadState);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [creatingProjectFileId, setCreatingProjectFileId] = useState<string | null>(null);
+  const [projectAuthorizationConfirmedFileId, setProjectAuthorizationConfirmedFileId] = useState<string | null>(null);
+  const [snapshotProjectId, setSnapshotProjectId] = useState<string | null>(null);
+  const [ciSetupProjectId, setCiSetupProjectId] = useState<string | null>(null);
+  const [repositoryImportSetupOpen, setRepositoryImportSetupOpen] = useState(false);
+  const [rerunningProjectId, setRerunningProjectId] = useState<string | null>(null);
   const [fileKindFilter, setFileKindFilter] = useState<FileKindFilter>("all");
   const [fileSearch, setFileSearch] = useState("");
   const [jobStatusFilter, setJobStatusFilter] = useState<JobStatusFilter>("all");
@@ -161,11 +220,29 @@ export function App() {
   const [activeHttpHeaderProbeAuthorizationConfirmed, setActiveHttpHeaderProbeAuthorizationConfirmed] = useState(false);
   const [activeHttpHeaderProbeLiveTrafficConfirmed, setActiveHttpHeaderProbeLiveTrafficConfirmed] = useState(false);
   const [activeHttpHeaderProbeState, setActiveHttpHeaderProbeState] = useState<LoadState>(initialLoadState);
+  const [advancedAuditsOpen, setAdvancedAuditsOpen] = useState(false);
+  const [workflowNotice, setWorkflowNotice] = useState<string | null>(null);
+  const [dashboardReady, setDashboardReady] = useState(false);
+  const [activeContextRevision, setActiveContextRevision] = useState(0);
+  const projectArchiveUploadRef = useRef<HTMLInputElement>(null);
+  const jobResultRef = useRef<HTMLElement>(null);
+  const jobTableRef = useRef<HTMLDivElement>(null);
+  const projectFindingsRef = useRef<HTMLElement>(null);
+  const restoredJobSelectionRef = useRef(false);
+  const restoredProjectSelectionRef = useRef(false);
+  const lastSelectedJobIdRef = useRef<string | null>(null);
 
   const clearPrivateUiState = useCallback(() => {
     setFiles([]);
+    setProjects([]);
+    setProjectsTotalCount(0);
+    setProjectsNextCursor(null);
     setJobs([]);
+    setJobsTotalCount(0);
+    setJobsNextCursor(null);
     setSelectedJob(null);
+    setSelectedProject(null);
+    setSnapshotProjectId(null);
   }, []);
 
   const applyAuthStatus = useCallback((status: AuthStatusResponse) => {
@@ -204,6 +281,18 @@ export function App() {
   }, [clearPrivateUiState, refreshAuthStatus]);
 
   useEffect(() => {
+    const url = new URL(window.location.href);
+    const oidcOutcome = url.searchParams.get("oidc");
+    if (oidcOutcome === "failed") {
+      setLoginState({ loading: false, error: "Federated sign-in failed. Contact your workspace administrator if the problem continues." });
+    }
+    if (oidcOutcome === "success" || oidcOutcome === "failed") {
+      url.searchParams.delete("oidc");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+  }, []);
+
+  useEffect(() => {
     authFailureHandlerRef.current = (status: number) => {
       void handleAuthFailure(status);
     };
@@ -230,17 +319,74 @@ export function App() {
     }
   }, []);
 
+  const refreshProjects = useCallback(async (options: { quiet?: boolean } = {}) => {
+    if (!options.quiet) {
+      setProjectsState({ loading: true, error: null });
+    }
+    try {
+      const page = await api.listProjectPage();
+      setProjects(page.items);
+      setProjectsTotalCount(page.total_count);
+      setProjectsNextCursor(page.next_cursor);
+      setProjectsState({ loading: false, error: null });
+    } catch (error) {
+      setProjectsState({ loading: false, error: toErrorMessage(error) });
+    }
+  }, []);
+
+  const loadMoreProjects = useCallback(async () => {
+    if (!projectsNextCursor || projectsState.loading) return;
+    setProjectsState({ loading: true, error: null });
+    try {
+      const page = await api.listProjectPage(projectsNextCursor);
+      setProjects((current) => {
+        const retained = new Map(current.map((item) => [item.project.id, item]));
+        page.items.forEach((item) => retained.set(item.project.id, item));
+        return [...retained.values()];
+      });
+      setProjectsTotalCount(page.total_count);
+      setProjectsNextCursor(page.next_cursor);
+      setProjectsState({ loading: false, error: null });
+    } catch (error) {
+      setProjectsState({ loading: false, error: toErrorMessage(error) });
+    }
+  }, [projectsNextCursor, projectsState.loading]);
+
   const refreshJobs = useCallback(async (options: { quiet?: boolean } = {}) => {
     if (!options.quiet) {
       setJobsState({ loading: true, error: null });
     }
     try {
-      setJobs(await api.listJobs());
+      const page = await api.listJobPage();
+      setJobs(page.items);
+      setJobsTotalCount(page.total_count);
+      setJobsNextCursor(page.next_cursor);
       setJobsState({ loading: false, error: null });
     } catch (error) {
       setJobsState({ loading: false, error: toErrorMessage(error) });
     }
   }, []);
+
+  const loadMoreJobs = useCallback(async () => {
+    if (!jobsNextCursor || jobsState.loading) {
+      return;
+    }
+    setJobsState({ loading: true, error: null });
+    try {
+      const page = await api.listJobPage(jobsNextCursor);
+      setJobs((current) => {
+        const known = new Set(current.map((job) => job.id));
+        return [...current, ...page.items.filter((job) => !known.has(job.id))];
+      });
+      setJobsTotalCount(page.total_count);
+      setJobsNextCursor(page.next_cursor);
+      setJobsState({ loading: false, error: null });
+      window.requestAnimationFrame(() => jobTableRef.current?.focus());
+    } catch (error) {
+      setJobsState({ loading: false, error: toErrorMessage(error) });
+      window.requestAnimationFrame(() => jobTableRef.current?.focus());
+    }
+  }, [jobsNextCursor, jobsState.loading]);
 
   const refreshAll = useCallback(async () => {
     setActionError(null);
@@ -250,15 +396,18 @@ export function App() {
       await refreshHealth();
       return;
     }
-    await Promise.all([refreshHealth(), refreshFiles(), refreshJobs()]);
-  }, [clearPrivateUiState, refreshAuthStatus, refreshFiles, refreshHealth, refreshJobs]);
+    await Promise.all([refreshHealth(), refreshFiles(), refreshProjects(), refreshJobs()]);
+  }, [clearPrivateUiState, refreshAuthStatus, refreshFiles, refreshHealth, refreshJobs, refreshProjects]);
 
   useEffect(() => {
-    void refreshAll();
+    void refreshAll().finally(() => setDashboardReady(true));
   }, [refreshAll]);
 
-  const hasActiveJobs = useMemo(() => jobs.some((job) => job.status === "queued" || job.status === "running"), [jobs]);
-  const isRefreshing = authState.loading || healthState.loading || filesState.loading || jobsState.loading;
+  const hasActiveJobs = useMemo(
+    () => jobs.some((job) => job.status === "queued" || job.status === "running" || job.status === "cancelling"),
+    [jobs]
+  );
+  const isRefreshing = authState.loading || healthState.loading || filesState.loading || projectsState.loading || jobsState.loading;
   const metrics = useMemo(() => buildDashboardMetrics(files, jobs), [files, jobs]);
   const filteredFiles = useMemo(
     () => filterFiles(files, fileKindFilter, fileSearch),
@@ -272,22 +421,106 @@ export function App() {
     () => (selectedJob?.file_id ? files.find((file) => file.id === selectedJob.file_id) : undefined),
     [files, selectedJob]
   );
+  const selectedProjectSummary = useMemo(
+    () => (selectedProject ? projects.find((item) => item.project.id === selectedProject.project.id) ?? selectedProject : null),
+    [projects, selectedProject]
+  );
+  const snapshotProject = useMemo(
+    () => (snapshotProjectId ? projects.find((item) => item.project.id === snapshotProjectId) ?? null : null),
+    [projects, snapshotProjectId]
+  );
   const webQueryInspection = useMemo(() => inspectWebUrlQuery(webUrl), [webUrl]);
   const activeDryRunQueryInspection = useMemo(() => inspectWebUrlQuery(activeDryRunTarget), [activeDryRunTarget]);
   const activeDryRunHasUserinfo = useMemo(() => targetHasUserinfo(activeDryRunTarget), [activeDryRunTarget]);
   const activeHttpHeaderProbeQueryInspection = useMemo(() => inspectWebUrlQuery(activeHttpHeaderProbeTarget), [activeHttpHeaderProbeTarget]);
   const activeHttpHeaderProbeHasUserinfo = useMemo(() => targetHasUserinfo(activeHttpHeaderProbeTarget), [activeHttpHeaderProbeTarget]);
   const authBlocksDashboard = authStatus.auth_required && !authStatus.authenticated;
+  const workflowStage = getWorkflowStage({ files, hasActiveJobs, selectedJob });
+  const workflowMessage = getWorkflowMessage(workflowStage);
+
+  useEffect(() => {
+    if (!selectedJob) {
+      return;
+    }
+    writeSelectedJobToLocation(selectedJob.id);
+    if (lastSelectedJobIdRef.current !== selectedJob.id) {
+      lastSelectedJobIdRef.current = selectedJob.id;
+      setWorkflowNotice(`${auditTypeLabel(selectedJob.audit_type)} is ${selectedJob.status}. Its result is now selected below.`);
+      jobResultRef.current?.focus({ preventScroll: false });
+    }
+  }, [selectedJob]);
+
+  useEffect(() => {
+    if (!selectedProjectSummary) {
+      return;
+    }
+    writeSelectedProjectToLocation(selectedProjectSummary.project.id);
+    if (ciSetupProjectId !== selectedProjectSummary.project.id) {
+      projectFindingsRef.current?.focus({ preventScroll: false });
+    }
+  }, [ciSetupProjectId, selectedProjectSummary]);
+
+  useEffect(() => {
+    if (restoredJobSelectionRef.current || !dashboardReady || authBlocksDashboard) {
+      return;
+    }
+    const jobId = selectedJobIdFromLocation();
+    if (!jobId) {
+      restoredJobSelectionRef.current = true;
+      return;
+    }
+    restoredJobSelectionRef.current = true;
+    void viewJob(jobId, { restoring: true });
+  }, [authBlocksDashboard, dashboardReady]);
+
+  useEffect(() => {
+    if (restoredProjectSelectionRef.current || !dashboardReady || authBlocksDashboard) {
+      return;
+    }
+    const projectId = selectedProjectIdFromLocation();
+    if (!projectId) {
+      restoredProjectSelectionRef.current = true;
+      return;
+    }
+    const project = projects.find((item) => item.project.id === projectId);
+    if (project) {
+      restoredProjectSelectionRef.current = true;
+      setSelectedProject(project);
+      return;
+    }
+    if (projectsState.loading) return;
+    restoredProjectSelectionRef.current = true;
+    if (!/^[a-f0-9]{32}$/.test(projectId)) {
+      clearSelectedProjectFromLocation();
+      return;
+    }
+    void api.getProject(projectId).then((resolved) => {
+      setSelectedProject(resolved);
+    }).catch(() => {
+      clearSelectedProjectFromLocation();
+    });
+  }, [authBlocksDashboard, dashboardReady, projects, projectsState.loading]);
+
+  useEffect(() => {
+    if (!selectedJob || !isActiveJob(selectedJob)) {
+      return;
+    }
+    const refreshedSummary = jobs.find((job) => job.id === selectedJob.id);
+    if (!refreshedSummary || refreshedSummary.status === selectedJob.status) {
+      return;
+    }
+    void refreshSelectedJob(selectedJob.id);
+  }, [jobs, selectedJob]);
 
   useEffect(() => {
     if (!hasActiveJobs) {
       return;
     }
     const interval = window.setInterval(() => {
-      void refreshJobs({ quiet: true });
+      void Promise.all([refreshJobs({ quiet: true }), refreshProjects({ quiet: true })]);
     }, 3000);
     return () => window.clearInterval(interval);
-  }, [hasActiveJobs, refreshJobs]);
+  }, [hasActiveJobs, refreshJobs, refreshProjects]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -296,10 +529,13 @@ export function App() {
     setLoginState({ loading: true, error: null });
     setActionError(null);
     try {
-      await api.login(password);
+      await api.login(
+        password,
+        authStatus.auth_mode === "private_team_lightweight_users" ? loginUsername : undefined,
+      );
       const status = await refreshAuthStatus();
       if (status && (!status.auth_required || status.authenticated)) {
-        await Promise.all([refreshFiles(), refreshJobs()]);
+        await Promise.all([refreshFiles(), refreshProjects(), refreshJobs()]);
       }
       setLoginState({ loading: false, error: null });
     } catch (error) {
@@ -320,6 +556,10 @@ export function App() {
         ...current,
         authenticated: false,
         operator_id: null,
+        username: null,
+        organization_id: null,
+        organization_name: null,
+        role: null,
         csrf_token: null
       }));
       clearPrivateUiState();
@@ -356,6 +596,7 @@ export function App() {
       setSelectedFile(null);
       form.reset();
       await refreshFiles();
+      setWorkflowNotice("File uploaded. Choose an analysis from the Files list to create a review job.");
       setUploadState({ loading: false, error: null });
     } catch (error) {
       setUploadState({ loading: false, error: toErrorMessage(error) });
@@ -394,6 +635,88 @@ export function App() {
     } catch (error) {
       setActionError(toErrorMessage(error));
     }
+  }
+
+  async function createProjectFromArchive(file: FileRecord) {
+    setActionError(null);
+    setCreatingProjectFileId(file.id);
+    try {
+      const created = await api.createProject(file.id);
+      setSelectedJob({ ...created.job, result: null, error: null });
+      setProjectAuthorizationConfirmedFileId(null);
+      await Promise.all([refreshProjects(), refreshJobs()]);
+      setWorkflowNotice(`Project ${created.project.name} was created and its initial review is queued.`);
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    } finally {
+      setCreatingProjectFileId(null);
+    }
+  }
+
+  async function rerunProjectAnalysis(project: ProjectSummary) {
+    setActionError(null);
+    setRerunningProjectId(project.project.id);
+    try {
+      const retryOf = project.latest_job && (project.latest_job.status === "failed" || project.latest_job.status === "cancelled")
+        ? project.latest_job.id
+        : undefined;
+      const job = await api.launchProjectAnalysis(project.project.id, retryOf);
+      setSelectedJob({ ...job, result: null, error: null });
+      await Promise.all([refreshProjects(), refreshJobs()]);
+      setWorkflowNotice(`A new analysis of ${project.project.name} is queued for its recorded source snapshot.`);
+    } catch (error) {
+      setActionError(toErrorMessage(error));
+    } finally {
+      setRerunningProjectId(null);
+    }
+  }
+
+  function viewProjectFindings(project: ProjectSummary) {
+    setSelectedProject(project);
+    setWorkflowNotice(`Project findings for ${project.project.name} are open below.`);
+  }
+
+  function openProjectWorkspace(project: ProjectSummary) {
+    setSelectedProject(project);
+    setWorkflowNotice(`Project workspace for ${project.project.name} is open below.`);
+  }
+
+  function openProjectSnapshotForm(projectId: string) {
+    setSnapshotProjectId(projectId);
+    setWorkflowNotice("Choose an authorized corrected archive to create a new immutable snapshot, then compare the completed results.");
+    const projectsRegion = document.getElementById("projects");
+    if (projectsRegion && typeof projectsRegion.scrollIntoView === "function") {
+      projectsRegion.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
+  function openProjectSourceUpdate(project: ProjectSummary) {
+    if (project.project.source_type !== "sbom" && project.latest_job?.analysis_profile !== "sbom_import") {
+      openProjectSnapshotForm(project.project.id);
+      return;
+    }
+    setSnapshotProjectId(null);
+    setSelectedProject(project);
+    setWorkflowNotice("Add an authorized SBOM revision from the project workspace. The original document will not be retained.");
+    globalThis.setTimeout(() => document.getElementById("sbom-revision")?.focus(), 0);
+  }
+
+  async function handleProjectDeleted(result: ProjectDeletionResponse) {
+    const deletedName = selectedProjectSummary?.project.id === result.project_id
+      ? selectedProjectSummary.project.name
+      : "the selected project";
+    setProjects((current) => current.filter((item) => item.project.id !== result.project_id));
+    setSelectedProject(null);
+    setSnapshotProjectId((current) => current === result.project_id ? null : current);
+    clearSelectedProjectFromLocation();
+    if (selectedJob?.project_id === result.project_id) {
+      setSelectedJob(null);
+      clearSelectedJobFromLocation();
+    }
+    setWorkflowNotice(
+      `${deletedName} and its derived records were deleted. Uploaded source files remain under the Files retention policy.`
+    );
+    await Promise.all([refreshProjects(), refreshJobs(), refreshFiles()]);
   }
 
   async function launchDjangoConfigAudit(file: FileRecord) {
@@ -688,16 +1011,35 @@ export function App() {
     setActionError(null);
     try {
       await api.deleteFile(fileId);
-      await Promise.all([refreshFiles(), refreshJobs()]);
+      await Promise.all([refreshFiles(), refreshProjects(), refreshJobs()]);
     } catch (error) {
       setActionError(toErrorMessage(error));
     }
   }
 
-  async function viewJob(jobId: string) {
+  function startProjectArchiveUpload() {
+    setUploadKind("archive");
+    projectArchiveUploadRef.current?.focus();
+  }
+
+  async function viewJob(jobId: string, options: { restoring?: boolean } = {}) {
     setActionError(null);
     try {
       setSelectedJob(await api.getJob(jobId));
+    } catch (error) {
+      if (options.restoring) {
+        clearSelectedJobFromLocation();
+        setWorkflowNotice("The job selected in the link is no longer available. Choose another job from the list.");
+      } else {
+        setActionError(toErrorMessage(error));
+      }
+    }
+  }
+
+  async function refreshSelectedJob(jobId: string) {
+    try {
+      setSelectedJob(await api.getJob(jobId));
+      setWorkflowNotice("The selected job status changed. Its latest result is shown below.");
     } catch (error) {
       setActionError(toErrorMessage(error));
     }
@@ -708,6 +1050,11 @@ export function App() {
       {
         label: "Start here",
         actions: [
+          {
+            label: creatingProjectFileId === file.id ? "Creating project" : "Create project & analyze",
+            onClick: () => void createProjectFromArchive(file),
+            disabled: creatingProjectFileId !== null || projectAuthorizationConfirmedFileId !== file.id
+          },
           { label: "Analyze archive", onClick: () => void launchAudit(file) },
           { label: "Analyze project manifests", onClick: () => void launchProjectArchiveAudit(file) }
         ]
@@ -763,7 +1110,11 @@ export function App() {
         <div className="header-actions">
           {authStatus.auth_required && authStatus.authenticated ? (
             <>
-              <span className="status-pill ok">Signed in as {authStatus.operator_id ?? "local-admin"}</span>
+              <span className="status-pill ok">
+                {authStatus.auth_mode === "private_team_lightweight_users"
+                  ? `${authStatus.organization_name ?? "Team workspace"} · ${authStatus.role ?? "member"}`
+                  : `Signed in as ${authStatus.operator_id ?? "local-admin"}`}
+              </span>
               <button className="secondary-button" onClick={() => void handleLogout()} disabled={logoutState.loading}>
                 <LogOut size={16} aria-hidden="true" />
                 {logoutState.loading ? "Signing out" : "Sign out"}
@@ -777,13 +1128,20 @@ export function App() {
         </div>
       </header>
 
-      {actionError ? <div className="alert">{actionError}</div> : null}
-      {logoutState.error ? <div className="alert">{logoutState.error}</div> : null}
+      <WorkflowNavigation stage={workflowStage} message={workflowMessage} />
+
+      {workflowNotice ? <div className="workflow-notice" role="status">{workflowNotice}</div> : null}
+      {actionError ? <div className="alert" role="alert">{actionError}</div> : null}
+      {logoutState.error ? <div className="alert" role="alert">{logoutState.error}</div> : null}
 
       {authBlocksDashboard ? (
         <section className="auth-gate" aria-label="Authentication">
           <Panel title="Authentication required" icon={<ShieldCheck size={18} aria-hidden="true" />}>
-            <p className="muted">Authentication required for this self-hosted instance.</p>
+            <p className="muted">
+              {authStatus.auth_mode === "private_team_lightweight_users"
+                ? "Sign in to your private team workspace. Access is limited by membership and role."
+                : "Authentication required for this self-hosted instance."}
+            </p>
             {authState.error ? <p className="error-text">{authState.error}</p> : null}
             {!authStatus.login_available ? (
               <div className="query-warning" role="status">
@@ -791,6 +1149,22 @@ export function App() {
               </div>
             ) : (
               <form className="auth-form" onSubmit={(event) => void handleLogin(event)}>
+                {authStatus.auth_mode === "private_team_lightweight_users" ? (
+                  <label className="auth-field">
+                    <span>Username</span>
+                    <input
+                      value={loginUsername}
+                      onChange={(event) => {
+                        setLoginUsername(event.target.value);
+                        setLoginState(initialLoadState);
+                      }}
+                      autoComplete="username"
+                      minLength={3}
+                      maxLength={64}
+                      required
+                    />
+                  </label>
+                ) : null}
                 <label className="auth-field">
                   <span>Password</span>
                   <input
@@ -804,31 +1178,136 @@ export function App() {
                     required
                   />
                 </label>
-                <button type="submit" disabled={loginState.loading || !loginPassword}>
+                <button
+                  type="submit"
+                  disabled={
+                    loginState.loading
+                    || !loginPassword
+                    || (authStatus.auth_mode === "private_team_lightweight_users" && !loginUsername)
+                  }
+                >
                   <ShieldCheck size={16} aria-hidden="true" />
                   {loginState.loading ? "Signing in" : "Sign in"}
                 </button>
                 {loginState.error ? <p className="error-text">{loginState.error}</p> : null}
               </form>
             )}
+            {authStatus.federated_login_available && authStatus.federated_login_path ? (
+              <div className="federated-login">
+                <span className="muted">or use your organization identity</span>
+                <a className="secondary-button" href={`${apiBaseUrl()}${authStatus.federated_login_path}`}>
+                  <ShieldCheck size={16} aria-hidden="true" />
+                  Continue with SSO
+                </a>
+                <p className="muted">Your account must be provisioned in this workspace before sign-in.</p>
+              </div>
+            ) : null}
+            {authStatus.auth_mode === "private_team_lightweight_users" ? (
+              <Suspense fallback={<p className="muted" role="status">Loading invitation setup…</p>}>
+                <TeamInvitationAcceptance onAccepted={(username) => setLoginUsername(username)} />
+              </Suspense>
+            ) : null}
           </Panel>
         </section>
       ) : (
         <>
 
-      <section className="metrics-grid" aria-label="Dashboard summary">
+      <Suspense fallback={<p className="project-start-guide muted" role="status">Loading project onboarding…</p>}>
+        <ProjectStartGuide
+          projects={projects}
+          onRepository={() => {
+            setRepositoryImportSetupOpen(true);
+            globalThis.setTimeout(() => document.getElementById("repository-import-setup")?.focus(), 0);
+          }}
+          onArchive={() => startProjectArchiveUpload()}
+          onSbom={() => {
+            document.getElementById("sbom-import")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+            globalThis.setTimeout(() => document.getElementById("sbom-import-file")?.focus(), 0);
+          }}
+          onCi={(project) => {
+            setCiSetupProjectId(project.project.id);
+            openProjectWorkspace(project);
+          }}
+          onOpenProject={openProjectWorkspace}
+        />
+      </Suspense>
+
+      {repositoryImportSetupOpen ? (
+        <Suspense fallback={<p className="muted" role="status">Loading local Git import setup…</p>}>
+          <RepositoryImportSetupPanel
+            requiresGrant={authStatus.auth_required}
+            canManage={!authStatus.auth_required || authStatus.auth_mode === "self_hosted_single_admin" || authStatus.role === "administrator"}
+            focusOnMount
+          />
+        </Suspense>
+      ) : null}
+
+      <details className="workspace-controls-disclosure">
+        <summary>Workspace administration and data controls</summary>
+        <div className="workspace-controls-content">
+
+      {authStatus.auth_mode === "private_team_lightweight_users" && authStatus.authenticated ? (
+        <Suspense fallback={<p className="muted" role="status">Loading team workspace…</p>}>
+          <TeamWorkspacePanel federatedLoginAvailable={Boolean(authStatus.federated_login_available)} onWorkspaceChanged={async () => {
+            clearPrivateUiState();
+            await refreshAuthStatus();
+            await Promise.all([refreshFiles(), refreshProjects(), refreshJobs()]);
+            setActiveContextRevision((revision) => revision + 1);
+          }} onMembershipChanged={() => setActiveContextRevision((revision) => revision + 1)} />
+        </Suspense>
+      ) : null}
+
+      {authStatus.auth_mode === "self_hosted_single_admin" || authStatus.role === "administrator" ? (
+        <Suspense fallback={<p className="muted" role="status">Loading product activity…</p>}>
+          <ProductAuditPanel />
+        </Suspense>
+      ) : null}
+
+      {authStatus.authenticated && (
+        authStatus.auth_mode === "self_hosted_single_admin" || authStatus.role === "administrator"
+      ) ? (
+        <Suspense fallback={<p className="muted" role="status">Loading automation access…</p>}>
+          <AutomationTokensPanel projects={projects} />
+        </Suspense>
+      ) : null}
+
+      <Suspense fallback={<p className="muted" role="status">Loading data lifecycle…</p>}>
+        <RetentionPolicyPanel />
+      </Suspense>
+        </div>
+      </details>
+
+      <Suspense fallback={<p className="muted" role="status">Loading SBOM import…</p>}>
+        <SbomImportPanel onImported={(created) => {
+          setSelectedProject({ project: created.project, latest_job: { ...created.job, summary: null } });
+          void Promise.all([refreshFiles(), refreshProjects(), refreshJobs()]);
+        }} />
+      </Suspense>
+
+      <Suspense fallback={<p className="muted" role="status">Loading Active operations…</p>}>
+        <ActiveOperationsCenter
+          canManage={authStatus.role !== "reader"}
+          teamMode={authStatus.auth_mode === "private_team_lightweight_users"}
+          currentUserId={authStatus.operator_id}
+          currentRole={authStatus.role}
+          refreshToken={activeContextRevision}
+          onJobCreated={handleActiveNmapBasicJobCreated}
+        />
+      </Suspense>
+
+      <section id="overview" className="metrics-grid" aria-label="Dashboard summary">
         <MetricCard label="Total files" value={metrics.totalFiles} />
         <MetricCard label="PDFs" value={metrics.pdfs} />
         <MetricCard label="Images" value={metrics.images} />
         <MetricCard label="Manifests" value={metrics.manifests} />
         <MetricCard label="Archives" value={metrics.archives} />
-        <MetricCard label="Total jobs" value={metrics.totalJobs} />
+        <MetricCard label="Loaded jobs" value={metrics.totalJobs} />
         <MetricCard label="Completed" value={metrics.completedJobs} />
         <MetricCard label="Failed" value={metrics.failedJobs} />
         <MetricCard label="Active" value={metrics.activeJobs} />
       </section>
 
-      <section className="dashboard-grid">
+      <section id="start" className="dashboard-grid" aria-label="Create an audit">
         <Panel
           title="Backend"
           icon={<Activity size={18} aria-hidden="true" />}
@@ -841,30 +1320,41 @@ export function App() {
           </div>
         </Panel>
 
-        <Panel title="Upload File" icon={<FilePlus2 size={18} aria-hidden="true" />}>
+        <Panel title={uploadKind === "archive" ? "Upload project archive" : "Upload File"} icon={<FilePlus2 size={18} aria-hidden="true" />}>
           <form className="upload-form" onSubmit={(event) => void handleUpload(event)}>
             <div className="segmented-control" aria-label="Upload type">
-              <button type="button" className={uploadKind === "pdf" ? "active" : ""} onClick={() => setUploadKind("pdf")}>
+              <button type="button" aria-pressed={uploadKind === "pdf"} className={uploadKind === "pdf" ? "active" : ""} onClick={() => setUploadKind("pdf")}>
                 PDF
               </button>
-              <button type="button" className={uploadKind === "image" ? "active" : ""} onClick={() => setUploadKind("image")}>
+              <button type="button" aria-pressed={uploadKind === "image"} className={uploadKind === "image" ? "active" : ""} onClick={() => setUploadKind("image")}>
                 Image
               </button>
-              <button type="button" className={uploadKind === "manifest" ? "active" : ""} onClick={() => setUploadKind("manifest")}>
+              <button type="button" aria-pressed={uploadKind === "manifest"} className={uploadKind === "manifest" ? "active" : ""} onClick={() => setUploadKind("manifest")}>
                 Manifest
               </button>
-              <button type="button" className={uploadKind === "archive" ? "active" : ""} onClick={() => setUploadKind("archive")}>
+              <button type="button" aria-pressed={uploadKind === "archive"} className={uploadKind === "archive" ? "active" : ""} onClick={() => setUploadKind("archive")}>
                 Archive
               </button>
             </div>
-            <input
-              type="file"
-              accept={acceptForKind(uploadKind)}
-              onChange={handleFileChange}
-            />
+            <p id="project-upload-boundary" className="muted project-upload-guidance">
+              {uploadKind === "archive"
+                ? "Project source: upload an authorized ZIP or TAR snapshot. Inspectra analyzes it passively; it does not execute project code or install dependencies."
+                : "To create a project with retained history, choose Archive and upload an authorized ZIP or TAR snapshot."}
+            </p>
+            <ProjectArchivePreflight active={uploadKind === "archive"} />
+            <label className="auth-field upload-file-field">
+              <span>File to upload</span>
+              <input
+                ref={projectArchiveUploadRef}
+                type="file"
+                accept={acceptForKind(uploadKind)}
+                aria-describedby="project-upload-boundary"
+                onChange={handleFileChange}
+              />
+            </label>
             <button type="submit" disabled={uploadState.loading}>
               <UploadCloud size={16} aria-hidden="true" />
-              {uploadState.loading ? "Uploading" : "Upload"}
+              {uploadState.loading ? "Uploading" : uploadKind === "archive" ? "Upload project archive" : "Upload"}
             </button>
           </form>
           <div className="query-warning" role="note" aria-label="Local alpha demo fixture note">
@@ -873,25 +1363,32 @@ export function App() {
           {uploadState.error ? <p className="error-text">{uploadState.error}</p> : null}
         </Panel>
 
+        <details className="specialist-audits-disclosure" open>
+          <summary>Specialist URL, domain, and active audits</summary>
+          <p className="muted">These optional workflows are separate from project source analysis and may require additional target authorization.</p>
+          <div className="specialist-audits-grid">
         <Panel title="Web Audit" icon={<Globe2 size={18} aria-hidden="true" />}>
           <form className="web-audit-form" onSubmit={(event) => void launchWebAudit(event)}>
-            <input
-              className="search-input"
-              type="url"
-              placeholder="https://example.com"
-              value={webUrl}
-              onChange={(event) => setWebUrl(event.target.value)}
-              required
-            />
+            <label className="auth-field">
+              <span>URL to audit</span>
+              <input
+                className="search-input"
+                type="url"
+                placeholder="https://example.com"
+                value={webUrl}
+                onChange={(event) => setWebUrl(event.target.value)}
+                required
+              />
+            </label>
             {webQueryInspection.hasQueryString ? (
               <div className="query-warning" role="status">
                 {webQueryInspection.sensitiveParams.length > 0 ? (
                   <>
-                    Se detectan posibles parametros sensibles que seran redactados en resultados y exports:{" "}
+                    Possible sensitive parameters will be redacted from results and exports:{" "}
                     <span className="mono">{webQueryInspection.sensitiveParams.join(", ")}</span>
                   </>
                 ) : (
-                  "La URL contiene query string. Inspectra usara la URL para la request autorizada, pero redactara parametros sensibles en resultados y exports. Evita introducir secretos reales."
+                  "This URL includes a query string. Inspectra will use it for the authorized request, but will redact sensitive parameters from results and exports. Do not enter real secrets."
                 )}
               </div>
             ) : null}
@@ -901,7 +1398,7 @@ export function App() {
                 checked={webAuthorizationConfirmed}
                 onChange={(event) => setWebAuthorizationConfirmed(event.target.checked)}
               />
-              Confirmo que tengo autorización para auditar este objetivo
+              I confirm I am authorized to audit this target.
             </label>
             <button type="submit" disabled={webAuditState.loading || !webAuthorizationConfirmed}>
               <Play size={16} aria-hidden="true" />
@@ -913,21 +1410,24 @@ export function App() {
 
         <Panel title="Domain Baseline" icon={<Network size={18} aria-hidden="true" />}>
           <form className="web-audit-form" onSubmit={(event) => void launchDomainAudit(event)}>
-            <input
-              className="search-input"
-              type="text"
-              placeholder="example.com"
-              value={domainName}
-              onChange={(event) => setDomainName(event.target.value)}
-              required
-            />
+            <label className="auth-field">
+              <span>Domain to audit</span>
+              <input
+                className="search-input"
+                type="text"
+                placeholder="example.com"
+                value={domainName}
+                onChange={(event) => setDomainName(event.target.value)}
+                required
+              />
+            </label>
             <label className="checkbox-row">
               <input
                 type="checkbox"
                 checked={domainAuthorizationConfirmed}
                 onChange={(event) => setDomainAuthorizationConfirmed(event.target.checked)}
               />
-              Confirmo que tengo autorización para auditar este dominio
+              I confirm I am authorized to audit this domain.
             </label>
             <button type="submit" disabled={domainAuditState.loading || !domainAuthorizationConfirmed}>
               <Play size={16} aria-hidden="true" />
@@ -939,29 +1439,35 @@ export function App() {
 
         <Panel title="Subdomain Inventory" icon={<Network size={18} aria-hidden="true" />}>
           <form className="web-audit-form" onSubmit={(event) => void launchSubdomainAudit(event)}>
-            <input
-              className="search-input"
-              type="text"
-              placeholder="example.com"
-              value={subdomainRootDomain}
-              onChange={(event) => setSubdomainRootDomain(event.target.value)}
-              required
-            />
-            <textarea
-              className="search-input multiline-input"
-              placeholder={"www\napi.example.com\nadmin"}
-              value={subdomainCandidates}
-              onChange={(event) => setSubdomainCandidates(event.target.value)}
-              rows={4}
-              required
-            />
+            <label className="auth-field">
+              <span>Root domain</span>
+              <input
+                className="search-input"
+                type="text"
+                placeholder="example.com"
+                value={subdomainRootDomain}
+                onChange={(event) => setSubdomainRootDomain(event.target.value)}
+                required
+              />
+            </label>
+            <label className="auth-field">
+              <span>Explicit subdomain candidates</span>
+              <textarea
+                className="search-input multiline-input"
+                placeholder={"www\napi.example.com\nadmin"}
+                value={subdomainCandidates}
+                onChange={(event) => setSubdomainCandidates(event.target.value)}
+                rows={4}
+                required
+              />
+            </label>
             <label className="checkbox-row">
               <input
                 type="checkbox"
                 checked={subdomainAuthorizationConfirmed}
                 onChange={(event) => setSubdomainAuthorizationConfirmed(event.target.checked)}
               />
-              Confirmo que tengo autorización para auditar estos subdominios
+              I confirm I am authorized to audit these subdomains.
             </label>
             <button type="submit" disabled={subdomainAuditState.loading || !subdomainAuthorizationConfirmed}>
               <Play size={16} aria-hidden="true" />
@@ -971,154 +1477,242 @@ export function App() {
           {subdomainAuditState.error ? <p className="error-text">{subdomainAuditState.error}</p> : null}
         </Panel>
 
-        <Panel title="Active / Network dry-run" icon={<Network size={18} aria-hidden="true" />}>
-          <form className="web-audit-form" onSubmit={(event) => void launchActiveDryRun(event)}>
-            <p className="muted">Create a dry-run plan for an explicitly authorized target. No network traffic is sent.</p>
-            <input
-              className="search-input"
-              type="text"
-              placeholder="https://example.test"
-              value={activeDryRunTarget}
-              onChange={(event) => setActiveDryRunTarget(event.target.value)}
-              required
-            />
-            {activeDryRunHasUserinfo ? (
-              <div className="query-warning" role="status">
-                URL credentials are not accepted. Remove userinfo before creating a dry-run plan.
-              </div>
-            ) : activeDryRunQueryInspection.hasQueryString ? (
-              <div className="query-warning" role="status">
-                {activeDryRunQueryInspection.sensitiveParams.length > 0 ? (
-                  <>
-                    Sensitive query parameters will be redacted in results and exports:{" "}
-                    <span className="mono">{activeDryRunQueryInspection.sensitiveParams.join(", ")}</span>
-                  </>
-                ) : (
-                  "Query string present. Sensitive parameter names are redacted in results and exports. Avoid entering secrets."
-                )}
-              </div>
-            ) : null}
-            <dl className="summary-list">
-              <dt>Mode</dt>
-              <dd>dry_run / Dry-run only</dd>
-              <dt>Profile</dt>
-              <dd>HTTP header preview plan</dd>
-              <dt>Limits</dt>
-              <dd className="mono">max_requests=0, timeout_seconds=0, max_redirects=0, response_size_bytes=0</dd>
-            </dl>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={activeDryRunAuthorizationConfirmed}
-                onChange={(event) => setActiveDryRunAuthorizationConfirmed(event.target.checked)}
-              />
-              {ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT}
-            </label>
-            <p className="muted">I understand this dry-run sends no network traffic. Do not use this against third-party systems without permission.</p>
-            <button type="submit" disabled={activeDryRunState.loading || !activeDryRunTarget.trim() || !activeDryRunAuthorizationConfirmed}>
-              <Play size={16} aria-hidden="true" />
-              {activeDryRunState.loading ? "Creating plan" : "Create dry-run plan"}
-            </button>
-          </form>
-          {activeDryRunState.error ? <p className="error-text">{activeDryRunState.error}</p> : null}
-        </Panel>
-
-        <Panel title="Authorized HTTP Header Probe" icon={<Network size={18} aria-hidden="true" />}>
-          <form className="web-audit-form" onSubmit={(event) => void launchActiveHttpHeaderProbe(event)}>
-            <div className="badge-row">
-              <span className="status-pill">Live request</span>
-              <span className="status-pill">One HTTP HEAD request</span>
-              <span className="status-pill">No body read</span>
-              <span className="status-pill">Redirects not followed</span>
-            </div>
-            <p className="muted">
-              Create a job for one authorized HTTP HEAD request to one explicit URL. This may be logged by the target. No redirects are followed
-              and no response body is read.
-            </p>
-            <input
-              className="search-input"
-              type="text"
-              placeholder="https://example.test/"
-              value={activeHttpHeaderProbeTarget}
-              onChange={(event) => setActiveHttpHeaderProbeTarget(event.target.value)}
-              required
-            />
-            {activeHttpHeaderProbeHasUserinfo ? (
-              <div className="query-warning" role="status">
-                URL credentials are not accepted. Remove userinfo before creating an authorized header probe job.
-              </div>
-            ) : activeHttpHeaderProbeQueryInspection.hasQueryString ? (
-              <div className="query-warning" role="status">
-                {activeHttpHeaderProbeQueryInspection.sensitiveParams.length > 0 ? (
-                  <>
-                    Sensitive query parameters will be redacted in results and exports:{" "}
-                    <span className="mono">{activeHttpHeaderProbeQueryInspection.sensitiveParams.join(", ")}</span>
-                  </>
-                ) : (
-                  "Query string present. Sensitive parameter names are redacted in results and exports. Avoid entering secrets."
-                )}
-              </div>
-            ) : null}
-            <dl className="summary-list">
-              <dt>Mode</dt>
-              <dd>live_header_probe</dd>
-              <dt>Profile</dt>
-              <dd>http_header_probe</dd>
-              <dt>Method</dt>
-              <dd>HEAD only</dd>
-              <dt>Limits</dt>
-              <dd className="mono">
-                max_targets=1, max_requests=1, timeout_seconds=3, max_redirects=0, response_body_bytes=0,
-                max_response_header_bytes=32768, max_dns_answers=8, retries=0, concurrency=1
-              </dd>
-              <dt>Custom headers</dt>
-              <dd>none</dd>
-              <dt>Request body</dt>
-              <dd>none</dd>
-            </dl>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={activeHttpHeaderProbeAuthorizationConfirmed}
-                onChange={(event) => setActiveHttpHeaderProbeAuthorizationConfirmed(event.target.checked)}
-              />
-              {ACTIVE_DRY_RUN_AUTHORIZATION_STATEMENT}
-            </label>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={activeHttpHeaderProbeLiveTrafficConfirmed}
-                onChange={(event) => setActiveHttpHeaderProbeLiveTrafficConfirmed(event.target.checked)}
-              />
-              {ACTIVE_HTTP_HEADER_PROBE_LIVE_TRAFFIC_STATEMENT}
-            </label>
-            <p className="muted">
-              Do not test third-party systems without permission. Authorization is a user assertion, not proof of ownership.
-            </p>
-            <button
-              type="submit"
-              disabled={
-                activeHttpHeaderProbeState.loading ||
-                !activeHttpHeaderProbeTarget.trim() ||
-                !activeHttpHeaderProbeAuthorizationConfirmed ||
-                !activeHttpHeaderProbeLiveTrafficConfirmed
-              }
-            >
-              <Play size={16} aria-hidden="true" />
-              {activeHttpHeaderProbeState.loading ? "Creating job" : "Create authorized header probe job"}
-            </button>
-          </form>
-          {activeHttpHeaderProbeState.error ? <p className="error-text">{activeHttpHeaderProbeState.error}</p> : null}
-        </Panel>
-
-        <ActiveHttpBasicHeaderReviewPanel onJobCreated={handleActiveHttpBasicHeaderReviewJobCreated} />
-        <ActiveNmapBasicPanel health={health} onJobCreated={handleActiveNmapBasicJobCreated} />
-        <ActiveTlsBasicPanel onJobCreated={handleActiveTlsBasicJobCreated} />
-        <ActiveDnsInventoryPanel onJobCreated={handleActiveDnsInventoryJobCreated} />
-        <ActiveDnsOsintPanel onJobCreated={handleActiveDnsOsintJobCreated} />
+        <div className="query-warning" role="note">
+          Live Active checks are no longer started from free-form targets here. Register an exact asset in Active operations, then choose one of its explicitly authorized capabilities.
+        </div>
+          </div>
+        </details>
       </section>
 
-      <section className="content-grid">
+      <section id="projects" className="projects-grid" aria-label="Projects">
+        <Suspense fallback={<p className="muted" role="status">Loading passive project actions…</p>}>
+          <ProjectActionInboxPanel
+            canRebuild={authStatus.role !== "reader"}
+            onOpenProject={openProjectWorkspace}
+          />
+        </Suspense>
+        <Suspense fallback={<p className="muted" role="status">Loading project portfolio…</p>}>
+          <ProjectPortfolioPanel onOpenProject={openProjectWorkspace} />
+        </Suspense>
+        <Suspense fallback={<p className="muted" role="status">Loading remediation center…</p>}>
+          <RemediationCenterPanel
+            canManage={authStatus.role !== "reader"}
+            currentUserId={authStatus.operator_id ?? authStatus.default_operator_id}
+            members={authStatus.auth_mode === "private_team_lightweight_users" ? undefined : (
+              authStatus.operator_id && authStatus.username && authStatus.role
+                ? [{ user_id: authStatus.operator_id, username: authStatus.username, role: authStatus.role, joined_at: "" }]
+                : []
+            )}
+            onOpenProject={openProjectWorkspace}
+          />
+        </Suspense>
+        <Suspense fallback={<p className="muted" role="status">Loading risk trends…</p>}>
+          <ProjectRiskTrendsPanel onOpenProject={openProjectWorkspace} />
+        </Suspense>
+        <Panel
+          title="Projects"
+          icon={<FolderPlus size={18} aria-hidden="true" />}
+          action={projectsState.loading ? <span className="muted">Loading</span> : null}
+        >
+          <p className="muted">
+            Projects retain either normalized SBOM revisions or uploaded ZIP/TAR snapshots. Inspectra never reads a server path, clones a repository, or requests repository credentials in this flow.
+          </p>
+          {projectsTotalCount > 0 ? (
+            <p className="muted" role="status">
+              Showing {projects.length} of {projectsTotalCount} projects.
+            </p>
+          ) : null}
+          {projectsState.error ? <p className="error-text">{projectsState.error}</p> : null}
+          {projects.length === 0 ? (
+            <EmptyState text="Create a project from an authorized archive or preflighted SBOM to keep its analysis history together." />
+          ) : (
+            <div className="table-wrap" role="region" aria-label="Projects table. Scroll horizontally to view all fields." tabIndex={0}>
+              <p className="table-scroll-hint" aria-hidden="true">Scroll horizontally to view all project fields.</p>
+              <table>
+                <caption className="sr-only">Projects</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Project</th>
+                    <th scope="col">Source revision</th>
+                    <th scope="col">Latest analysis</th>
+                    <th scope="col">Updated</th>
+                    <th scope="col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {projects.map(({ project, latest_job: latestJob }) => (
+                    <tr key={project.id}>
+                      <td>
+                        <strong>{project.name}</strong>
+                        <span className="subtle-id">{project.analysis_count} {project.analysis_count === 1 ? "analysis" : "analyses"}</span>
+                      </td>
+                      <td>
+                        <span className="mono">{project.source_reference}</span>
+                        <span className="subtle-id">
+                          {project.source_type === "sbom" || latestJob?.analysis_profile === "sbom_import"
+                            ? project.source_file_deleted_at ? "Normalized SBOM removed; history retained" : "Normalized SBOM retained; original discarded"
+                            : project.source_file_deleted_at ? "Archive removed; history retained" : "Archive retained; filename withheld"}
+                        </span>
+                      </td>
+                      <td>
+                        {latestJob ? (
+                          <>
+                            <span className={`status-pill ${latestJob.status}`}>{latestJob.status}</span>
+                            <span className="subtle-id">{auditTypeLabel(latestJob.audit_type)}</span>
+                          </>
+                        ) : (
+                          <span className="muted">No retained analysis</span>
+                        )}
+                      </td>
+                      <td>{formatDate(project.updated_at)}</td>
+                      <td>
+                        <div className="row-actions">
+                          <button
+                            aria-label={`Open workspace for ${project.name}`}
+                            onClick={() => openProjectWorkspace({ project, latest_job: latestJob })}
+                          >
+                            <FolderPlus size={15} aria-hidden="true" /> Open workspace
+                          </button>
+                          {latestJob ? (
+                            <button
+                              className="secondary-button"
+                              aria-label={`Explore findings for ${project.name}`}
+                              onClick={() => viewProjectFindings({ project, latest_job: latestJob })}
+                            >
+                              <ShieldCheck size={15} aria-hidden="true" />
+                              Findings
+                            </button>
+                          ) : null}
+                          {latestJob ? (
+                            <button
+                              className="icon-button"
+                              aria-label={`View latest analysis for ${project.name}`}
+                              title="View latest analysis"
+                              onClick={() => void viewJob(latestJob.id)}
+                            >
+                              <Eye size={16} aria-hidden="true" />
+                            </button>
+                          ) : null}
+                          <button
+                            aria-label={`Run recorded snapshot for ${project.name} again`}
+                            disabled={
+                              project.source_file_deleted_at !== null ||
+                              rerunningProjectId !== null ||
+                              (latestJob ? isActiveJob(latestJob) : false)
+                            }
+                            onClick={() => void rerunProjectAnalysis({ project, latest_job: latestJob })}
+                          >
+                            <Play size={15} aria-hidden="true" />
+                            {rerunningProjectId === project.id ? "Starting" : "Run again"}
+                          </button>
+                          <button
+                            className="secondary-button"
+                            aria-label={`${project.source_type === "sbom" || latestJob?.analysis_profile === "sbom_import" ? "Add a compatible SBOM revision to" : "Add a new archive snapshot to"} ${project.name}`}
+                            disabled={latestJob ? isActiveJob(latestJob) : false}
+                            onClick={() => openProjectSourceUpdate({ project, latest_job: latestJob })}
+                          >
+                            <FilePlus2 size={15} aria-hidden="true" /> {project.source_type === "sbom" || latestJob?.analysis_profile === "sbom_import" ? "Add SBOM revision" : "Add archive snapshot"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {projectsNextCursor ? (
+            <button
+              className="secondary-button"
+              disabled={projectsState.loading}
+              onClick={() => void loadMoreProjects()}
+            >
+              {projectsState.loading ? "Loading more projects…" : "Load more projects"}
+            </button>
+          ) : null}
+          {snapshotProject && snapshotProject.project.source_type !== "sbom" && snapshotProject.latest_job?.analysis_profile !== "sbom_import" ? (
+            <Suspense fallback={<p className="muted" role="status">Loading snapshot form…</p>}>
+              <ProjectSnapshotForm
+                project={snapshotProject}
+                files={files}
+                onCompleted={async (created) => {
+                  setSelectedJob({ ...created.job, result: null, error: null });
+                  setSelectedProject({ project: created.project, latest_job: { ...created.job, summary: null } });
+                  setSnapshotProjectId(null);
+                  await Promise.all([refreshProjects(), refreshJobs()]);
+                  setWorkflowNotice(`A new source snapshot for ${created.project.name} is queued for analysis.`);
+                }}
+                onCancel={() => setSnapshotProjectId(null)}
+              />
+            </Suspense>
+          ) : null}
+        </Panel>
+      </section>
+
+      {selectedProjectSummary ? (
+        <section id="project-findings" className="project-findings-region" ref={projectFindingsRef} tabIndex={-1}>
+          <Suspense fallback={<p className="muted" role="status">Loading project workspace…</p>}>
+            <ProjectWorkspacePanel
+              project={selectedProjectSummary}
+              onOpenAnalysis={(analysisId) => void viewJob(analysisId)}
+              showVulnerabilityIntelligence
+              canManageAutomation={authStatus.auth_mode === "self_hosted_single_admin" || authStatus.role === "administrator"}
+              focusCiSetup={ciSetupProjectId === selectedProjectSummary.project.id}
+              canImportSbomRevision={authStatus.role !== "reader"}
+              canManageResponsibility={authStatus.role !== "reader"}
+              teamMode={authStatus.auth_mode === "private_team_lightweight_users"}
+              currentOperator={{
+                user_id: authStatus.operator_id ?? authStatus.default_operator_id,
+                username: authStatus.username ?? "local-admin",
+              }}
+              onProjectUpdated={(updated) => {
+                setSelectedProject((current) => current
+                  ? { ...current, project: updated }
+                  : current);
+                setProjects((current) => current.map((item) => item.project.id === updated.id
+                  ? { ...item, project: updated }
+                  : item));
+              }}
+              onSbomRevisionImported={async (created) => {
+                setSelectedJob({ ...created.job, result: null, error: null });
+                setSelectedProject({ project: created.project, latest_job: { ...created.job, summary: null } });
+                await Promise.all([refreshProjects(), refreshJobs()]);
+                setWorkflowNotice(created.replayed
+                  ? `The existing SBOM revision for ${created.project.name} is selected.`
+                  : `A new immutable SBOM revision for ${created.project.name} is ready to review.`);
+              }}
+            />
+          </Suspense>
+          <Suspense fallback={<p className="muted" role="status">Loading project findings…</p>}>
+            <ProjectFindingsPanel
+              project={selectedProjectSummary}
+              onOpenAnalysis={(analysisId) => void viewJob(analysisId)}
+              onRequestNewSnapshot={() => openProjectSourceUpdate(selectedProjectSummary)}
+              teamMode={authStatus.auth_mode === "private_team_lightweight_users"}
+              currentRole={authStatus.role}
+            />
+          </Suspense>
+          <Suspense fallback={<p className="muted" role="status">Loading component inventory…</p>}>
+            <ProjectComponentInventoryPanel project={selectedProjectSummary} />
+          </Suspense>
+          <Suspense fallback={<p className="muted" role="status">Loading analysis comparison…</p>}>
+            <ProjectComparisonPanel
+              project={selectedProjectSummary}
+              onOpenAnalysis={(analysisId) => void viewJob(analysisId)}
+              onRequestNewSnapshot={() => openProjectSourceUpdate(selectedProjectSummary)}
+            />
+          </Suspense>
+          <Suspense fallback={<p className="muted" role="status">Loading project data controls…</p>}>
+            <ProjectDeletionPanel
+              project={selectedProjectSummary}
+              canDelete={authStatus.role !== "reader"}
+              onDeleted={handleProjectDeleted}
+            />
+          </Suspense>
+        </section>
+      ) : null}
+
+      <section id="jobs" className="content-grid" aria-label="Files and jobs">
         <Panel title="Files" action={filesState.loading ? <span className="muted">Loading</span> : null}>
           <div className="filter-bar">
             <div className="segmented-control" aria-label="File kind filter">
@@ -1126,6 +1720,7 @@ export function App() {
                 <button
                   type="button"
                   key={kind}
+                  aria-pressed={fileKindFilter === kind}
                   className={fileKindFilter === kind ? "active" : ""}
                   onClick={() => setFileKindFilter(kind)}
                 >
@@ -1133,7 +1728,9 @@ export function App() {
                 </button>
               ))}
             </div>
+            <label className="sr-only" htmlFor="file-search">Search files</label>
             <input
+              id="file-search"
               className="search-input"
               type="search"
               placeholder="Search files"
@@ -1147,16 +1744,18 @@ export function App() {
           ) : filteredFiles.length === 0 ? (
             <EmptyState text="No files match the current filters." />
           ) : (
-            <div className="table-wrap">
+            <div className="table-wrap" role="region" aria-label="Files table. Scroll horizontally to view all fields." tabIndex={0}>
+              <p className="table-scroll-hint" aria-hidden="true">Scroll horizontally to view all file fields.</p>
               <table>
+                <caption className="sr-only">Files</caption>
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>Kind</th>
-                    <th>Size</th>
-                    <th>SHA-256</th>
-                    <th>Created</th>
-                    <th>Actions</th>
+                    <th scope="col">Name</th>
+                    <th scope="col">Kind</th>
+                    <th scope="col">Size</th>
+                    <th scope="col">SHA-256</th>
+                    <th scope="col">Created</th>
+                    <th scope="col">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1175,7 +1774,13 @@ export function App() {
                       <td>
                         <div className="row-actions">
                           {file.kind === "archive" ? (
-                            <ArchiveActionGroups groups={buildArchiveActionGroups(file)} />
+                            <ArchiveActionGroups
+                              groups={buildArchiveActionGroups(file)}
+                              projectAuthorizationConfirmed={projectAuthorizationConfirmedFileId === file.id}
+                              onProjectAuthorizationChange={(confirmed) => {
+                                setProjectAuthorizationConfirmedFileId(confirmed ? file.id : null);
+                              }}
+                            />
                           ) : (
                             <button onClick={() => void launchAudit(file)}>
                               <Play size={15} aria-hidden="true" />
@@ -1203,10 +1808,11 @@ export function App() {
           <div className="filter-stack">
             <div className="filter-bar">
               <div className="segmented-control" aria-label="Job status filter">
-                {(["all", "queued", "running", "completed", "failed"] as JobStatusFilter[]).map((status) => (
+                {(["all", "queued", "running", "cancelling", "cancelled", "completed", "failed"] as JobStatusFilter[]).map((status) => (
                   <button
                     type="button"
                     key={status}
+                    aria-pressed={jobStatusFilter === status}
                     className={jobStatusFilter === status ? "active" : ""}
                     onClick={() => setJobStatusFilter(status)}
                   >
@@ -1214,7 +1820,9 @@ export function App() {
                   </button>
                 ))}
               </div>
+              <label className="sr-only" htmlFor="job-search">Search jobs</label>
               <input
+                id="job-search"
                 className="search-input"
                 type="search"
                 placeholder="Search jobs"
@@ -1227,6 +1835,7 @@ export function App() {
                 <button
                   type="button"
                   key={auditType}
+                  aria-pressed={jobTypeFilter === auditType}
                   className={jobTypeFilter === auditType ? "active" : ""}
                   onClick={() => setJobTypeFilter(auditType)}
                 >
@@ -1236,21 +1845,28 @@ export function App() {
             </div>
           </div>
           {jobsState.error ? <p className="error-text">{jobsState.error}</p> : null}
+          {jobsTotalCount > jobs.length ? (
+            <p className="muted" role="status">
+              Showing {jobs.length} of {jobsTotalCount} jobs. Filters and search apply to loaded jobs; load more to expand the history.
+            </p>
+          ) : null}
           {jobs.length === 0 ? (
             <EmptyState text="Choose a passive archive review to create a job." />
           ) : filteredJobs.length === 0 ? (
             <EmptyState text="No jobs match the current filters." />
           ) : (
-            <div className="table-wrap">
+            <div ref={jobTableRef} className="table-wrap" role="region" aria-label="Jobs table. Scroll horizontally to view all fields." tabIndex={0}>
+              <p className="table-scroll-hint" aria-hidden="true">Scroll horizontally to view all job fields.</p>
               <table>
+                <caption className="sr-only">Jobs</caption>
                 <thead>
                   <tr>
-                    <th>Status</th>
-                    <th>Type</th>
-                    <th>Target</th>
-                    <th>Updated</th>
-                    <th>Summary</th>
-                    <th>Detail</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Type</th>
+                    <th scope="col">Target</th>
+                    <th scope="col">Updated</th>
+                    <th scope="col">Summary</th>
+                    <th scope="col">Detail</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1267,7 +1883,12 @@ export function App() {
                       <td>{formatDate(job.updated_at)}</td>
                       <td>{summarizeJob(job)}</td>
                       <td>
-                        <button className="icon-button" title="View job" onClick={() => void viewJob(job.id)}>
+                        <button
+                          className="icon-button"
+                          aria-label={`View ${auditTypeLabel(job.audit_type)} job`}
+                          title="View job"
+                          onClick={() => void viewJob(job.id)}
+                        >
                           <Eye size={16} aria-hidden="true" />
                         </button>
                       </td>
@@ -1275,91 +1896,164 @@ export function App() {
                   ))}
                 </tbody>
               </table>
+              {jobsNextCursor ? (
+                <div className="table-actions">
+                  <button type="button" onClick={() => void loadMoreJobs()} disabled={jobsState.loading}>
+                    {jobsState.loading ? "Loading more…" : "Load more jobs"}
+                  </button>
+                </div>
+              ) : null}
             </div>
           )}
         </Panel>
       </section>
 
+      <section id="results" className="job-result-region" ref={jobResultRef} tabIndex={-1} aria-live="polite">
       <Panel title="Job Result">
         {selectedJob ? (
           <>
             <ExportActions job={selectedJob} />
-            {isActiveNmapBasicJob(selectedJob) ? (
-              <ActiveNmapBasicJobReport job={selectedJob} />
-            ) : isActiveTlsBasicJob(selectedJob) ? (
-              <ActiveTlsBasicJobReport job={selectedJob} />
-            ) : isActiveDnsInventoryJob(selectedJob) ? (
-              <ActiveDnsInventoryJobReport job={selectedJob} />
-            ) : isActiveDnsOsintJob(selectedJob) ? (
-              <ActiveDnsOsintJobReport job={selectedJob} />
-            ) : isActiveHttpBasicHeaderReviewJob(selectedJob) ? (
-              <ActiveHttpBasicHeaderReviewJobReport job={selectedJob} />
-            ) : selectedJob.audit_type === "pdf_basic" ? (
-              <PdfJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "image_basic" ? (
-              <ImageJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "manifest_basic" ? (
-              <ManifestJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "archive_basic" ? (
-              <ArchiveJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "project_archive_basic" ? (
-              <ProjectArchiveJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "domain_basic" ? (
-              <DomainJobReport job={selectedJob} />
-            ) : selectedJob.audit_type === "subdomain_inventory_basic" ? (
-              <SubdomainJobReport job={selectedJob} />
-            ) : selectedJob.audit_type === "active_network_dry_run" ? (
-              <ActiveDryRunJobReport job={selectedJob} />
-            ) : selectedJob.audit_type === "active_http_header_probe" ? (
-              <ActiveHttpHeaderProbeJobReport job={selectedJob} />
-            ) : selectedJob.audit_type === "django_config_basic" ? (
-              <DjangoConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "docker_config_basic" ? (
-              <DockerConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "secrets_review_basic" ? (
-              <SecretsReviewJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "node_package_config_basic" ? (
-              <NodePackageConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "ci_cd_config_basic" ? (
-              <CiCdConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "k8s_config_basic" ? (
-              <K8sConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "terraform_config_basic" ? (
-              <TerraformConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "nginx_config_basic" ? (
-              <NginxConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "compose_config_basic" ? (
-              <ComposeConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "database_config_basic" ? (
-              <DatabaseConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "redis_config_basic" ? (
-              <RedisConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : selectedJob.audit_type === "sql_database_config_basic" ? (
-              <SqlDatabaseConfigJobReport job={selectedJob} file={selectedJobFile} />
-            ) : (
-              <WebJobReport job={selectedJob} />
-            )}
+            <Suspense fallback={<p className="muted" role="status">Loading redacted job report…</p>}>
+              <JobResultReport job={selectedJob} file={selectedJobFile} />
+            </Suspense>
           </>
         ) : (
           <EmptyState text="Select a job to view its result." />
         )}
       </Panel>
+      </section>
         </>
       )}
     </main>
   );
 }
 
-function ArchiveActionGroups({ groups }: { groups: ArchiveActionGroup[] }) {
+function WorkflowNavigation({ stage, message }: { stage: WorkflowStage; message: string }) {
+  const steps: Array<{ id: WorkflowStage; label: string; href: string }> = [
+    { id: "prepare", label: "1. Prepare", href: "#start" },
+    { id: "run", label: "2. Run analysis", href: "#jobs" },
+    { id: "monitor", label: "3. Follow progress", href: "#jobs" },
+    { id: "review", label: "4. Review result", href: "#results" }
+  ];
+
+  return (
+    <section className="workflow-guide" aria-label="Audit workflow">
+      <nav className="workflow-nav" aria-label="Audit workflow steps">
+        {steps.map((step) => (
+          <a key={step.id} href={step.href} aria-current={stage === step.id ? "step" : undefined}>
+            {step.label}
+          </a>
+        ))}
+      </nav>
+      <p className="workflow-message" role="status">
+        <strong>Current step:</strong> {message}
+      </p>
+    </section>
+  );
+}
+
+function getWorkflowStage({
+  files,
+  hasActiveJobs,
+  selectedJob
+}: {
+  files: FileRecord[];
+  hasActiveJobs: boolean;
+  selectedJob: JobRecord | null;
+}): WorkflowStage {
+  if (selectedJob) {
+    return "review";
+  }
+  if (hasActiveJobs) {
+    return "monitor";
+  }
+  if (files.length > 0) {
+    return "run";
+  }
+  return "prepare";
+}
+
+function getWorkflowMessage(stage: WorkflowStage): string {
+  if (stage === "run") {
+    return "For a project, confirm authorization in Files and select Create project & analyze. Individual file and target-based reviews remain available.";
+  }
+  if (stage === "monitor") {
+    return "A job is running or queued. The Jobs list refreshes automatically every few seconds.";
+  }
+  if (stage === "review") {
+    return "The selected job is open below. Use the Jobs list to switch context or the export actions to share a redacted report.";
+  }
+  return "To analyze a project, import an exact local Git snapshot, an authorized archive or an SBOM; individual file and target-based reviews remain available.";
+}
+
+function isActiveJob(job: Pick<JobRecord, "status">): boolean {
+  return job.status === "queued" || job.status === "running" || job.status === "cancelling";
+}
+
+function selectedJobIdFromLocation(): string | null {
+  const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+  const jobId = new URLSearchParams(hash).get("job");
+  return jobId?.trim() || null;
+}
+
+function selectedProjectIdFromLocation(): string | null {
+  const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+  const projectId = new URLSearchParams(hash).get("project");
+  return projectId?.trim() || null;
+}
+
+function writeSelectedJobToLocation(jobId: string): void {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  params.set("job", jobId);
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${params.toString()}`);
+}
+
+function clearSelectedJobFromLocation(): void {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  params.delete("job");
+  const suffix = params.toString() ? `#${params.toString()}` : "";
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${suffix}`);
+}
+
+function writeSelectedProjectToLocation(projectId: string): void {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  params.set("project", projectId);
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${params.toString()}`);
+}
+
+function clearSelectedProjectFromLocation(): void {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  params.delete("project");
+  const suffix = params.toString() ? `#${params.toString()}` : "";
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${suffix}`);
+}
+
+function ArchiveActionGroups({
+  groups,
+  projectAuthorizationConfirmed,
+  onProjectAuthorizationChange
+}: {
+  groups: ArchiveActionGroup[];
+  projectAuthorizationConfirmed: boolean;
+  onProjectAuthorizationChange: (confirmed: boolean) => void;
+}) {
   return (
     <div aria-label="Archive passive review actions">
       <p className="muted">{ARCHIVE_ACTION_SCOPE_COPY}</p>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={projectAuthorizationConfirmed}
+          onChange={(event) => onProjectAuthorizationChange(event.target.checked)}
+        />
+        I confirm I own or am authorized to analyze this archive as a project.
+      </label>
       {groups.map((group) => (
         <div key={group.label} role="group" aria-label={group.label}>
           <span className="subtle-id">{group.label}</span>
           <div className="row-actions">
             {group.actions.map((action) => (
-              <button key={action.label} onClick={action.onClick}>
+              <button key={action.label} onClick={action.onClick} disabled={action.disabled}>
                 <Play size={15} aria-hidden="true" />
                 {action.label}
               </button>
@@ -1445,8 +2139,11 @@ function supportsSbomExport(job: JobRecord): boolean {
   return job.status === "completed" && (job.audit_type === "manifest_basic" || job.audit_type === "project_archive_basic");
 }
 
-function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Unexpected error";
+export function toErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    return error.message;
+  }
+  return "Unable to complete the request. Refresh the page and try again.";
 }
 
 function parseSubdomainCandidates(value: string): string[] {
@@ -1520,26 +2217,6 @@ function jobTargetDisplay(job: JobListItem): string {
   return target;
 }
 
-function isActiveNmapBasicJob(job: JobRecord): boolean {
-  return job.audit_type === "active_nmap_basic" || job.result?.capability === "active_nmap_basic";
-}
-
-function isActiveTlsBasicJob(job: JobRecord): boolean {
-  return job.audit_type === "active_tls_basic" || job.result?.capability === "active_tls_basic";
-}
-
-function isActiveDnsInventoryJob(job: JobRecord): boolean {
-  return job.audit_type === "active_dns_inventory" || job.result?.capability === "active_dns_inventory";
-}
-
-function isActiveDnsOsintJob(job: JobRecord): boolean {
-  return job.audit_type === "active_dns_osint" || job.result?.capability === "active_dns_osint";
-}
-
-function isActiveHttpBasicHeaderReviewJob(job: JobRecord): boolean {
-  return job.audit_type === "active_http_basic_header_review" || job.result?.capability === "active_http_basic_header_review";
-}
-
 function acceptForKind(kind: FileRecord["kind"]): string {
   if (kind === "pdf") {
     return "application/pdf,.pdf";
@@ -1593,12 +2270,15 @@ function auditLabel(kind: FileRecord["kind"]): string {
 }
 
 function summarizeJob(job: JobListItem): string {
+  if (job.status_detail?.message) {
+    return job.status_detail.message;
+  }
   if (!job.summary) {
     return job.source_file_deleted_at ? "Source deleted" : "Pending";
   }
   const error = typeof job.summary.error === "string" ? job.summary.error : null;
   if (error) {
-    return error;
+    return "Review failed.";
   }
   const warnings = Array.isArray(job.summary.warnings) ? job.summary.warnings.length : 0;
   const timedOut = Array.isArray(job.summary.timed_out_tools) ? job.summary.timed_out_tools.length : 0;

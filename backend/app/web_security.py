@@ -43,6 +43,7 @@ SENSITIVE_QUERY_PARAM_NAMES = {
 }
 SENSITIVE_QUERY_PARAM_FRAGMENTS = ("token", "secret", "password", "passwd", "session", "auth", "signature", "api_key", "apikey")
 URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+")
+URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^@\s/]*@")
 
 
 def normalize_web_url(raw_url: str) -> str:
@@ -128,9 +129,29 @@ def redact_url_query(url: str) -> str:
     try:
         parsed = urlsplit(url)
     except ValueError:
-        return url
+        return redact_url_userinfo(url)
     redacted_query, _ = redact_query_params(parsed.query)
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, redacted_query, parsed.fragment))
+    netloc = parsed.netloc
+    if "@" in netloc:
+        netloc = f"[REDACTED]@{netloc.rsplit('@', 1)[-1]}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, redacted_query, parsed.fragment))
+
+
+def redact_url_userinfo(url: str) -> str:
+    """Remove URL userinfo from values that may have bypassed request validation.
+
+    URL targets are rejected before execution when they carry credentials, but
+    this defensive path also protects legacy records, errors and malformed
+    strings before they are persisted or rendered.
+    """
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return URL_USERINFO_RE.sub(r"\1[REDACTED]@", url)
+    if "@" not in parsed.netloc:
+        return url
+    host_part = parsed.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parsed.scheme, f"[REDACTED]@{host_part}", parsed.path, parsed.query, parsed.fragment))
 
 
 def redact_query_params(query: str) -> tuple[str, list[str]]:

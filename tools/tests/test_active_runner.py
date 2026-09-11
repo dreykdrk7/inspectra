@@ -1,4 +1,5 @@
 import ast
+import http.client
 import json
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from active_runner import (
     run_authorized_http_header_probe,
 )
 from active_runner.models import APPROVED_AUTHORIZATION_STATEMENT
+from active_runner import http_header_probe
 
 
 FIXTURE_SECRETS = (
@@ -282,7 +284,7 @@ def test_active_runner_does_not_import_network_or_probe_runtime_modules():
                 for forbidden in forbidden_modules
                 if module == forbidden or module.startswith(f"{forbidden}.")
             }
-            if path.name != "http_header_probe.py":
+            if path.name not in {"http_header_probe.py", "verification.py"}:
                 blocked.update(module for module in imported if module == "socket")
             assert not blocked, f"{path} imports forbidden active runtime module(s): {blocked}"
 
@@ -367,6 +369,58 @@ def test_http_header_probe_valid_request_sends_one_head_and_redacts_headers():
     for secret in FIXTURE_SECRETS + ("sessionid=super-secret-password",):
         assert secret not in body
     assert "[REDACTED]" in body
+
+
+def test_http_header_probe_default_transport_connects_only_to_validated_address(monkeypatch):
+    connections: list[tuple[str, int | None, int]] = []
+    socket_targets: list[tuple[tuple[str, int], int | float | None]] = []
+
+    class FakeSocket:
+        def close(self):
+            return None
+
+    class FakeResponse:
+        status = 200
+
+        @staticmethod
+        def getheaders():
+            return [("Server", "fixture")]
+
+    class FakeHttpsConnection:
+        def __init__(self, host: str, *, port: int | None, timeout: int):
+            connections.append((host, port, timeout))
+            self._create_connection = None
+
+        def request(self, method: str, path: str, *, headers: dict[str, str]):
+            assert method == "HEAD"
+            assert path == "/path?ok=value"
+            assert self._create_connection is not None
+            self._socket = self._create_connection(("public.example", 443), 3)
+
+        @staticmethod
+        def getresponse():
+            return FakeResponse()
+
+        def close(self):
+            if hasattr(self, "_socket"):
+                self._socket.close()
+
+    def create_connection(address, timeout, source_address=None):
+        assert source_address is None
+        socket_targets.append((address, timeout))
+        return FakeSocket()
+
+    monkeypatch.setattr(http.client, "HTTPSConnection", FakeHttpsConnection)
+    monkeypatch.setattr(http_header_probe.socket, "create_connection", create_connection)
+
+    result = run_authorized_http_header_probe(
+        make_header_probe_request(),
+        resolver=lambda _host, _port, _timeout, _maximum: ["93.184.216.34"],
+    )
+
+    assert result["summary"]["network_requests_sent"] == 1
+    assert connections == [("public.example", None, 3)]
+    assert socket_targets == [(("93.184.216.34", 443), 3)]
 
 
 def test_http_header_probe_blocks_before_request_for_url_credentials_and_private_resolution():

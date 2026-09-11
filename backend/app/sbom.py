@@ -7,6 +7,8 @@ import re
 from typing import Any
 from urllib.parse import quote
 
+from app.version_matching import canonicalize_nuget_version, is_supported_maven_version
+
 from fastapi import HTTPException, status
 
 from app.models import JobRecord
@@ -62,6 +64,7 @@ def generate_cyclonedx_json(job: JobRecord) -> str:
 
 def generate_spdx_json(job: JobRecord) -> str:
     components = extract_components_from_job(job)
+    project_package = build_spdx_project_package(job)
     payload = {
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
@@ -72,7 +75,7 @@ def generate_spdx_json(job: JobRecord) -> str:
             "created": current_timestamp(),
             "creators": ["Tool: Inspectra"],
         },
-        "packages": [spdx_package(component) for component in components],
+        "packages": ([project_package] if project_package else []) + [spdx_package(component) for component in components],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
@@ -104,6 +107,13 @@ def extract_components_from_job(job: JobRecord) -> list[SbomComponent]:
                 ).strip()
                 index = len(components) + 1
                 source_type = classify_dependency_source(ecosystem, manifest_type, name, specifier, declared, dependency)
+                if source_type != "registry":
+                    # Export the fact that a dependency uses a non-registry
+                    # source, not its URL, VCS locator, local path or alias
+                    # target. Those values can expose private topology or
+                    # credentials and are never needed for a safe SBOM purl.
+                    specifier = ""
+                    declared = f"{name}: non-registry reference withheld ({source_type})"
                 package_url = build_package_url(ecosystem, name, specifier, source_type)
                 components.append(
                     SbomComponent(
@@ -123,7 +133,27 @@ def extract_components_from_job(job: JobRecord) -> list[SbomComponent]:
                     )
                 )
 
-    return components
+    return deduplicate_components(components)
+
+
+def deduplicate_components(components: list[SbomComponent]) -> list[SbomComponent]:
+    """Collapse exact repeated declarations without merging distinct sources or versions."""
+
+    retained: list[SbomComponent] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for component in components:
+        key = (
+            component.ecosystem.lower(),
+            component.name.lower(),
+            component.version_or_range,
+            component.dependency_source_type,
+            component.source_manifest_path,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        retained.append(component)
+    return retained
 
 
 def ensure_supported_job(job: JobRecord) -> None:
@@ -167,6 +197,7 @@ def cyclonedx_component(component: SbomComponent) -> dict[str, Any]:
             {"name": "inspectra:source_manifest", "value": component.source_manifest_path},
             {"name": "inspectra:ecosystem", "value": component.ecosystem},
             {"name": "inspectra:dependency_source_type", "value": component.dependency_source_type},
+            {"name": "inspectra:license_status", "value": "unknown_not_observed"},
         ],
     }
     if component.exact_version:
@@ -193,6 +224,8 @@ def spdx_package(component: SbomComponent) -> dict[str, Any]:
         "downloadLocation": "NOASSERTION",
         "filesAnalyzed": False,
         "supplier": "NOASSERTION",
+        "licenseDeclared": "NOASSERTION",
+        "licenseConcluded": "NOASSERTION",
         "comment": (
             f"Declared requirement: {component.declared_requirement}; "
             f"dependency group: {component.group}; "
@@ -226,6 +259,7 @@ def build_project_component(job: JobRecord) -> dict[str, Any] | None:
         version = project.get("version")
         if isinstance(version, str) and version:
             payload["version"] = version
+        add_declared_project_license(payload, project)
         return payload
 
     parsed_manifests = result.get("parsed_manifests")
@@ -239,7 +273,45 @@ def build_project_component(job: JobRecord) -> dict[str, Any] | None:
     version = project.get("version")
     if isinstance(version, str) and version:
         payload["version"] = version
+    add_declared_project_license(payload, project)
     return payload
+
+
+def add_declared_project_license(payload: dict[str, Any], project: dict[str, Any]) -> None:
+    """Add only a runner-normalized root declaration to CycloneDX metadata."""
+
+    expression = project.get("license")
+    if isinstance(expression, str) and expression:
+        payload["licenses"] = [{"expression": expression}]
+    else:
+        payload.setdefault("properties", []).append(
+            {"name": "inspectra:license_status", "value": "unknown_not_observed_or_unsupported"}
+        )
+
+
+def build_spdx_project_package(job: JobRecord) -> dict[str, Any] | None:
+    component = build_project_component(job)
+    if component is None:
+        return None
+    licenses = component.get("licenses") if isinstance(component.get("licenses"), list) else []
+    first = licenses[0] if licenses and isinstance(licenses[0], dict) else {}
+    expression = first.get("expression") if isinstance(first.get("expression"), str) else None
+    if expression is None:
+        # Preserve the established dependency-only SPDX shape unless the root
+        # contributes a supported declaration. Unknown root-license state is
+        # already explicit on every dependency and in the project review.
+        return None
+    return {
+        "name": component["name"],
+        "SPDXID": "SPDXRef-Project",
+        "versionInfo": component.get("version", "NOASSERTION"),
+        "downloadLocation": "NOASSERTION",
+        "filesAnalyzed": False,
+        "supplier": "NOASSERTION",
+        "licenseDeclared": expression,
+        "licenseConcluded": "NOASSERTION",
+        "comment": "Root project declaration retained by Inspectra; no legal compatibility or obligation analysis was performed.",
+    }
 
 
 def format_declared_requirement(name: str, specifier: str, manifest_type: str) -> str:
@@ -257,6 +329,16 @@ def format_declared_requirement(name: str, specifier: str, manifest_type: str) -
 def ecosystem_for_manifest(manifest_type: str) -> str:
     if manifest_type == "package_json":
         return "npm"
+    if manifest_type == "go_mod":
+        return "go"
+    if manifest_type == "cargo_toml":
+        return "cargo"
+    if manifest_type == "composer_json":
+        return "composer"
+    if manifest_type == "gradle_build":
+        return "maven"
+    if manifest_type == "dotnet_project":
+        return "nuget"
     return "pypi"
 
 
@@ -264,17 +346,44 @@ def build_package_url(ecosystem: str, name: str, specifier: str, source_type: st
     if source_type != "registry":
         return None
     exact_version = extract_exact_version(specifier, ecosystem)
+    encoded_version = quote(exact_version, safe="-._~+") if exact_version else None
     if ecosystem == "npm":
         if not is_valid_npm_name(name):
             return None
         encoded_name = quote(name, safe="/")
-        return f"pkg:npm/{encoded_name}@{exact_version}" if exact_version else f"pkg:npm/{encoded_name}"
+        return f"pkg:npm/{encoded_name}@{encoded_version}" if encoded_version else f"pkg:npm/{encoded_name}"
     if ecosystem == "pypi":
         if not is_valid_pypi_name(name):
             return None
         normalized_name = canonicalize_python_name(name)
         encoded_name = quote(normalized_name, safe="")
-        return f"pkg:pypi/{encoded_name}@{exact_version}" if exact_version else f"pkg:pypi/{encoded_name}"
+        return f"pkg:pypi/{encoded_name}@{encoded_version}" if encoded_version else f"pkg:pypi/{encoded_name}"
+    if ecosystem == "go":
+        if not is_valid_go_module_name(name):
+            return None
+        encoded_name = quote(name, safe="/")
+        return f"pkg:golang/{encoded_name}@{encoded_version}" if encoded_version else f"pkg:golang/{encoded_name}"
+    if ecosystem == "cargo":
+        if not is_valid_cargo_name(name):
+            return None
+        encoded_name = quote(name, safe="")
+        return f"pkg:cargo/{encoded_name}@{encoded_version}" if encoded_version else f"pkg:cargo/{encoded_name}"
+    if ecosystem == "composer":
+        if not is_valid_composer_name(name):
+            return None
+        encoded_name = quote(name, safe="/")
+        return f"pkg:composer/{encoded_name}@{encoded_version}" if encoded_version else f"pkg:composer/{encoded_name}"
+    if ecosystem == "maven":
+        if not is_valid_maven_name(name):
+            return None
+        group, artifact = name.split(":", 1)
+        encoded_name = f"{quote(group, safe='.-')}/{quote(artifact, safe='.-')}"
+        return f"pkg:maven/{encoded_name}@{encoded_version}" if encoded_version else f"pkg:maven/{encoded_name}"
+    if ecosystem == "nuget":
+        if not is_valid_nuget_name(name):
+            return None
+        encoded_name = quote(name.lower(), safe=".-")
+        return f"pkg:nuget/{encoded_name}@{encoded_version}" if encoded_version else f"pkg:nuget/{encoded_name}"
     return None
 
 
@@ -361,9 +470,7 @@ def build_purl_omitted_reason(source_type: str, ecosystem: str, name: str) -> st
         )
     if source_type == "unknown":
         return "Dependency source is unknown or ambiguous; Inspectra did not infer a registry package URL."
-    return (
-        f"Dependency source is {source_type}; Inspectra preserves the declaration but does not infer a registry package URL."
-    )
+    return f"Dependency source is {source_type}; its reference is withheld and Inspectra does not infer a registry package URL."
 
 
 def normalize_source_type(value: str) -> str | None:
@@ -379,6 +486,33 @@ def is_valid_npm_name(name: str) -> bool:
 
 def is_valid_pypi_name(name: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,._-]+\])?", name))
+
+
+def is_valid_go_module_name(name: str) -> bool:
+    if len(name) > 300 or name != name.lower():
+        return False
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._~-]*(?:/[a-z0-9][a-z0-9._~+\-]*)+", name):
+        return False
+    return "." in name.split("/", 1)[0]
+
+
+def is_valid_cargo_name(name: str) -> bool:
+    return len(name) <= 128 and bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name))
+
+
+def is_valid_composer_name(name: str) -> bool:
+    return len(name) <= 200 and bool(re.fullmatch(r"[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*", name))
+
+
+def is_valid_maven_name(name: str) -> bool:
+    if len(name) > 321 or name.count(":") != 1:
+        return False
+    group, artifact = name.split(":", 1)
+    return name == name.lower() and bool(re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", group) and re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", artifact))
+
+
+def is_valid_nuget_name(name: str) -> bool:
+    return len(name) <= 200 and name == name.lower() and bool(re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", name))
 
 
 def looks_like_url(value: str) -> bool:
@@ -409,6 +543,17 @@ def extract_exact_version(specifier: str, ecosystem: str) -> str | None:
     if ecosystem == "pypi":
         match = re.fullmatch(r"==\s*([^,;\s]+)", value)
         return match.group(1) if match else None
+    if ecosystem == "go":
+        return value if re.fullmatch(r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", value) else None
+    if ecosystem == "cargo":
+        return value if re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", value) else None
+    if ecosystem == "composer":
+        matched = re.fullmatch(r"v?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)", value)
+        return matched.group(1) if matched else None
+    if ecosystem == "maven":
+        return value if is_supported_maven_version(value) else None
+    if ecosystem == "nuget":
+        return canonicalize_nuget_version(value)
     if re.fullmatch(r"[0-9][A-Za-z0-9._+\-]*", value):
         return value
     return None

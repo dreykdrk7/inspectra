@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
+import json
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
@@ -148,12 +149,21 @@ ACTIVE_TOOLS_HEALTH_ALLOWED_FIELDS = {
     "service",
     "status",
 }
-ACTIVE_TOOLS_HEALTH_ALLOWED_CAPABILITIES = {"active_nmap_basic"}
-ACTIVE_TOOLS_HEALTH_ALLOWED_NMAP_FIELDS = {
+ACTIVE_TOOLS_HEALTH_ALLOWED_CAPABILITIES = {
+    "active_nmap_basic",
+    "active_dns_inventory",
+    "active_dns_osint",
+    "active_http_basic_header_review",
+    "active_tls_basic",
+    "active_asset_verification",
+}
+ACTIVE_TOOLS_HEALTH_ALLOWED_CAPABILITY_FIELDS = {
     "execution_enabled",
     "status",
     "target_input_allowed",
 }
+ACTIVE_TOOLS_HEALTH_MAX_RESPONSE_BYTES = 4_096
+ACTIVE_TOOLS_HEALTH_MAX_TIMEOUT_SECONDS = 2.0
 ACTIVE_TOOLS_HEALTH_ERROR_CODES = {
     "active_tools_unconfigured",
     "active_tools_unavailable",
@@ -397,10 +407,23 @@ async def check_active_tools_health(
     if not normalized_base_url:
         return _active_tools_health_error("active_tools_unconfigured")
 
+    bounded_timeout = min(max(float(timeout_seconds), 0.1), ACTIVE_TOOLS_HEALTH_MAX_TIMEOUT_SECONDS)
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
-            response = await client.get(f"{normalized_base_url}/health")
-            response.raise_for_status()
+        async with httpx.AsyncClient(timeout=bounded_timeout, transport=transport, follow_redirects=False) as client:
+            async with client.stream("GET", f"{normalized_base_url}/health") as response:
+                response.raise_for_status()
+                declared = response.headers.get("content-length")
+                if declared is not None:
+                    try:
+                        if int(declared) > ACTIVE_TOOLS_HEALTH_MAX_RESPONSE_BYTES:
+                            return _active_tools_health_error("active_tools_invalid_response")
+                    except ValueError:
+                        return _active_tools_health_error("active_tools_invalid_response")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > ACTIVE_TOOLS_HEALTH_MAX_RESPONSE_BYTES:
+                        return _active_tools_health_error("active_tools_invalid_response")
     except httpx.TimeoutException:
         return _active_tools_health_error("active_tools_timeout")
     except httpx.HTTPStatusError as exc:
@@ -410,8 +433,8 @@ async def check_active_tools_health(
         return _active_tools_health_error("active_tools_unavailable")
 
     try:
-        payload = response.json()
-    except ValueError:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
         return _active_tools_health_error("active_tools_invalid_response")
 
     return validate_active_tools_health_payload(payload)
@@ -431,39 +454,53 @@ def validate_active_tools_health_payload(payload: Any) -> dict[str, Any]:
     if {_normalize_key(key) for key in capabilities} != ACTIVE_TOOLS_HEALTH_ALLOWED_CAPABILITIES:
         return _active_tools_health_error("active_tools_unexpected_fields")
 
-    nmap_capability = capabilities.get("active_nmap_basic")
-    if not isinstance(nmap_capability, Mapping):
-        return _active_tools_health_error("active_tools_invalid_response")
-    if {_normalize_key(key) for key in nmap_capability} != ACTIVE_TOOLS_HEALTH_ALLOWED_NMAP_FIELDS:
-        return _active_tools_health_error("active_tools_unexpected_fields")
-
+    service = payload.get("service")
     status = _safe_status(payload.get("status"))
-    active_nmap_basic_status = _safe_status(nmap_capability.get("status"))
-    execution_enabled = nmap_capability.get("execution_enabled")
-    target_input_allowed = nmap_capability.get("target_input_allowed")
     network_requests_sent = payload.get("network_requests_sent")
     nmap_executed = payload.get("nmap_executed")
+    normalized_capabilities: dict[str, dict[str, Any]] = {}
+    capabilities_valid = True
+    for capability in sorted(ACTIVE_TOOLS_HEALTH_ALLOWED_CAPABILITIES):
+        candidate = capabilities.get(capability)
+        if not isinstance(candidate, Mapping):
+            return _active_tools_health_error("active_tools_invalid_response")
+        if {_normalize_key(key) for key in candidate} != ACTIVE_TOOLS_HEALTH_ALLOWED_CAPABILITY_FIELDS:
+            return _active_tools_health_error("active_tools_unexpected_fields")
+        capability_status = _safe_status(candidate.get("status"))
+        execution_enabled = candidate.get("execution_enabled")
+        target_input_allowed = candidate.get("target_input_allowed")
+        normalized_capabilities[capability] = {
+            "status": capability_status,
+            "execution_enabled": execution_enabled if isinstance(execution_enabled, bool) else None,
+            "target_input_allowed": target_input_allowed if isinstance(target_input_allowed, bool) else None,
+        }
+        if (
+            capability_status not in {"disabled_no_scan", "ready_bounded_execution"}
+            or not isinstance(execution_enabled, bool)
+            or target_input_allowed is not False
+            or (capability_status == "ready_bounded_execution") != execution_enabled
+        ):
+            capabilities_valid = False
+
+    nmap_capability = normalized_capabilities["active_nmap_basic"]
 
     result = _active_tools_health_error(
         "",
         status=status,
-        active_nmap_basic_status=active_nmap_basic_status,
-        execution_enabled=execution_enabled if isinstance(execution_enabled, bool) else None,
-        target_input_allowed=target_input_allowed if isinstance(target_input_allowed, bool) else None,
+        capabilities=normalized_capabilities,
+        active_nmap_basic_status=nmap_capability["status"],
+        execution_enabled=nmap_capability["execution_enabled"],
+        target_input_allowed=nmap_capability["target_input_allowed"],
         network_requests_sent=network_requests_sent if _is_non_negative_int(network_requests_sent) else None,
         nmap_executed=nmap_executed if isinstance(nmap_executed, bool) else None,
     )
 
     if (
-        status != "scaffold_ready"
-        or active_nmap_basic_status not in {"disabled_no_scan", "ready_bounded_execution"}
-        or not isinstance(execution_enabled, bool)
-        or not isinstance(target_input_allowed, bool)
+        service != "active-tools"
+        or status != "scaffold_ready"
+        or not capabilities_valid
     ):
         result["error_code"] = "active_tools_not_ready"
-        return result
-    if target_input_allowed:
-        result["error_code"] = "active_tools_invalid_response"
         return result
     if not _is_non_negative_int(network_requests_sent) or not isinstance(nmap_executed, bool):
         result["error_code"] = "active_tools_invalid_response"
@@ -481,6 +518,7 @@ def _active_tools_health_error(
     error_code: str,
     *,
     status: str | None = None,
+    capabilities: Mapping[str, Mapping[str, Any]] | None = None,
     active_nmap_basic_status: str | None = None,
     execution_enabled: bool | None = None,
     target_input_allowed: bool | None = None,
@@ -488,9 +526,27 @@ def _active_tools_health_error(
     nmap_executed: bool | None = None,
 ) -> dict[str, Any]:
     controlled_error = error_code if error_code in ACTIVE_TOOLS_HEALTH_ERROR_CODES else None
+    safe_capabilities = {
+        capability: {
+            "status": None,
+            "execution_enabled": None,
+            "target_input_allowed": None,
+        }
+        for capability in sorted(ACTIVE_TOOLS_HEALTH_ALLOWED_CAPABILITIES)
+    }
+    if capabilities is not None:
+        for capability in safe_capabilities:
+            candidate = capabilities.get(capability)
+            if isinstance(candidate, Mapping):
+                safe_capabilities[capability] = {
+                    "status": _safe_status(candidate.get("status")),
+                    "execution_enabled": candidate.get("execution_enabled") if isinstance(candidate.get("execution_enabled"), bool) else None,
+                    "target_input_allowed": candidate.get("target_input_allowed") if isinstance(candidate.get("target_input_allowed"), bool) else None,
+                }
     return {
         "available": False,
         "status": status,
+        "capabilities": safe_capabilities,
         "active_nmap_basic_status": active_nmap_basic_status,
         "execution_enabled": execution_enabled,
         "target_input_allowed": target_input_allowed,

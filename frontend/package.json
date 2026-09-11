@@ -1,11 +1,12 @@
 {
   "name": "inspectra-frontend",
-  "version": "0.1.0",
+  "version": "0.3.0-beta.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && npm run check:bundle",
+    "check:bundle": "node scripts/check-initial-bundle-budget.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest",
     "test:run": "vitest --run"
@@ -22,9 +23,10 @@
     "@types/react": "^18.3.29",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.3.4",
+    "axe-core": "^4.13.0",
     "jsdom": "^27.0.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.11"
   }
 }

@@ -1,0 +1,59 @@
+# Private self-hosted alpha example. Apply this file only together with
+# docker-compose.yml and a private, untracked environment file.
+#
+# It replaces the local backend/frontend port mappings with a single Caddy TLS
+# entry point. It is not a public/community deployment configuration.
+
+services:
+  backend:
+    ports: !reset []
+    environment:
+      INSPECTRA_DEPLOYMENT_PROFILE: private_tls_proxy
+      INSPECTRA_AUTH_MODE: self_hosted_single_admin
+      INSPECTRA_ADMIN_PASSWORD_HASH: ${INSPECTRA_ADMIN_PASSWORD_HASH:?Set INSPECTRA_ADMIN_PASSWORD_HASH in a private environment file.}
+      INSPECTRA_AUTH_STATE_STORE: sqlite
+      INSPECTRA_AUTH_STATE_DB_PATH: /app/data/runtime/auth_state.sqlite3
+      INSPECTRA_CORS_ORIGINS: https://${INSPECTRA_PUBLIC_HOST:?Set INSPECTRA_PUBLIC_HOST to the TLS hostname.}
+      INSPECTRA_SESSION_COOKIE_SECURE: "true"
+
+  frontend:
+    build:
+      args:
+        VITE_API_BASE_URL: /api
+    ports: !reset []
+
+  proxy:
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    environment:
+      INSPECTRA_PUBLIC_HOST: ${INSPECTRA_PUBLIC_HOST:?Set INSPECTRA_PUBLIC_HOST to the TLS hostname.}
+      INSPECTRA_TLS_EMAIL: ${INSPECTRA_TLS_EMAIL:?Set INSPECTRA_TLS_EMAIL for certificate notices.}
+    ports:
+      - "${INSPECTRA_PRIVATE_HTTP_PORT:-80}:80"
+      - "${INSPECTRA_PRIVATE_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/private/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    networks:
+      - inspectra_host_access
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    cpus: 0.5
+    mem_limit: 128m
+    pids_limit: 64
+
+volumes:
+  caddy_data:
+  caddy_config:
