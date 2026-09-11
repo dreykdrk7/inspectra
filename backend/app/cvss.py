@@ -1,9 +1,9 @@
-"""Small, deterministic CVSS vector validator and v3 base-score evaluator.
+"""Small, deterministic CVSS vector validator and v3/v4 score evaluator.
 
 The evaluator is intentionally not a vulnerability source.  It only derives a
-base score from a provider-supplied CVSS 3.0/3.1 vector so Inspectra can make
-that vector easier to triage.  An unsupported or malformed vector remains
-``unknown``; callers must retain the original vector and never invent a score.
+score from a provider-supplied CVSS vector so Inspectra can make that vector
+easier to triage.  An unsupported or malformed vector remains ``unknown``;
+callers must retain the original vector and never invent a score.
 """
 
 from __future__ import annotations
@@ -11,6 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from typing import Literal
+
+from cvss import CVSS4
+import cvss.cvss4 as _cvss4_implementation
+from cvss.exceptions import CVSS4Error
 
 
 CvssBand = Literal["none", "low", "medium", "high", "critical", "unknown"]
@@ -85,6 +89,20 @@ _V4_OPTIONAL_METRICS = {
     "RE": frozenset({"X", "L", "M", "H"}),
     "U": frozenset({"X", "Clear", "Green", "Amber", "Red"}),
 }
+_V4_METRIC_ORDER = tuple(_V4_BASE_METRICS) + tuple(_V4_OPTIONAL_METRICS)
+
+
+def _official_cvss_v4_rounding(value: float) -> float:
+    """Match the FIRST reference calculator's ``Math.round(value * 10)``."""
+
+    return math.floor(value * 10 + 0.5) / 10
+
+
+# cvss 3.6 is a maintained Python port of the FIRST algorithm, but adds an
+# EPSILON before final rounding.  That differs from the reference calculator
+# and FIRST's base/threat corpus at exact binary-float boundaries.  The version
+# is pinned and this one hook restores the reference implementation semantics.
+_cvss4_implementation.final_rounding = _official_cvss_v4_rounding
 
 
 def assess_cvss_v3_vector(vector: object) -> CvssAssessment:
@@ -125,9 +143,9 @@ def assess_cvss_metric(
 ) -> CvssAssessment | None:
     """Validate a provider metric without mixing CVSS generations.
 
-    CVSS v3 base scores can be derived deterministically. CVSS v4 scores are
-    retained only when the source publishes a finite score; Inspectra does not
-    implement or approximate the v4 scoring algorithm in this contract.
+    CVSS v3 and v4 scores can be derived deterministically. A finite score
+    published by the source remains authoritative and is never replaced by a
+    derived value.
     """
 
     if not isinstance(kind, str):
@@ -152,7 +170,22 @@ def assess_cvss_metric(
         return CvssAssessment(score, cvss_band_for_score(score), "source_provided", version)
     if normalized_kind == "CVSS_V3":
         return assess_cvss_v3_vector(vector)
-    return CvssAssessment(None, "unknown", "not_available", version)
+    return assess_cvss_v4_vector(vector)
+
+
+def assess_cvss_v4_vector(vector: object) -> CvssAssessment:
+    """Derive a CVSS v4 score using the pinned FIRST-compatible algorithm."""
+
+    parsed = _parse_vector(vector)
+    if parsed is None or parsed[0] != "4.0":
+        return CvssAssessment(None, "unknown", "not_available")
+    try:
+        score = float(CVSS4(str(vector)).scores()[0])
+    except (CVSS4Error, KeyError, TypeError, ValueError, ArithmeticError):
+        return CvssAssessment(None, "unknown", "not_available", "4.0")
+    if not math.isfinite(score) or not 0 <= score <= 10:
+        return CvssAssessment(None, "unknown", "not_available", "4.0")
+    return CvssAssessment(score, cvss_band_for_score(score), "derived_from_vector", "4.0")
 
 
 def cvss_version_for_vector(vector: object) -> CvssVersion | None:
@@ -163,7 +196,7 @@ def cvss_version_for_vector(vector: object) -> CvssVersion | None:
 
 
 def cvss_band_for_score(score: float) -> CvssBand:
-    """Map an already validated CVSS base score to its standard band."""
+    """Map an already validated CVSS score to its standard band."""
 
     if not isinstance(score, (float, int)) or isinstance(score, bool) or score < 0 or score > 10:
         return "unknown"
@@ -224,6 +257,10 @@ def _parse_vector(vector: object) -> tuple[CvssVersion, dict[str, str]] | None:
             return None
         metrics[key] = value
     if not required.issubset(metrics):
+        return None
+    if version == "4.0" and tuple(metrics) != tuple(
+        key for key in _V4_METRIC_ORDER if key in metrics
+    ):
         return None
     return version, metrics
 

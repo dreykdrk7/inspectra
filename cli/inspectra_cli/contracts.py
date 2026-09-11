@@ -1,8 +1,8 @@
 """Versioned contracts required before the CLI may process private source."""
 
-CLI_PROTOCOL_VERSION = "2026-09-10.6"
+CLI_PROTOCOL_VERSION = "2026-09-11.1"
 REQUIRED_SERVER_CONTRACTS = {
-    "git_snapshot": "2026-09-07.1",
+    "git_snapshot": "2026-09-11.1",
     "ci_admission": "2026-09-06.1",
     "policy_result": "2026-09-07.1",
     "cli_result": "2026-09-07.1",

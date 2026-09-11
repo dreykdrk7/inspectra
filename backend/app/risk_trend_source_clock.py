@@ -299,6 +299,14 @@ class RiskTrendSourceClock:
             }
             if tables != set(RISK_TREND_SOURCE_CLOCK_COLUMNS) or columns != RISK_TREND_SOURCE_CLOCK_COLUMNS:
                 raise RiskTrendSourceClockError("risk_trend_source_clock_invalid")
+            if not query_only:
+                # This database is a rebuildable invalidation journal, never
+                # authority. NORMAL removes one rollback-journal sync while
+                # retaining transactional consistency. If the latest
+                # transaction is lost, the independently persisted source
+                # directory revision no longer matches and every read falls
+                # back globally until startup recovery rotates the epoch.
+                connection.execute("PRAGMA synchronous = NORMAL")
             return connection
         except Exception:
             if connection is not None:

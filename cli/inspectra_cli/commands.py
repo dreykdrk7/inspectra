@@ -219,10 +219,15 @@ def execute_scan(
     if any(path is not None for path in (go_graph_path, cargo_graph_path, composer_graph_path, gradle_graph_path, nuget_graph_path)) and not arguments.dry_run and not arguments.project_id:
         raise SnapshotError("Dependency graph uploads require an existing --project-id so evidence remains source-bound.")
 
-    token = os.environ.get("INSPECTRA_TOKEN")
+    automation_token = os.environ.get("INSPECTRA_TOKEN")
+    import_token = os.environ.get("INSPECTRA_IMPORT_TOKEN")
     client = None
     if not arguments.dry_run:
-        client = client_factory(arguments.api_url, token=token, timeout_seconds=arguments.http_timeout)
+        client = client_factory(
+            arguments.api_url,
+            token=automation_token if arguments.project_id else import_token,
+            timeout_seconds=arguments.http_timeout,
+        )
         client.ensure_compatible()
 
     with build_snapshot(
@@ -305,7 +310,7 @@ def execute_scan(
         assert client is not None
         replayed = False
         if arguments.project_id:
-            if not token:
+            if not automation_token:
                 raise ApiClientError("--project-id requires INSPECTRA_TOKEN from the CI secret store.")
             if arguments.name:
                 raise SnapshotError("--name cannot be combined with --project-id.")
@@ -318,12 +323,13 @@ def execute_scan(
                 branch=arguments.branch,
             )
         else:
-            file_id = client.upload_archive(snapshot.archive_path)
-            try:
-                project_id, job_id = client.create_project(file_id, name=arguments.name)
-            except Exception:
-                client.delete_file(file_id)
-                raise
+            project_id, job_id = client.submit_initial_git_snapshot(
+                snapshot.archive_path,
+                name=arguments.name or "Git repository",
+                commit_sha=snapshot.metadata.commit,
+                source_sha256=snapshot.metadata.archive_sha256,
+                branch=arguments.branch,
+            )
         result_url = client.result_url(arguments.web_url, project_id, job_id)
         try:
             client.wait_for_analysis(job_id, timeout_seconds=arguments.timeout)

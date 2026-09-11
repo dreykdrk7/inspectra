@@ -115,6 +115,12 @@ def test_owner_clock_has_bounded_write_overhead_and_retains_no_source_labels(tmp
     assert b"private-content-canary" not in retained
     assert OWNER.encode() not in retained
     assert clock.path.stat().st_mode & 0o777 == 0o600
+    connection = clock._connect()
+    try:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert connection.execute("PRAGMA synchronous").fetchone()[0] == 1
+    finally:
+        connection.close()
 
 
 def test_owner_clock_accepts_legacy_labels_but_persists_only_an_opaque_digest(tmp_path):

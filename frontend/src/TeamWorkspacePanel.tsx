@@ -3,6 +3,8 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { PublicIdentityAttestationPanel } from "./PublicIdentityAttestationPanel";
 import { PublicAdvisoryOperationsPanel } from "./PublicAdvisoryOperationsPanel";
+import { FederatedIdentityPanel } from "./FederatedIdentityPanel";
+import { IntegrationEventStatusPanel } from "./IntegrationEventStatusPanel";
 import type { ActiveMemberResponsibilityImpact, TeamInvitation, TeamMember, TeamOrganization, TeamOrganizationListItem, TeamRole } from "./types";
 
 
@@ -12,11 +14,13 @@ const idle: LoadState = { loading: false, error: null };
 type TeamWorkspacePanelProps = {
   onWorkspaceChanged?: () => void | Promise<void>;
   onMembershipChanged?: () => void | Promise<void>;
+  federatedLoginAvailable?: boolean;
 };
 
 export function TeamWorkspacePanel({
   onWorkspaceChanged = async () => undefined,
   onMembershipChanged = async () => undefined,
+  federatedLoginAvailable = false,
 }: TeamWorkspacePanelProps) {
   const [organization, setOrganization] = useState<TeamOrganization | null>(null);
   const [organizations, setOrganizations] = useState<TeamOrganizationListItem[]>([]);
@@ -253,9 +257,11 @@ export function TeamWorkspacePanel({
 
           <PublicIdentityAttestationPanel key={organization.id} role={organization.current_role} />
           {organization.current_role === "administrator" ? <PublicAdvisoryOperationsPanel key={`advisories-${organization.id}`} /> : null}
+          {organization.current_role === "administrator" ? <IntegrationEventStatusPanel key={`integration-events-${organization.id}`} /> : null}
 
           {organization.current_role === "administrator" ? (
             <div className="team-administration-actions">
+              <FederatedIdentityPanel enabled={federatedLoginAvailable} members={members} />
               <form className="team-workspace-create-form" onSubmit={(event) => void createWorkspace(event)}>
                 <div>
                   <h3>Create an isolated workspace</h3>

@@ -187,7 +187,13 @@ MAX_PRODUCT_AUDIT_MAX_EVENTS = 1_000_000
 DEFAULT_AUTOMATION_TOKEN_RETENTION_DAYS = 30
 MAX_AUTOMATION_TOKEN_RETENTION_DAYS = 365
 DEFAULT_ADOPTION_METRICS_ENABLED = False
+DEFAULT_INTEGRATION_EVENTS_ENABLED = False
+DEFAULT_INTEGRATION_EVENT_TIMEOUT_SECONDS = 5.0
+DEFAULT_INTEGRATION_EVENT_MAX_CONCURRENCY = 2
+MAX_INTEGRATION_EVENT_TIMEOUT_SECONDS = 10.0
+MAX_INTEGRATION_EVENT_MAX_CONCURRENCY = 4
 PORTFOLIO_INDEX_HMAC_KEY_BYTES = 32
+OIDC_SUBJECT_HMAC_KEY_BYTES = 32
 PRIVATE_TLS_STORAGE_FORBIDDEN_MODE_BITS = stat.S_IRWXG | stat.S_IRWXO
 SUPPORTED_AUTH_MODES = (
     "trusted_local_no_auth",
@@ -350,7 +356,28 @@ class Settings:
     product_audit_max_events: int = DEFAULT_PRODUCT_AUDIT_MAX_EVENTS
     automation_token_retention_days: int = DEFAULT_AUTOMATION_TOKEN_RETENTION_DAYS
     adoption_metrics_enabled: bool = DEFAULT_ADOPTION_METRICS_ENABLED
+    integration_events_enabled: bool = DEFAULT_INTEGRATION_EVENTS_ENABLED
+    integration_event_endpoint: str | None = None
+    integration_event_allowed_host: str | None = None
+    integration_event_signing_key: bytes | None = field(default=None, repr=False)
+    integration_event_signing_key_id: str | None = None
+    integration_event_timeout_seconds: float = DEFAULT_INTEGRATION_EVENT_TIMEOUT_SECONDS
+    integration_event_max_concurrency: int = DEFAULT_INTEGRATION_EVENT_MAX_CONCURRENCY
     portfolio_index_hmac_key: bytes | None = field(default=None, repr=False)
+    oidc_issuer: str | None = None
+    oidc_authorization_endpoint: str | None = None
+    oidc_token_endpoint: str | None = None
+    oidc_jwks_uri: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: str | None = field(default=None, repr=False)
+    oidc_redirect_uri: str | None = None
+    oidc_post_login_redirect_uri: str | None = None
+    oidc_organization_id: str | None = None
+    oidc_reader_group: str | None = None
+    oidc_maintainer_group: str | None = None
+    oidc_subject_hmac_key: bytes | None = field(default=None, repr=False)
+    oidc_tenant_claim: str | None = None
+    oidc_expected_tenant: str | None = None
 
     @property
     def upload_dir(self) -> Path:
@@ -435,6 +462,10 @@ class Settings:
     @property
     def runtime_dir(self) -> Path:
         return self.data_dir / "runtime"
+
+    @property
+    def integration_event_outbox_path(self) -> Path:
+        return self.runtime_dir / "integration_event_outbox.sqlite3"
 
     @property
     def resolved_auth_state_db_path(self) -> Path:
@@ -959,13 +990,73 @@ def load_settings() -> Settings:
         "INSPECTRA_ADOPTION_METRICS_ENABLED",
         DEFAULT_ADOPTION_METRICS_ENABLED,
     )
+    integration_events_enabled = _bool_from_env(
+        "INSPECTRA_INTEGRATION_EVENTS_ENABLED",
+        DEFAULT_INTEGRATION_EVENTS_ENABLED,
+    )
+    integration_event_endpoint = _optional_secret_from_env("INSPECTRA_INTEGRATION_EVENT_ENDPOINT")
+    integration_event_allowed_host = _optional_secret_from_env("INSPECTRA_INTEGRATION_EVENT_ALLOWED_HOST")
+    integration_event_signing_key = _base64url_32_byte_key_from_env(
+        "INSPECTRA_INTEGRATION_EVENT_SIGNING_KEY"
+    )
+    integration_event_signing_key_id = _optional_secret_from_env("INSPECTRA_INTEGRATION_EVENT_SIGNING_KEY_ID")
+    integration_event_timeout_seconds = _bounded_positive_float_from_env(
+        "INSPECTRA_INTEGRATION_EVENT_TIMEOUT_SECONDS",
+        DEFAULT_INTEGRATION_EVENT_TIMEOUT_SECONDS,
+        MAX_INTEGRATION_EVENT_TIMEOUT_SECONDS,
+    )
+    integration_event_max_concurrency = _bounded_positive_int_from_env(
+        "INSPECTRA_INTEGRATION_EVENT_MAX_CONCURRENCY",
+        DEFAULT_INTEGRATION_EVENT_MAX_CONCURRENCY,
+        MAX_INTEGRATION_EVENT_MAX_CONCURRENCY,
+    )
     portfolio_index_hmac_key = _portfolio_index_hmac_key_from_env(
         "INSPECTRA_PORTFOLIO_INDEX_HMAC_KEY"
     )
+    oidc_issuer = _optional_secret_from_env("INSPECTRA_OIDC_ISSUER")
+    oidc_authorization_endpoint = _optional_secret_from_env("INSPECTRA_OIDC_AUTHORIZATION_ENDPOINT")
+    oidc_token_endpoint = _optional_secret_from_env("INSPECTRA_OIDC_TOKEN_ENDPOINT")
+    oidc_jwks_uri = _optional_secret_from_env("INSPECTRA_OIDC_JWKS_URI")
+    oidc_client_id = _optional_secret_from_env("INSPECTRA_OIDC_CLIENT_ID")
+    oidc_client_secret = _optional_secret_from_env("INSPECTRA_OIDC_CLIENT_SECRET")
+    oidc_redirect_uri = _optional_secret_from_env("INSPECTRA_OIDC_REDIRECT_URI")
+    oidc_post_login_redirect_uri = _optional_secret_from_env("INSPECTRA_OIDC_POST_LOGIN_REDIRECT_URI")
+    oidc_organization_id = _optional_secret_from_env("INSPECTRA_OIDC_ORGANIZATION_ID")
+    oidc_reader_group = _optional_secret_from_env("INSPECTRA_OIDC_READER_GROUP")
+    oidc_maintainer_group = _optional_secret_from_env("INSPECTRA_OIDC_MAINTAINER_GROUP")
+    oidc_subject_hmac_key = _base64url_32_byte_key_from_env("INSPECTRA_OIDC_SUBJECT_HMAC_KEY")
+    oidc_tenant_claim = _optional_secret_from_env("INSPECTRA_OIDC_TENANT_CLAIM")
+    oidc_expected_tenant = _optional_secret_from_env("INSPECTRA_OIDC_EXPECTED_TENANT")
     _validate_team_auth_mode(
         auth_mode=auth_mode,
         admin_password_hash=admin_password_hash,
         auth_state_store=auth_state_store,
+    )
+    _validate_oidc_settings(
+        auth_mode=auth_mode,
+        values=(
+            oidc_issuer,
+            oidc_authorization_endpoint,
+            oidc_token_endpoint,
+            oidc_jwks_uri,
+            oidc_client_id,
+            oidc_client_secret,
+            oidc_redirect_uri,
+            oidc_post_login_redirect_uri,
+            oidc_organization_id,
+            oidc_reader_group,
+            oidc_maintainer_group,
+            oidc_subject_hmac_key,
+        ),
+        tenant_claim=oidc_tenant_claim,
+        expected_tenant=oidc_expected_tenant,
+    )
+    _validate_integration_event_settings(
+        enabled=integration_events_enabled,
+        endpoint=integration_event_endpoint,
+        allowed_host=integration_event_allowed_host,
+        signing_key=integration_event_signing_key,
+        signing_key_id=integration_event_signing_key_id,
     )
     _validate_deployment_profile(
         deployment_profile=deployment_profile,
@@ -995,7 +1086,28 @@ def load_settings() -> Settings:
         product_audit_max_events=product_audit_max_events,
         automation_token_retention_days=automation_token_retention_days,
         adoption_metrics_enabled=adoption_metrics_enabled,
+        integration_events_enabled=integration_events_enabled,
+        integration_event_endpoint=integration_event_endpoint,
+        integration_event_allowed_host=integration_event_allowed_host,
+        integration_event_signing_key=integration_event_signing_key,
+        integration_event_signing_key_id=integration_event_signing_key_id,
+        integration_event_timeout_seconds=integration_event_timeout_seconds,
+        integration_event_max_concurrency=integration_event_max_concurrency,
         portfolio_index_hmac_key=portfolio_index_hmac_key,
+        oidc_issuer=oidc_issuer,
+        oidc_authorization_endpoint=oidc_authorization_endpoint,
+        oidc_token_endpoint=oidc_token_endpoint,
+        oidc_jwks_uri=oidc_jwks_uri,
+        oidc_client_id=oidc_client_id,
+        oidc_client_secret=oidc_client_secret,
+        oidc_redirect_uri=oidc_redirect_uri,
+        oidc_post_login_redirect_uri=oidc_post_login_redirect_uri,
+        oidc_organization_id=oidc_organization_id,
+        oidc_reader_group=oidc_reader_group,
+        oidc_maintainer_group=oidc_maintainer_group,
+        oidc_subject_hmac_key=oidc_subject_hmac_key,
+        oidc_tenant_claim=oidc_tenant_claim,
+        oidc_expected_tenant=oidc_expected_tenant,
         max_upload_bytes=max_upload_bytes,
         upload_retention_days=upload_retention_days,
         job_retention_days=job_retention_days,
@@ -1221,6 +1333,46 @@ def _validate_team_auth_mode(
         raise ValueError("private_team_lightweight_users requires a supported INSPECTRA_ADMIN_PASSWORD_HASH.")
 
 
+def _validate_oidc_settings(
+    *,
+    auth_mode: AuthMode,
+    values: tuple[object | None, ...],
+    tenant_claim: str | None,
+    expected_tenant: str | None,
+) -> None:
+    configured = [value is not None for value in values]
+    if any(configured) and not all(configured):
+        raise ValueError("OIDC federation configuration must be complete or omitted.")
+    if any(configured) and auth_mode != "private_team_lightweight_users":
+        raise ValueError("OIDC federation requires private_team_lightweight_users auth.")
+    if bool(tenant_claim) != bool(expected_tenant):
+        raise ValueError("OIDC tenant claim and expected value must be configured together.")
+
+
+def _validate_integration_event_settings(
+    *,
+    enabled: bool,
+    endpoint: str | None,
+    allowed_host: str | None,
+    signing_key: bytes | None,
+    signing_key_id: str | None,
+) -> None:
+    configured = (endpoint, allowed_host, signing_key, signing_key_id)
+    if enabled and any(value is None for value in configured):
+        raise ValueError("Integration events require endpoint, allowed host, signing key and key id.")
+    if not enabled and any(value is not None for value in configured):
+        raise ValueError("Integration event secrets and destination require INSPECTRA_INTEGRATION_EVENTS_ENABLED=true.")
+    if enabled:
+        from app.integration_events import IntegrationEventConfig
+
+        IntegrationEventConfig(
+            endpoint=endpoint or "",
+            host=allowed_host or "",
+            signing_key=signing_key or b"",
+            signing_key_id=signing_key_id or "",
+        )
+
+
 def _validate_private_storage_directory_permissions(directories: tuple[Path, ...]) -> None:
     for directory in directories:
         try:
@@ -1265,6 +1417,10 @@ def _optional_secret_from_env(name: str) -> str | None:
 
 
 def _portfolio_index_hmac_key_from_env(name: str) -> bytes | None:
+    return _base64url_32_byte_key_from_env(name)
+
+
+def _base64url_32_byte_key_from_env(name: str) -> bytes | None:
     raw_value = os.getenv(name)
     if raw_value is None or not raw_value.strip():
         return None
@@ -1276,7 +1432,7 @@ def _portfolio_index_hmac_key_from_env(name: str) -> bytes | None:
     except ValueError as exc:
         raise ValueError(f"{name} must be an unpadded base64url-encoded 32-byte secret.") from exc
     canonical = base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii")
-    if len(decoded) != PORTFOLIO_INDEX_HMAC_KEY_BYTES or canonical != value:
+    if len(decoded) != OIDC_SUBJECT_HMAC_KEY_BYTES or canonical != value:
         raise ValueError(f"{name} must be an unpadded base64url-encoded 32-byte secret.")
     return decoded
 

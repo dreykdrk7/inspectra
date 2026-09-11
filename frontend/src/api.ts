@@ -3,6 +3,7 @@ import type {
   AutomationTokenCreated,
   AutomationTokenProbe,
   AutomationTokenScope,
+  RepositoryImportGrantCreated,
   ActiveAsset,
   ActiveAssetBatchCommit,
   ActiveAssetBatchPreflight,
@@ -46,6 +47,7 @@ import type {
   FileRecord,
   FindingDecisionCreateRequest,
   FindingDecisionRecord,
+  FindingActivityPage,
   HealthResponse,
   JobListItem,
   JobPage,
@@ -90,6 +92,10 @@ import type {
   SbomFormat,
   SbomImportPreflight,
   TeamInvitation,
+  FederatedIdentityBinding,
+  IntegrationEventStatus,
+  IntegrationEventReplayPreflight,
+  IntegrationEventReplayResult,
   TeamMember,
   TeamOrganization,
   TeamOrganizationListItem,
@@ -641,6 +647,47 @@ export async function revokeTeamMember(userId: string): Promise<void> {
   }
 }
 
+export async function listFederatedIdentities(): Promise<FederatedIdentityBinding[]> {
+  return parseJsonResponse<FederatedIdentityBinding[]>(await apiFetch('/organization/federated-identities'));
+}
+
+export async function provisionFederatedIdentity(userId: string, subject: string): Promise<FederatedIdentityBinding> {
+  return parseJsonResponse<FederatedIdentityBinding>(await apiFetch('/organization/federated-identities', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, subject }),
+  }));
+}
+
+export async function revokeFederatedIdentity(bindingId: string): Promise<FederatedIdentityBinding> {
+  return parseJsonResponse<FederatedIdentityBinding>(await apiFetch(
+    `/organization/federated-identities/${encodeURIComponent(bindingId)}`,
+    { method: 'DELETE' },
+  ));
+}
+
+export async function getIntegrationEventStatus(): Promise<IntegrationEventStatus> {
+  return parseJsonResponse<IntegrationEventStatus>(await apiFetch('/operations/integration-events'));
+}
+
+export async function getIntegrationEventReplayPreflight(): Promise<IntegrationEventReplayPreflight> {
+  return parseJsonResponse<IntegrationEventReplayPreflight>(await apiFetch('/operations/integration-events/replay-preflight'));
+}
+
+export async function replayDeadIntegrationEvents(
+  preflight: IntegrationEventReplayPreflight,
+): Promise<IntegrationEventReplayResult> {
+  return parseJsonResponse<IntegrationEventReplayResult>(await apiFetch('/operations/integration-events/replay', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      observed_at: preflight.observed_at,
+      snapshot_digest: preflight.snapshot_digest,
+      confirmation: 'replay_dead_integration_events',
+    }),
+  }));
+}
+
 export async function getTeamMemberActiveImpact(userId: string): Promise<ActiveMemberResponsibilityImpact> {
   const response = await apiFetch(`/organization/members/${encodeURIComponent(userId)}/responsibility-impact`);
   return parseJsonResponse<ActiveMemberResponsibilityImpact>(response);
@@ -703,6 +750,15 @@ export async function revokeAutomationToken(tokenId: string): Promise<Automation
 export async function probeAutomationToken(tokenId: string): Promise<AutomationTokenProbe> {
   const response = await apiFetch(`/automation/tokens/${encodeURIComponent(tokenId)}`);
   return parseJsonResponse<AutomationTokenProbe>(response);
+}
+
+export async function createRepositoryImportGrant(lifetimeSeconds = 900): Promise<RepositoryImportGrantCreated> {
+  const response = await apiFetch('/repository-import/grants', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ lifetime_seconds: lifetimeSeconds }),
+  });
+  return parseJsonResponse<RepositoryImportGrantCreated>(response);
 }
 
 export async function listProductAuditEvents(options: {
@@ -1317,6 +1373,19 @@ export async function createProjectFindingDecision(
   return parseJsonResponse<FindingDecisionRecord>(response);
 }
 
+export async function getProjectFindingActivity(
+  projectId: string,
+  findingId: string,
+  cursor?: string,
+): Promise<FindingActivityPage> {
+  const params = new URLSearchParams({ page_size: '10' });
+  if (cursor) params.set('cursor', cursor);
+  const response = await apiFetch(
+    `/projects/${encodeURIComponent(projectId)}/findings/${encodeURIComponent(findingId)}/activity?${params.toString()}`,
+  );
+  return parseJsonResponse<FindingActivityPage>(response);
+}
+
 export async function getProjectComponentInventory(projectId: string, analysisId?: string): Promise<ProjectComponentInventoryResponse> {
   const params = analysisId ? `?analysis_id=${encodeURIComponent(analysisId)}` : '';
   const response = await apiFetch(`/projects/${projectId}/components${params}`);
@@ -1733,6 +1802,12 @@ export const api = {
   createTeamInvitation,
   changeTeamMemberRole,
   revokeTeamMember,
+  listFederatedIdentities,
+  provisionFederatedIdentity,
+  revokeFederatedIdentity,
+  getIntegrationEventStatus,
+  getIntegrationEventReplayPreflight,
+  replayDeadIntegrationEvents,
   getTeamMemberActiveImpact,
   listPublicIdentityAttestations,
   proposePublicIdentityAttestation,
@@ -1742,6 +1817,7 @@ export const api = {
   createAutomationToken,
   revokeAutomationToken,
   probeAutomationToken,
+  createRepositoryImportGrant,
   listProductAuditEvents,
   verifyProductAuditIntegrity,
   getProductAuditExportPreflight,
@@ -1795,6 +1871,7 @@ export const api = {
   createProjectSnapshot,
   getProjectFindings,
   createProjectFindingDecision,
+  getProjectFindingActivity,
   getProjectComponentInventory,
   getProjectVulnerabilityIntelligence,
   runProjectOsvVulnerabilityIntelligence,

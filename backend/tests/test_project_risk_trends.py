@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from time import perf_counter
+from time import perf_counter, process_time
 import tracemalloc
 import sqlite3
 
@@ -592,12 +592,19 @@ def test_materialized_trends_scale_to_one_hundred_thousand_analyses(tmp_path):
         settings, object(), jobs, _NoIntelligence(), _NoDecisions()
     )
     assert index.source_clock.recover() is True
+    # Production calls recover_pending_refreshes during lifespan before a
+    # request can schedule work. Keep one-time SQLite schema creation outside
+    # the request-path budget so the gate measures scheduling rather than
+    # filesystem-dependent DDL/fsync latency.
+    assert index.recover_pending_refreshes() == []
     cutoff = NOW - timedelta(days=30)
 
     scheduled_at = perf_counter()
+    scheduled_cpu_at = process_time()
     owner_status = index.request_refresh(organization_id=OWNER, observed_at=NOW)
     foreign_status = index.request_refresh(organization_id=FOREIGN, observed_at=NOW)
     scheduling_seconds = perf_counter() - scheduled_at
+    scheduling_cpu_seconds = process_time() - scheduled_cpu_at
     assert owner_status.state == foreign_status.state == "rebuilding"
     assert index.query_available(
         organization_id=OWNER,
@@ -608,6 +615,17 @@ def test_materialized_trends_scale_to_one_hundred_thousand_analyses(tmp_path):
     ) is None
     assert jobs.get_calls == 0
     assert scheduling_seconds < 0.25
+    assert scheduling_cpu_seconds < 0.10
+
+    warm_scheduled_at = perf_counter()
+    assert index.request_refresh(
+        organization_id=OWNER, observed_at=NOW
+    ).state == "rebuilding"
+    assert index.request_refresh(
+        organization_id=FOREIGN, observed_at=NOW
+    ).state == "rebuilding"
+    assert perf_counter() - warm_scheduled_at < 0.25
+    assert jobs.get_calls == 0
 
     tracemalloc.start()
     owner_revision = index.claim_refresh(organization_id=OWNER, started_at=NOW)

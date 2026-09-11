@@ -121,10 +121,10 @@ def test_active_asset_deletion_previews_and_removes_entire_aggregate(tmp_path, m
     assert jobs.active_asset_history(owner_id=OWNER_A, asset_id=asset.id) == [job]
     original_glob = Path.glob
 
-    def guarded_glob(path, pattern):
+    def guarded_glob(path, pattern, **kwargs):
         if path == settings.jobs_dir:
             raise AssertionError("asset deletion must not glob global job history")
-        return original_glob(path, pattern)
+        return original_glob(path, pattern, **kwargs)
 
     monkeypatch.setattr(Path, "glob", guarded_glob)
     revision = asset.authorization_revisions[-1]

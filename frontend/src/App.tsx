@@ -15,7 +15,7 @@ import {
   UploadCloud
 } from "lucide-react";
 
-import { ApiError, api } from "./api";
+import { ApiError, api, apiBaseUrl } from "./api";
 import { redactActiveDryRunText } from "./activeDryRunReport";
 import { ActiveDnsInventoryPanel } from "./ActiveDnsInventoryPanel";
 import { redactActiveDnsInventoryText } from "./activeDnsInventoryReport";
@@ -97,6 +97,9 @@ const SbomImportPanel = lazy(() =>
 const ProjectStartGuide = lazy(() =>
   import("./ProjectStartGuide").then((module) => ({ default: module.ProjectStartGuide }))
 );
+const RepositoryImportSetupPanel = lazy(() =>
+  import("./RepositoryImportSetupPanel").then((module) => ({ default: module.RepositoryImportSetupPanel }))
+);
 const ProjectPortfolioPanel = lazy(() =>
   import("./ProjectPortfolioPanel").then((module) => ({ default: module.ProjectPortfolioPanel }))
 );
@@ -138,6 +141,8 @@ const initialAuthStatus: AuthStatusResponse = {
   trusted_local: true,
   default_operator_id: "local-admin",
   login_available: false,
+  federated_login_available: false,
+  federated_login_path: null,
   authenticated: false,
   operator_id: null,
   username: null,
@@ -191,6 +196,7 @@ export function App() {
   const [projectAuthorizationConfirmedFileId, setProjectAuthorizationConfirmedFileId] = useState<string | null>(null);
   const [snapshotProjectId, setSnapshotProjectId] = useState<string | null>(null);
   const [ciSetupProjectId, setCiSetupProjectId] = useState<string | null>(null);
+  const [repositoryImportSetupOpen, setRepositoryImportSetupOpen] = useState(false);
   const [rerunningProjectId, setRerunningProjectId] = useState<string | null>(null);
   const [fileKindFilter, setFileKindFilter] = useState<FileKindFilter>("all");
   const [fileSearch, setFileSearch] = useState("");
@@ -273,6 +279,18 @@ export function App() {
       setActionError(status === 403 ? AUTH_CSRF_FAILED_MESSAGE : AUTH_SESSION_EXPIRED_MESSAGE);
     }
   }, [clearPrivateUiState, refreshAuthStatus]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const oidcOutcome = url.searchParams.get("oidc");
+    if (oidcOutcome === "failed") {
+      setLoginState({ loading: false, error: "Federated sign-in failed. Contact your workspace administrator if the problem continues." });
+    }
+    if (oidcOutcome === "success" || oidcOutcome === "failed") {
+      url.searchParams.delete("oidc");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+  }, []);
 
   useEffect(() => {
     authFailureHandlerRef.current = (status: number) => {
@@ -1174,6 +1192,16 @@ export function App() {
                 {loginState.error ? <p className="error-text">{loginState.error}</p> : null}
               </form>
             )}
+            {authStatus.federated_login_available && authStatus.federated_login_path ? (
+              <div className="federated-login">
+                <span className="muted">or use your organization identity</span>
+                <a className="secondary-button" href={`${apiBaseUrl()}${authStatus.federated_login_path}`}>
+                  <ShieldCheck size={16} aria-hidden="true" />
+                  Continue with SSO
+                </a>
+                <p className="muted">Your account must be provisioned in this workspace before sign-in.</p>
+              </div>
+            ) : null}
             {authStatus.auth_mode === "private_team_lightweight_users" ? (
               <Suspense fallback={<p className="muted" role="status">Loading invitation setup…</p>}>
                 <TeamInvitationAcceptance onAccepted={(username) => setLoginUsername(username)} />
@@ -1187,6 +1215,10 @@ export function App() {
       <Suspense fallback={<p className="project-start-guide muted" role="status">Loading project onboarding…</p>}>
         <ProjectStartGuide
           projects={projects}
+          onRepository={() => {
+            setRepositoryImportSetupOpen(true);
+            globalThis.setTimeout(() => document.getElementById("repository-import-setup")?.focus(), 0);
+          }}
           onArchive={() => startProjectArchiveUpload()}
           onSbom={() => {
             document.getElementById("sbom-import")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
@@ -1200,13 +1232,23 @@ export function App() {
         />
       </Suspense>
 
+      {repositoryImportSetupOpen ? (
+        <Suspense fallback={<p className="muted" role="status">Loading local Git import setup…</p>}>
+          <RepositoryImportSetupPanel
+            requiresGrant={authStatus.auth_required}
+            canManage={!authStatus.auth_required || authStatus.auth_mode === "self_hosted_single_admin" || authStatus.role === "administrator"}
+            focusOnMount
+          />
+        </Suspense>
+      ) : null}
+
       <details className="workspace-controls-disclosure">
         <summary>Workspace administration and data controls</summary>
         <div className="workspace-controls-content">
 
       {authStatus.auth_mode === "private_team_lightweight_users" && authStatus.authenticated ? (
         <Suspense fallback={<p className="muted" role="status">Loading team workspace…</p>}>
-          <TeamWorkspacePanel onWorkspaceChanged={async () => {
+          <TeamWorkspacePanel federatedLoginAvailable={Boolean(authStatus.federated_login_available)} onWorkspaceChanged={async () => {
             clearPrivateUiState();
             await refreshAuthStatus();
             await Promise.all([refreshFiles(), refreshProjects(), refreshJobs()]);
@@ -1941,7 +1983,7 @@ function getWorkflowMessage(stage: WorkflowStage): string {
   if (stage === "review") {
     return "The selected job is open below. Use the Jobs list to switch context or the export actions to share a redacted report.";
   }
-  return "To analyze a project, prepare an authorized archive; individual file and target-based reviews remain available.";
+  return "To analyze a project, import an exact local Git snapshot, an authorized archive or an SBOM; individual file and target-based reviews remain available.";
 }
 
 function isActiveJob(job: Pick<JobRecord, "status">): boolean {

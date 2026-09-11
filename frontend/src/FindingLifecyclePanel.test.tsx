@@ -148,6 +148,53 @@ describe("FindingLifecyclePanel", () => {
     expect((await axe.run(container)).violations).toEqual([]);
   });
 
+  it("inserts bounded member mentions and loads older redacted activity", async () => {
+    const olderDecision = {
+      ...currentDecision,
+      contract_version: "2026-09-11.1" as const,
+      id: "e".repeat(32),
+      reason: "Earlier review context",
+      comment: "Coordinate with @reader.one",
+      mentioned_usernames: ["reader.one"],
+      previous_decision_id: "f".repeat(32),
+    };
+    const fetchMock = vi.fn((_input: RequestInfo | URL) => Promise.resolve(jsonResponse({
+      contract_version: "2026-09-11.1",
+      items: [olderDecision],
+      total_count: 12,
+      returned_count: 1,
+      has_more: false,
+      next_cursor: null,
+      privacy: "owner_scoped_redacted_decision_activity",
+    })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <FindingLifecyclePanel
+        projectId={currentDecision.project_id}
+        analysisId={"d".repeat(32)}
+        finding={finding}
+        lifecycle={{ ...lifecycle, history_total: 12, history_has_more: true }}
+        canManage
+        members={[
+          { user_id: "reader-id", username: "reader.one", role: "reader", joined_at: "2026-09-06T09:00:00Z" },
+        ]}
+        onUpdated={vi.fn()}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("Insert member mention"), { target: { value: "reader.one" } });
+    expect(screen.getByLabelText(/Comment/)).toHaveValue("@reader.one ");
+    expect(screen.getByText("Decision history (12)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load older activity" }));
+
+    expect(await screen.findByText("Earlier review context")).toBeInTheDocument();
+    expect(screen.getByText("Mentions: @reader.one")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load older activity" })).not.toBeInTheDocument();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(`/activity?page_size=10&cursor=${currentDecision.id}`);
+    expect((await axe.run(container)).violations).toEqual([]);
+  });
+
   it("shows a recoverable conflict without losing the form", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({ detail: "Conflict" }, 409))));
     render(

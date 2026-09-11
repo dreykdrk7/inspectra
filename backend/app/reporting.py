@@ -856,7 +856,7 @@ def build_public_vulnerability_intelligence_sections(vulnerability_intelligence:
             ("Relationship evidence", project_report_text(str(getattr(finding, "relationship_status", "reported")))),
             ("Affected ranges", public_intelligence_ranges(getattr(finding, "affected_ranges", []))),
             ("Fixed versions", project_report_text(", ".join(getattr(finding, "fixed_versions", [])) or "Not published")),
-            ("CVSS base score", public_intelligence_cvss_score(finding)),
+            ("CVSS score", public_intelligence_cvss_score(finding)),
             ("CVSS vectors", project_report_text(", ".join(getattr(item, "vector", "") for item in getattr(finding, "severity", []) if getattr(item, "vector", "")) or "Not published")),
             ("Recommended next step", project_report_text(str(getattr(finding, "recommendation", "Not reported")))),
             ("Public references", public_intelligence_references(getattr(finding, "references", []))),

@@ -279,6 +279,76 @@ class InspectraApiClient:
             raise ApiClientError("Inspectra did not return a valid CI analysis identifier.")
         return job_id, payload.get("replayed") is True
 
+    def submit_initial_git_snapshot(
+        self,
+        archive_path: Path,
+        *,
+        name: str,
+        commit_sha: str,
+        source_sha256: str,
+        branch: str | None = None,
+    ) -> tuple[str, str]:
+        """Create a project through the closed exact-commit admission route."""
+
+        normalized_name = name.strip()
+        if not 3 <= len(normalized_name) <= 120 or any(
+            ord(character) < 32 or character in {"/", "\\"} for character in normalized_name
+        ):
+            raise ApiClientError("The project name is invalid.")
+        if not re.fullmatch(r"[a-f0-9]{40,64}", commit_sha):
+            raise ApiClientError("The Git commit identifier is invalid.")
+        if not re.fullmatch(r"[a-f0-9]{64}", source_sha256):
+            raise ApiClientError("The Git source digest is invalid.")
+        fields = {
+            "name": normalized_name,
+            "commit_sha": commit_sha,
+            "source_sha256": source_sha256,
+            "authorization_confirmed": "true",
+            **({"branch": branch} if branch else {}),
+        }
+        boundary = f"inspectra-{secrets.token_hex(16)}"
+        field_bytes = b"".join(
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field_name}\"\r\n\r\n{value}\r\n"
+            ).encode("utf-8")
+            for field_name, value in fields.items()
+        )
+        file_prefix = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="snapshot.tar"\r\n'
+            "Content-Type: application/x-tar\r\n\r\n"
+        ).encode("ascii")
+        suffix = f"\r\n--{boundary}--\r\n".encode("ascii")
+        content_length = len(field_bytes) + len(file_prefix) + archive_path.stat().st_size + len(suffix)
+        connection = self._connection()
+        try:
+            connection.putrequest("POST", self._path("/projects/import/git-snapshot"))
+            for header_name, value in self._headers().items():
+                connection.putheader(header_name, value)
+            connection.putheader("Content-Type", f"multipart/form-data; boundary={boundary}")
+            connection.putheader("Content-Length", str(content_length))
+            connection.endheaders()
+            connection.send(field_bytes)
+            connection.send(file_prefix)
+            with archive_path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    connection.send(chunk)
+            connection.send(suffix)
+            payload = self._read_json_response(connection.getresponse())
+        except (OSError, http.client.HTTPException) as exc:
+            raise ApiClientError("The initial Git snapshot admission did not complete safely.") from exc
+        finally:
+            connection.close()
+        if not isinstance(payload, dict) or not isinstance(payload.get("project"), dict) or not isinstance(payload.get("job"), dict):
+            raise ApiClientError("Inspectra did not return a valid initial Git admission response.")
+        project_id = payload["project"].get("id")
+        job_id = payload["job"].get("id")
+        if not isinstance(project_id, str) or not re.fullmatch(r"[a-f0-9]{32}", project_id):
+            raise ApiClientError("Inspectra did not return a valid project identifier.")
+        if not isinstance(job_id, str) or not re.fullmatch(r"[a-f0-9]{32}", job_id):
+            raise ApiClientError("Inspectra did not return a valid analysis identifier.")
+        return project_id, job_id
+
     def attach_go_dependency_graph(
         self,
         project_id: str,

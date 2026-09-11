@@ -15,8 +15,11 @@ import tarfile
 import threading
 from xml.etree import ElementTree
 import zipfile
+from urllib.parse import parse_qs, urlsplit
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient, ConnectError, MockTransport, ReadTimeout, Response
 
@@ -540,9 +543,26 @@ def configure_test_state(monkeypatch, tmp_path, max_upload_bytes=None):
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
     app.state.team_identity = backend_main.create_team_identity_store(settings)
+    app.state.oidc_config = backend_main.create_oidc_federation_config(settings)
+    app.state.oidc_transactions = backend_main.OidcTransactionStore()
+    app.state.oidc_start_attempts = LoginAttemptStore(
+        window_seconds=backend_main.OIDC_TRANSACTION_TTL_SECONDS,
+        max_failures=10,
+        lockout_seconds=backend_main.OIDC_TRANSACTION_TTL_SECONDS,
+        max_keys=settings.login_attempt_max_keys,
+    )
+    app.state.oidc_provider = (
+        backend_main.OidcProviderClient(app.state.oidc_config)
+        if app.state.oidc_config is not None
+        else None
+    )
+    app.state.integration_event_config = None
+    app.state.integration_event_store = None
+    app.state.integration_event_wake = backend_main.asyncio.Event()
     app.state.admin_sessions = backend_main.create_admin_session_store(settings)
     app.state.login_attempts = backend_main.create_login_attempt_store(settings)
     app.state.automation_tokens = backend_main.create_automation_token_store(settings)
+    app.state.repository_import_grants = backend_main.create_repository_import_grant_store(settings)
     app.state.session_cookie_settings = build_session_cookie_settings(
         settings.session_ttl_seconds,
         secure=settings.session_cookie_secure,
@@ -666,6 +686,71 @@ async def test_health(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "inspectra-backend"}
     assert re.fullmatch(r"[a-f0-9]{32}", response.headers["x-request-id"])
+
+
+@pytest.mark.anyio
+async def test_integration_event_status_is_admin_scoped_aggregate_and_disabled_by_default(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/operations/integration-events")
+        rejected = await client.get("/operations/integration-events?destination=https://private.invalid")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.json() == {
+        "contract_version": "2026-09-11.1",
+        "enabled": False,
+        "destination_configured": False,
+        "pending": 0,
+        "delivering": 0,
+        "delivered": 0,
+        "dead": 0,
+        "delivery_scope": "project_analysis_terminal",
+    }
+    assert rejected.status_code == 400
+    assert "private.invalid" not in rejected.text
+
+
+@pytest.mark.anyio
+async def test_integration_event_replay_uses_aggregate_preflight_and_preserves_event_id(monkeypatch, tmp_path):
+    configure_test_state(monkeypatch, tmp_path)
+    store = backend_main.IntegrationEventStore(tmp_path / "runtime" / "integration-events.sqlite3")
+    record = store.enqueue_terminal_analysis(
+        organization_id="local-admin",
+        project_id="a" * 32,
+        analysis_id="b" * 32,
+        status="failed",
+        occurred_at=datetime.now(timezone.utc),
+        finding_count=None,
+    )
+    claim = store.claim_due()
+    assert claim is not None
+    store.record_result(claim.payload.event_id, accepted=False, retryable=False)
+    app.state.integration_event_store = store
+    app.state.integration_event_config = object()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        preflight = await client.get("/operations/integration-events/replay-preflight")
+        replay = await client.post(
+            "/operations/integration-events/replay",
+            json={
+                "observed_at": preflight.json()["observed_at"],
+                "snapshot_digest": preflight.json()["snapshot_digest"],
+                "confirmation": "replay_dead_integration_events",
+            },
+        )
+
+    assert preflight.status_code == 200
+    assert preflight.headers["cache-control"] == "private, no-store"
+    assert preflight.json()["selected_events"] == 1
+    assert "event_id" not in preflight.text and "project_id" not in preflight.text
+    assert replay.status_code == 200
+    assert replay.headers["cache-control"] == "private, no-store"
+    assert replay.json()["replayed_events"] == 1
+    assert store.get(record.payload.event_id).state == "pending"
 
 
 def readiness_runner_transport(requests: list[str] | None = None) -> MockTransport:
@@ -987,12 +1072,12 @@ async def test_client_capabilities_is_public_static_closed_and_source_free(monke
 
     assert response.status_code == 200
     assert response.json() == {
-        "contract_version": "2026-09-10.6",
+        "contract_version": "2026-09-11.1",
         "status": "available",
         "server_version": "0.3.0-beta.1",
-        "supported_cli_protocols": ["2026-09-10.6"],
+        "supported_cli_protocols": ["2026-09-11.1"],
         "contracts": {
-            "git_snapshot": ["2026-09-07.1"],
+            "git_snapshot": ["2026-09-07.1", "2026-09-11.1"],
             "ci_admission": ["2026-09-06.1"],
             "policy_result": ["2026-09-07.1"],
             "cli_result": ["2026-09-07.1"],
@@ -2841,6 +2926,8 @@ async def test_auth_status_defaults_to_trusted_local_no_auth(monkeypatch, tmp_pa
         "trusted_local": True,
         "default_operator_id": "local-admin",
         "login_available": False,
+        "federated_login_available": False,
+        "federated_login_path": None,
         "authenticated": False,
         "operator_id": None,
         "username": None,
@@ -3501,6 +3588,117 @@ async def test_private_team_invitation_shared_scope_role_and_revocation_flow(mon
 
 
 @pytest.mark.anyio
+async def test_private_team_oidc_preprovisioned_login_and_revocation_flow(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    monkeypatch.setenv("INSPECTRA_OIDC_ISSUER", "https://id.example.test/tenant-a")
+    monkeypatch.setenv("INSPECTRA_OIDC_AUTHORIZATION_ENDPOINT", "https://id.example.test/tenant-a/authorize")
+    monkeypatch.setenv("INSPECTRA_OIDC_TOKEN_ENDPOINT", "https://id.example.test/tenant-a/token")
+    monkeypatch.setenv("INSPECTRA_OIDC_JWKS_URI", "https://id.example.test/tenant-a/jwks")
+    monkeypatch.setenv("INSPECTRA_OIDC_CLIENT_ID", "inspectra-private")
+    monkeypatch.setenv("INSPECTRA_OIDC_CLIENT_SECRET", "external-client-secret")
+    monkeypatch.setenv("INSPECTRA_OIDC_REDIRECT_URI", "https://inspectra.example.test/auth/oidc/callback")
+    monkeypatch.setenv("INSPECTRA_OIDC_POST_LOGIN_REDIRECT_URI", "https://inspectra.example.test/")
+    monkeypatch.setenv("INSPECTRA_OIDC_ORGANIZATION_ID", "local-admin")
+    monkeypatch.setenv("INSPECTRA_OIDC_READER_GROUP", "inspectra-readers")
+    monkeypatch.setenv("INSPECTRA_OIDC_MAINTAINER_GROUP", "inspectra-maintainers")
+    monkeypatch.setenv(
+        "INSPECTRA_OIDC_SUBJECT_HMAC_KEY",
+        base64.urlsafe_b64encode(b"k" * 32).rstrip(b"=").decode("ascii"),
+    )
+    monkeypatch.setenv("INSPECTRA_OIDC_TENANT_CLAIM", "tid")
+    monkeypatch.setenv("INSPECTRA_OIDC_EXPECTED_TENANT", "tenant-a")
+    configure_test_state(monkeypatch, tmp_path)
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk.update({"kid": "integration-key", "alg": "RS256", "use": "sig"})
+    tokens = iter(["s" * 32, "n" * 32, "v" * 32, "w" * 32, "b" * 32])
+    app.state.oidc_transactions = backend_main.OidcTransactionStore(token_factory=lambda: next(tokens))
+
+    class SimulatedProvider:
+        async def exchange_code(self, code, verifier):
+            assert code == "simulated-code"
+            assert verifier == ("v" * 32) + ("w" * 32)
+            now = datetime.now(timezone.utc)
+            return jwt.encode(
+                {
+                    "iss": "https://id.example.test/tenant-a",
+                    "aud": "inspectra-private",
+                    "sub": "private-provider-subject",
+                    "nonce": "n" * 32,
+                    "iat": now,
+                    "exp": now + timedelta(minutes=5),
+                    "groups": ["inspectra-readers"],
+                    "tid": "tenant-a",
+                },
+                private_key,
+                algorithm="RS256",
+                headers={"kid": "integration-key"},
+            )
+
+        async def jwks(self):
+            return {"keys": [jwk]}
+
+    app.state.oidc_provider = SimulatedProvider()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="https://inspectra.example.test") as admin_client:
+        assert (await admin_client.post(
+            "/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD_FIXTURE}
+        )).status_code == 200
+        admin_status = await admin_client.get("/auth/status")
+        assert admin_status.json()["federated_login_available"] is True
+        admin_headers = {ADMIN_CSRF_HEADER_NAME: admin_status.json()["csrf_token"]}
+        invitation = await admin_client.post(
+            "/organization/invitations",
+            json={"username": "federated.reader", "role": "reader"},
+            headers=admin_headers,
+        )
+        async with AsyncClient(transport=transport, base_url="https://inspectra.example.test") as activation_client:
+            assert (await activation_client.post(
+                "/auth/invitations/accept",
+                json={"token": invitation.json()["token"], "password": "federated-reader-password"},
+            )).status_code == 200
+        members = (await admin_client.get("/organization/members")).json()
+        user_id = next(item["user_id"] for item in members if item["username"] == "federated.reader")
+        provisioned = await admin_client.post(
+            "/organization/federated-identities",
+            json={"user_id": user_id, "subject": "private-provider-subject"},
+            headers=admin_headers,
+        )
+        assert provisioned.status_code == 201
+        assert "private-provider-subject" not in provisioned.text
+
+        async with AsyncClient(transport=transport, base_url="https://inspectra.example.test") as oidc_client:
+            started = await oidc_client.get("/auth/oidc/start", follow_redirects=False)
+            assert started.status_code == 303
+            query = parse_qs(urlsplit(started.headers["location"]).query)
+            assert query["state"] == ["s" * 32]
+            assert query["code_challenge_method"] == ["S256"]
+            callback = await oidc_client.get(
+                "/auth/oidc/callback",
+                params={"code": "simulated-code", "state": "s" * 32},
+                follow_redirects=False,
+            )
+            assert callback.status_code == 303
+            assert callback.headers["x-inspectra-oidc-result"] == "success"
+            federated_status = await oidc_client.get("/auth/status")
+            assert federated_status.json()["username"] == "federated.reader"
+            assert federated_status.json()["role"] == "reader"
+
+            revoked = await admin_client.delete(
+                f"/organization/federated-identities/{provisioned.json()['id']}",
+                headers=admin_headers,
+            )
+            assert revoked.status_code == 200
+            assert (await oidc_client.get("/files")).status_code == 401
+
+    persisted = (tmp_path / "runtime" / "auth_state.sqlite3").read_bytes()
+    assert b"private-provider-subject" not in persisted
+    assert b"external-client-secret" not in persisted
+
+
+@pytest.mark.anyio
 async def test_team_public_identity_approval_flow_is_role_scoped_audited_and_revocable(monkeypatch, tmp_path):
     monkeypatch.setenv("INSPECTRA_AUTH_MODE", "private_team_lightweight_users")
     monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
@@ -3835,6 +4033,105 @@ async def test_automation_token_is_one_time_hashed_project_bound_revocable_and_c
         assert revoked_probe.json()["status"] == "revoked"
         assert after_revoke.status_code == 401
         assert after_revoke.json() == {"detail": AUTOMATION_TOKEN_INVALID_DETAIL}
+
+
+@pytest.mark.anyio
+async def test_initial_git_snapshot_uses_single_use_grant_and_rejects_repository_metadata(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSPECTRA_AUTH_MODE", "self_hosted_single_admin")
+    monkeypatch.setenv("INSPECTRA_AUTH_STATE_STORE", "sqlite")
+    monkeypatch.setenv("INSPECTRA_ADMIN_PASSWORD_HASH", make_admin_password_hash())
+    configure_test_state(monkeypatch, tmp_path)
+    app.state.project_archive_audits = NoopAuditService()
+    transport = ASGITransport(app=app)
+    archive_bytes = make_zip_bytes({"package-lock.json": b'{"lockfileVersion":3,"packages":{}}'})
+    digest = hashlib.sha256(archive_bytes).hexdigest()
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        assert (await client.post("/auth/login", json={"password": ADMIN_PASSWORD_FIXTURE})).status_code == 200
+        csrf = (await client.get("/auth/status")).json()["csrf_token"]
+        browser_headers = {ADMIN_CSRF_HEADER_NAME: csrf}
+        created = await client.post(
+            "/repository-import/grants",
+            json={"lifetime_seconds": 300},
+            headers=browser_headers,
+        )
+        assert created.status_code == 201
+        grant = created.json()
+        plaintext = grant["token"]
+        assert plaintext.startswith(f"inspectra_ri_{grant['id']}_")
+        assert plaintext not in (tmp_path / "runtime" / "auth_state.sqlite3").read_text(errors="ignore")
+        bearer = {"Authorization": f"Bearer {plaintext}"}
+
+        denied_route = await client.get("/projects", headers=bearer)
+        unexpected_metadata = await client.post(
+            "/projects/import/git-snapshot",
+            data={
+                "name": "Local repository",
+                "commit_sha": "a" * 40,
+                "source_sha256": digest,
+                "authorization_confirmed": "true",
+                "repository_url": "https://forbidden.example/private.git",
+            },
+            files={"file": ("snapshot.zip", archive_bytes, "application/zip")},
+            headers=bearer,
+        )
+        imported = await client.post(
+            "/projects/import/git-snapshot",
+            data={
+                "name": "Local repository",
+                "commit_sha": "a" * 40,
+                "source_sha256": digest,
+                "branch": "feature/safe-import",
+                "authorization_confirmed": "true",
+            },
+            files={"file": ("snapshot.zip", archive_bytes, "application/zip")},
+            headers=bearer,
+        )
+        replay = await client.post(
+            "/projects/import/git-snapshot",
+            data={
+                "name": "Second project",
+                "commit_sha": "b" * 40,
+                "source_sha256": digest,
+                "authorization_confirmed": "true",
+            },
+            files={"file": ("snapshot.zip", archive_bytes, "application/zip")},
+            headers=bearer,
+        )
+
+        assert denied_route.status_code == 403
+        assert unexpected_metadata.status_code == 400
+        assert "forbidden.example" not in unexpected_metadata.text
+        assert imported.status_code == 202
+        payload = imported.json()
+        assert payload["contract_version"] == "2026-09-11.1"
+        assert payload["commit_sha"] == "a" * 40
+        assert payload["source_digest_verified"] is True
+        assert payload["snapshot"]["source_channel"] == "git_cli"
+        assert payload["snapshot"]["source_commit_sha"] == "a" * 40
+        assert payload["snapshot"]["source_branch"] == "feature/safe-import"
+        assert payload["project"]["owner_id"] == "local-admin"
+        assert replay.status_code == 401
+        assert len(app.state.files.list(owner_id="local-admin")) == 1
+
+        replacement = await client.post(
+            "/repository-import/grants",
+            json={"lifetime_seconds": 300},
+            headers=browser_headers,
+        )
+        mismatch = await client.post(
+            "/projects/import/git-snapshot",
+            data={
+                "name": "Digest mismatch",
+                "commit_sha": "c" * 40,
+                "source_sha256": "0" * 64,
+                "authorization_confirmed": "true",
+            },
+            files={"file": ("snapshot.zip", archive_bytes, "application/zip")},
+            headers={"Authorization": f"Bearer {replacement.json()['token']}"},
+        )
+        assert mismatch.status_code == 409
+        assert len(app.state.files.list(owner_id="local-admin")) == 1
 
 
 @pytest.mark.anyio
@@ -5089,9 +5386,44 @@ async def test_team_finding_triage_validates_assignee_role_and_organization_scop
                     "analysis_id": analysis_id,
                     "status": "in_review",
                     "reason": "Reader will verify the context",
+                    "comment": "Coordinate with @team.reader before review. Authorization: Bearer collaboration-secret",
                     "assignee_user_id": reader_id,
                 },
                 headers=admin_headers,
+            )
+            unknown_mention = await admin_client.post(
+                f"/projects/{project_id}/findings/{finding_id}/decisions",
+                json={
+                    "analysis_id": analysis_id,
+                    "status": "resolved",
+                    "reason": "Unknown mention must fail first",
+                    "comment": "Coordinate with @not.a.member before review",
+                },
+                headers=admin_headers,
+            )
+            reopened = await admin_client.post(
+                f"/projects/{project_id}/findings/{finding_id}/decisions",
+                json={
+                    "analysis_id": analysis_id,
+                    "status": "open",
+                    "reason": "Keep the context visible while ownership is reviewed",
+                },
+                headers=admin_headers,
+            )
+            activity = await reader_client.get(
+                f"/projects/{project_id}/findings/{finding_id}/activity",
+                params={"page_size": 1},
+            )
+            older_activity = await reader_client.get(
+                f"/projects/{project_id}/findings/{finding_id}/activity",
+                params={"page_size": 1, "cursor": activity.json()["next_cursor"]},
+            )
+            invalid_activity_cursor = await reader_client.get(
+                f"/projects/{project_id}/findings/{finding_id}/activity",
+                params={"page_size": 1, "cursor": "f" * 32},
+            )
+            activity_audit = await admin_client.get(
+                "/audit/events", params={"action": "finding.activity_read"}
             )
             reader_blocked = await reader_client.post(
                 f"/projects/{project_id}/findings/{finding_id}/decisions",
@@ -5114,12 +5446,34 @@ async def test_team_finding_triage_validates_assignee_role_and_organization_scop
             json={"analysis_id": analysis_id, "status": "resolved", "reason": "Must not cross workspaces"},
             headers={ADMIN_CSRF_HEADER_NAME: second_status.json()["csrf_token"]},
         )
+        cross_workspace_activity = await admin_client.get(
+            f"/projects/{project_id}/findings/{finding_id}/activity"
+        )
 
     assert assigned.status_code == 201
     assert assigned.json()["assignee_user_id"] == reader_id
     assert assigned.json()["assignee_username"] == "team.reader"
+    assert assigned.json()["mentioned_usernames"] == ["team.reader"]
+    assert "collaboration-secret" not in assigned.text
+    assert unknown_mention.status_code == 422
+    assert reopened.status_code == 201
+    assert activity.status_code == 200
+    assert activity.headers["cache-control"] == "private, no-store"
+    assert activity.json()["contract_version"] == "2026-09-11.1"
+    assert activity.json()["total_count"] == 2
+    assert activity.json()["has_more"] is True
+    assert older_activity.status_code == 200
+    assert older_activity.json()["has_more"] is False
+    assert older_activity.json()["items"][0]["mentioned_usernames"] == ["team.reader"]
+    assert "collaboration-secret" not in older_activity.text
+    assert invalid_activity_cursor.status_code == 400
+    assert "collaboration-secret" not in activity.text
+    assert activity_audit.status_code == 200
+    assert activity_audit.json()["items"][0]["action"] == "finding.activity_read"
+    assert "team.reader" not in activity_audit.text
     assert reader_blocked.status_code == 403
     assert cross_workspace.status_code == 404
+    assert cross_workspace_activity.status_code == 404
 
 
 @pytest.mark.anyio

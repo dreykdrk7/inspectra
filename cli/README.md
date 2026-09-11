@@ -83,9 +83,10 @@ regular, no symlink, menor de 64 KiB y, en POSIX, modo `0600`:
 Valide la resolución con
 `inspectra config show --profile equipo --config /ruta/config.json --json`.
 Los campos son cerrados y cualquier clave de token, secreto, contraseña,
-credencial, autorización o cookie se rechaza. `INSPECTRA_TOKEN` permanece
-exclusivamente en el entorno/almacén de secretos y `config show` comunica solo
-si está presente. La precedencia verificable es flag, variable de entorno,
+credencial, autorización o cookie se rechaza. `INSPECTRA_TOKEN` y el grant
+inicial `INSPECTRA_IMPORT_TOKEN` permanecen exclusivamente en el entorno o
+almacén de secretos; `config show` solo comunica la presencia del primero y
+nunca muestra su valor. La precedencia verificable es flag, variable de entorno,
 perfil y valor por defecto. Las variables admitidas son `INSPECTRA_API_URL`,
 `INSPECTRA_WEB_URL`, `INSPECTRA_PROJECT_ID`, `INSPECTRA_POLICY`,
 `INSPECTRA_TIMEOUT` e `INSPECTRA_HTTP_TIMEOUT`.
@@ -121,7 +122,7 @@ ejecuciones sobre el mismo commit produzcan el mismo digest.
 ```bash
 export INSPECTRA_API_URL=http://127.0.0.1:8000
 export INSPECTRA_WEB_URL=http://127.0.0.1:5173
-inspectra scan /ruta/al/repositorio
+inspectra scan /ruta/al/repositorio --commit HEAD --name 'Mi proyecto'
 ```
 
 Después del preflight se debe escribir la confirmación exacta mostrada. Para un
@@ -130,10 +131,19 @@ entorno no interactivo, `--yes` solo funciona junto a
 mantener stdout como un único documento JSON. HTTP sin TLS se acepta solo en
 loopback; otros servidores requieren HTTPS. No coloque credenciales en la URL.
 
-La CLI sube `snapshot.tar` como nombre genérico, crea el proyecto, espera el
+En un despliegue autenticado, un administrador debe crear previamente desde el
+onboarding un grant de importación de un solo uso y exportarlo como
+`INSPECTRA_IMPORT_TOKEN`. El grant dura entre 5 y 30 minutos (15 por defecto),
+solo permite el alta inicial y nunca se pasa como argumento. En modo local
+confiable no es necesario.
+
+La CLI sube `snapshot.tar` como nombre genérico junto con commit y SHA-256 a la
+ruta cerrada de ingesta, crea el proyecto con procedencia `git_cli`, espera el
 trabajo hasta `--timeout` y devuelve un enlace `#project=…&job=…`, el resumen de
-hallazgos, cobertura y el estado honesto de inteligencia pública. No activa
-egress ni proveedores por sí misma.
+hallazgos, cobertura y el estado honesto de inteligencia pública. El servidor
+no acepta URL, host, ruta ni credencial Git y rechaza campos adicionales. La
+CLI no activa egress ni proveedores por sí misma. Véase
+[`docs/repository-ingestion.md`](../docs/repository-ingestion.md).
 
 Un timeout o `Ctrl-C` conserva el trabajo remoto por defecto y devuelve su enlace
 de seguimiento. `--cancel-on-interrupt` solicita una sola cancelación del análisis

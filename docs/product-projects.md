@@ -1,4 +1,4 @@
-# Archive-backed projects
+# Project sources and immutable snapshots
 
 Este es el flujo principal de la candidatura `0.3.0-beta.1`, técnicamente
 validada en un PR borrador pero todavía sin tag, release ni publicación: fuente
@@ -34,8 +34,11 @@ públicas; esas capacidades se mantienen como tareas explícitas del centro de
 remediación. Cada snapshot nuevo conserva un canal cerrado fijado por el
 servidor: `archive_upload`, `git_cli`, `ci` o `sbom`. La ruta no acepta este
 valor desde el cliente. Una credencial de automatización vigente atesta `ci`;
-una sesión interactiva sobre la ruta de commit atesta `git_cli`; los endpoints
-de archivo y SBOM fijan sus valores respectivos. En registros históricos con
+la ruta inicial cerrada, autenticada mediante sesión o grant de un uso, atesta
+`git_cli`; los endpoints de archivo y SBOM fijan sus valores respectivos. La
+ingesta Git se construye localmente y nunca acepta URL o credenciales de
+repositorio; su decisión de amenaza se documenta en
+[`repository-ingestion.md`](repository-ingestion.md). En registros históricos con
 commit que preceden a este contrato no es posible distinguir de forma fiable
 Git/CLI de CI: la cartera conserva `unknown_git_or_ci`, explica la ambigüedad y
 nunca adivina ni migra el canal por heurística.
@@ -931,6 +934,15 @@ it in one SQLite transaction. Duplicate reads coalesce. A mutation observed
 during work queues at most one immediate second pass; continued churn remains
 queued rather than monopolizing the worker.
 
+The scheduling performance gate mirrors that lifecycle: startup first creates
+and validates the empty trend database through `recover_pending_refreshes`,
+then the request-path measurement schedules two previously unseen owners. Both
+cold-owner and already-queued passes must remain below 250 ms, use less than
+100 ms of process CPU and perform zero authoritative job reads. One-time SQLite
+DDL and its mandatory `fsync` remain part of startup/readiness validation, but
+not of the HTTP scheduling budget; the separate 60-second rebuild and 64 MiB
+memory guards continue to cover the 100,000-analysis materialization.
+
 The response declares operational state (`ready`, `rebuilding`, `stale` or
 `failed`) separately from fact state (`current`, `stale` or `unavailable`). A
 previous snapshot may remain visible during rebuild, but is explicitly labelled
@@ -998,6 +1010,33 @@ explicit confirmation because the priority-project section includes project
 names. The response is `no-store`, carries a SHA-256 digest and excludes source
 filenames, paths, content, comments, actor identities, credentials and provider
 payloads. Inspectra does not persist the downloaded copy.
+
+## Finding collaboration and activity
+
+Finding workflow decisions use the append-only `2026-09-11.1` contract while
+remaining able to read legacy `2026-09-06.1` records. A decision may assign one
+currently active workspace member and include one redacted comment. Within that
+comment, up to five exact lowercase `@username` values may be mentioned; each
+must be followed by whitespace or end-of-text and resolve to an active member
+of the current workspace. Email addresses are not mentions, unknown or inactive
+accounts fail closed, and no mention triggers email, webhook or other external
+notification.
+
+The findings response embeds only the ten newest decision events and declares
+the exact retained total. Older context is loaded through the owner-scoped
+`GET /projects/{project_id}/findings/{finding_id}/activity` endpoint, at most 25
+records per page. Its opaque decision-ID cursor must belong to the same validated
+organization, project and finding; otherwise the client restarts from page one.
+Responses are `private, no-store`, reads create a content-free product-audit
+event, and the UI preserves already loaded context if a later page fails.
+
+Comments remain bounded to 1,000 characters and pass through the existing
+secret redactor before storage. Activity contains only workflow context already
+available within the project boundary; it never includes analyzer source bytes,
+paths or raw evidence. Project deletion removes the same validated decision
+chain, including comments and mentions, and no separate collaboration database
+or orphan notification record is created. This is contextual collaboration
+attached to explicit decisions, not a general chat system.
 
 ## Stable project responsibility
 

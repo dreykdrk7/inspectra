@@ -54,6 +54,16 @@ responsibility to an explicit attention state and then reconciles Active-asset
 responsibility. User-facing portfolio/remediation/report projections resolve a
 username only after validating current workspace membership.
 
+Finding collaboration reuses the authoritative append-only decision store. New
+`2026-09-11.1` records add at most five validated active-workspace usernames
+derived from exact, whitespace-delimited mentions in the already redacted
+comment; legacy records load with an empty mention list. Findings embed the ten
+newest records, while a read-only activity endpoint pages at most 25 older
+records using a decision ID that is re-bound to owner, project and finding on
+every request. There is no external notification, free-form recipient, second
+comment store or cross-workspace lookup. The existing project deletion cascade
+therefore removes the complete collaboration context with its decision chain.
+
 Explicit project deletion is an organization-scoped, recoverable cascade rather
 than a recursive filesystem operation. Under the shared storage lock it first
 refuses active work or pending snapshot admission, then writes a content-free
@@ -727,6 +737,13 @@ requeued at startup. One mutation during a build causes at most one immediate
 second pass; continuing churn stays queued. This is owner-level rebuild, not a
 distributed lease or row-level incremental correctness claim.
 
+Startup recovery creates and validates the SQLite schema before request-path
+latency is measured. The scale gate then bounds both first-owner and coalesced
+scheduling to 250 ms, process CPU to 100 ms and authoritative job reads to zero.
+This keeps variable DDL/`fsync` latency attributed to startup while preserving
+the independent 60-second rebuild and 64 MiB peak-memory limits for 100,000
+analyses.
+
 Source revision changes and detected corruption queue work; warm reads use SQL
 aggregates and revalidate at most eight authoritative job digests. A separate
 private source clock records only SHA-256-derived owner keys, monotonic
@@ -742,6 +759,17 @@ both SQLite stores, while backup validates their closed schemas and ownership
 topology. This trends index does not remove its own
 5,000-project aggregate guard; portfolio priority has a separate 20,000-project
 projection.
+
+The source clock keeps SQLite rollback-journal mode `DELETE` and uses
+`synchronous=NORMAL` only for its small derived mutation transaction. SQLite
+still provides atomicity, consistency and application-crash durability in this
+mode while avoiding one redundant journal flush; its documented power-loss
+trade-off is acceptable here because authoritative JSON is committed first and
+its independent directory metadata is not part of the clock transaction. A lost
+clock commit therefore leaves `covered_source_revision` behind the real source,
+which forces the global fallback and an epoch rotation instead of serving a
+stale owner revision. `OFF` and an unjournaled write remain prohibited. See the
+[SQLite synchronous policy](https://www.sqlite.org/pragma.html#pragma_synchronous).
 
 ## Request Flow
 
@@ -953,3 +981,8 @@ load suspended until explicitly rebound.
   custom repositories and identities absent from retained lock evidence; raw
   nodes, roots and edges are not persisted. This relationship layer is strictly
   separate from Packagist/public-identity attestation.
+The private-team federation decision is `PRODUCT_PRIVATE_TEAM_OIDC_PREPROVISIONED_FIXTURE_VALIDATED`. OIDC is an opt-in extension of `private_team_lightweight_users`: the local bootstrap administrator remains the break-glass path, users are explicitly bound to one fixed organization through an HMAC pseudonym, and only matching `reader` or `maintainer` memberships can open a session. Authorization Code + PKCE S256, browser-bound one-use state, nonce, asymmetric ID-token verification, fixed same-origin HTTPS provider endpoints, bounded no-redirect egress, and local session revocation are implemented. Tokens, claims, provider responses and external secrets are not persisted. The ordinary suite uses an IdP simulator; no real provider, SAML/SCIM, JIT provisioning, back-channel logout, multiissuer discovery, public deployment, push or release approval is claimed. The operational contract is `docs/oidc-federation.md`.
+
+The signed integration-event decision is `PRODUCT_SIGNED_TERMINAL_ANALYSIS_EVENTS_FIXTURE_VALIDATED`. It is an off-by-default durable outbox for one operator-fixed, allowlisted HTTPS receiver. Only terminal project-analysis state, opaque project/analysis IDs, UTC time, a deterministic event ID and an optional aggregate finding count cross the boundary. HMAC signing, key ID, receiver idempotency, leases, bounded retries, aggregate administrator status and strict no-redirect/no-proxy/public-address transport controls are implemented. Administrators can replay a bounded, tenant-scoped snapshot of exhausted events after an opaque five-minute preflight; payloads and identifiers are never listed, while the original event ID is retained for receiver deduplication and delivery uses the currently configured signing key. The outbox is deliberately excluded from backup to prevent ambiguous re-emission, and backup refuses the exclusion while any event is not delivered. Destination, key, source, path, evidence, findings and provider payloads are not persisted in the outbox or exposed in status. Ordinary tests use a fake receiver; no real integration endpoint, user-configurable webhook, general event bus, SIEM, push or deployment is claimed. The contract is `docs/signed-integration-events.md`.
+
+CVSS v4 scoring uses the pinned `cvss==3.6` MacroVector implementation behind Inspectra's strict vector validator. The adapter preserves any valid provider-published score, derives only when it is absent, rejects noncanonical or unsupported forms, and replaces the port's epsilon-assisted rounding with the exact final rounding used by the FIRST JavaScript reference calculator. The offline `tools/validate_cvss_v4_corpus.py` command binds all four inputs by SHA-256 and checks both exact scores and expected rejection counts against a fixed FIRST `cvss-resources` commit. Unsupported corpus forms remain unknown rather than being coerced. The persisted `cvss_base_score` name remains a compatibility field while user-facing projections call it a CVSS score, since v4 may include Threat or Environmental metrics. CISA KEV stays an independent exploitation-priority signal and never changes CVSS.

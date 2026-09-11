@@ -30,6 +30,12 @@ invitaciones se almacenan como hashes, esos hashes y los password hashes siguen
 requiriendo protección. El payload también conserva nombres de proyecto y de
 archivo presentes en los registros.
 
+En modo de equipo, ese SQLite incluye también las ligaduras OIDC
+preaprovisionadas. Cada ligadura conserva únicamente el digest HMAC de
+`issuer + sub`, nunca el `sub`, claims, grupos, tokens ni secretos del proveedor.
+La copia sigue siendo sensible porque el digest está asociado a un usuario y una
+organización; restaurarlo no reactiva sesiones anteriores.
+
 El comando exige confirmar expresamente que:
 
 - la aplicación está detenida y el almacén no recibe escrituras;
@@ -52,6 +58,14 @@ proxy, descargas del navegador y snapshots/backups del operador. No se sigue
 ningún symlink ni hardlink y no se lee nada fuera del directorio de datos. Una
 fuente sensible dentro de una subida autorizada sí forma parte de la copia
 completa: excluirla produciría una restauración incoherente.
+
+El outbox `runtime/integration_event_outbox.sqlite3` se excluye de forma
+deliberada. Una copia antigua no puede demostrar si el receptor ya aplicó esos
+eventos y restaurarla podría duplicar tickets o automatizaciones. Antes de la
+copia, el operador deshabilita la integración y revisa/vacía la cola; después
+del restore parte de una cola nueva y no reconstruye eventos históricos. El
+preflight rechaza la copia si el outbox contiene filas pendientes, en entrega o
+agotadas; los recibos ya entregados sí pueden excluirse sin reemitirlos.
 
 Las colecciones `results/remediation_saved_views/` también se incluyen. Pueden
 contener nombres elegidos por usuarios y preferencias de seguridad, por lo que
@@ -124,6 +138,11 @@ de tenant, nombres, rutas ni contenido. Los metadatos de directorio cambian al
 copiar/restaurar, por lo que el arranque posterior al restore rota el epoch y
 reconstruye las particiones de forma perezosa; el bundle no convierte ese reloj
 en autoridad ni promete conservar una proyección como current entre máquinas.
+El reloj usa journal `DELETE` y `synchronous=NORMAL`, nunca `OFF`: si una caída
+de alimentación pierde su última transacción derivada, el digest independiente
+de los directorios autoritativos queda divergente y obliga al fallback global y
+a una nueva época durante la recuperación. Los JSON autoritativos conservan sus
+propias garantías y no adoptan esta política de sincronización.
 
 Si el opt-in de métricas locales está activo, el bundle incluye también
 `results/adoption_metrics.sqlite3`. Se valida como SQLite quiescente `0600`,
@@ -262,7 +281,9 @@ Después se debe apuntar el montaje a ese directorio nuevo, mantener el árbol
 anterior intacto para rollback, arrancar la misma versión de Inspectra y
 verificar `/health`, `/ready`, login nuevo y listados owner-scoped. Ninguna
 sesión o invitación anterior debe funcionar. Los esquemas auth distintos de
-`1`/`2` y team identity distinto de `1` se rechazan; no existe migración de
+`1`/`2` y team identity fuera del rango histórico `1`–`3` se rechazan. La
+versión actual acepta los esquemas team identity `1`, `2` y `3`, y completa las
+tablas que falten al abrir el almacén restaurado; no existe migración de
 datos de producto más allá de sus contratos JSON actuales. Los activos,
 verificaciones y jobs Active se validan por organización y referencia: una
 verificación o ejecución que apunte a un activo ausente o de otro owner hace

@@ -33,7 +33,7 @@ PUBLIC_IDENTITY_ECOSYSTEMS: tuple[PublicIdentityEcosystem, ...] = (
     "nuget",
 )
 PublicIdentityAttestationStatus = Literal["pending", "approved", "expired", "revoked"]
-TEAM_IDENTITY_SCHEMA_VERSION = 2
+TEAM_IDENTITY_SCHEMA_VERSION = 3
 TEAM_BOOTSTRAP_ORGANIZATION_ID = "local-admin"
 TEAM_BOOTSTRAP_ADMIN_ID = "team-admin"
 TEAM_BOOTSTRAP_ADMIN_USERNAME = "admin"
@@ -64,6 +64,12 @@ def team_role_allows(role: object, capability: object) -> bool:
     return capability in TEAM_ROLE_CAPABILITIES[role]
 
 
+def _subject_digest(value: object) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[a-f0-9]{64}", value) is None:
+        raise TeamIdentityError("invalid_federated_subject")
+    return value
+
+
 @dataclass(frozen=True)
 class TeamPrincipal:
     user_id: str
@@ -79,6 +85,17 @@ class TeamMember:
     username: str
     role: TeamRole
     joined_at: datetime
+
+
+@dataclass(frozen=True)
+class FederatedIdentityBinding:
+    binding_id: str
+    organization_id: str
+    user_id: str
+    username: str
+    role: TeamRole
+    created_at: datetime
+    revoked_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -270,6 +287,174 @@ class TeamIdentityStore:
             )
             for row in rows
         ]
+
+    def provision_federated_identity(
+        self,
+        *,
+        principal: TeamPrincipal,
+        user_id: str,
+        subject_digest: str,
+    ) -> FederatedIdentityBinding:
+        if principal.role != "administrator":
+            raise TeamIdentityError("administrator_required")
+        digest = _subject_digest(subject_digest)
+        now = self._now()
+        try:
+            connection = self._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                member = connection.execute(
+                    """
+                    SELECT u.id AS user_id, u.username, m.role
+                    FROM team_users u
+                    JOIN team_memberships m ON m.user_id = u.id
+                    WHERE u.id = ? AND m.organization_id = ?
+                      AND u.active = 1 AND m.revoked_at IS NULL
+                    """,
+                    (user_id, principal.organization_id),
+                ).fetchone()
+                if member is None:
+                    raise TeamIdentityError("member_not_found")
+                role = _team_role(str(member["role"]))
+                if role == "administrator":
+                    raise TeamIdentityError("federated_administrator_forbidden")
+                existing = connection.execute(
+                    "SELECT * FROM team_federated_identities WHERE subject_digest = ?",
+                    (digest,),
+                ).fetchone()
+                if existing is not None and (
+                    existing["organization_id"] != principal.organization_id
+                    or existing["user_id"] != user_id
+                ):
+                    raise TeamIdentityError("federated_identity_conflict")
+                binding_id = str(existing["id"]) if existing is not None else secrets.token_hex(16)
+                connection.execute(
+                    """
+                    INSERT INTO team_federated_identities (
+                        id, subject_digest, organization_id, user_id,
+                        created_by_user_id, created_at, revoked_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                    ON CONFLICT(subject_digest) DO UPDATE SET revoked_at = NULL
+                    """,
+                    (
+                        binding_id,
+                        digest,
+                        principal.organization_id,
+                        user_id,
+                        principal.user_id,
+                        now.timestamp(),
+                    ),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+        except TeamIdentityError:
+            raise
+        except sqlite3.Error as exc:
+            raise TeamIdentityError("identity_store_unavailable") from exc
+        return FederatedIdentityBinding(
+            binding_id=binding_id,
+            organization_id=principal.organization_id,
+            user_id=str(member["user_id"]),
+            username=str(member["username"]),
+            role=role,
+            created_at=now,
+            revoked_at=None,
+        )
+
+    def resolve_federated_principal(
+        self,
+        *,
+        organization_id: str,
+        subject_digest: str,
+        asserted_role: str,
+    ) -> TeamPrincipal | None:
+        digest = _subject_digest(subject_digest)
+        row = self._fetchone(
+            """
+            SELECT u.id AS user_id, u.username,
+                   o.id AS organization_id, o.name AS organization_name, m.role
+            FROM team_federated_identities f
+            JOIN team_users u ON u.id = f.user_id
+            JOIN team_memberships m
+              ON m.user_id = f.user_id AND m.organization_id = f.organization_id
+            JOIN team_organizations o ON o.id = f.organization_id
+            WHERE f.subject_digest = ? AND f.organization_id = ?
+              AND f.revoked_at IS NULL AND u.active = 1 AND m.revoked_at IS NULL
+            """,
+            (digest, organization_id),
+        )
+        if row is None or row["role"] != asserted_role or row["role"] == "administrator":
+            return None
+        return _principal_from_row(row)
+
+    def list_federated_identities(self, organization_id: str) -> list[FederatedIdentityBinding]:
+        rows = self._fetchone(
+            """
+            SELECT f.*, u.username, m.role
+            FROM team_federated_identities f
+            JOIN team_users u ON u.id = f.user_id
+            JOIN team_memberships m
+              ON m.user_id = f.user_id AND m.organization_id = f.organization_id
+            WHERE f.organization_id = ? AND f.revoked_at IS NULL
+            ORDER BY f.created_at DESC, f.id ASC
+            """,
+            (organization_id,),
+            many=True,
+        )
+        assert isinstance(rows, list)
+        return [
+            FederatedIdentityBinding(
+                binding_id=str(row["id"]),
+                organization_id=organization_id,
+                user_id=str(row["user_id"]),
+                username=str(row["username"]),
+                role=_team_role(str(row["role"])),
+                created_at=_datetime_from_timestamp(row["created_at"]),
+                revoked_at=None,
+            )
+            for row in rows
+        ]
+
+    def revoke_federated_identity(
+        self,
+        *,
+        principal: TeamPrincipal,
+        binding_id: str,
+    ) -> FederatedIdentityBinding:
+        if principal.role != "administrator":
+            raise TeamIdentityError("administrator_required")
+        normalized_id = _binding_identifier(binding_id)
+        now = self._now()
+        row = self._fetchone(
+            """
+            SELECT f.*, u.username, m.role
+            FROM team_federated_identities f
+            JOIN team_users u ON u.id = f.user_id
+            JOIN team_memberships m
+              ON m.user_id = f.user_id AND m.organization_id = f.organization_id
+            WHERE f.id = ? AND f.organization_id = ?
+            """,
+            (normalized_id, principal.organization_id),
+        )
+        if row is None or row["revoked_at"] is not None:
+            raise TeamIdentityError("federated_identity_not_found")
+        self._execute(
+            "UPDATE team_federated_identities SET revoked_at = ? WHERE id = ? AND organization_id = ?",
+            (now.timestamp(), normalized_id, principal.organization_id),
+        )
+        return FederatedIdentityBinding(
+            binding_id=normalized_id,
+            organization_id=principal.organization_id,
+            user_id=str(row["user_id"]),
+            username=str(row["username"]),
+            role=_team_role(str(row["role"])),
+            created_at=_datetime_from_timestamp(row["created_at"]),
+            revoked_at=now,
+        )
 
     def create_invitation(
         self,
@@ -949,6 +1134,20 @@ class TeamIdentityStore:
                     );
                     CREATE INDEX IF NOT EXISTS idx_team_memberships_user
                         ON team_memberships (user_id, revoked_at);
+                    CREATE TABLE IF NOT EXISTS team_federated_identities (
+                        id TEXT PRIMARY KEY,
+                        subject_digest TEXT NOT NULL UNIQUE,
+                        organization_id TEXT NOT NULL,
+                        user_id TEXT NOT NULL,
+                        created_by_user_id TEXT NOT NULL,
+                        created_at REAL NOT NULL,
+                        revoked_at REAL NULL,
+                        FOREIGN KEY (organization_id) REFERENCES team_organizations(id),
+                        FOREIGN KEY (user_id) REFERENCES team_users(id),
+                        FOREIGN KEY (created_by_user_id) REFERENCES team_users(id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_team_federated_identity_scope
+                        ON team_federated_identities (organization_id, revoked_at);
                     CREATE TABLE IF NOT EXISTS team_invitations (
                         id TEXT PRIMARY KEY,
                         token_hash TEXT NOT NULL UNIQUE,
@@ -1092,6 +1291,12 @@ def normalize_public_identity_ttl(value: object) -> int:
 def _opaque_identifier(value: object) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{32}", value):
         raise TeamIdentityError("attestation_not_found")
+    return value
+
+
+def _binding_identifier(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{32}", value):
+        raise TeamIdentityError("federated_identity_not_found")
     return value
 
 

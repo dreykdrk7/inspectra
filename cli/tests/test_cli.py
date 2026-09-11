@@ -92,6 +92,18 @@ def test_snapshot_uses_only_commit_blobs_and_is_reproducible(tmp_path: Path) -> 
     assert b"private worktree data" not in first_bytes
 
 
+def test_snapshot_context_removes_all_private_temporary_material(tmp_path: Path) -> None:
+    repository, commit = _repository(tmp_path)
+
+    with build_snapshot(repository, commit) as bundle:
+        temporary_root = bundle.archive_path.parent
+        assert bundle.archive_path.is_file()
+        assert bundle.scan_root.is_dir()
+        assert temporary_root.stat().st_mode & 0o777 == 0o700
+
+    assert not temporary_root.exists()
+
+
 def test_snapshot_rejects_revision_options_and_limits(tmp_path: Path) -> None:
     repository, _ = _repository(tmp_path)
 
@@ -214,12 +226,12 @@ class _InspectraHandler(BaseHTTPRequestHandler):
     capability_authorization_headers: list[str | None] = []
     capabilities_status = 200
     capabilities_payload: dict[str, object] = {
-        "contract_version": "2026-09-10.6",
+        "contract_version": "2026-09-11.1",
         "status": "available",
         "server_version": "0.3.0-beta.1",
-        "supported_cli_protocols": ["2026-09-10.6"],
+        "supported_cli_protocols": ["2026-09-11.1"],
         "contracts": {
-            "git_snapshot": ["2026-09-07.1"],
+            "git_snapshot": ["2026-09-07.1", "2026-09-11.1"],
             "ci_admission": ["2026-09-06.1"],
             "policy_result": ["2026-09-07.1"],
             "cli_result": ["2026-09-07.1"],
@@ -247,14 +259,12 @@ class _InspectraHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         self.__class__.request_bodies.append(body)
         self.__class__.authorization_headers.append(self.headers.get("Authorization"))
-        if self.path == "/files/archive":
-            payload_start = body.index(b"\r\n\r\n") + 4
+        if self.path == "/projects/import/git-snapshot":
+            marker = b'Content-Disposition: form-data; name="file"; filename="snapshot.tar"\r\nContent-Type: application/x-tar\r\n\r\n'
+            payload_start = body.index(marker) + len(marker)
             payload_end = body.rindex(b"\r\n--")
             self.__class__.uploaded_archive = body[payload_start:payload_end]
-            self._json(201, {"id": "f" * 32})
-            return
-        if self.path == "/projects":
-            self._json(201, {"project": {"id": "a" * 32}, "job": {"id": "b" * 32}})
+            self._json(202, {"project": {"id": "a" * 32}, "job": {"id": "b" * 32}})
             return
         if self.path == f"/projects/{'a' * 32}/ci/snapshots":
             self._json(202, {"job": {"id": "b" * 32}, "replayed": True})
@@ -344,10 +354,13 @@ def _arguments(repository: Path, port: int) -> argparse.Namespace:
     )
 
 
-def test_scan_end_to_end_uploads_snapshot_and_returns_project_result(tmp_path: Path) -> None:
+def test_scan_end_to_end_uploads_attested_snapshot_with_import_grant(monkeypatch, tmp_path: Path) -> None:
     repository, commit = _repository(tmp_path)
     _InspectraHandler.uploaded_archive = b""
     _InspectraHandler.request_bodies = []
+    _InspectraHandler.authorization_headers = []
+    monkeypatch.setenv("INSPECTRA_IMPORT_TOKEN", "short-lived-import-grant")
+    monkeypatch.setenv("INSPECTRA_TOKEN", "must-not-authorize-project-creation")
     server = ThreadingHTTPServer(("127.0.0.1", 0), _InspectraHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -367,6 +380,7 @@ def test_scan_end_to_end_uploads_snapshot_and_returns_project_result(tmp_path: P
     assert result["findings"]["total"] == 1
     assert result["public_intelligence"]["state"] == "disabled"
     assert result["result_url"].endswith(f"#project={'a' * 32}&job={'b' * 32}")
+    assert _InspectraHandler.authorization_headers[0] == "Bearer short-lived-import-grant"
     with tarfile.open(fileobj=BytesIO(_InspectraHandler.uploaded_archive), mode="r") as archive:
         names = archive.getnames()
         assert names == ["package-lock.json", "src/app.py"]
@@ -375,6 +389,7 @@ def test_scan_end_to_end_uploads_snapshot_and_returns_project_result(tmp_path: P
     assert str(repository).encode() not in combined_requests
     assert b"local change" not in combined_requests
     assert b"private worktree data" not in combined_requests
+    assert b"must-not-authorize-project-creation" not in combined_requests
 
 
 def test_scan_ci_submits_commit_bound_snapshot_with_environment_token(monkeypatch, tmp_path: Path) -> None:
@@ -425,6 +440,9 @@ class _WaitExitClient:
 
     def create_project(self, _file_id: str, *, name: str | None = None) -> tuple[str, str]:
         assert name is None
+        return "a" * 32, "b" * 32
+
+    def submit_initial_git_snapshot(self, *_: object, **__: object) -> tuple[str, str]:
         return "a" * 32, "b" * 32
 
     def submit_ci_snapshot(self, *_: object, **__: object) -> tuple[str, bool]:

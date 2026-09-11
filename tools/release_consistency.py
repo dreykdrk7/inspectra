@@ -8,11 +8,17 @@ import json
 from pathlib import Path
 import re
 
+from third_party_notices import validate_notices
+
 
 SEMVER_PATTERN = re.compile(
     r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 )
+ACCEPTANCE_HEADING = "## Estado canónico actual"
+ACCEPTANCE_GO_MARKER = "**Última aceptación real de proyecto: GO acotado.**"
+ACCEPTANCE_REVALIDATION_MARKER = "**Cambios posteriores: requieren una aceptación nueva.**"
+LEGACY_ACCEPTANCE_HEADER = "Estado: **aceptación real ejecutada; NO-GO para despliegue**"
 
 
 def _python_assignment(path: Path, name: str) -> str | None:
@@ -69,12 +75,36 @@ def validate_release(root: Path) -> list[str]:
         root / "CHANGELOG.md",
         root / "docs/releases/0.3.0-beta.1-local.md",
         root / "docs/feature-matrix.md",
+        root / "DEPLOYMENT_ACCEPTANCE.md",
     )
     for path in required_documents:
         if not path.is_file():
             errors.append(f"Falta el documento canónico {path.relative_to(root)}.")
         elif version not in path.read_text(encoding="utf-8"):
             errors.append(f"{path.relative_to(root)} no identifica la versión {version}.")
+
+    acceptance_path = root / "DEPLOYMENT_ACCEPTANCE.md"
+    if acceptance_path.is_file():
+        acceptance = acceptance_path.read_text(encoding="utf-8")
+        for marker in (
+            ACCEPTANCE_HEADING,
+            ACCEPTANCE_GO_MARKER,
+            ACCEPTANCE_REVALIDATION_MARKER,
+        ):
+            if marker not in acceptance:
+                errors.append(
+                    f"DEPLOYMENT_ACCEPTANCE.md no contiene el marcador canónico {marker!r}."
+                )
+        preamble = acceptance.split("## Alcance de la candidatura", 1)[0]
+        if LEGACY_ACCEPTANCE_HEADER in preamble:
+            errors.append(
+                "DEPLOYMENT_ACCEPTANCE.md presenta el NO-GO histórico como estado actual."
+            )
+    notices_path = root / "THIRD_PARTY_NOTICES.md"
+    if not notices_path.is_file():
+        errors.append("Falta el documento canónico THIRD_PARTY_NOTICES.md.")
+    else:
+        errors.extend(validate_notices(root))
     return sorted(errors)
 
 
@@ -88,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         errors = validate_release(args.root.resolve())
-    except (OSError, UnicodeError, json.JSONDecodeError, SyntaxError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, SyntaxError, ValueError) as exc:
         print(f"No se pudo validar la candidatura: {exc}")
         return 2
     if errors:

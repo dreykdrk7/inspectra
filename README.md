@@ -17,6 +17,8 @@ Active acotada en una sola experiencia.
 
 - Incorporación reproducible mediante archivo autorizado, snapshot Git desde la
   CLI, CI o SBOM CycloneDX/SPDX.
+- Alta inicial Git sin clone remoto: snapshot exacto local, Gitleaks obligatorio
+  y grant privado de un uso; véase [`docs/repository-ingestion.md`](docs/repository-ingestion.md).
 - Análisis pasivo sin ejecutar código, instaladores ni gestores del proyecto.
 - Inventario y cobertura explícita de manifests/lockfiles npm, PyPI, Go, Cargo,
   Composer, Gradle y NuGet dentro de contratos cerrados y versionados.
@@ -196,9 +198,12 @@ operativa y `TODO_PRODUCTO.md` mantiene el roadmap funcional sincronizado.
 - [SBOM](docs/sbom-import.md)
 - [Operación Active](docs/active-operations.md)
 - [Equipos y permisos](docs/team-permission-matrix.md)
+- [Federación OIDC privada](docs/oidc-federation.md)
+- [Eventos firmados para integraciones](docs/signed-integration-events.md)
 - [Backup y restore](docs/backup-restore.md)
 - [Aceptación de despliegue](DEPLOYMENT_ACCEPTANCE.md)
 - [Notas de la candidatura](docs/releases/0.3.0-beta.1-local.md)
+- [Avisos de dependencias runtime](THIRD_PARTY_NOTICES.md)
 
 El historial técnico detallado se conserva en `docs/future/`, `docs/audits/`,
 las actas de aceptación y los backlogs; el README describe únicamente el
@@ -210,4 +215,6 @@ Use Inspectra solo sobre proyectos y activos propios o con autorización expresa
 Los resultados son señales de revisión y no sustituyen verificación humana,
 pruebas especializadas ni gestión de riesgo organizativa.
 
-Inspectra se distribuye bajo la licencia [MIT](LICENSE).
+Inspectra se distribuye bajo la licencia [MIT](LICENSE). Sus dependencias de
+producción conservan licencias propias; el inventario fijado y sus fuentes se
+publican en [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

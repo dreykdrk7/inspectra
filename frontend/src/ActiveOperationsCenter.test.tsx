@@ -198,7 +198,15 @@ describe('ActiveOperationsCenter', () => {
           if (failNextPage) return Promise.resolve(response({ detail: 'unavailable' }, 503));
           return Promise.resolve(response({ contract_version: '2026-09-08.1', items: [secondAsset], returned_count: 1, page_size: 24, has_more: false, next_cursor: null }));
         }
-        return Promise.resolve(response({ contract_version: '2026-09-08.1', items: [asset], returned_count: 1, page_size: 24, has_more: true, next_cursor: 'signed-cursor' }));
+        const exactFilter = payload.query_mode === 'exact';
+        return Promise.resolve(response({
+          contract_version: '2026-09-08.1',
+          items: [asset],
+          returned_count: 1,
+          page_size: 24,
+          has_more: !exactFilter,
+          next_cursor: exactFilter ? null : 'signed-cursor',
+        }));
       }
       return Promise.resolve(activeGet(input, [asset], init));
     });
@@ -209,6 +217,7 @@ describe('ActiveOperationsCenter', () => {
     fireEvent.change(screen.getByLabelText('Search authorized asset'), { target: { value: 'example' } });
     fireEvent.change(screen.getByLabelText('Match'), { target: { value: 'exact' } });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/active\/assets\/search$/), expect.objectContaining({ body: expect.stringMatching(/"query":"example".*"query_mode":"exact"|"query_mode":"exact".*"query":"example"/) })));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'All matching assets loaded' })).toBeDisabled());
 
     fireEvent.change(screen.getByLabelText('Match'), { target: { value: 'prefix' } });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Load next 24 assets' })).toBeEnabled());

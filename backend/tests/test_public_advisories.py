@@ -49,7 +49,7 @@ def test_valid_osv_fixture_normalizes_only_safe_traced_advisory_fields():
     assert "owner" not in rendered.lower()
 
 
-def test_osv_cvss_v4_without_source_score_preserves_valid_version_and_explicit_absence():
+def test_osv_cvss_v4_without_source_score_derives_first_compatible_score():
     payload = json.loads((FIXTURES / "querybatch-valid.json").read_text(encoding="utf-8"))
     payload["results"][0]["vulns"][0]["severity"] = [{
         "type": "CVSS_V4",
@@ -61,7 +61,7 @@ def test_osv_cvss_v4_without_source_score_preserves_valid_version_and_explicit_a
     assert result.status == "ready"
     metric = result.advisories[0].severity[0]
     assert (metric.cvss_version, metric.base_score, metric.band, metric.score_status) == (
-        "4.0", None, "unknown", "not_available"
+        "4.0", 9.3, "critical", "derived_from_vector"
     )
 
 

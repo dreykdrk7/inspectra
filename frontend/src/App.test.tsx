@@ -1215,7 +1215,7 @@ describe("App", () => {
     expect(screen.getByLabelText("Project onboarding paths")).toHaveTextContent("Repository-free");
     expect(screen.getByRole("button", { name: "Open CI setup" })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Prepare archive" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use archive workflow" }));
 
     await waitFor(() => {
       expect(within(screen.getByLabelText("Upload type")).getByRole("button", { name: "Archive" })).toHaveAttribute("aria-pressed", "true");
@@ -1335,6 +1335,31 @@ describe("App", () => {
     expect(screen.getByLabelText("Password")).toHaveAttribute("autocomplete", "current-password");
     expect(await screen.findByRole("button", { name: "I have a one-time invitation" })).toBeInTheDocument();
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input).endsWith("/files"))).toBe(false);
+  });
+
+  it("offers fixed federated sign-in without collecting identity-provider input", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth/status")) {
+          return Promise.resolve(jsonResponse({
+            ...privateTeamLoginStatus,
+            federated_login_available: true,
+            federated_login_path: "/auth/oidc/start",
+          }));
+        }
+        if (url.endsWith("/health")) return Promise.resolve(jsonResponse({ status: "ok", service: "inspectra-backend" }));
+        return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
+      }),
+    );
+
+    render(<App />);
+
+    const link = await screen.findByRole("link", { name: "Continue with SSO" });
+    expect(link).toHaveAttribute("href", "http://localhost:8000/auth/oidc/start");
+    expect(screen.getByText("Your account must be provisioned in this workspace before sign-in.")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/issuer|tenant|redirect|provider/i)).not.toBeInTheDocument();
   });
 
   it("loads the scoped team workspace after authenticated status", async () => {

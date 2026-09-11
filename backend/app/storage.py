@@ -2156,10 +2156,14 @@ class ProjectStore:
         name: str,
         source: StoredFile,
         owner_id: str | None = None,
-        source_channel: Literal["archive_upload", "sbom"] = "archive_upload",
+        source_channel: Literal["archive_upload", "git_cli", "sbom"] = "archive_upload",
+        source_commit_sha: str | None = None,
+        source_branch: str | None = None,
     ) -> ProjectRecord:
-        if (source_channel == "archive_upload" and source.kind != "archive") or (
+        if (source_channel in {"archive_upload", "git_cli"} and source.kind != "archive") or (
             source_channel == "sbom" and (source.kind != "manifest" or source.original_filename != "sbom.json")
+        ) or ((source_channel == "git_cli") != (source_commit_sha is not None)) or (
+            source_channel != "git_cli" and source_branch is not None
         ):
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Project source channel is invalid.")
         now = utc_now()
@@ -2168,6 +2172,8 @@ class ProjectStore:
             source_file_id=source.id,
             source_filename=source.original_filename,
             source_sha256=source.sha256,
+            source_commit_sha=source_commit_sha,
+            source_branch=source_branch,
             source_channel=source_channel,
             created_at=now,
         )

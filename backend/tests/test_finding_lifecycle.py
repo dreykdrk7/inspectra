@@ -5,7 +5,11 @@ import pytest
 
 import app.finding_lifecycle as lifecycle_module
 from app.config import Settings
-from app.finding_lifecycle import FindingDecisionStore, FindingLifecycleError
+from app.finding_lifecycle import (
+    FindingDecisionStore,
+    FindingLifecycleError,
+    extract_decision_mentions,
+)
 from app.models import NormalizedFinding
 
 
@@ -106,6 +110,58 @@ def test_decisions_are_append_only_redacted_and_scoped(tmp_path):
     assert "super-secret-value" not in persisted
     assert "sensitive-token-value" not in persisted
     assert json.loads(next(store.directory.glob("*.json")).read_text())["organization_id"] == "local-admin"
+
+
+def test_mentions_are_bounded_and_activity_pages_are_stable_and_owner_scoped(tmp_path):
+    store = FindingDecisionStore(_settings(tmp_path))
+    decisions = []
+    for index in range(12):
+        decisions.append(_record(
+            store,
+            status="in_review" if index % 2 == 0 else "open",
+            reason=f"Review step {index}",
+            comment="Coordinate with @reader.one and admin@example.test is an email.",
+            mentioned_usernames=["reader.one"],
+        ))
+
+    first, total, cursor = store.page_for_finding(
+        "local-admin", PROJECT_ID, FINDING_ID, page_size=5
+    )
+    second, second_total, second_cursor = store.page_for_finding(
+        "local-admin", PROJECT_ID, FINDING_ID, page_size=5, cursor=cursor
+    )
+    third, third_total, final_cursor = store.page_for_finding(
+        "local-admin", PROJECT_ID, FINDING_ID, page_size=5, cursor=second_cursor
+    )
+
+    assert [record.id for record in first + second + third] == [
+        record.id for record in reversed(decisions)
+    ]
+    assert total == second_total == third_total == 12
+    assert cursor == first[-1].id
+    assert second_cursor == second[-1].id
+    assert final_cursor is None
+    assert all(record.mentioned_usernames == ["reader.one"] for record in decisions)
+    assert extract_decision_mentions("mail admin@example.test and mention @reader.one twice @reader.one") == ["reader.one"]
+    lifecycle = store.lifecycle_for_findings("local-admin", PROJECT_ID, [_finding()])[FINDING_ID]
+    assert lifecycle.history_total == 12
+    assert lifecycle.history_has_more is True
+    assert len(lifecycle.history) == 10
+    assert lifecycle.history[0].id == decisions[-1].id
+
+    with pytest.raises(FindingLifecycleError, match="invalid_activity_cursor"):
+        store.page_for_finding("c" * 32, PROJECT_ID, FINDING_ID, cursor=cursor)
+    with pytest.raises(FindingLifecycleError, match="invalid_activity_cursor"):
+        store.page_for_finding("local-admin", PROJECT_ID, FINDING_ID, cursor="f" * 32)
+    with pytest.raises(FindingLifecycleError, match="invalid_mentions"):
+        _record(
+            store,
+            status="in_review",
+            comment="Coordinate with @reader.one",
+            mentioned_usernames=[],
+        )
+    with pytest.raises(FindingLifecycleError, match="invalid_mentions"):
+        extract_decision_mentions(" ".join(f"@member{index}" for index in range(6)))
 
 
 def test_report_snapshot_is_owner_scoped_and_rejects_decisions_after_cutoff(tmp_path):

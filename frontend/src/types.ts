@@ -21,6 +21,8 @@ export type AuthStatusResponse = {
   trusted_local: boolean;
   default_operator_id: string;
   login_available: boolean;
+  federated_login_available?: boolean;
+  federated_login_path?: string | null;
   authenticated: boolean;
   operator_id: string | null;
   username?: string | null;
@@ -61,6 +63,13 @@ export type AutomationTokenProbe = {
   expires_at: string;
 };
 
+export type RepositoryImportGrantCreated = {
+  id: string;
+  token: string;
+  created_at: string;
+  expires_at: string;
+};
+
 export type TeamOrganization = {
   id: string;
   name: string;
@@ -89,6 +98,42 @@ export type TeamInvitation = {
   username: string;
   role: TeamRole;
   expires_at: string;
+};
+
+export type FederatedIdentityBinding = {
+  id: string;
+  user_id: string;
+  username: string;
+  role: TeamRole;
+  created_at: string;
+  revoked_at: string | null;
+};
+
+export type IntegrationEventStatus = {
+  contract_version: string;
+  enabled: boolean;
+  destination_configured: boolean;
+  pending: number;
+  delivering: number;
+  delivered: number;
+  dead: number;
+  delivery_scope: 'project_analysis_terminal';
+};
+
+export type IntegrationEventReplayPreflight = {
+  contract_version: string;
+  observed_at: string;
+  expires_at: string;
+  total_dead: number;
+  selected_events: number;
+  truncated: boolean;
+  snapshot_digest: string;
+};
+
+export type IntegrationEventReplayResult = {
+  contract_version: string;
+  replayed_events: number;
+  remaining_dead: number;
 };
 
 export type PublicIdentityEcosystem = 'npm' | 'pypi' | 'go' | 'cargo' | 'composer' | 'maven' | 'nuget';
@@ -679,7 +724,7 @@ export type NormalizedFinding = {
 export type FindingDecisionStatus = 'open' | 'in_review' | 'accepted' | 'false_positive' | 'resolved';
 
 export type FindingDecisionRecord = {
-  contract_version: '2026-09-06.1';
+  contract_version: '2026-09-06.1' | '2026-09-11.1';
   id: string;
   organization_id: string;
   project_id: string;
@@ -688,6 +733,7 @@ export type FindingDecisionRecord = {
   status: FindingDecisionStatus;
   reason: string;
   comment: string | null;
+  mentioned_usernames?: string[];
   assignee_user_id: string | null;
   assignee_username: string | null;
   actor_id: string;
@@ -707,6 +753,18 @@ export type FindingLifecycleState = {
   review_overdue?: boolean;
   current_decision: FindingDecisionRecord | null;
   history: FindingDecisionRecord[];
+  history_total?: number;
+  history_has_more?: boolean;
+};
+
+export type FindingActivityPage = {
+  contract_version: '2026-09-11.1';
+  items: FindingDecisionRecord[];
+  total_count: number;
+  returned_count: number;
+  has_more: boolean;
+  next_cursor: string | null;
+  privacy: 'owner_scoped_redacted_decision_activity';
 };
 
 export type FindingDecisionCreateRequest = {

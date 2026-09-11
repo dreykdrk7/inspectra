@@ -1,12 +1,24 @@
 # Candidatura de despliegue y aceptación de Inspectra
 
-Estado: **aceptación real ejecutada; NO-GO para despliegue**. El 2026-09-06 se
-ejecutó `PROD-117` con la fuente A expresamente autorizada, dentro de
-una pila local aislada y limitada al loopback. La aplicación completó el flujo
-local y su limpieza, pero el `HEAD` autorizado no contiene un lockfile ni una
-versión npm/PyPI exacta. La política impidió correctamente cualquier consulta:
-OSV no pudo validarse contra el proveedor real y KEV no tenía un CVE previamente
-correlacionado que enriquecer. No hubo despliegue externo.
+## Estado canónico actual
+
+- **Última aceptación real de proyecto: GO acotado.** La segunda ejecución de
+  `PROD-117`, con la fuente B autorizada, validó OSV oficial y CISA KEV dentro
+  del alcance documentado más abajo. No validó GHSA/NVD reales, estabilidad,
+  publicación ni despliegue externo.
+- **Última validación funcional remota: verde y no publicada.** El commit
+  `7f7614cc2c2024aaa90506841bf05b576c4bdb38` pasó CI; el tip documental
+  posterior `e40b61124023613ca39d89f0195ce46de6f7b066` no cambia producto. La
+  versión sigue siendo `0.3.0-beta.1`, sin merge, tag ni release.
+- **Cambios posteriores: requieren una aceptación nueva.** Un árbol de trabajo
+  distinto, especialmente si contiene cambios sin confirmar, no hereda esos
+  veredictos. Debe fijarse por commit, repetir las puertas y el flujo aplicable,
+  y registrar un acta antes de considerarlo desplegable.
+
+Los `NO-GO` posteriores permanecen como hitos históricos fechados, no como el
+estado global actual. En particular, la primera ejecución de `PROD-117` con la
+fuente A terminó `NO-GO` porque no contenía una versión exacta correlacionable;
+ese resultado no fue reescrito ni se interpretó como una consulta real.
 
 ## Alcance de la candidatura
 
@@ -905,9 +917,10 @@ el acta contiene revisión/digests, comandos, tiempos, resultados y responsable.
    proyecto y verificar ausencia de proyecto, jobs, workspaces, snapshots,
    triage e informes. Eliminar después la subida por su ruta independiente y
    documentar caché pública, actividad y cualquier copia externa retenida.
-   `PROD-120` continúa pendiente: la aplicación no promete purga total de
-   fuente compartida, backups, snapshots ni secure erase, por lo que la
-   limpieza completa requiere revisión operativa del volumen.
+   `PROD-120` está completada y aporta la cascada recuperable verificable, pero
+   la aplicación no promete secure erase físico ni eliminar automáticamente
+   fuentes compartidas o copias externas; la limpieza completa sigue exigiendo
+   revisar el volumen y la custodia de backups.
 
 La reversión se considerará ensayada solo cuando se hayan registrado duración,
 estado de los datos y comprobaciones posteriores sin usar el proyecto real

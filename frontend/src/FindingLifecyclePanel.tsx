@@ -58,6 +58,16 @@ export function FindingLifecyclePanel({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [activity, setActivity] = useState(lifecycle?.history ?? []);
+  const [activityTotal, setActivityTotal] = useState(lifecycle?.history_total ?? lifecycle?.history.length ?? 0);
+  const [activityHasMore, setActivityHasMore] = useState(lifecycle?.history_has_more ?? false);
+  const [activityCursor, setActivityCursor] = useState(
+    lifecycle?.history_has_more && lifecycle.history.length
+      ? lifecycle.history[lifecycle.history.length - 1].id
+      : null,
+  );
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState<string | null>(null);
   const isException = status === "accepted" || status === "false_positive";
   const reviewDateBounds = useMemo(() => exceptionReviewDateBounds(), []);
 
@@ -67,6 +77,16 @@ export function FindingLifecyclePanel({
       setExceptionConfirmed(false);
     }
   }, [availableStatuses, status]);
+
+  useEffect(() => {
+    const firstPage = lifecycle?.history ?? [];
+    const hasMore = lifecycle?.history_has_more ?? false;
+    setActivity(firstPage);
+    setActivityTotal(lifecycle?.history_total ?? firstPage.length);
+    setActivityHasMore(hasMore);
+    setActivityCursor(hasMore && firstPage.length ? firstPage[firstPage.length - 1].id : null);
+    setActivityError(null);
+  }, [finding.id, lifecycle?.history, lifecycle?.history_has_more, lifecycle?.history_total, projectId]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -92,6 +112,26 @@ export function FindingLifecyclePanel({
       setError(decisionErrorMessage(caught));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function loadOlderActivity() {
+    if (!activityCursor || activityLoading) return;
+    setActivityLoading(true);
+    setActivityError(null);
+    try {
+      const page = await api.getProjectFindingActivity(projectId, finding.id, activityCursor);
+      setActivity((current) => {
+        const seen = new Set(current.map((item) => item.id));
+        return [...current, ...page.items.filter((item) => !seen.has(item.id))];
+      });
+      setActivityTotal(page.total_count);
+      setActivityHasMore(page.has_more);
+      setActivityCursor(page.next_cursor);
+    } catch {
+      setActivityError("Older activity could not be loaded. Existing history remains available; try again.");
+    } finally {
+      setActivityLoading(false);
     }
   }
 
@@ -188,8 +228,29 @@ export function FindingLifecyclePanel({
           ) : null}
           <label className="auth-field finding-decision-comment">
             <span>Comment (optional; do not include secrets)</span>
-            <textarea value={comment} onChange={(event) => setComment(event.target.value)} maxLength={1_000} rows={3} />
+            <textarea
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+              maxLength={1_000}
+              rows={3}
+              aria-describedby={`finding-comment-help-${finding.id}`}
+            />
           </label>
+          <p id={`finding-comment-help-${finding.id}`} className="muted finding-decision-review-help">
+            Mention at most five active workspace members with their exact <code>@username</code>. Email addresses are not mentions.
+          </p>
+          {members.length ? (
+            <label className="auth-field finding-mention-picker">
+              <span>Insert member mention</span>
+              <select value="" onChange={(event) => {
+                const username = event.target.value;
+                if (username) setComment((current) => `${current.trimEnd()}${current.trim() ? " " : ""}@${username} `);
+              }}>
+                <option value="">Choose a member</option>
+                {members.map((member) => <option key={member.user_id} value={member.username}>@{member.username}</option>)}
+              </select>
+            </label>
+          ) : null}
           {error ? <p className="error-text" role="alert">{error}</p> : null}
           {notice ? <p className="success-text" role="status">{notice}</p> : null}
           <button type="submit" disabled={submitting || reason.trim().length < 3 || (isException && (!exceptionConfirmed || !reviewAt))}>
@@ -200,18 +261,27 @@ export function FindingLifecyclePanel({
         <p className="muted">Your role can review this history but cannot change finding workflow.</p>
       )}
 
-      {lifecycle?.history.length ? (
+      {activity.length ? (
         <details className="finding-decision-history">
-          <summary>Decision history ({lifecycle.history.length})</summary>
+          <summary>Decision history ({activityTotal})</summary>
           <ol>
-            {lifecycle.history.map((item) => (
+            {activity.map((item) => (
               <li key={item.id}>
                 <strong>{labels[item.status]}</strong> · {formatDate(item.created_at)} · {item.actor_username}
                 <span>{item.reason}</span>
                 {item.comment ? <span>{item.comment}</span> : null}
+                {item.mentioned_usernames?.length ? <span>Mentions: {item.mentioned_usernames.map((username) => `@${username}`).join(", ")}</span> : null}
               </li>
             ))}
           </ol>
+          {activityError ? <p className="error-text" role="alert">{activityError}</p> : null}
+          {activityHasMore ? (
+            <button type="button" className="secondary-button" onClick={() => void loadOlderActivity()} disabled={activityLoading || !activityCursor}>
+              {activityLoading ? "Loading older activity" : "Load older activity"}
+            </button>
+          ) : activity.length < activityTotal ? (
+            <p className="query-warning" role="status">Activity pagination ended before the recorded total. Refresh the finding.</p>
+          ) : null}
         </details>
       ) : null}
     </section>

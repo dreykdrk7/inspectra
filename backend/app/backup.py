@@ -149,6 +149,7 @@ _RUNTIME_OPERATION_DIRECTORIES = (
 )
 _MANIFEST_NAME = "manifest.json"
 _PAYLOAD_DIRECTORY = "payload"
+_INTEGRATION_EVENT_OUTBOX_NAME = "integration_event_outbox.sqlite3"
 BACKUP_EXCLUDED_CLASSES = (
     "storage_locks",
     "execution_workspaces",
@@ -158,6 +159,7 @@ BACKUP_EXCLUDED_CLASSES = (
     "proxy_logs",
     "browser_downloads",
     "operator_snapshots",
+    "integration_event_outbox",
 )
 
 
@@ -206,6 +208,7 @@ class BackupManifest(BaseModel):
             "proxy_logs",
             "browser_downloads",
             "operator_snapshots",
+            "integration_event_outbox",
         ],
         ...,
     ]
@@ -2001,7 +2004,7 @@ def _validate_sqlite_auth_state(path: Path) -> tuple[int | None, int | None]:
         raise BackupError("invalid_auth_state") from exc
     if auth_schema not in {None, 1, AUTH_STATE_SCHEMA_VERSION}:
         raise BackupError("unsupported_auth_schema")
-    if team_schema not in {None, 1, TEAM_IDENTITY_SCHEMA_VERSION}:
+    if team_schema is not None and team_schema not in range(1, TEAM_IDENTITY_SCHEMA_VERSION + 1):
         raise BackupError("unsupported_team_identity_schema")
     if auth_schema is None and team_schema is None:
         raise BackupError("invalid_auth_state")
@@ -2145,13 +2148,20 @@ def _validate_topology(root: Path, auth_relative: PurePosixPath) -> None:
     if runtime.exists():
         if runtime.is_symlink() or not runtime.is_dir():
             raise BackupError("invalid_storage_data")
-        allowed_runtime_roots = {*_RUNTIME_OPERATION_DIRECTORIES, auth_relative.parts[1]}
+        allowed_runtime_roots = {
+            *_RUNTIME_OPERATION_DIRECTORIES,
+            auth_relative.parts[1],
+            _INTEGRATION_EVENT_OUTBOX_NAME,
+        }
         for child in runtime.iterdir():
             if child.name == _IGNORED_MARKER:
                 continue
             if child.name not in allowed_runtime_roots:
                 raise BackupError("unsupported_storage_entry")
         _validate_single_auth_branch(runtime, auth_relative.parts[1:])
+        outbox = runtime / _INTEGRATION_EVENT_OUTBOX_NAME
+        if outbox.exists() or outbox.is_symlink():
+            _require_regular_file(outbox)
     if auth_path.exists():
         _require_regular_file(auth_path)
 
@@ -2204,10 +2214,57 @@ def _require_quiescent(root: Path, auth_relative: PurePosixPath) -> None:
             if path.is_file() or path.is_symlink():
                 raise BackupError("pending_operations_present")
     auth_path = root.joinpath(*auth_relative.parts)
-    for suffix in ("-wal", "-shm", "-journal"):
-        companion = Path(f"{auth_path}{suffix}")
-        if companion.exists() or companion.is_symlink():
-            raise BackupError("sqlite_not_quiescent")
+    sqlite_paths = (auth_path, root / "runtime" / _INTEGRATION_EVENT_OUTBOX_NAME)
+    for sqlite_path in sqlite_paths:
+        for suffix in ("-wal", "-shm", "-journal"):
+            companion = Path(f"{sqlite_path}{suffix}")
+            if companion.exists() or companion.is_symlink():
+                raise BackupError("sqlite_not_quiescent")
+    _require_integration_outbox_safe_to_exclude(
+        root / "runtime" / _INTEGRATION_EVENT_OUTBOX_NAME
+    )
+
+
+def _require_integration_outbox_safe_to_exclude(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    _require_regular_file(path)
+    metadata = path.lstat()
+    if metadata.st_mode & 0o077 or metadata.st_size > 64 * 1024 * 1024:
+        raise BackupError("invalid_storage_data")
+    expected_columns = {
+        "event_id", "organization_id", "payload_json", "state", "attempts",
+        "next_attempt_at", "lease_until", "last_result", "created_at", "delivered_at",
+    }
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+        try:
+            integrity = connection.execute("PRAGMA quick_check").fetchone()
+            tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+            columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(integration_events)")
+            }
+            pending = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM integration_events WHERE state != 'delivered'"
+                ).fetchone()[0]
+            )
+            if integrity is None or integrity[0] != "ok" or tables != {"integration_events"} or columns != expected_columns:
+                raise BackupError("invalid_storage_data")
+            if pending:
+                raise BackupError("pending_integration_events_present")
+        finally:
+            connection.close()
+    except BackupError:
+        raise
+    except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+        raise BackupError("invalid_storage_data") from exc
 
 
 @contextmanager

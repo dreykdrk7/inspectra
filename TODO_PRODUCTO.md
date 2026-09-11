@@ -77,7 +77,7 @@ integración con esos proveedores.
 | PROD-004 | P0 | completada | Exploración de resultados de proyecto |
 | PROD-005 | P1 | completada | Comparación entre ejecuciones |
 | PROD-006 | P1 | completada | Informe de proyecto para equipos |
-| PROD-007 | P2 | pendiente | Repositorios de solo lectura, tras modelo de amenaza |
+| PROD-007 | P2 | completada | Repositorios de solo lectura, tras modelo de amenaza |
 | PROD-008 | P2 | completada | Límites, aislamiento y trazabilidad operativa |
 | PROD-009 | P2 | completada | Perfiles pasivos por stack |
 | PROD-010 | P1 | completada | Enriquecimiento reproducible de dependencias |
@@ -91,8 +91,8 @@ integración con esos proveedores.
 | PROD-018 | P2 | completada | SBOM y revisión de licencias declaradas |
 | PROD-019 | P2 | completada | Integraciones de CI y salidas interoperables |
 | PROD-020 | P2 | completada | Privacidad, residencia, retención y despliegue empresarial |
-| PROD-021 | P3 | pendiente | Asignación, comentarios y colaboración contextual |
-| PROD-022 | P3 | pendiente | Métricas de tendencia y objetivos de riesgo |
+| PROD-021 | P3 | completada | Asignación, comentarios y colaboración contextual |
+| PROD-022 | P3 | completada | Métricas de tendencia y objetivos de riesgo |
 | PROD-023 | P1 | completada | Ubicaciones normalizadas seguras |
 | PROD-024 | P1 | completada | Inventario seguro de componentes por ejecución |
 | PROD-025 | P1 | completada | Fidelidad de versión y lockfiles soportados |
@@ -109,7 +109,7 @@ integración con esos proveedores.
 | PROD-036 | P2 | completada | Retención/eliminación recuperable de proyecto y derivados |
 | PROD-037 | P2 | completada | Modularidad de pruebas de producto |
 | PROD-038 | P2 | completada | CI y puertas de riesgo |
-| PROD-039 | P3 | pendiente | Identidad empresarial federada |
+| PROD-039 | P3 | completada | Identidad empresarial federada |
 | PROD-040 | P2 | completada | Backup, verificación y restauración aislada |
 | PROD-041 | P1 | completada | Nueva instantánea inmutable en el mismo proyecto |
 | PROD-042 | P1 | completada | Estado y recuperación comprensibles por ejecución |
@@ -141,8 +141,8 @@ integración con esos proveedores.
 | PROD-068 | P2 | completada | Contrato de integración seguro |
 | PROD-069 | P2 | completada | Exportación SARIF trazable |
 | PROD-070 | P2 | completada | Modo CI determinista |
-| PROD-071 | P3 | pendiente | Eventos firmados a integraciones |
-| PROD-072 | P3 | pendiente | Métricas de adopción privadas |
+| PROD-071 | P3 | completada | Eventos firmados a integraciones |
+| PROD-072 | P3 | completada | Métricas de adopción privadas |
 | PROD-073 | P1 | completada | Admisión idempotente y acotada de instantáneas |
 | PROD-074 | P1 | completada | Matriz de seguridad para mutaciones de proyecto |
 | PROD-075 | P2 | completada | Privacidad de metadatos de fuente e historial |
@@ -307,7 +307,7 @@ integración con esos proveedores.
 | PROD-234 | P2 | completada | Grafo NuGet multi-target aportado por CI |
 | PROD-235 | P2 | completada | Semántica completa y segura de versiones NuGet |
 | PROD-236 | P3 | pendiente | Evolución versionada de packages.lock.json |
-| PROD-237 | P3 | pendiente | Evaluador CVSS v4 validado con corpus oficial |
+| PROD-237 | P3 | completada | Evaluador CVSS v4 validado con corpus oficial |
 | PROD-238 | P2 | bloqueada | Catálogo revisado de equivalencias CPE↔purl |
 | PROD-239 | P2 | completada | Reconciliación verificable del backlog heredado |
 | PROD-240 | P1 | completada | Permisos y tipo seguro del lock de almacenamiento |
@@ -320,6 +320,12 @@ integración con esos proveedores.
 | PROD-247 | P2 | completada | Gate reproducible de rendimiento para planes de remediación |
 | PROD-248 | P2 | completada | Reloj de mutación owner-scoped para tendencias |
 | PROD-249 | P2 | completada | Suite CLI dentro de la puerta Python reproducible |
+| PROD-250 | P2 | completada | Gate reproducible de programación de tendencias a escala |
+| PROD-251 | P2 | completada | Durabilidad eficiente y gate reproducible del reloj owner-scoped |
+| PROD-252 | P3 | completada | Custodia y replay controlado del outbox de integraciones |
+| PROD-253 | P2 | completada | Estabilizar la prueba asíncrona de paginación Active bajo carga |
+| PROD-254 | P1 | completada | Estado canónico y verificable de aceptación de despliegue |
+| PROD-255 | P2 | completada | Avisos verificables de dependencias runtime distribuidas |
 
 ## Evaluación de las P3 multiecosistema — 2026-09-10
 
@@ -1008,7 +1014,7 @@ autorización y evidencia CI remota independiente.
 ### PROD-007 — Repositorios de solo lectura con diseño de amenaza previo
 
 - **Prioridad:** P2
-- **Estado:** pendiente
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** los equipos quieren analizar un
   repositorio autorizado sin descargar manualmente, manteniendo el mismo modelo
   de instantánea trazable.
@@ -1027,9 +1033,22 @@ autorización y evidencia CI remota independiente.
   fuga de token o checkout persistente de código de clientes.
 - **Dependencias:** PROD-008, PROD-012 y decisión de amenaza explícita.
 - **Tamaño:** L
-- **Evidencia de validación al completarse:** pendiente; una revisión iniciada
-  el 2026-09-09 no implementó ni validó el checkout seguro y no constituye
-  evidencia de cierre.
+- **Evidencia de validación al completarse:** 2026-09-11: el vertical adopta
+  Git local, no un clone de proveedor. La CLI usa exclusivamente blobs del
+  commit exacto, sin fetch/hooks/submódulos/symlinks/worktree; aplica límites y
+  preflight Gitleaks, genera TAR reproducible privado y borra el temporal. El
+  endpoint inicial es cerrado y no admite URL, host, path, token Git ni campos
+  extra; persiste `git_cli`, commit, rama normalizada y digest. El bootstrap
+  privado usa un grant de organización hash-only, 15 minutos, máximo tres
+  activos, uso único y una sola ruta, consumido antes de retener bytes. La UI
+  administrativa muestra el valor una vez, lo retira del DOM y entrega una
+  orden sin secreto. Pasaron backend dirigido 5/5, CLI 66/66, frontend 423/423
+  con axe, build 303,6/322 KiB, `compileall`, Compose local/privado, backlog y
+  diff-check; revisión desktop/móvil sin overflow de página (1265/1265 y
+  375/375). Backend recolectó 1.616 casos y las 1.615 pruebas restantes pasaron;
+  el único benchmark de tendencias falla también aislado (0,302 s > 0,250 s),
+  fuera del diff, y queda trazado en `PROD-250`. Sin red, proveedor remoto,
+  proyecto externo, push, PR, tag ni despliegue.
 
 ### PROD-008 — Aislamiento y cuotas por ejecución
 
@@ -1355,7 +1374,7 @@ autorización y evidencia CI remota independiente.
 ### PROD-021 — Asignación, comentarios y colaboración contextual
 
 - **Prioridad:** P3
-- **Estado:** pendiente
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** tras un triage consistente, los
   equipos pueden repartir correcciones y conservar contexto sin trasladar datos
   sensibles a herramientas no controladas.
@@ -1371,14 +1390,27 @@ autorización y evidencia CI remota independiente.
   canal de secretos/PII o facilitan acceso cruzado.
 - **Dependencias:** PROD-011, PROD-012 y PROD-013.
 - **Tamaño:** M
-- **Evidencia de validación al completarse:** pendiente. La evidencia de
-  retención y baja que figuraba aquí correspondía a `PROD-124`; no demuestra
-  asignación, comentarios, menciones ni paginación de colaboración.
+- **Evidencia de validación al completarse:** 2026-09-11: el contrato append-only
+  `2026-09-11.1` conserva compatibilidad de lectura con el legado y añade hasta
+  cinco menciones exactas, únicas y resueltas únicamente contra miembros activos
+  del workspace; emails, usuarios desconocidos/inactivos y metadata discrepante
+  fallan cerrados. El resultado de hallazgos embebe diez eventos y la ruta
+  owner/project/finding-scoped pagina 1–25 con cursor revalidado, `no-store` y
+  auditoría content-free; la UI carga más actividad sin perder lo ya mostrado y
+  el selector accesible inserta solo miembros conocidos. Pruebas cubren secreto
+  sintético redactado, cursor ajeno/desconocido, dos organizaciones, cinco
+  menciones, fallo recuperable y `axe`: 3 backend dirigidas, 61 frontend
+  dirigidas, frontend completo 424/424, CLI 66/66, TypeScript/Vite y bundle
+  inicial 303,8/322 KiB. La suite backend ejecutó 1.617 casos: 1.616 pasaron y
+  falló únicamente el gate preexistente de latencia del reloj owner-scoped
+  (p95 63,1 ms frente a 50 ms), reproducido aislado 10/10 y registrado como
+  `PROD-251`; no se presenta la puerta general como verde. Sin red, notificación
+  externa, proyecto real ni cambio de CI.
 
 ### PROD-022 — Métricas de tendencia y objetivos de riesgo
 
 - **Prioridad:** P3
-- **Estado:** pendiente
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** dirección técnica necesita ver si el
   riesgo mejora o empeora sin usar los contadores como una promesa de seguridad.
 - **Flujo completo afectado:** historial comparable → agregación por proyecto y
@@ -1394,7 +1426,21 @@ autorización y evidencia CI remota independiente.
   el producto.
 - **Dependencias:** PROD-005, PROD-006 y PROD-012.
 - **Tamaño:** M
-- **Evidencia de validación al completarse:** pendiente.
+- **Evidencia de validación al completarse:** reconciliada 2026-09-11. La
+  auditoría trazó cada criterio a `PROD-105/147/219/242/248/250/251`: series de
+  nuevos/resueltos/persistentes solo entre ejecuciones comparables; cambios de
+  perfil/cobertura y PVI no disponible quedan excluidos; periodos 30/90/180 y
+  buckets 7/30 son cerrados; los tres perfiles consumen el mismo hecho, declaran
+  denominadores/limitaciones y permiten abrir proyecto; export JSON/CSV solo
+  desde estado current y con confirmación. El índice owner-scoped limita 5.000
+  proyectos/250.000 análisis, reconstruye fuera de la petición y conserva
+  current/stale/unavailable sin mezclar organizaciones. Diez pruebas backend de
+  tendencias cubren vacío, huecos, otro owner, alteración, reinicio, error,
+  refresh y 100.000 análisis; cuatro frontend cubren perfiles, error, export,
+  stale y `axe`. En el corte pasan backend 1.617/1.617, frontend 424/424, build y
+  gates de rendimiento. «Objetivo» significa aquí dirección de reducción
+  verificable y priorización actual; no se inventa score ni SLA configurable, y
+  las duraciones siguen etiquetadas explícitamente como mediciones.
 
 ## Auditoría de producto y correspondencia de módulos — 2026-09-05
 
@@ -2003,7 +2049,7 @@ red se ejercitan solo mediante adaptadores y fixtures grabados/revisados.
 ### PROD-039 — Identidad empresarial federada y aprovisionamiento controlado
 
 - **Prioridad:** P3
-- **Estado:** pendiente
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** organizaciones con identidad central
   necesitan acceso/revocación consistente sin credenciales locales extra.
 - **Flujo completo afectado:** proveedor → autenticación → grupo/rol mínimo →
@@ -2019,7 +2065,30 @@ red se ejercitan solo mediante adaptadores y fixtures grabados/revisados.
 - **Tamaño:** L
 - **Estrategia de pruebas:** IdP simulado, middleware/session/autorización y docs;
   sin IdP real en suite principal.
-- **Evidencia de validación al completarse:** pendiente.
+- **Evidencia de validación al completarse:** **2026-09-11:** vertical OIDC
+  privado opt-in y preaprovisionado para `reader`/`maintainer`, con administrador
+  local de ruptura. Implementa Authorization Code + PKCE S256, `state` de un
+  solo uso ligado al navegador, nonce, issuer/audience/azp/tenant/grupos, firma
+  asimétrica RS256/ES256 y endpoints HTTPS de mismo origen fijados por operador.
+  Token/JWKS usan `trust_env=false`, cero redirecciones, 5 s, 256 KiB,
+  concurrencia cuatro y caché JWKS en memoria; tokens, claims, `sub` y secretos
+  no se persisten. La ligadura almacena HMAC de `issuer + sub`, exige membresía
+  y rol exactos, prohíbe federar administradores y su revocación invalida
+  sesiones. API/CSRF/auditoría y UI administrativa cubren carga, vacío, error,
+  acceso fijo y retorno fallido genérico. El contrato y runbooks quedaron en
+  `docs/oidc-federation.md`, arquitectura, workspaces y backup/restore.
+  Pruebas: backend completo 1.631/1.631 (384,59 s; 409.984 KiB RSS), frontend
+  serial 427/427 (la primera ejecución paralela tuvo un único timeout de una
+  prueba Active ajena, reproducida verde dos veces y luego en la suite serial),
+  CLI 66/66 bajo Python 3.12.13, build 305,2/322 KiB, `compileall`, Compose
+  base/privado, consistencia de release y auditorías de ambos locks Python sin
+  vulnerabilidades conocidas. La primera pasada CLI bajo Python 3.13.15 dio
+  65/66 porque `doctor` verifica el runtime 3.12 contractual; la repetición con
+  3.12 pasó completa. Revisión visual reproducible en escritorio y 390×844
+  confirmó login condicional, error redactado y panel admin responsive. Todo el
+  IdP fue simulado con claves efímeras: **implementado y validado con fixtures,
+  no validado contra proveedor real**; no se siguió el enlace IdP ni hubo
+  egress, push, PR o despliegue.
 
 ### PROD-040 — Recuperación, backup y migración verificable
 
@@ -3243,7 +3312,7 @@ de la secuencia autorizada y permanece bloqueada sin cambios.
 ### PROD-071 — Entrega de eventos a integraciones con firma y reintento seguro
 
 - **Prioridad:** P3
-- **Estado:** pendiente
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** un equipo puede sincronizar eventos
   mínimos de análisis/estado sin otorgar acceso de lectura continuo al producto.
 - **Flujo completo afectado:** configurar destino permitido → evento terminal →
@@ -3260,12 +3329,182 @@ de la secuencia autorizada y permanece bloqueada sin cambios.
 - **Tamaño:** L
 - **Estrategia de pruebas:** receptor local falso, firma/caducidad, 429/timeout y
   ausencia de red externa.
-- **Evidencia de validación al completarse:** pendiente.
+- **Evidencia de validación al completarse:** **2026-09-11:** contrato
+  `2026-09-11.1` y vertical opt-in para `analysis.terminal`. Un estado terminal
+  de proyecto crea un único evento determinista con IDs opacos, UTC, estado y
+  conteo agregado opcional; se excluyen organización, nombres, fuente, hashes,
+  componentes, hallazgos, evidencia, errores, rutas, targets y credenciales.
+  Outbox SQLite `0600`, lease de 30 s, recuperación tras reinicio, máximo cinco
+  intentos y retención 30/90 días; HMAC-SHA256 sobre bytes exactos, key ID y
+  receptor idempotente. La configuración todo-o-nada está apagada por defecto y
+  solo admite una URL HTTPS:443 cuyo host coincide con la allowlist del operador.
+  Transporte con resolución pública previa, `trust_env=false`, cero redirects,
+  5 s/8 KiB y concurrencia dos (máximos 10 s/cuatro). `429`, `5xx`, timeout y red
+  reintentan; `4xx`, redirect, respuesta excesiva o resolución privada agotan de
+  forma controlada. Un endpoint/UI solo-admin muestra conteos tenant-scoped sin
+  destino, payload ni IDs. Backend completo 1.649/1.649 (446,66 s; 405.876 KiB
+  RSS) y 20/20 regresiones finales tras añadir purga; frontend serial 62
+  archivos/429 pruebas (135,03 s), axe dirigido y build 305,3/322 KiB;
+  `compileall`, Compose base/privado, release y diff-check verdes. La CLI vigente
+  pasó 66/66 en Python 3.12.13. Revisión visual local escritorio/móvil confirmó
+  apagado, copy de privacidad y jerarquía; runtime y servicios sintéticos fueron
+  eliminados. Todo receptor fue `MockTransport`: **no existe validación contra
+  un receptor real** ni hubo egress, push, PR o despliegue. Contrato operativo en
+  `docs/signed-integration-events.md`; la custodia/replay después de restore se
+  separa en `PROD-252`.
+
+### PROD-252 — Custodia y replay controlado del outbox de integraciones
+
+- **Prioridad:** P3
+- **Estado:** completada
+- **Necesidad de usuario y valor aportado:** operación necesita decidir qué hacer
+  con entregas agotadas y conservar una recuperación coherente sin duplicar
+  tickets ni convertir el outbox en una exportación sensible.
+- **Flujo completo afectado:** fila `dead` o backup → preflight agregado →
+  corregir receptor/rotar clave → replay explícito idempotente → verificar recibo
+  → purgar según custodia.
+- **Áreas o archivos implicados:** `integration_events.py`, backup/restore,
+  API/roles/CSRF, auditoría, panel administrativo y runbooks.
+- **Criterios de aceptación verificables:** backup declara e implementa inclusión
+  o exclusión segura del outbox; admin puede revisar y reintentar una selección
+  acotada sin ver payload/destino/IDs sensibles, tras confirmación y con nuevo
+  lease; receptor sigue deduplicando el event ID original. Retención/capacidad,
+  dos organizaciones, carrera, reinicio, restore y clave rotada se prueban sin
+  Internet.
+- **Riesgos de seguridad, privacidad y operación:** replay masivo duplica efectos;
+  copiar una cola con destino/clave o filas cruzadas filtra datos y restaurar sin
+  política pierde notificaciones silenciosamente.
+- **Dependencias:** `PROD-071` completada y `PROD-040`.
+- **Tamaño:** M
+- **Estrategia de pruebas:** SQLite/backup sintético, receptor simulado, CSRF,
+  roles, replay concurrente, canarios sensibles y estados UI.
+- **Evidencia de validación al completarse:** 2026-09-11: el outbox queda fuera
+  del backup y su preflight rechaza filas `pending`, `delivering` o `dead`; un
+  restore verificado empieza sin cola histórica. El replay solo-admin selecciona
+  como máximo 100 agotados del tenant mediante digest opaco con TTL de cinco
+  minutos, exige confirmación y CSRF, conserva el `event_id`, reinicia intentos
+  atómicamente y no expone IDs, payload ni destino. Se verificaron dos owners,
+  carrera/replay repetido, expiración, reinicio, retención y firma con una clave
+  rotada usando solo SQLite y `MockTransport`. Pasaron 25 regresiones dirigidas;
+  suite Python completa 2.136/2.136 (backend 1.655 + tools 481; 422,82 s,
+  416.928 KiB RSS), CLI 66/66 en Python 3.12.13 y frontend 62 archivos/430
+  pruebas (124,73 s), axe y build 305,7/322 KiB. También pasaron `compileall`,
+  Compose base/privado, release, backlogs, diff-check, Gitleaks sobre el diff y
+  su canario. El escaneo íntegro del árbol no se atribuye: halló 102 fixtures y
+  no pudo leer `data/runtime`. La revisión visual nueva quedó no ejecutada porque
+  el navegador integrado bloqueó ambos orígenes locales con
+  `ERR_BLOCKED_BY_CLIENT`; permanece la revisión visual previa del estado
+  deshabilitado y la regresión DOM/axe del replay. Servicios, pestaña y datos
+  sintéticos se eliminaron (`TEMP_RESIDUALS=0`). No hubo Internet, receptor
+  real, push, PR ni despliegue.
+
+### PROD-253 — Estabilizar la prueba asíncrona de paginación Active bajo carga
+
+- **Prioridad:** P2
+- **Estado:** completada
+- **Necesidad de usuario y valor aportado:** la puerta frontend debe distinguir
+  una regresión real de una carrera del test para que una candidatura no quede
+  bloqueada o aprobada de forma aleatoria.
+- **Flujo completo afectado:** cambiar filtros de activos → recibir la página
+  correspondiente → paginar con su cursor firmado → conservar foco y filas.
+- **Áreas o archivos implicados:** `ActiveOperationsCenter.test.tsx`, mocks de
+  búsqueda paginada y, solo si la reproducción lo demuestra, el panel Active.
+- **Criterios de aceptación verificables:** el test espera la respuesta del
+  filtro exacto actual, no solo un botón habilitado por una respuesta anterior;
+  20 repeticiones dirigidas y dos suites frontend completas pasan sin elevar
+  timeouts ni ocultar una carrera real. La semántica de descarte stale, cursor,
+  deduplicación y foco no cambia.
+- **Riesgos de seguridad, privacidad y operativa:** una puerta flaky erosiona la
+  confianza en CI; una corrección que desactive la protección stale podría
+  mezclar resultados de filtros o scopes distintos.
+- **Dependencias:** `PROD-171` completada; fallo observado durante la validación
+  de `PROD-237`.
+- **Tamaño:** S
+- **Estrategia de pruebas:** reproducción bajo carga, repetición serial dirigida
+  y suite completa; inspeccionar orden exacto de requests/responses simuladas.
+- **Evidencia de validación al completarse:** 2026-09-11: se confirmó que el
+  test esperaba un botón habilitado que podía pertenecer a la respuesta previa.
+  El mock distingue ahora la página exacta (`has_more=false`) de la prefija y
+  espera primero que el estado exacto quede aplicado; no se cambió producto ni
+  timeout. Pasaron 20/20 repeticiones dirigidas y dos suites completas de 62
+  archivos/430 pruebas (44,55 s y 45,03 s; picos 614.036 y 703.004 KiB). Se
+  conservan las aserciones de cursor, deduplicación, filtros, foco, error
+  recuperable, descarte stale y axe; diff-check/backlogs verdes.
+
+### PROD-254 — Estado canónico y verificable de aceptación de despliegue
+
+- **Prioridad:** P1
+- **Estado:** completada
+- **Necesidad de usuario y valor aportado:** operación necesita distinguir la
+  última aceptación real, la última revisión funcional con CI y el árbol de
+  trabajo actual; el encabezado vigente presenta como actual el NO-GO histórico
+  de la primera fuente y contradice el acta posterior.
+- **Flujo completo afectado:** abrir guía canónica → identificar versión/revisión
+  y alcance aceptado → decidir si el árbol concreto puede desplegarse → aplicar
+  configuración, aceptación o reversión correcta.
+- **Áreas o archivos implicados:** `DEPLOYMENT_ACCEPTANCE.md`, puerta
+  `release_consistency.py`, sus pruebas y backlogs.
+- **Criterios de aceptación verificables:** la cabecera separa explícitamente
+  aceptación real de proyecto, revisión CI y cambios posteriores; conserva los
+  NO-GO históricos fechados y no transfiere un GO a un árbol distinto. La guía
+  deja de decir que `PROD-120` está pendiente, elimina duplicación y la puerta
+  falla si desaparece el bloque canónico o vuelve el encabezado obsoleto.
+- **Riesgos de seguridad, privacidad y operativa:** desplegar una revisión no
+  aceptada, o bloquear una revisión aceptada por leer un estado histórico como
+  actual; asumir que GO de OSV/KEV autoriza GHSA, NVD, publicación o estabilidad.
+- **Dependencias:** actas `PROD-117`, `PROD-129/130` y estado Git local; no
+  modifica ni reabre sus evidencias.
+- **Tamaño:** S
+- **Estrategia de pruebas:** fixtures positivos/negativos del validador de
+  release, puerta real, diff-check y revisión textual de todos los GO/NO-GO.
+- **Evidencia de validación al completarse:** 2026-09-11: la cabecera separa GO
+  acotado de la segunda aceptación, CI verde/no publicada en `7f7614c…`, tip
+  documental `e40b611…` y obligación de revalidar cualquier árbol posterior.
+  Los NO-GO históricos permanecen fechados. Se corrigió la referencia obsoleta
+  a `PROD-120` sin prometer secure erase. `make check-release` exige los tres
+  marcadores y rechaza el encabezado legacy; dos regresiones nuevas, 28 pruebas
+  dirigidas y tools completo 485/485 en 11,77 s pasaron, además de compileall,
+  backlogs y diff-check. Sin modificar producto, aceptación histórica, CI,
+  `SEC-012`, push, PR o despliegue.
+
+### PROD-255 — Avisos verificables de dependencias runtime distribuidas
+
+- **Prioridad:** P2
+- **Estado:** completada
+- **Necesidad de usuario y valor aportado:** equipos que evalúan o redistribuyen
+  Inspectra necesitan conocer las licencias de todos los paquetes runtime; la
+  incorporación de `cvss` LGPL confirmó que no existe aviso ni gate de cobertura.
+- **Flujo completo afectado:** actualizar lock de producción → revisar licencia
+  y fuente → actualizar aviso → puerta de release detecta omisión/deriva.
+- **Áreas o archivos implicados:** locks backend/frontend,
+  `THIRD_PARTY_NOTICES.md`, herramientas/pruebas y documentación de release.
+- **Criterios de aceptación verificables:** cada paquete Python runtime y cada
+  paquete npm de producción aparece exactamente una vez con versión, expresión
+  de licencia y enlace HTTPS; faltantes, extras, duplicados o versión divergente
+  fallan. `cvss==3.6` se identifica como LGPL-3.0-or-later. Dev/test quedan fuera
+  explícitamente y una licencia declarada no sustituye revisión jurídica.
+- **Riesgos de seguridad, privacidad y operativa:** incumplimiento de licencias,
+  adopción empresarial bloqueada o dependencia nueva distribuida sin revisión.
+- **Dependencias:** locks reproducibles y `PROD-237` completada.
+- **Tamaño:** S
+- **Estrategia de pruebas:** fixtures de inventario válido, ausencia, versión,
+  duplicado/extra/URL y ejecución contra locks reales, release y diff-check.
+- **Evidencia de validación al completarse:** 2026-09-11: aviso humano enlazado
+  desde README cubre exactamente 29 distribuciones Python y 6 paquetes npm de
+  producción; `cvss==3.6` figura como LGPL-3.0-or-later y el límite jurídico se
+  declara sin prometer cumplimiento automático. El validador deriva el conjunto
+  de ambos locks y rechaza faltantes, extras/versiones obsoletas, duplicados,
+  licencias no revisadas y fuentes no HTTPS; dev queda excluido por el lock. El
+  vocabulario SPDX es cerrado y fuerza revisión ante una licencia nueva. Once
+  pruebas dirigidas y tools 491/491 (7,17 s, 74.420 KiB) pasaron; también
+  compileall, check real de avisos, release, backlogs, diff y Gitleaks
+  diff/canario. Sin instalar/cambiar dependencias, red de producto, `SEC-012`,
+  push, PR o despliegue.
 
 ### PROD-072 — Métricas de adopción locales y privadas
 
 - **Prioridad:** P3
-- **Estado:** pendiente
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** mantenedores necesitan saber si el
   producto ayuda a completar análisis y correcciones, sin telemetría de código,
   paquetes o usuarios enviada por defecto.
@@ -3283,7 +3522,18 @@ de la secuencia autorizada y permanece bloqueada sin cambios.
 - **Tamaño:** M
 - **Estrategia de pruebas:** eventos agregados sintéticos, toggle, retención y
   aserciones de ausencia de identificadores.
-- **Evidencia de validación al completarse:** pendiente.
+- **Evidencia de validación al completarse:** reconciliada 2026-09-11 mediante
+  `PROD-162`. `INSPECTRA_ADOPTION_METRICS_ENABLED` permanece `false` por defecto;
+  el middleware solo acepta diez plantillas de ruta internas y persiste día,
+  flujo/fase/resultado cerrados, bucket de duración y contador, nunca ruta real,
+  query, payload, ID, nombre, componente, timestamp o duración exactos. SQLite
+  `0600` está limitado a 8.192 filas/16 MiB y 90 días; purga, readiness y backup
+  validan esquema/contenido y fallan cerrados. No existe endpoint ni transporte:
+  la exportación JSON requiere confirmación en CLI local y declara sus límites.
+  Cuatro pruebas específicas cubren off/toggle, agregación, payload canario,
+  purga, manipulación, backup y export; la regresión middleware confirma que un
+  payload secreto no llega al store. Formaron parte del backend 1.617/1.617 y
+  Compose base/privado verdes de este corte. Sin duplicar store, red o telemetría.
 
 ### Ronda 5 — Revisión crítica de entrega, seguridad y experiencia (2026-09-05)
 
@@ -4046,7 +4296,7 @@ estado funcional para la misma capacidad.
 | **PROD-234 — P2 — completada**<br>Grafo NuGet multi-target aportado por CI | Equipos .NET necesitan alcance y aristas verificables sin ejecutar restore/MSBuild en Inspectra. Flujo: CI autorizado → artefacto ligado a commit → validación acotada → inventario/PVI/informe. | CLI/CI, contrato de artefacto, inventario, PVI y reporting. | Artefacto versionado/digestado, paquetes/aristas y grupos de target opacos y acotados; sin TFM privados, rutas, repositorios, hashes ni metadata libre. Divergencia/truncado quedan inconclusos. Fixtures hostiles y dos owners. | Inferir un grafo del lock sesga prioridad; aceptar salida libre filtra topología. | PROD-144 y contrato de artefactos CI. | M | **2026-09-10:** contrato cerrado `2026-09-10.5` y handshake CLI `2026-09-10.6`; 1 MiB/2.000 nodos/4.000 aristas/32 targets opacos consecutivos. Digest y commit/snapshot, mismo root, target count, identidad, raíces y alcance por target fallan cerrados; ciclos/truncación son explícitos. Solo se retienen proyección y recibo agregado, nunca TFM, topología, rutas, fuentes, hashes o metadata libre; tampoco se atribuye NuGet.org. CLI/productor/API/inventario/PVI/UI/informes/docs completos, con replay, bloqueo tras PVI, hostiles y dos owners. Offline: backend 1.523/1.523, tools 464/464, CLI 56/56, frontend 410/410+axe, build 298,0/322 KiB, compileall, Compose y diff-check. Sin ejecutar NuGet/MSBuild, usar red/proveedor o analizar proyecto real. |
 | **PROD-235 — P2 — completada**<br>Semántica completa y segura de versiones NuGet | Proyectos con formas NuGet fuera del subconjunto numérico actual necesitan cobertura sin coerción incorrecta. Flujo: versión exacta → canonicalización oficial → matching OSV → estado o inconcluso. | Normalizador/matcher, PVI, UI y corpus de fixtures. | Orden y equivalencias siguen la especificación NuGetVersion verificada; legacy/ambigua queda `unknown`, nunca se recorta qualifier ni se inventa equivalencia. Pruebas de precedencia y límites. | Comparación incorrecta genera falsos positivos o negativos. | PROD-144 y corpus oficial revisado. | M | **2026-09-10:** contrato NuGetVersion `2026-09-10.1` y PVI `2026-09-10.6`, basados en la referencia Microsoft y código oficial `NuGetVersion`/`VersionComparer`. Normalización pura 1–4 segmentos/64 caracteres/enteros .NET; completa minor/patch, elimina ceros, omite revisión cero/build metadata y canonicaliza prerelease case-insensitive con orden numérico. Runner, inventario, purl, egress/caché/fingerprint OSV, rangos/fixes, grafo y productor/validador CLI usan una identidad; sintaxis/enteros ambiguos quedan `unknown` o se rechazan. La validación descubrió y corrigió el fingerprint fuera de ámbito y un valor no canónico en estado PVI. Offline: 232 backend dirigidas, 2 parser, 6 CLI/productor, 26 UI; suites backend 1.544/1.544, tools 464/464, CLI 56/56, frontend 410/410+axe, build 298,0/322 KiB, compileall, Compose y diff-check. Sin .NET/NuGet, proveedor ni proyecto real. |
 | **PROD-236 — P3 — pendiente**<br>Evolución versionada de packages.lock.json | Operación necesita detectar nuevas versiones/estructuras sin ampliar aceptación silenciosamente. Flujo: fuente oficial → corpus → revisión → bump contractual → despliegue. | Runner, cobertura, contratos, fixtures y docs. | Cada formato nuevo requiere fuente oficial, casos positivos/negativos y bump; versión, shape o claves duplicadas no soportadas fallan cerradas sin retener contenido. | Aceptación permisiva puede perder paquetes o conservar metadata sensible. | PROD-144. | S | Pendiente; v1 y rechazo de JSON ambiguo están cubiertos. |
-| **PROD-237 — P3 — pendiente**<br>Evaluador CVSS v4 validado con corpus oficial | Seguridad necesita derivar v4 solo si el cálculo puede demostrarse, no aproximarse. Flujo: vector validado → evaluación oficial → banda/origen → detalle/informe. | `cvss.py`, normalizadores, UI/report y fixtures. | Algoritmo completo versionado, corpus FIRST y fronteras de redondeo; igualdad con resultados oficiales, score publicado intacto y `unknown` ante forma no soportada. | Una puntuación v4 aproximada altera prioridad y remediación. | PROD-097 y corpus oficial CVSS v4 revisado. | M | Pendiente; hoy v4 solo conserva un score válido publicado por la fuente. |
+| **PROD-237 — P3 — completada**<br>Evaluador CVSS v4 validado con corpus oficial | Seguridad necesita derivar v4 solo si el cálculo puede demostrarse, no aproximarse. Flujo: vector validado → evaluación oficial → banda/origen → detalle/informe. | `cvss.py`, normalizadores, UI/report y fixtures. | Algoritmo completo versionado, corpus FIRST y fronteras de redondeo; igualdad con resultados oficiales, score publicado intacto y `unknown` ante forma no soportada. | Una puntuación v4 aproximada altera prioridad y remediación. | PROD-097 y corpus oficial CVSS v4 revisado. | M | **2026-09-11:** `cvss==3.6` fijado y adaptado al redondeo final FIRST. Validador offline ligado al commit `fe21348d…7b` y cuatro SHA-256: 270 MacroVectors, 419.904 Base/Threat y 41.270 referencias soportadas coinciden; 25.028 vectores negativos quedan `unknown`, 33 marcadores inválidos y cero discrepancias. Score publicado permanece autoritativo; orden/forma inválida falla cerrado; KEV no cambia. 29 pruebas dirigidas, Python 3.12 completo 2.143/2.143, CLI 66/66, frontend 430/430 al repetir, build 305,7/322 KiB, auditorías, compileall, Compose y Gitleaks diff/canario verdes. El primer frontend completo tuvo una carrera no atribuida y queda en PROD-253. Sin proveedor/proyecto real, push, PR o despliegue. |
 | **PROD-238 — P2 — bloqueada**<br>Catálogo revisado de equivalencias CPE↔purl | Analistas necesitan aprovechar relaciones reales sin convertir el registro seguro vacío en una heurística. Flujo: evidencia primaria de proveedor/NVD/advisory → revisión de equivalencia y CVE → entrada de código → fixture negativa/positiva → mapeo visible y auditable. | Registro `cpe_purl_mappings.py`, manifiesto de gobernanza, fixtures, documentación y revisión de UI/informes. | Cada entrada documenta fuente primaria enlazada, fecha, revisor, componente purl exacto, CPE exacto y CVE acotados; dos revisores aprueban el cambio. No se aceptan changelog aislado, nombre similar, wildcard, entrada runtime ni equivalencia global sin CVE. Renovación/retirada sube versión y conserva fixture histórica; pruebas demuestran homónimos y rangos/advisories incompatibles. | Una tabla poblada sin evidencia puede reforzar falsos positivos a escala; no poblarla limita solo esta corroboración secundaria y mantiene OSV operativo. | PROD-098; requiere acceso a evidencia primaria y dos revisores humanos. | M | **Bloqueada 2026-09-10:** el ciclo prohíbe red externa y no hay dos revisores autorizados disponibles. El registro seguro vacío conserva OSV operativo y evita equivalencias heurísticas; no se simuló aprobación ni evidencia. |
 | **PROD-240 — P1 — completada**<br>Lock de almacenamiento endurecido | Operación necesita que el primer acceso posterior a restore no amplíe permisos ni permita redirigir la exclusión mutua. Flujo: crear/restaurar datos → abrir listado paginado → adquirir lock local → validar tipo/permisos → operar. | `storage_lock`, backup/restore y pruebas backend. | `.locks` queda `0700`; `storage.lock` es regular, enlace único y `0600`; la apertura no sigue symlink y rechaza un directorio enlazado. Restore y primer acceso conservan el árbol privado. | El `umask` observado creó `.locks` `0755`; un path manipulable podría exponer metadatos o hacer creer a procesos que comparten un lock cuando no es así. | Hallazgo confirmado durante PROD-214. | S | **2026-09-09:** `O_NOFOLLOW` cuando existe, `fstat`, `nlink=1`, `fchmod` y directorio validado/forzado. Regresiones de modos, symlink y restore incluidas en la validación dirigida offline de PROD-214. |
 | **PROD-241 — P2 — completada**<br>Prioridad de cartera materializada por encima de 5.000 | Empresas con carteras grandes necesitan ordenar riesgo global sin recalcular todos los hallazgos bajo una petición ni rebajar el límite a ciegas. Flujo: cambio job/PVI/triage → hecho privado → página priorizada → filtros/resumen coherentes → rebuild. | Cartera, índices job/PVI/lifecycle, backup/readiness, API/UI y pruebas de escala. | Proyección sin nombres, rutas, componentes, evidencia ni texto; señales cerradas equivalentes byte-semánticamente a PROD-145, ligadas a digests autoritativos. Paginación coherente, rebuild/reinicio/corrupción y fixture de 20.000/dos owners con p95/memoria definidos. | Una consulta O(N) agota CPU/IO; un índice stale o cross-tenant falsea prioridad y puede revelar existencia/riesgo. | PROD-214 y proyecciones job/lifecycle existentes; coordinar con PROD-219. | L | **2026-09-10:** SQLite privado schema v2, HMAC exacto/de prefijo, digest y revalidación autoritativa. Equivalencia de filtros/orden/resumen, corrupción/topología/reinicio/refresh y dos owners cubiertos. Fixture 20.000: cold 5,379 s, warm p95 0,264 s, pico 271.699 B, 240 lecturas/10 páginas. Dirigidas 32/32, API/smoke 6/6, frontend 419/419 y build 302,5/322 KiB; revisión visual desktop/móvil limpia. Backend monolítico quedó 1.592/1.593 por el benchmark preexistente de remediación (aislado verde), registrado como `PROD-247`; no se falsea el gate. Sin red y con limpieza completa. |
@@ -4058,3 +4308,43 @@ estado funcional para la misma capacidad.
 | **PROD-247 — P2 — completada**<br>Gate reproducible de rendimiento de remediación | Operación necesita que el presupuesto de 20.000 proyectos sea estable también dentro de la suite completa. Flujo: páginas → cancelación frecuente → checkpoint durable acotado → artefacto atómico/recuperación. | Jobs de plan de remediación, benchmark, tests y docs. | Menos escrituras durables sin relajar 5 s; cancelación, recuperación, progreso final y artefacto siguen correctos; dirigida y suite backend completa verdes con tiempo. | Un gate intermitente oculta regresiones; checkpoints excesivamente espaciados degradan cancelación. | PROD-216. | S | **2026-09-10:** cancelación por página de 100 y escritura cada 1.000/final; 20.000 proyectos requieren 23 escrituras totales en vez de 203. Regresión de cancelación entre checkpoints, 9/9 dirigidas, benchmark aislado 0,48 s con umbrales originales y backend completo 1.594/1.594 offline. `compileall`, diff-check y coherencia de backlogs verdes. |
 | **PROD-248 — P2 — completada**<br>Reloj owner-scoped de mutaciones de tendencias | Empresas multi-tenant necesitan evitar rebuilds de tendencias provocados por cambios de otra organización sin arriesgar hechos stale. Flujo: mutación autoritativa → revisión monotónica del owner → refresh solo del owner afectado → fallback conservador. | Stores de proyectos/jobs/PVI/lifecycle/remediación, storage lock, índice/scheduler, backup/readiness, benchmarks y docs. | Cada mutación relevante incrementa una revisión owner-scoped atómica; un cambio extranjero no ensucia al owner consultado. Migración, restore, carrera y crash no pierden invalidaciones: diario ausente/corrupto/divergente cae al hash conservador. Dos owners/100.000 análisis demuestran equivalencia, cero lecturas cruzadas, ausencia de rebuild ajeno y coste p95 documentado; sin datos privados en índice/logs. | El estado actual gasta CPU/IO de forma conservadora; una invalidación fina incompleta podría etiquetar evidencia stale como actual. | PROD-242; coordinar stores, storage lock y PROD-241. | L | **2026-09-10:** clock SQLite v1 privado/derivado con owner key SHA-256, generación, epoch y digest content-free; cubre jobs/proyectos/PVI/lifecycle/batches/borrado bajo lock. Fallo o divergencia activa fallback global/readiness false y nunca revierte autoridad. Nueve regresiones dirigidas, fixture 100.000/dos owners sin dirty/read ajeno, backend actual 1.607 offline por grupos, frontend 420/420, build 302,7/322 KiB, Compose, compileall y diff-check verdes. Etiquetas legacy y reparación concurrente quedaron corregidas durante la suite; docs/backup alineados. Sin red/proyecto externo/push/PR/despliegue. |
 | **PROD-249 — P2 — completada**<br>Suite CLI dentro de la puerta Python reproducible | Equipos necesitan que el mismo target local/CI falle ante una regresión de snapshot, policy o SARIF, no depender de una pasada manual separada. Flujo: preparar Python 3.12 desde locks → backend/tools → CLI → resultado único atribuible. | `Makefile`, `backend/requirements-dev.*`, CLI, documentación y pruebas. | El lock fija dependencias de test CLI; `make test-python` ejecuta suite raíz y `cli/tests` con import correcto; SARIF valida el esquema oficial fijado; cero red ordinaria y sin cambiar workflow/SEC-012. | CI puede quedar verde con una CLI rota o con un test que solo pasa gracias a una dependencia local no declarada. | PROD-037, PROD-152 y PROD-155. | S | **2026-09-10:** `test-python` incorpora `cli/tests` y existe repetición atribuible `test-cli`; `jsonschema==4.25.1` y cuatro transitivas quedan fijadas. Regresión estática cubre target/lock/docs. Offline y read-only: CLI 65/65, tools+canario no-red 476/476 y `pip check` sin requisitos rotos; `make -n` muestra ambas fases. No se ejecutó bootstrap con red. Workflow y bloqueos protegidos permanecen intactos. |
+| **PROD-250 — P2 — completada**<br>Gate reproducible de programación de tendencias a escala | Operación necesita que la puerta de 100.000 análisis detecte regresiones reales sin depender de variación accidental de I/O. Flujo: mutación owner-scoped → scheduling acotado → publicación incremental → medición atribuible cold/warm. | Scheduler/índice de tendencias, storage lock/SQLite, benchmark, instrumentación y documentación. | Perfila lock, revisión owner-scoped, SQLite y `fsync`; conserva cero lecturas de jobs y semántica stale/ready; separa presupuesto algorítmico de variación de I/O sin elevar el límite sin evidencia; repeticiones aisladas y suite completa quedan verdes con presupuesto documentado. | Una puerta intermitente oculta regresiones o induce a perder invalidaciones mediante una optimización no demostrada. | PROD-242 y PROD-248; perfil reproducible de plataforma. | M | **2026-09-11:** 106/124 ms del perfil previo eran inicialización de esquema (97 ms `executescript`), no el scheduling ni los 100.000 análisis; commit/`fsync` siguieron activos. El fixture usa ahora el mismo startup `recover_pending_refreshes()` y después mide first-owner y warm con pared `<250 ms`, CPU `<100 ms` y cero reads. Diez repeticiones: 12,9–24,9 ms first-owner, 2,2–3,1 ms warm y 2,8–3,1 ms CPU. Benchmark completo 75,42 s con guards de rebuild `<60 s` y memoria `<64 MiB`; backend 1.616/1.616 en 481,59 s. Solo prueba/docs, sin relajar límites ni tocar producto, red, CI o bloqueos. |
+
+### PROD-251 — Durabilidad eficiente y gate reproducible del reloj owner-scoped
+
+- **Prioridad:** P2
+- **Estado:** completada
+- **Necesidad de usuario y valor aportado:** las mutaciones autoritativas deben
+  invalidar tendencias con durabilidad suficiente y coste predecible; una puerta
+  roja de forma sostenida impide certificar cualquier candidatura local.
+- **Flujo completo afectado:** mutación bajo lock → digest de directorios →
+  transacción owner-scoped → crash/reinicio → lectura exacta o fallback global.
+- **Áreas o archivos implicados:** `backend/app/risk_trend_source_clock.py`,
+  pruebas de reloj/tendencias y documentación de arquitectura/operación.
+- **Criterios de aceptación verificables:** conserva transacción atómica,
+  permisos `0600`, claves de owner opacas, detección de mutación fuera de banda y
+  fallback conservador; una transacción perdida nunca puede presentar una
+  revisión stale como actual. El gate de 100 mutaciones pasa repetidamente con
+  p95 menor de 50 ms sin elevar el límite, y la suite backend completa queda
+  verde.
+- **Riesgos de seguridad, privacidad y operativa:** reducir durabilidad sin
+  demostrar recuperación puede ocultar hechos stale; mantener dos `fsync` por
+  mutación deriva en latencia alta y una puerta permanentemente roja.
+- **Dependencias:** `PROD-248` completada; fallo reproducido al validar
+  `PROD-021`.
+- **Tamaño:** S
+- **Estrategia de pruebas:** perfil de commit/SQLite, regresiones de transacción
+  perdida/corrupción/out-of-band/dos owners, diez repeticiones del gate y suite
+  backend completa offline.
+- **Evidencia de validación al completarse:** 2026-09-11: la suite inicial falló
+  con p95 63,1 ms y diez repeticiones aisladas fallaron entre 52,8 y 68,0 ms;
+  `cProfile` atribuyó 2,738/2,789 s a 101 commits SQLite. Solo el diario derivado
+  adopta `DELETE`+`synchronous=NORMAL`, conservando transacción y detección por
+  digest independiente; autoridad JSON y demás stores no cambian. La regresión
+  verifica journal/sync, `0600`, redacción, pérdida out-of-band, corrupción,
+  rotación y aislamiento. Diez repeticiones posteriores pasaron sin elevar el
+  límite; medición adicional: p95 37,073 ms, media 16,516 ms y máximo 55,915 ms.
+  Reloj+tendencias dirigidas y backend completo 1.617/1.617 pasaron offline;
+  frontend 424/424, CLI 66/66, build 303,8/322 KiB, compileall, Compose
+  base/privado, release, backlogs y diff-check verdes. Documentada la garantía y
+  el trade-off según SQLite oficial; sin proyecto real, push, PR o despliegue.

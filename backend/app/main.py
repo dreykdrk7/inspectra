@@ -13,10 +13,22 @@ from uuid import uuid4
 from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from app.version import PRODUCT_VERSION
+
+from app.integration_events import (
+    IntegrationEventConfig,
+    IntegrationEventDispatcher,
+    IntegrationEventError,
+    IntegrationEventReplayPreflight,
+    IntegrationEventReplayRequest,
+    IntegrationEventReplayResult,
+    IntegrationEventStatus,
+    IntegrationEventStore,
+    IntegrationEventTransport,
+)
 
 from app.active_http_basic_header_review import (
     ActiveHttpBasicHeaderReviewContractError,
@@ -212,8 +224,26 @@ from app.auth import (
     verify_admin_password,
 )
 from app.auth_state_sqlite import SQLiteAdminSessionStore, SQLiteLoginAttemptStore
+from app.oidc_federation import (
+    OIDC_STATE_COOKIE_NAME,
+    OIDC_STATE_COOKIE_SAMESITE,
+    OIDC_TRANSACTION_TTL_SECONDS,
+    OidcFederationConfig,
+    OidcFederationError,
+    OidcProviderClient,
+    OidcTransactionStore,
+    authenticate_oidc_callback,
+)
 from app.automation_tokens import AutomationPrincipal, AutomationTokenError, AutomationTokenRecord, AutomationTokenStore
+from app.repository_import_grants import (
+    REPOSITORY_IMPORT_GRANT_PREFIX,
+    RepositoryImportGrantError,
+    RepositoryImportGrantRecord,
+    RepositoryImportGrantStore,
+    RepositoryImportPrincipal,
+)
 from app.config import (
+    Settings,
     get_auth_mode,
     get_current_operator_for_trusted_local,
     is_auth_configured,
@@ -224,7 +254,11 @@ from app.config import (
 from app.domain_security import normalize_domain, normalize_subdomain_candidates
 from app.execution_profile import build_execution_profile, execution_profile_comparison_limitation, execution_profiles_are_compatible
 from app.finding_normalization import normalize_project_relative_path
-from app.finding_lifecycle import FindingDecisionStore, FindingLifecycleError
+from app.finding_lifecycle import (
+    FindingDecisionStore,
+    FindingLifecycleError,
+    extract_decision_mentions,
+)
 from app.cargo_dependency_graph import (
     CARGO_DEPENDENCY_GRAPH_MAX_BYTES,
     CargoDependencyGraphError,
@@ -267,12 +301,15 @@ from app.models import (
     AutomationTokenProbeResponse,
     AutomationTokenResponse,
     CiProjectSnapshotCreated,
+    GitProjectCreated,
     DeletedFileResponse,
     DeletedJobResponse,
     DomainAuditRequest,
     FindingDecisionCreateRequest,
     FindingDecisionRecord,
     FindingLifecycleState,
+    FederatedIdentityBindingResponse,
+    FederatedIdentityProvisionRequest,
     AuthLoginRequest,
     AuthSessionResponse,
     AuthStatusResponse,
@@ -304,6 +341,7 @@ from app.models import (
     ProjectDeletionRequest,
     ProjectDeletionResponse,
     ProjectFindingComparison,
+    FindingActivityPage,
     ProjectFindingsResponse,
     ProjectFindingSummary,
     ProjectRecord,
@@ -327,6 +365,8 @@ from app.models import (
     opaque_source_reference,
     ProjectSnapshotCreated,
     ProjectSbomRevisionCreated,
+    RepositoryImportGrantCreateRequest,
+    RepositoryImportGrantCreatedResponse,
     SbomImportPreflightResponse,
     ProjectSnapshotCreateRequest,
     ProjectSummary,
@@ -469,6 +509,68 @@ from app.team_identity import (
 from active_runner.models import ActiveDryRunRequest, ActiveHttpHeaderProbeRequest
 
 
+def build_integration_event_config(settings: Settings) -> IntegrationEventConfig | None:
+    if not settings.integration_events_enabled:
+        return None
+    return IntegrationEventConfig(
+        endpoint=settings.integration_event_endpoint or "",
+        host=settings.integration_event_allowed_host or "",
+        signing_key=settings.integration_event_signing_key or b"",
+        signing_key_id=settings.integration_event_signing_key_id or "",
+        timeout_seconds=settings.integration_event_timeout_seconds,
+        max_concurrency=settings.integration_event_max_concurrency,
+    )
+
+
+async def run_integration_event_loop(app: FastAPI) -> None:
+    """Drain the durable outbox without exposing payloads in telemetry."""
+
+    stop = app.state.integration_event_stop
+    wake = app.state.integration_event_wake
+    while not stop.is_set():
+        try:
+            processed = await app.state.integration_event_dispatcher.drain_once()
+        except Exception:
+            processed = 0
+            log_audit_event("integration_events.delivery_failed", result="failed")
+        if processed:
+            continue
+        wake.clear()
+        try:
+            await asyncio.wait_for(wake.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+def enqueue_terminal_project_analysis_event(app: FastAPI, job_id: str) -> None:
+    """Create one idempotent, minimal integration event after terminal commit."""
+
+    store = getattr(app.state, "integration_event_store", None)
+    if store is None:
+        return
+    try:
+        job = app.state.jobs.get(job_id)
+        if (
+            job.project_id is None
+            or job.owner_id is None
+            or job.status not in {"completed", "failed", "cancelled"}
+        ):
+            return
+        findings = job.result.get("findings") if isinstance(job.result, dict) else None
+        finding_count = len(findings) if isinstance(findings, list) else None
+        store.enqueue_terminal_analysis(
+            organization_id=job.owner_id,
+            project_id=job.project_id,
+            analysis_id=job.id,
+            status=job.status,
+            occurred_at=job.finished_at or job.updated_at,
+            finding_count=finding_count,
+        )
+        app.state.integration_event_wake.set()
+    except (IntegrationEventError, HTTPException, ValidationError, AttributeError):
+        log_audit_event("integration_events.enqueue_failed", result="failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = load_settings()
@@ -561,6 +663,22 @@ async def lifespan(app: FastAPI):
     app.state.active_asset_revocation_events = {}
     app.state.active_verification_cancellation_events = {}
 
+    integration_event_config = build_integration_event_config(settings)
+    app.state.integration_event_config = integration_event_config
+    app.state.integration_event_store = None
+    app.state.integration_event_dispatcher = None
+    app.state.integration_event_stop = asyncio.Event()
+    app.state.integration_event_wake = asyncio.Event()
+    app.state.integration_event_task = None
+    if integration_event_config is not None:
+        integration_event_store = IntegrationEventStore(settings.integration_event_outbox_path)
+        app.state.integration_event_store = integration_event_store
+        app.state.integration_event_dispatcher = IntegrationEventDispatcher(
+            integration_event_store,
+            IntegrationEventTransport(integration_event_config),
+            concurrency=integration_event_config.max_concurrency,
+        )
+
     app.state.settings = settings
     app.state.product_audit = product_audit
     app.state.adoption_metrics = adoption_metrics
@@ -568,6 +686,19 @@ async def lifespan(app: FastAPI):
     app.state.default_local_operator = get_current_operator_for_trusted_local(settings)
     app.state.single_admin_auth_configured = is_single_admin_auth_configured(settings)
     app.state.team_identity = create_team_identity_store(settings)
+    app.state.oidc_config = create_oidc_federation_config(settings)
+    app.state.oidc_transactions = OidcTransactionStore()
+    app.state.oidc_start_attempts = LoginAttemptStore(
+        window_seconds=OIDC_TRANSACTION_TTL_SECONDS,
+        max_failures=10,
+        lockout_seconds=OIDC_TRANSACTION_TTL_SECONDS,
+        max_keys=settings.login_attempt_max_keys,
+    )
+    app.state.oidc_provider = (
+        OidcProviderClient(app.state.oidc_config)
+        if app.state.oidc_config is not None
+        else None
+    )
     if app.state.team_identity is not None:
         try:
             app.state.retention_cleanup["team_invitations_deleted"] = (
@@ -622,6 +753,7 @@ async def lifespan(app: FastAPI):
     app.state.admin_sessions = create_admin_session_store(settings)
     app.state.login_attempts = create_login_attempt_store(settings)
     app.state.automation_tokens = create_automation_token_store(settings)
+    app.state.repository_import_grants = create_repository_import_grant_store(settings)
     app.state.session_cookie_settings = build_session_cookie_settings(
         settings.session_ttl_seconds,
         secure=settings.session_cookie_secure,
@@ -757,9 +889,20 @@ async def lifespan(app: FastAPI):
         if settings.active_recurrence_enabled
         else None
     )
+    if app.state.integration_event_dispatcher is not None:
+        app.state.integration_event_task = asyncio.create_task(
+            run_integration_event_loop(app), name="inspectra-integration-event-outbox"
+        )
     try:
         yield
     finally:
+        app.state.integration_event_stop.set()
+        app.state.integration_event_wake.set()
+        integration_event_task = app.state.integration_event_task
+        if integration_event_task is not None:
+            integration_event_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await integration_event_task
         app.state.active_recurrence_stop.set()
         recurrence_task = app.state.active_recurrence_task
         if recurrence_task is not None:
@@ -789,6 +932,8 @@ PUBLIC_ANONYMOUS_PATHS = {
     "/ready",
     "/auth/status",
     "/auth/login",
+    "/auth/oidc/start",
+    "/auth/oidc/callback",
     "/auth/invitations/accept",
 }
 CSRF_REQUIRED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -813,6 +958,7 @@ CORS_EXPOSED_RESPONSE_HEADERS = ("X-Inspectra-Snapshot-SHA256",)
 PROJECT_FLOW_MUTATION_ROUTE_CONTRACT = frozenset(
     {
         ("POST", "/projects"),
+        ("POST", "/projects/import/git-snapshot"),
         ("POST", "/projects/import/sbom"),
         ("POST", "/projects/import/sbom/preflight"),
         ("POST", "/projects/{project_id}/baseline"),
@@ -960,6 +1106,7 @@ async def run_scheduled_project_archive(app: FastAPI, job_id: str) -> None:
     try:
         await run_tracked_bounded_audit(app, app.state.project_archive_audits.run_project_archive_analysis, job_id)
     finally:
+        enqueue_terminal_project_analysis_event(app, job_id)
         app.state.scheduled_project_audit_job_ids.discard(job_id)
 
 
@@ -1608,6 +1755,33 @@ async def deny_anonymous_sensitive_routes(request: Request, call_next) -> Respon
             if not authorization.startswith("Bearer ") or authorization.count(" ") != 1:
                 response = JSONResponse(status_code=401, content={"detail": AUTOMATION_TOKEN_INVALID_DETAIL})
                 return response
+            plaintext = authorization.removeprefix("Bearer ")
+            if plaintext.startswith(REPOSITORY_IMPORT_GRANT_PREFIX):
+                grant_store = getattr(request.app.state, "repository_import_grants", None)
+                if not isinstance(grant_store, RepositoryImportGrantStore):
+                    response = JSONResponse(status_code=401, content={"detail": AUTOMATION_TOKEN_INVALID_DETAIL})
+                    return response
+                try:
+                    import_principal = grant_store.authenticate(plaintext)
+                except RepositoryImportGrantError:
+                    response = JSONResponse(
+                        status_code=503,
+                        content={"detail": "Repository import authentication is unavailable."},
+                    )
+                    return response
+                if import_principal is None:
+                    response = JSONResponse(status_code=401, content={"detail": AUTOMATION_TOKEN_INVALID_DETAIL})
+                    return response
+                if request.method.upper() != "POST" or request.url.path != "/projects/import/git-snapshot":
+                    response = JSONResponse(
+                        status_code=403,
+                        content={"detail": "Repository import grant permits one initial Git snapshot only."},
+                    )
+                    return response
+                request.state.repository_import_principal = import_principal
+                request.state.current_operator_id = import_principal.organization_id
+                response = await call_next(request)
+                return response
             token_store = getattr(request.app.state, "automation_tokens", None)
             if not isinstance(token_store, AutomationTokenStore):
                 response = JSONResponse(status_code=401, content={"detail": AUTOMATION_TOKEN_INVALID_DETAIL})
@@ -1807,6 +1981,30 @@ def create_team_identity_store(settings) -> TeamIdentityStore | None:
     )
 
 
+def create_oidc_federation_config(settings) -> OidcFederationConfig | None:
+    if settings.oidc_issuer is None:
+        return None
+    try:
+        return OidcFederationConfig(
+            issuer=settings.oidc_issuer,
+            authorization_endpoint=settings.oidc_authorization_endpoint,
+            token_endpoint=settings.oidc_token_endpoint,
+            jwks_uri=settings.oidc_jwks_uri,
+            client_id=settings.oidc_client_id,
+            client_secret=settings.oidc_client_secret,
+            redirect_uri=settings.oidc_redirect_uri,
+            post_login_redirect_uri=settings.oidc_post_login_redirect_uri,
+            organization_id=settings.oidc_organization_id,
+            reader_group=settings.oidc_reader_group,
+            maintainer_group=settings.oidc_maintainer_group,
+            subject_hmac_key=settings.oidc_subject_hmac_key,
+            tenant_claim=settings.oidc_tenant_claim,
+            expected_tenant=settings.oidc_expected_tenant,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("OIDC federation configuration is invalid.") from exc
+
+
 def create_automation_token_store(settings) -> AutomationTokenStore | None:
     if get_auth_mode(settings) not in {"self_hosted_single_admin", "private_team_lightweight_users"}:
         return None
@@ -1815,9 +2013,22 @@ def create_automation_token_store(settings) -> AutomationTokenStore | None:
     return AutomationTokenStore(settings.resolved_auth_state_db_path)
 
 
+def create_repository_import_grant_store(settings) -> RepositoryImportGrantStore | None:
+    if get_auth_mode(settings) not in {"self_hosted_single_admin", "private_team_lightweight_users"}:
+        return None
+    if settings.auth_state_store != "sqlite" or not is_auth_configured(settings):
+        return None
+    return RepositoryImportGrantStore(settings.resolved_auth_state_db_path)
+
+
 def automation_principal_for_request(request: Request) -> AutomationPrincipal | None:
     principal = getattr(request.state, "automation_principal", None)
     return principal if isinstance(principal, AutomationPrincipal) else None
+
+
+def repository_import_principal_for_request(request: Request) -> RepositoryImportPrincipal | None:
+    principal = getattr(request.state, "repository_import_principal", None)
+    return principal if isinstance(principal, RepositoryImportPrincipal) else None
 
 
 def automation_principal_authorizes_request(principal: AutomationPrincipal, method: str, path: str) -> bool:
@@ -2157,6 +2368,44 @@ def finding_decision_assignee(request: Request, user_id: str | None) -> tuple[st
     if user_id != actor_id:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Assignee must be the current operator.")
     return actor_id, actor_username
+
+
+def finding_decision_mentions(request: Request, comment: str | None) -> list[str]:
+    """Resolve explicit @usernames only against the current workspace."""
+
+    try:
+        usernames = extract_decision_mentions(comment)
+    except FindingLifecycleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A decision may mention at most five active workspace members.",
+        ) from exc
+    if not usernames:
+        return []
+    settings = getattr(request.app.state, "settings", None) or load_settings()
+    if get_auth_mode(settings) == "private_team_lightweight_users":
+        principal = current_team_principal(request)
+        try:
+            active = {
+                member.username
+                for member in request.app.state.team_identity.list_members(
+                    principal.organization_id
+                )
+            }
+        except TeamIdentityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Identity service unavailable.",
+            ) from exc
+    else:
+        _actor_id, actor_username, _actor_role = finding_decision_actor(request)
+        active = {actor_username}
+    if any(username not in active for username in usernames):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Mentions must reference active workspace members.",
+        )
+    return usernames
 
 
 def project_responsibility_for_report(
@@ -3910,6 +4159,10 @@ async def auth_status(request: Request) -> AuthStatusResponse:
         trusted_local=auth_mode == "trusted_local_no_auth",
         default_operator_id=operator.id,
         login_available=is_login_available_for_settings(settings),
+        federated_login_available=getattr(request.app.state, "oidc_config", None) is not None,
+        federated_login_path=(
+            "/auth/oidc/start" if getattr(request.app.state, "oidc_config", None) is not None else None
+        ),
         authenticated=session is not None,
         operator_id=session.operator_id if session is not None else None,
         username=principal.username if principal is not None else None,
@@ -3919,6 +4172,119 @@ async def auth_status(request: Request) -> AuthStatusResponse:
         csrf_required=auth_required,
         csrf_token=csrf_token_for_session(request, session),
     )
+
+
+@app.get("/auth/oidc/start")
+async def auth_oidc_start(request: Request) -> RedirectResponse:
+    config = getattr(request.app.state, "oidc_config", None)
+    transactions = getattr(request.app.state, "oidc_transactions", None)
+    if not isinstance(config, OidcFederationConfig) or not isinstance(transactions, OidcTransactionStore):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Federated login is unavailable.")
+    if request.query_params:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Federated login does not accept request data.")
+    start_attempts = request.app.state.oidc_start_attempts
+    client_key = login_client_key_for_request(request)
+    start_attempts.purge_expired()
+    if start_attempts.is_locked(client_key):
+        retry_after = start_attempts.seconds_until_unlock(client_key)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=RATE_LIMITED_DETAIL,
+            headers={"Retry-After": str(retry_after)} if retry_after > 0 else None,
+        )
+    start_attempts.record_failure(client_key)
+    transaction = transactions.create()
+    response = RedirectResponse(config.authorization_url(transaction), status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        key=OIDC_STATE_COOKIE_NAME,
+        value=transaction.binding,
+        max_age=OIDC_TRANSACTION_TTL_SECONDS,
+        httponly=True,
+        secure=request.app.state.session_cookie_settings.secure,
+        samesite=OIDC_STATE_COOKIE_SAMESITE,
+        path="/auth/oidc/callback",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/auth/oidc/callback")
+async def auth_oidc_callback(
+    request: Request,
+    code: str | None = Query(default=None, min_length=1, max_length=2048),
+    state: str | None = Query(default=None, min_length=1, max_length=256),
+    error: str | None = Query(default=None, max_length=128),
+) -> RedirectResponse:
+    config = getattr(request.app.state, "oidc_config", None)
+    transactions = getattr(request.app.state, "oidc_transactions", None)
+    provider = getattr(request.app.state, "oidc_provider", None)
+    if not isinstance(config, OidcFederationConfig) or not isinstance(transactions, OidcTransactionStore):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Federated login is unavailable.")
+    outcome = "failed"
+    failure_code = "provider_denied" if error else "invalid_callback"
+    try:
+        if error or code is None or state is None or provider is None:
+            raise OidcFederationError(failure_code)
+        transaction = transactions.consume(state, request.cookies.get(OIDC_STATE_COOKIE_NAME))
+        identity = await authenticate_oidc_callback(
+            config=config,
+            transaction=transaction,
+            code=code,
+            exchange_code=provider.exchange_code,
+            load_jwks=provider.jwks,
+        )
+        identity_store = getattr(request.app.state, "team_identity", None)
+        if not isinstance(identity_store, TeamIdentityStore):
+            raise OidcFederationError("identity_store_unavailable")
+        principal = identity_store.resolve_federated_principal(
+            organization_id=config.organization_id,
+            subject_digest=identity.subject_digest,
+            asserted_role=identity.asserted_role,
+        )
+        if principal is None:
+            raise OidcFederationError("identity_not_provisioned")
+        session = request.app.state.admin_sessions.create_admin_session(
+            principal.user_id,
+            auth_mode="private_team_lightweight_users",
+            organization_id=principal.organization_id,
+            role=principal.role,
+        )
+        outcome = "success"
+        request.app.state.oidc_start_attempts.reset_success(login_client_key_for_request(request))
+        response = RedirectResponse(f"{config.post_login_redirect_uri}?oidc=success", status_code=status.HTTP_303_SEE_OTHER)
+        cookie_settings = request.app.state.session_cookie_settings
+        response.set_cookie(
+            key=cookie_settings.name,
+            value=session.session_id,
+            max_age=cookie_settings.max_age_seconds,
+            httponly=cookie_settings.httponly,
+            secure=cookie_settings.secure,
+            samesite=cookie_settings.samesite,
+            path=cookie_settings.path,
+        )
+        record_product_action(
+            request,
+            "auth.oidc_login",
+            resource_type="account",
+            resource_id=principal.user_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            actor_role=principal.role,
+        )
+    except (OidcFederationError, TeamIdentityError) as exc:
+        failure_code = exc.code
+        log_audit_event("auth.oidc_login", result="failed", reason=failure_code)
+        response = RedirectResponse(f"{config.post_login_redirect_uri}?oidc=failed", status_code=status.HTTP_303_SEE_OTHER)
+    response.delete_cookie(
+        key=OIDC_STATE_COOKIE_NAME,
+        path="/auth/oidc/callback",
+        secure=request.app.state.session_cookie_settings.secure,
+        httponly=True,
+        samesite=OIDC_STATE_COOKIE_SAMESITE,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Inspectra-OIDC-Result"] = outcome
+    return response
 
 
 @app.post("/auth/login", response_model=AuthSessionResponse)
@@ -4641,6 +5007,81 @@ async def get_public_advisory_operations(request: Request, response: Response) -
     return result
 
 
+@app.get("/operations/integration-events", response_model=IntegrationEventStatus)
+async def get_integration_event_status(request: Request, response: Response) -> IntegrationEventStatus:
+    """Expose aggregate outbox health to the active workspace administrator."""
+
+    if request.query_params:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Integration event status does not accept query parameters.")
+    organization_id = require_retention_administrator(request)
+    store = getattr(request.app.state, "integration_event_store", None)
+    counts = store.summary(organization_id) if store is not None else {
+        "pending": 0,
+        "delivering": 0,
+        "delivered": 0,
+        "dead": 0,
+    }
+    response.headers["Cache-Control"] = "private, no-store"
+    return IntegrationEventStatus(
+        enabled=getattr(request.app.state, "integration_event_config", None) is not None,
+        destination_configured=getattr(request.app.state, "integration_event_config", None) is not None,
+        **counts,
+    )
+
+
+@app.get(
+    "/operations/integration-events/replay-preflight",
+    response_model=IntegrationEventReplayPreflight,
+)
+async def get_integration_event_replay_preflight(
+    request: Request, response: Response
+) -> IntegrationEventReplayPreflight:
+    if request.query_params:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Integration event replay preflight does not accept query parameters.")
+    organization_id = require_retention_administrator(request)
+    store = getattr(request.app.state, "integration_event_store", None)
+    if store is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Signed integration delivery is disabled.")
+    try:
+        result = store.replay_preflight(organization_id)
+    except IntegrationEventError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Integration event replay is unavailable.") from exc
+    response.headers["Cache-Control"] = "private, no-store"
+    return result
+
+
+@app.post(
+    "/operations/integration-events/replay",
+    response_model=IntegrationEventReplayResult,
+)
+async def replay_dead_integration_events(
+    request: Request,
+    payload: IntegrationEventReplayRequest,
+    response: Response,
+) -> IntegrationEventReplayResult:
+    organization_id = require_retention_administrator(request)
+    store = getattr(request.app.state, "integration_event_store", None)
+    if store is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Signed integration delivery is disabled.")
+    try:
+        result = store.replay_dead(organization_id, payload)
+    except IntegrationEventError as exc:
+        if exc.code in {"replay_preflight_expired", "replay_snapshot_changed", "no_dead_events"}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Replay scope changed or expired. Review it again.") from exc
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Integration event replay is unavailable.") from exc
+    request.app.state.integration_event_wake.set()
+    record_product_action(
+        request,
+        "integration_events.replayed",
+        resource_type="organization",
+        resource_id=organization_id,
+        organization_id=organization_id,
+        metadata={"event_count": result.replayed_events, "replayed": True},
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return result
+
+
 @app.post("/operations/public-advisories/cache/purge-expired", response_model=PublicAdvisoryCacheCleanupResponse)
 async def purge_public_advisory_cache(request: Request, response: Response) -> PublicAdvisoryCacheCleanupResponse:
     if request.query_params or await request.body():
@@ -4728,6 +5169,125 @@ async def create_team_invitation(
         username=invitation.username,
         role=invitation.role,
         expires_at=invitation.expires_at,
+    )
+
+
+@app.get(
+    "/organization/federated-identities",
+    response_model=list[FederatedIdentityBindingResponse],
+)
+async def list_federated_identities(request: Request) -> list[FederatedIdentityBindingResponse]:
+    principal = require_team_administrator(request)
+    config = getattr(request.app.state, "oidc_config", None)
+    if not isinstance(config, OidcFederationConfig) or principal.organization_id != config.organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Federated identity is unavailable.")
+    try:
+        bindings = request.app.state.team_identity.list_federated_identities(principal.organization_id)
+    except TeamIdentityError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Federated identity is unavailable.") from exc
+    return [
+        FederatedIdentityBindingResponse(
+            id=item.binding_id,
+            user_id=item.user_id,
+            username=item.username,
+            role=item.role,
+            created_at=item.created_at,
+            revoked_at=item.revoked_at,
+        )
+        for item in bindings
+    ]
+
+
+@app.post(
+    "/organization/federated-identities",
+    response_model=FederatedIdentityBindingResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def provision_federated_identity(
+    request: Request,
+    payload: FederatedIdentityProvisionRequest,
+) -> FederatedIdentityBindingResponse:
+    principal = require_team_administrator(request)
+    config = getattr(request.app.state, "oidc_config", None)
+    if not isinstance(config, OidcFederationConfig) or principal.organization_id != config.organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Federated identity is unavailable.")
+    try:
+        binding = request.app.state.team_identity.provision_federated_identity(
+            principal=principal,
+            user_id=payload.user_id,
+            subject_digest=config.subject_digest(payload.subject),
+        )
+    except OidcFederationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Federated identity is invalid.") from exc
+    except TeamIdentityError as exc:
+        if exc.code == "member_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.") from exc
+        if exc.code in {"federated_administrator_forbidden", "federated_identity_conflict"}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Federated identity cannot be provisioned.") from exc
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Federated identity is unavailable.") from exc
+    record_product_action(
+        request,
+        "team.federated_identity_provisioned",
+        resource_type="federated_identity",
+        resource_id=binding.binding_id,
+        organization_id=principal.organization_id,
+        actor_id=principal.user_id,
+        actor_role=principal.role,
+        metadata={"target_user_id": binding.user_id, "target_role": binding.role},
+    )
+    return FederatedIdentityBindingResponse(
+        id=binding.binding_id,
+        user_id=binding.user_id,
+        username=binding.username,
+        role=binding.role,
+        created_at=binding.created_at,
+        revoked_at=binding.revoked_at,
+    )
+
+
+@app.delete(
+    "/organization/federated-identities/{binding_id}",
+    response_model=FederatedIdentityBindingResponse,
+)
+async def revoke_federated_identity(
+    request: Request,
+    binding_id: str,
+) -> FederatedIdentityBindingResponse:
+    principal = require_team_administrator(request)
+    config = getattr(request.app.state, "oidc_config", None)
+    if not isinstance(config, OidcFederationConfig) or principal.organization_id != config.organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Federated identity is unavailable.")
+    try:
+        binding = request.app.state.team_identity.revoke_federated_identity(
+            principal=principal,
+            binding_id=binding_id,
+        )
+    except TeamIdentityError as exc:
+        if exc.code in {"invalid_identifier", "federated_identity_not_found"}:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Federated identity not found.") from exc
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Federated identity is unavailable.") from exc
+    invalidator = getattr(request.app.state.admin_sessions, "invalidate_operator_organization_sessions", None)
+    if callable(invalidator):
+        invalidator(binding.user_id, principal.organization_id)
+    else:
+        request.app.state.admin_sessions.invalidate_operator_sessions(binding.user_id)
+    record_product_action(
+        request,
+        "team.federated_identity_revoked",
+        resource_type="federated_identity",
+        resource_id=binding.binding_id,
+        organization_id=principal.organization_id,
+        actor_id=principal.user_id,
+        actor_role=principal.role,
+        metadata={"target_user_id": binding.user_id},
+    )
+    return FederatedIdentityBindingResponse(
+        id=binding.binding_id,
+        user_id=binding.user_id,
+        username=binding.username,
+        role=binding.role,
+        created_at=binding.created_at,
+        revoked_at=binding.revoked_at,
     )
 
 
@@ -4972,6 +5532,169 @@ async def revoke_automation_token(request: Request, token_id: str) -> Automation
     return automation_token_response(record)
 
 
+@app.post(
+    "/repository-import/grants",
+    response_model=RepositoryImportGrantCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_repository_import_grant(
+    request: Request,
+    payload: RepositoryImportGrantCreateRequest,
+) -> RepositoryImportGrantCreatedResponse:
+    """Issue one short-lived secret for exactly one initial local Git snapshot."""
+
+    organization_id, actor_id, actor_role = require_automation_token_administrator(request)
+    store = getattr(request.app.state, "repository_import_grants", None)
+    if not isinstance(store, RepositoryImportGrantStore):
+        raise HTTPException(status_code=404, detail="Repository import grants are unavailable.")
+    try:
+        record, plaintext = store.create(
+            organization_id=organization_id,
+            created_by=actor_id,
+            lifetime_seconds=payload.lifetime_seconds,
+        )
+    except RepositoryImportGrantError as exc:
+        if exc.code in {"invalid_identity", "invalid_lifetime"}:
+            raise HTTPException(status_code=400, detail="Repository import grant request is invalid.") from exc
+        if exc.code == "active_limit":
+            raise HTTPException(status_code=409, detail="Wait for an active import grant to expire before creating another one.") from exc
+        raise HTTPException(status_code=503, detail="Repository import grants are unavailable.") from exc
+    record_product_action(
+        request,
+        "repository_import_grant.created",
+        resource_type="repository_import_grant",
+        resource_id=record.grant_id,
+        organization_id=organization_id,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        metadata={"lifetime_seconds": payload.lifetime_seconds},
+    )
+    return RepositoryImportGrantCreatedResponse(
+        id=record.grant_id,
+        token=plaintext,
+        created_at=record.created_at,
+        expires_at=record.expires_at,
+    )
+
+
+def normalize_git_branch_metadata(branch: str | None) -> str | None:
+    if branch is None:
+        return None
+    normalized = branch.strip()
+    if (
+        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,159}", normalized)
+        or ".." in normalized
+        or "//" in normalized
+        or normalized.endswith(("/", ".lock"))
+    ):
+        raise HTTPException(status_code=400, detail="Git branch metadata is invalid.")
+    return normalized
+
+
+@app.post(
+    "/projects/import/git-snapshot",
+    response_model=GitProjectCreated,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def import_git_snapshot_project(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    name: str = Form(..., min_length=3, max_length=120),
+    commit_sha: str = Form(..., min_length=40, max_length=64, pattern=r"^[a-f0-9]{40,64}$"),
+    source_sha256: str = Form(..., min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$"),
+    branch: str | None = Form(default=None, max_length=160),
+    authorization_confirmed: bool = Form(...),
+) -> GitProjectCreated:
+    """Admit a locally built exact-commit snapshot without Git URL or credentials."""
+
+    submitted_form = await request.form()
+    allowed_fields = {
+        "file",
+        "name",
+        "commit_sha",
+        "source_sha256",
+        "branch",
+        "authorization_confirmed",
+    }
+    if set(submitted_form.keys()) - allowed_fields or any(
+        len(submitted_form.getlist(field_name)) != 1
+        for field_name in allowed_fields
+        if field_name in submitted_form
+    ):
+        raise HTTPException(status_code=400, detail="Git snapshot admission fields are invalid.")
+    if authorization_confirmed is not True:
+        raise HTTPException(status_code=400, detail="Explicit source authorization confirmation is required.")
+    normalized_name = name.strip()
+    if not normalized_name or any(ord(character) < 32 or character in {"/", "\\"} for character in normalized_name):
+        raise HTTPException(status_code=400, detail="Project name contains unsupported characters.")
+    normalized_branch = normalize_git_branch_metadata(branch)
+    import_principal = repository_import_principal_for_request(request)
+    owner_id = import_principal.organization_id if import_principal is not None else current_owner_id_for_request(request)
+    request.app.state.jobs.assert_admission_available(owner_id=owner_id)
+    if import_principal is not None:
+        store = getattr(request.app.state, "repository_import_grants", None)
+        if not isinstance(store, RepositoryImportGrantStore):
+            raise HTTPException(status_code=503, detail="Repository import grants are unavailable.")
+        try:
+            store.consume(import_principal)
+        except RepositoryImportGrantError as exc:
+            if exc.code == "invalid_or_consumed":
+                raise HTTPException(status_code=409, detail="Repository import grant is expired or already consumed.") from exc
+            raise HTTPException(status_code=503, detail="Repository import grants are unavailable.") from exc
+
+    uploaded = await request.app.state.files.save_archive(file, owner_id=owner_id)
+    if uploaded.sha256 != source_sha256:
+        request.app.state.files.delete(uploaded.id, owner_id=owner_id)
+        raise HTTPException(status_code=409, detail="Uploaded snapshot digest does not match the declared source digest.")
+    project = request.app.state.projects.create(
+        name=normalized_name,
+        source=uploaded,
+        owner_id=owner_id,
+        source_channel="git_cli",
+        source_commit_sha=commit_sha,
+        source_branch=normalized_branch,
+    )
+    job = request.app.state.jobs.create_project_archive_job(
+        uploaded.id,
+        owner_id=owner_id,
+        project_id=project.id,
+        source_sha256=uploaded.sha256,
+    )
+    project = request.app.state.projects.attach_job(project.id, job.id)
+    snapshot = project.source_snapshots[0]
+    actor_id = import_principal.created_by if import_principal is not None else None
+    record_product_action(
+        request,
+        "project.git_snapshot_imported",
+        resource_type="project",
+        resource_id=project.id,
+        organization_id=owner_id,
+        actor_id=actor_id,
+        actor_role="repository_import_grant" if actor_id is not None else None,
+        metadata={
+            "job_id": job.id,
+            "analysis_profile": job.analysis_profile,
+            "source_channel": "git_cli",
+        },
+    )
+    log_audit_event(
+        "project.git_snapshot.queued",
+        correlation_id=f"job:{job.id}",
+        project_id=project.id,
+        job_id=job.id,
+        owner_id=owner_id,
+    )
+    schedule_project_archive_once(background_tasks, request.app, job.id)
+    return GitProjectCreated(
+        project=project,
+        job=request.app.state.jobs.get_list_item(job.id),
+        snapshot=snapshot,
+        commit_sha=commit_sha,
+        source_digest_verified=True,
+    )
+
+
 @app.post("/projects", response_model=ProjectCreated, status_code=status.HTTP_201_CREATED)
 async def create_project(
     request: Request,
@@ -5018,7 +5741,7 @@ async def create_project(
             "execution_contract_version": job.execution_profile.contract_version if job.execution_profile else None,
         },
     )
-    schedule_bounded_audit(background_tasks, request.app, request.app.state.project_archive_audits.run_project_archive_analysis, job.id)
+    schedule_project_archive_once(background_tasks, request.app, job.id)
     return ProjectCreated(project=project, job=request.app.state.jobs.get_list_item(job.id))
 
 
@@ -5615,6 +6338,7 @@ async def apply_remediation_action(
         selections=payload.selections,
     )
     assignee_user_id, assignee_username = finding_decision_assignee(request, payload.assignee_user_id)
+    mentioned_usernames = finding_decision_mentions(request, payload.comment)
     try:
         decisions, replayed = request.app.state.finding_decisions.record_many(
             organization_id=organization_id,
@@ -5628,6 +6352,7 @@ async def apply_remediation_action(
             status=payload.status,
             reason=payload.reason,
             comment=payload.comment,
+            mentioned_usernames=mentioned_usernames,
             actor_id=actor_id,
             actor_username=actor_username,
             actor_role=actor_role,
@@ -5643,7 +6368,7 @@ async def apply_remediation_action(
         if exc.code in {"finding_decision_limit", "project_decision_limit", "store_limit"}:
             raise HTTPException(status_code=409, detail="Finding decision history reached its configured limit.") from exc
         if exc.code in {
-            "reason_required", "invalid_text", "invalid_assignee", "review_date_required",
+            "reason_required", "invalid_text", "invalid_assignee", "invalid_mentions", "review_date_required",
             "review_date_not_allowed", "review_date_not_future", "review_date_timezone_required",
             "review_date_too_far", "finding_not_supported", "invalid_batch",
         }:
@@ -6183,6 +6908,64 @@ async def get_project_findings(
     return project_findings_response(request, project, analysis_id)
 
 
+@app.get(
+    "/projects/{project_id}/findings/{finding_id}/activity",
+    response_model=FindingActivityPage,
+)
+async def get_project_finding_activity(
+    request: Request,
+    response: Response,
+    project_id: str,
+    finding_id: str,
+    page_size: int = Query(default=10, ge=1, le=25),
+    cursor: str | None = Query(default=None, min_length=32, max_length=32, pattern=r"^[a-f0-9]{32}$"),
+) -> FindingActivityPage:
+    """Page redacted decision context inside the current owner boundary."""
+
+    project = get_project_for_current_owner(request, project_id)
+    organization_id = project.organization_id or project.owner_id
+    if not organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Finding activity is unavailable.",
+        )
+    try:
+        items, total, next_cursor = request.app.state.finding_decisions.page_for_finding(
+            organization_id,
+            project.id,
+            finding_id,
+            page_size=page_size,
+            cursor=cursor,
+        )
+    except FindingLifecycleError as exc:
+        if exc.code == "invalid_activity_cursor":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Finding activity cursor is invalid. Restart from the first page.",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Finding activity is unavailable.",
+        ) from exc
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    record_product_action(
+        request,
+        "finding.activity_read",
+        resource_type="finding",
+        resource_id=finding_id,
+        organization_id=organization_id,
+        metadata={"event_count": len(items), "filter_applied": cursor is not None},
+    )
+    return FindingActivityPage(
+        items=items,
+        total_count=total,
+        returned_count=len(items),
+        has_more=next_cursor is not None,
+        next_cursor=next_cursor,
+    )
+
+
 @app.post(
     "/projects/{project_id}/findings/{finding_id}/decisions",
     response_model=FindingDecisionRecord,
@@ -6232,6 +7015,7 @@ async def create_project_finding_decision(
 
     actor_id, actor_username, actor_role = finding_decision_actor(request)
     assignee_user_id, assignee_username = finding_decision_assignee(request, payload.assignee_user_id)
+    mentioned_usernames = finding_decision_mentions(request, payload.comment)
     organization_id = project.organization_id or project.owner_id
     if not organization_id:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Finding lifecycle is unavailable.")
@@ -6244,6 +7028,7 @@ async def create_project_finding_decision(
             status=payload.status,
             reason=payload.reason,
             comment=payload.comment,
+            mentioned_usernames=mentioned_usernames,
             actor_id=actor_id,
             actor_username=actor_username,
             actor_role=actor_role,
@@ -6262,6 +7047,7 @@ async def create_project_finding_decision(
         if exc.code in {
             "reason_required",
             "invalid_text",
+            "invalid_mentions",
             "invalid_assignee",
             "review_date_required",
             "review_date_not_allowed",
@@ -6843,7 +7629,9 @@ async def launch_project_analysis(
         },
     )
     if not is_sbom:
-        schedule_bounded_audit(background_tasks, request.app, request.app.state.project_archive_audits.run_project_archive_analysis, job.id)
+        schedule_project_archive_once(background_tasks, request.app, job.id)
+    else:
+        enqueue_terminal_project_analysis_event(request.app, job.id)
     return request.app.state.jobs.get_list_item(job.id)
 
 

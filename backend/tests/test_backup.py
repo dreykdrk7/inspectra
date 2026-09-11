@@ -23,6 +23,7 @@ from app.auth_state_sqlite import SQLiteAuthStateStore
 from app.backup import BackupError, create_backup, restore_backup, validate_data_store, verify_backup
 from app.config import Settings
 from app.finding_lifecycle import FindingDecisionStore
+from app.integration_events import IntegrationEventStore
 from app.remediation_saved_views import (
     RemediationSavedViewCreateRequest,
     RemediationSavedViewFilters,
@@ -213,7 +214,7 @@ def test_full_backup_verify_restore_preserves_owner_boundaries_and_revokes_acces
     assert restored.invitations_revoked == 1
     validation = validate_data_store(restored_dir)
     assert validation.auth_schema_version == 2
-    assert validation.team_identity_schema_version == 2
+    assert validation.team_identity_schema_version == 3
     restored_settings = _settings(restored_dir)
     restored_file_index = restored_settings.data_dir / "results" / "file_retention_index.sqlite3"
     assert restored_file_index.exists()
@@ -574,6 +575,19 @@ def test_backup_validates_private_portfolio_priority_projection_and_rebuilds_aft
 def test_manifest_is_host_path_and_human_identity_free_but_declares_sensitive_scope(tmp_path):
     data_dir = tmp_path / "source-data"
     _build_complete_fixture(data_dir)
+    settings = _settings(data_dir)
+    outbox = IntegrationEventStore(settings.integration_event_outbox_path, now_func=lambda: NOW)
+    outbox.enqueue_terminal_analysis(
+        organization_id=OWNER_A,
+        project_id="d" * 32,
+        analysis_id="e" * 32,
+        status="failed",
+        occurred_at=NOW,
+        finding_count=None,
+    )
+    claimed = outbox.claim_due()
+    assert claimed is not None
+    outbox.record_result(claimed.payload.event_id, accepted=True, retryable=False)
     backup_dir = tmp_path / "encrypted-backup"
     _create(data_dir, backup_dir)
 
@@ -585,6 +599,17 @@ def test_manifest_is_host_path_and_human_identity_free_but_declares_sensitive_sc
     assert manifest["auth_state_included"] is True
     assert "external_configuration" in manifest["excluded_classes"]
     assert "execution_workspaces" in manifest["excluded_classes"]
+    assert "integration_event_outbox" in manifest["excluded_classes"]
+    assert all("integration_event_outbox" not in entry["relative_path"] for entry in manifest["entries"])
+    assert not (backup_dir / "payload" / "runtime" / "integration_event_outbox.sqlite3").exists()
+    restored_dir = tmp_path / "restored-data"
+    restore_backup(
+        backup_dir,
+        restored_dir,
+        offline_confirmed=True,
+        sensitive_data_confirmed=True,
+    )
+    assert not (_settings(restored_dir).integration_event_outbox_path).exists()
     for forbidden in (
         str(data_dir),
         "authorized-private.zip",
@@ -594,6 +619,23 @@ def test_manifest_is_host_path_and_human_identity_free_but_declares_sensitive_sc
         "synthetic-invitation-token",
     ):
         assert forbidden not in manifest_text
+
+
+def test_backup_refuses_to_drop_pending_integration_events(tmp_path):
+    data_dir = tmp_path / "source-data"
+    _build_complete_fixture(data_dir)
+    settings = _settings(data_dir)
+    IntegrationEventStore(settings.integration_event_outbox_path, now_func=lambda: NOW).enqueue_terminal_analysis(
+        organization_id=OWNER_A,
+        project_id="d" * 32,
+        analysis_id="e" * 32,
+        status="failed",
+        occurred_at=NOW,
+        finding_count=None,
+    )
+
+    with pytest.raises(BackupError, match="pending_integration_events_present"):
+        _create(data_dir, tmp_path / "encrypted-backup")
 
 
 def test_backup_validates_restores_and_replays_active_batch_receipts(tmp_path):

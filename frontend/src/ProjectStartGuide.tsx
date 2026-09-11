@@ -1,15 +1,17 @@
-import { FolderPlus } from "lucide-react";
+import { FolderPlus, GitBranch } from "lucide-react";
 
 import type { ProjectSummary } from "./types";
 
 export function ProjectStartGuide({
   projects,
+  onRepository,
   onArchive,
   onSbom,
   onCi,
   onOpenProject,
 }: {
   projects: ProjectSummary[];
+  onRepository: () => void;
   onArchive: () => void;
   onSbom: () => void;
   onCi: (project: ProjectSummary) => void;
@@ -39,9 +41,12 @@ export function ProjectStartGuide({
       <div className="product-entry-grid" aria-label="Project onboarding paths">
         <article>
           <span className="entry-kicker">Local repository</span>
-          <h3>Analyze a source snapshot</h3>
-          <p>Create a tracked-files archive locally, then upload the authorized ZIP or TAR without repository credentials.</p>
-          <button type="button" onClick={onArchive}><FolderPlus size={16} aria-hidden="true" /> Prepare archive</button>
+          <h3>Import an exact Git commit</h3>
+          <p>Use the CLI to snapshot tracked blobs locally with a secret preflight. No clone URL, worktree change or Git credential reaches Inspectra.</p>
+          <div className="row-actions">
+            <button type="button" onClick={onRepository}><GitBranch size={16} aria-hidden="true" /> Set up Git import</button>
+            <button type="button" className="secondary-button" onClick={onArchive}><FolderPlus size={16} aria-hidden="true" /> Use archive workflow</button>
+          </div>
         </article>
         <article>
           <span className="entry-kicker">Continuous delivery</span>

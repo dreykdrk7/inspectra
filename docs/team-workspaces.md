@@ -156,7 +156,10 @@ volver a proponerse como una revisión nueva sin crear otra fila.
 - No hay borrado o renombrado de espacios. Un usuario con varias membresías
   entra primero en el espacio bootstrap si pertenece a él y luego puede cambiar
   de forma explícita; aún falta una preferencia de último espacio no sensible.
-- No hay correo, recuperación de cuenta, MFA, OIDC/SAML/SCIM ni tokens de API.
+- OIDC privado opt-in dispone de un primer vertical preaprovisionado para
+  `reader` y `maintainer`, documentado en `docs/oidc-federation.md`; solo se ha
+  validado con IdP simulado. No hay correo, recuperación de cuenta, MFA,
+  SAML/SCIM ni logout back-channel.
 - La bitácora empresarial de cambios de rol e invitaciones depende de
   `PROD-013`; los logs HTTP agregados no sustituyen una auditoría de acciones.
 - Antes de declarar el modo listo para despliegue se necesitan backup/restore,

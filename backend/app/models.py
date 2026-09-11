@@ -1284,6 +1284,12 @@ class CiProjectSnapshotCreated(ProjectSnapshotCreated):
     source_digest_verified: Literal[True] = True
 
 
+class GitProjectCreated(ProjectSnapshotCreated):
+    contract_version: Literal["2026-09-11.1"] = "2026-09-11.1"
+    commit_sha: str = Field(pattern=r"^[a-f0-9]{40,64}$")
+    source_digest_verified: Literal[True] = True
+
+
 class ProjectDeletionRequest(BaseModel):
     """Require an explicit acknowledgement for the irreversible project cascade."""
 
@@ -1379,7 +1385,7 @@ class FindingDecisionRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: Literal["2026-09-06.1"] = "2026-09-06.1"
+    contract_version: Literal["2026-09-06.1", "2026-09-11.1"] = "2026-09-11.1"
     id: str = Field(min_length=32, max_length=32, pattern=r"^[a-f0-9]{32}$")
     organization_id: str = Field(min_length=1, max_length=64, pattern=r"^(?:local-admin|[a-f0-9]{32})$")
     project_id: str = Field(min_length=32, max_length=32, pattern=r"^[a-f0-9]{32}$")
@@ -1392,6 +1398,7 @@ class FindingDecisionRecord(BaseModel):
     status: FindingDecisionStatus
     reason: str = Field(min_length=3, max_length=240)
     comment: str | None = Field(default=None, max_length=1_000)
+    mentioned_usernames: list[str] = Field(default_factory=list, max_length=5)
     assignee_user_id: str | None = Field(default=None, min_length=1, max_length=64)
     assignee_username: str | None = Field(default=None, min_length=3, max_length=64)
     actor_id: str = Field(min_length=1, max_length=64)
@@ -1417,6 +1424,12 @@ class FindingDecisionRecord(BaseModel):
             raise ValueError("Finding decision timestamps must include a timezone.")
         if self.review_at is not None and (self.review_at.tzinfo is None or self.review_at.utcoffset() is None):
             raise ValueError("Finding decision review timestamps must include a timezone.")
+        if (
+            len(set(self.mentioned_usernames)) != len(self.mentioned_usernames)
+            or any(re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,63}", value) is None for value in self.mentioned_usernames)
+            or (self.mentioned_usernames and self.comment is None)
+        ):
+            raise ValueError("Finding decision mentions are invalid.")
         return self
 
 
@@ -1429,6 +1442,28 @@ class FindingLifecycleState(BaseModel):
     review_overdue: bool = False
     current_decision: FindingDecisionRecord | None = None
     history: list[FindingDecisionRecord] = Field(default_factory=list)
+    history_total: int = Field(default=0, ge=0, le=100)
+    history_has_more: bool = False
+
+
+class FindingActivityPage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_version: Literal["2026-09-11.1"] = "2026-09-11.1"
+    items: list[FindingDecisionRecord] = Field(default_factory=list, max_length=25)
+    total_count: int = Field(ge=0, le=100)
+    returned_count: int = Field(ge=0, le=25)
+    has_more: bool
+    next_cursor: str | None = Field(default=None, min_length=32, max_length=32, pattern=r"^[a-f0-9]{32}$")
+    privacy: Literal["owner_scoped_redacted_decision_activity"] = "owner_scoped_redacted_decision_activity"
+
+    @model_validator(mode="after")
+    def validate_pagination_contract(self):
+        if self.returned_count != len(self.items):
+            raise ValueError("Finding activity returned_count must match the returned items.")
+        if self.has_more != (self.next_cursor is not None):
+            raise ValueError("Finding activity cursor state is inconsistent.")
+        return self
 
 
 class FindingDecisionCreateRequest(BaseModel):
@@ -2215,6 +2250,8 @@ class AuthStatusResponse(BaseModel):
     trusted_local: bool
     default_operator_id: str
     login_available: bool = False
+    federated_login_available: bool = False
+    federated_login_path: str | None = None
     authenticated: bool = False
     operator_id: str | None = None
     username: str | None = None
@@ -2238,6 +2275,22 @@ class AuthSessionResponse(BaseModel):
     auth_mode: AuthMode
     organization_id: str | None = None
     role: TeamRole | None = None
+
+
+class FederatedIdentityProvisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(pattern=r"^[a-f0-9]{32}$|^team-admin$", max_length=64)
+    subject: str = Field(min_length=1, max_length=255)
+
+
+class FederatedIdentityBindingResponse(BaseModel):
+    id: str
+    user_id: str
+    username: str
+    role: TeamRole
+    created_at: datetime
+    revoked_at: datetime | None = None
 
 
 class TeamOrganizationResponse(BaseModel):
@@ -2647,6 +2700,21 @@ class AutomationTokenProbeResponse(BaseModel):
     project_id: str
     scopes: list[AutomationTokenScope]
     scopes_complete: bool
+    expires_at: datetime
+
+
+class RepositoryImportGrantCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lifetime_seconds: int = Field(default=900, ge=300, le=1800)
+
+
+class RepositoryImportGrantCreatedResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    token: str = Field(min_length=89, max_length=89)
+    created_at: datetime
     expires_at: datetime
 
 

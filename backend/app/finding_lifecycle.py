@@ -24,10 +24,12 @@ from app.risk_trend_source_clock import RiskTrendSourceClock
 from app.storage import _atomic_write_json, storage_lock
 
 
-FINDING_DECISION_CONTRACT_VERSION = "2026-09-06.1"
+FINDING_DECISION_CONTRACT_VERSION = "2026-09-11.1"
 MAX_DECISIONS_PER_FINDING = 100
 MAX_DECISIONS_PER_PROJECT = 10_000
 MAX_PORTFOLIO_QUERY_PROJECTS = 20_000
+FINDING_ACTIVITY_EMBEDDED_PAGE_SIZE = 10
+FINDING_ACTIVITY_MAX_PAGE_SIZE = 25
 
 ALLOWED_TRANSITIONS: dict[FindingDecisionStatus, frozenset[FindingDecisionStatus]] = {
     "open": frozenset({"in_review", "accepted", "false_positive", "resolved"}),
@@ -41,6 +43,10 @@ MAX_EXCEPTION_REVIEW_DAYS = 366
 REMEDIATION_BATCH_CONTRACT_VERSION = "2026-09-09.1"
 _BATCH_ID = re.compile(r"^[a-f0-9]{64}$")
 _ORGANIZATION_ID = re.compile(r"^(?:local-admin|[a-f0-9]{32})$")
+_PROJECT_ID = re.compile(r"^[a-f0-9]{32}$")
+_FINDING_ID = re.compile(r"^(?:[a-f0-9]{64}|pvf_[a-f0-9]{64})$")
+_USERNAME = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
+_MENTION = re.compile(r"(?<![A-Za-z0-9._-])@([a-z0-9][a-z0-9._-]{2,63})(?=$|\s)")
 
 
 class RemediationBatchJournal(BaseModel):
@@ -127,11 +133,15 @@ class FindingDecisionStore:
         review_at: datetime | None,
         assignee_user_id: str | None,
         assignee_username: str | None,
+        mentioned_usernames: list[str] | None = None,
     ) -> FindingDecisionRecord:
         now = self._now()
         safe_reason = safe_decision_text(reason, required=True, max_length=240)
         safe_comment = safe_decision_text(comment, required=False, max_length=1_000)
         normalized_review_at = normalize_review_at(review_at, status=status, now=now)
+        normalized_mentions = normalize_mentioned_usernames(mentioned_usernames)
+        if extract_decision_mentions(safe_comment) != normalized_mentions:
+            raise FindingLifecycleError("invalid_mentions")
         if len(rule_id) > 160 or any(ord(character) < 32 for character in rule_id):
             raise FindingLifecycleError("finding_not_supported")
         if bool(assignee_user_id) != bool(assignee_username):
@@ -162,6 +172,7 @@ class FindingDecisionStore:
                 status=status,
                 reason=safe_reason,
                 comment=safe_comment,
+                mentioned_usernames=normalized_mentions,
                 assignee_user_id=assignee_user_id,
                 assignee_username=assignee_username,
                 actor_id=actor_id,
@@ -182,6 +193,44 @@ class FindingDecisionStore:
     def list_for_project(self, organization_id: str, project_id: str) -> list[FindingDecisionRecord]:
         with storage_lock(self.settings):
             return self._list_for_project_unlocked(organization_id, project_id)
+
+    def page_for_finding(
+        self,
+        organization_id: str,
+        project_id: str,
+        finding_id: str,
+        *,
+        page_size: int = FINDING_ACTIVITY_EMBEDDED_PAGE_SIZE,
+        cursor: str | None = None,
+    ) -> tuple[list[FindingDecisionRecord], int, str | None]:
+        """Return a stable newest-first page bound to one owner/project/finding."""
+
+        if (
+            not _ORGANIZATION_ID.fullmatch(organization_id)
+            or not _PROJECT_ID.fullmatch(project_id)
+            or not _FINDING_ID.fullmatch(finding_id)
+            or not 1 <= page_size <= FINDING_ACTIVITY_MAX_PAGE_SIZE
+            or (cursor is not None and _PROJECT_ID.fullmatch(cursor) is None)
+        ):
+            raise FindingLifecycleError("invalid_activity_cursor")
+        records = [
+            record
+            for record in self.list_for_project(organization_id, project_id)
+            if record.finding_id == finding_id
+        ]
+        newest = list(reversed(records))
+        start = 0
+        if cursor is not None:
+            start = next(
+                (index + 1 for index, record in enumerate(newest) if record.id == cursor),
+                -1,
+            )
+            if start < 0:
+                raise FindingLifecycleError("invalid_activity_cursor")
+        items = newest[start : start + page_size]
+        has_more = start + len(items) < len(newest)
+        next_cursor = items[-1].id if items and has_more else None
+        return items, len(newest), next_cursor
 
     def batch_binding(
         self,
@@ -274,6 +323,7 @@ class FindingDecisionStore:
         review_at: datetime | None,
         assignee_user_id: str | None,
         assignee_username: str | None,
+        mentioned_usernames: list[str] | None = None,
     ) -> tuple[list[FindingDecisionRecord], bool]:
         """Commit one recoverable batch; its decisions become visible together."""
 
@@ -285,6 +335,9 @@ class FindingDecisionStore:
         safe_reason = safe_decision_text(reason, required=True, max_length=240)
         safe_comment = safe_decision_text(comment, required=False, max_length=1_000)
         normalized_review_at = normalize_review_at(review_at, status=status, now=now)
+        normalized_mentions = normalize_mentioned_usernames(mentioned_usernames)
+        if extract_decision_mentions(safe_comment) != normalized_mentions:
+            raise FindingLifecycleError("invalid_mentions")
         if bool(assignee_user_id) != bool(assignee_username):
             raise FindingLifecycleError("invalid_assignee")
 
@@ -346,6 +399,7 @@ class FindingDecisionStore:
                     status=status,
                     reason=safe_reason,
                     comment=safe_comment,
+                    mentioned_usernames=normalized_mentions,
                     assignee_user_id=assignee_user_id,
                     assignee_username=assignee_username,
                     actor_id=actor_id,
@@ -473,7 +527,9 @@ class FindingDecisionStore:
                 needs_review=current is not None and status == "in_review",
                 review_overdue=review_overdue,
                 current_decision=current,
-                history=list(reversed(history)),
+                history=list(reversed(history))[:FINDING_ACTIVITY_EMBEDDED_PAGE_SIZE],
+                history_total=len(history),
+                history_has_more=len(history) > FINDING_ACTIVITY_EMBEDDED_PAGE_SIZE,
             )
         return states
 
@@ -835,6 +891,36 @@ def safe_decision_text(value: str | None, *, required: bool, max_length: int) ->
         return None
     redacted = " ".join(redact_active_secret_text(normalized).split())
     return redacted[:max_length]
+
+
+def extract_decision_mentions(value: str | None) -> list[str]:
+    """Extract bounded, explicit team usernames without treating emails as mentions."""
+
+    if value is None:
+        return []
+    mentions: list[str] = []
+    for match in _MENTION.finditer(value):
+        username = match.group(1)
+        if username not in mentions:
+            mentions.append(username)
+        if len(mentions) > 5:
+            raise FindingLifecycleError("invalid_mentions")
+    return mentions
+
+
+def normalize_mentioned_usernames(values: list[str] | None) -> list[str]:
+    if values is None:
+        return []
+    if len(values) > 5:
+        raise FindingLifecycleError("invalid_mentions")
+    normalized = [value.strip().lower() for value in values if isinstance(value, str)]
+    if (
+        len(normalized) != len(values)
+        or len(set(normalized)) != len(normalized)
+        or any(_USERNAME.fullmatch(value) is None for value in normalized)
+    ):
+        raise FindingLifecycleError("invalid_mentions")
+    return normalized
 
 
 def normalize_review_at(
