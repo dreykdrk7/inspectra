@@ -7,8 +7,9 @@
   del alcance documentado más abajo. No validó GHSA/NVD reales, estabilidad,
   publicación ni despliegue externo.
 - **Última validación funcional remota: verde y no publicada.** El commit
-  `7f7614cc2c2024aaa90506841bf05b576c4bdb38` pasó CI; el tip documental
-  posterior `e40b61124023613ca39d89f0195ce46de6f7b066` no cambia producto. La
+  `b768fc3efc85ce7174029c8719d1f228f2f0cbca` pasó la ejecución remota
+  [34599394973](https://github.com/dreykdrk7/inspectra/actions/runs/34599394973)
+  completa; esta actualización documental posterior no cambia producto. La
   versión sigue siendo `0.3.0-beta.1`, sin merge, tag ni release.
 - **Cambios posteriores: requieren una aceptación nueva.** Un árbol de trabajo
   distinto, especialmente si contiene cambios sin confirmar, no hereda esos

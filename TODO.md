@@ -355,6 +355,11 @@ ya correlacionado.
 - **Estimación:** S
 - **Dependencias:** SEC-005 completada.
 - **Evidencia de validación al completarla:** 2026-09-10: las etiquetas oficiales se verificaron contra sus repositorios: checkout v4.4.0 → `11d5960a326750d5838078e36cf38b85af677262`, setup-python v5.6.0 → `a26af69be951a213d495a4c3e4e4022e16d87065` y setup-node v4.4.0 → `49933ea5288caeca8642d1e84afbd3f7d6820020`. El workflow referencia solo SHA completos, tiene permisos globales `contents: read`, no usa `pull_request_target`, secretos ni OIDC, y Gitleaks se ejecuta desde una imagen v8.30.1 fijada por digest. La ejecución real [34520803043](https://github.com/dreykdrk7/inspectra/actions/runs/34520803043) sobre `ef046a1fe2d8468aed6bfa83315ab7ae687bf922` completó correctamente checkout/setup en los cuatro jobs, las pruebas, auditorías, dos perfiles Compose, historial Gitleaks y canario. Todos los pasos terminaron y no se publicaron artefactos. GitHub avisó que fuerza Node 24 para estas revisiones de acciones basadas en Node 20; `SEC-021` registra la actualización posterior sin invalidar que los SHA auditados se ejecutaron correctamente.
+  La ejecución posterior [34599394973](https://github.com/dreykdrk7/inspectra/actions/runs/34599394973)
+  volvió a ejecutar esos mismos SHA fijados sobre
+  `b768fc3efc85ce7174029c8719d1f228f2f0cbca`: los cuatro jobs y todos sus
+  pasos terminaron verdes, el historial Gitleaks no encontró fugas, el canario
+  detectó la señal sintética esperada y se publicaron cero artefactos.
 
 ### SEC-021 — Migrar las acciones fijadas a revisiones con runtime Node 24 nativo
 
@@ -2891,6 +2896,17 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
   conocidas; frontend 59/59 y 420/420, build y auditoría npm; Compose; e
   historial Gitleaks de 366 commits más canario. Los cuatro jobs terminaron
   verdes, sin pasos esenciales omitidos ni artefactos publicados.
+  La consolidación funcional posterior se publicó como fast-forward normal,
+  sin bypass ni force-push, y la ejecución remota
+  [34599394973](https://github.com/dreykdrk7/inspectra/actions/runs/34599394973)
+  validó `b768fc3efc85ce7174029c8719d1f228f2f0cbca`: Python 2.151/2.151 y CLI
+  66/66, cinco auditorías Python sin vulnerabilidades conocidas; frontend
+  62/62 archivos y 430/430 pruebas, build 305,7/322 KiB y auditoría npm sin
+  vulnerabilidades; Compose base/privado; e historial Gitleaks más canario.
+  Los cuatro jobs y todos sus pasos terminaron verdes en 5 min 59 s de
+  ejecución total, con cero artefactos publicados. El PR #1 permaneció abierto
+  y draft; no hubo merge, tag, release, publicación de paquetes/imágenes ni
+  despliegue.
 
 ### PROD-179 — Readiness efectivo del runner por capacidad
 
