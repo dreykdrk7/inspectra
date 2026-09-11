@@ -58,7 +58,6 @@ def run_authorized_http_header_probe(
     head_request: HeadRequester | None = None,
 ) -> ActiveHttpHeaderProbeResult:
     resolver = resolver or default_resolver
-    head_request = head_request or default_head_request
     audit_log: list[dict[str, Any]] = [audit_event("active_http_header_probe_received", {"mode": request.mode, "profile": request.profile})]
     blocked_reasons: list[dict[str, str]] = []
     errors: list[dict[str, str]] = []
@@ -138,7 +137,15 @@ def run_authorized_http_header_probe(
     request_headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
     audit_log.append(audit_event("http_head_request_started", {"method": "HEAD"}))
     try:
-        response = head_request(request_url, request.limits.timeout_seconds, request_headers)
+        if head_request is None:
+            response = default_head_request(
+                request_url,
+                unique_addresses[0],
+                request.limits.timeout_seconds,
+                request_headers,
+            )
+        else:
+            response = head_request(request_url, request.limits.timeout_seconds, request_headers)
     except TimeoutError:
         errors.append({"code": "timeout", "message": "The HTTP HEAD request timed out."})
         audit_log.append(audit_event("http_head_request_error", {"code": "timeout"}))
@@ -276,12 +283,29 @@ def default_resolver(host: str, port: int, timeout_seconds: int, max_answers: in
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-def default_head_request(url: str, timeout_seconds: int, headers: dict[str, str]) -> HeadResponse:
+def default_head_request(
+    url: str,
+    validated_address: str,
+    timeout_seconds: int,
+    headers: dict[str, str],
+) -> HeadResponse:
     parsed = urlsplit(url)
     connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
     port = parsed.port
     host = parsed.hostname or ""
     connection = connection_cls(host, port=port, timeout=timeout_seconds)
+
+    def connect_to_validated_address(
+        _address: tuple[str, int],
+        timeout: float | None,
+        source_address: tuple[str, int] | None = None,
+    ) -> socket.socket:
+        target_port = port or (443 if parsed.scheme == "https" else 80)
+        return socket.create_connection((validated_address, target_port), timeout, source_address)
+
+    # Preserve the original hostname for Host and HTTPS SNI/certificate checks,
+    # while preventing the transport from resolving it a second time.
+    connection._create_connection = connect_to_validated_address
     path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
     try:
         connection.request("HEAD", path, headers=headers)

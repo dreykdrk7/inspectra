@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+import csv
 import gc
+import io
 import json
 import os
 from time import perf_counter
@@ -22,7 +24,7 @@ from app.remediation_plan_jobs import (
     RemediationPlanRetryRequest,
     build_remediation_plan,
 )
-from app.remediation_reporting import render_durable_remediation_plan
+from app.remediation_reporting import render_durable_remediation_plan, render_remediation_report
 
 
 OWNER = "1" * 32
@@ -146,6 +148,85 @@ def test_builds_reproducible_private_artifact_for_twenty_thousand_indexed_projec
     assert b"manifest" in csv_body
     for canary in (b"/home/private", b"secret-canary", b"actor-canary"):
         assert canary not in store._artifact_path(OWNER, created.id).read_bytes()
+
+
+def test_csv_exports_neutralize_spreadsheet_formulas_without_changing_json():
+    dangerous_values = ["=1+1", "+cmd", "-2+3", "@SUM(A1)", "\tformula", "\rformula", "\nformula"]
+    occurrence = SimpleNamespace(
+        project=SimpleNamespace(name=dangerous_values[0]),
+        analysis=SimpleNamespace(id="a" * 32),
+        finding_id="f" * 64,
+        observed_version="1.0.0",
+        dependency_scope="direct",
+        workflow_state="open",
+        assignee_username=dangerous_values[1],
+        review_at=None,
+        is_new=True,
+        coverage_state="complete",
+    )
+    group = SimpleNamespace(
+        id="1" * 64,
+        revision="2" * 64,
+        evidence_kind="public_vulnerability",
+        title="Fixture",
+        ecosystem="npm",
+        component_name=dangerous_values[2],
+        advisory_ids=[dangerous_values[3]],
+        observed_versions=["1.0.0"],
+        affected_ranges=[],
+        fixed_versions=[dangerous_values[4]],
+        recommended_fixed_version=None,
+        recommendation=dangerous_values[5],
+        priority="high",
+        priority_reasons=[dangerous_values[6]],
+        highest_severity="high",
+        known_exploited=False,
+        source_conflict=False,
+        exposure_state="not_assessed",
+        dependency_scopes=["direct"],
+        affected_project_count=1,
+        occurrence_count=1,
+        occurrences=[occurrence],
+        occurrences_truncated=False,
+        workflow_counts=SimpleNamespace(model_dump=lambda **_kwargs: {}),
+        limitations=[],
+    )
+    page = SimpleNamespace(
+        snapshot_at=NOW,
+        resolution_policy="comparable_reanalysis_required",
+        summary=SimpleNamespace(model_dump=lambda **_kwargs: {}),
+        limitations=[],
+    )
+
+    csv_body, *_rest = render_remediation_report(page, [group], report_format="csv", groups_truncated=False)
+    csv_row = next(csv.DictReader(io.StringIO(csv_body.decode("utf-8"))))
+    assert csv_row["project_name"] == "'=1+1"
+    assert csv_row["assignee"] == "'+cmd"
+    assert csv_row["component"] == "'-2+3"
+    assert csv_row["advisory_ids"] == "'@SUM(A1)"
+    assert csv_row["fixed_versions"] == "'\tformula"
+    assert csv_row["recommendation"] == "'\rformula"
+    assert csv_row["priority_reasons"] == "'\nformula"
+
+    artifact = SimpleNamespace(
+        contract_version="2026-09-09.1",
+        cutoff_at=NOW,
+        processed_projects=1,
+        total_projects=1,
+        included_groups=1,
+        included_occurrences=1,
+        groups_truncated=False,
+        occurrences_truncated=False,
+        groups=[group],
+    )
+    durable_body, *_rest = render_durable_remediation_plan(artifact, report_format="csv")
+    durable_rows = list(csv.DictReader(io.StringIO(durable_body.decode("utf-8"))))
+    assert durable_rows[1]["project_name"] == "'=1+1"
+
+    json_body, *_rest = render_remediation_report(page, [group], report_format="json", groups_truncated=False)
+    payload = json.loads(json_body)
+    assert payload["groups"][0]["component_name"] == "-2+3"
+    assert payload["groups"][0]["occurrences"][0]["project_name"] == "=1+1"
 
 
 def test_idempotency_is_owner_and_payload_bound_and_cross_owner_reads_fail_closed(tmp_path):

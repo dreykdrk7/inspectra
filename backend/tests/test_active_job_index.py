@@ -81,14 +81,17 @@ def test_active_job_projection_is_owner_scoped_bounded_and_meets_warm_budget(tmp
         return original_loader(path)
 
     store.active_index.loader = counted_loader
-    samples = []
+    wall_samples = []
+    cpu_samples = []
     tracemalloc.start()
     for _index in range(20):
         started = time.perf_counter()
+        cpu_started = time.process_time()
         warm_records, warm_total = store.active_operations_snapshot(
             owner_id=OWNER_A, asset_ids=selected_assets
         )
-        samples.append(time.perf_counter() - started)
+        cpu_samples.append(time.process_time() - cpu_started)
+        wall_samples.append(time.perf_counter() - started)
         assert len(warm_records) == 2_000
         assert warm_total == 19_000
     _current, peak = tracemalloc.get_traced_memory()
@@ -97,7 +100,10 @@ def test_active_job_projection_is_owner_scoped_bounded_and_meets_warm_budget(tmp
     assert reads == 40_000
     assert store.active_admission_available(owner_id=OWNER_A) is True
     assert reads == 40_000
-    assert sorted(samples)[18] < 1.0
+    # CPU time is the stable algorithmic budget. Keep a separate wall-clock
+    # ceiling to detect blocking without making host scheduling a release gate.
+    assert sorted(cpu_samples)[18] < 1.0
+    assert sorted(wall_samples)[18] < 2.0
     assert peak < 128 * 1024 * 1024
 
     reads = 0

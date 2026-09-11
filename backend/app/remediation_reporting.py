@@ -60,7 +60,7 @@ def render_remediation_report(
         output = io.StringIO(newline="")
         writer = csv.DictWriter(output, fieldnames=list(rows[0]) if rows else _csv_fields())
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(_csv_safe_row(row) for row in rows)
         content = output.getvalue().encode("utf-8")
         media_type = "text/csv; charset=utf-8"
         extension = "csv"
@@ -176,7 +176,7 @@ def render_durable_remediation_plan(
         ]
         writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
-        writer.writerow({
+        writer.writerow(_csv_safe_row({
             "record_type": "manifest",
             "contract_version": artifact.contract_version,
             "cutoff_at": artifact.cutoff_at.isoformat(),
@@ -186,9 +186,9 @@ def render_durable_remediation_plan(
             "included_occurrences": artifact.included_occurrences,
             "groups_truncated": str(artifact.groups_truncated).lower(),
             "occurrences_truncated": str(artifact.occurrences_truncated).lower(),
-        })
+        }))
         for row in rows:
-            writer.writerow({"record_type": "occurrence", "contract_version": artifact.contract_version, **row})
+            writer.writerow(_csv_safe_row({"record_type": "occurrence", "contract_version": artifact.contract_version, **row}))
         content = output.getvalue().encode("utf-8")
         media_type = "text/csv; charset=utf-8"
         extension = "csv"
@@ -197,3 +197,12 @@ def render_durable_remediation_plan(
     if len(content) > 16 * 1024 * 1024:
         raise ValueError("Remediation plan download exceeds its safe size limit.")
     return content, media_type, f"inspectra-remediation-plan-{artifact.cutoff_at.date().isoformat()}.{extension}"
+
+
+def _csv_safe_row(row: dict[str, object]) -> dict[str, object]:
+    """Neutralize spreadsheet formulas while preserving non-text values and JSON."""
+
+    return {
+        key: f"'{value}" if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r", "\n")) else value
+        for key, value in row.items()
+    }
