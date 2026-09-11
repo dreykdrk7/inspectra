@@ -6,9 +6,9 @@ inventario de dependencias, reglas pasivas, inteligencia pública de
 vulnerabilidades, triage, comparación, informes, automatización y una superficie
 Active acotada en una sola experiencia.
 
-> **Estado actual:** `0.3.0-beta.1` es una candidatura técnicamente validada en
-> un [PR público](https://github.com/dreykdrk7/inspectra/pull/1), no una versión
-> estable ni publicada. La aceptación controlada validó OSV y CISA KEV con
+> **Estado actual:** `0.3.0-beta.1` es una beta validada para distribución como
+> GitHub Prerelease, no una versión estable ni un despliegue de producción. La
+> aceptación controlada validó OSV y CISA KEV con
 > identidades npm públicas exactas; GitHub Security Advisories y NVD continúan
 > validados solo con fixtures. El egress y todas las capacidades Active están
 > deshabilitados por defecto.
