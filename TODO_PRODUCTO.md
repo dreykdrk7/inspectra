@@ -328,8 +328,8 @@ integración con esos proveedores.
 | PROD-255 | P2 | completada | Avisos verificables de dependencias runtime distribuidas |
 | PROD-256 | P2 | pendiente | Ligar webhooks de integración a la resolución validada |
 | PROD-257 | P2 | pendiente | Objetivos táctiles coherentes en los flujos principales |
-| PROD-258 | P2 | pendiente | Política de reporte responsable de vulnerabilidades |
-| PROD-259 | P2 | bloqueada | Protección exigible de `main` y checks requeridos |
+| PROD-258 | P2 | completada | Política de reporte responsable de vulnerabilidades |
+| PROD-259 | P2 | completada | Protección exigible de `main` y checks requeridos |
 
 ## Evaluación de las P3 multiecosistema — 2026-09-10
 
@@ -4394,7 +4394,7 @@ estado funcional para la misma capacidad.
 ### PROD-258 — Política de reporte responsable de vulnerabilidades
 
 - **Prioridad:** P2
-- **Estado:** pendiente
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** investigadores y clientes necesitan un canal privado y expectativas claras para comunicar fallos sin exponerlos en un issue público.
 - **Flujo completo afectado:** descubrir vulnerabilidad → consultar versiones soportadas → contacto privado → acuse/triage → divulgación coordinada.
 - **Áreas o archivos implicados:** `SECURITY.md`, README y configuración de seguridad del repositorio.
@@ -4403,12 +4403,12 @@ estado funcional para la misma capacidad.
 - **Dependencias:** el mantenedor debe proporcionar o habilitar un canal privado verificable.
 - **Tamaño:** S
 - **Estrategia de pruebas:** revisión de enlaces y contacto por dos mantenedores, render GitHub y gate documental sin secretos.
-- **Evidencia de validación al completarse:** pendiente.
+- **Evidencia de validación al completarse:** 2026-09-11: Private Vulnerability Reporting quedó habilitado y la lectura posterior devolvió `enabled=true`; el endpoint autenticado de advisories fue accesible y el formulario oficial respondió HTTP 200, sin crear un advisory. `SECURITY.md` documenta soporte beta, alcance, límites, investigación responsable, datos mínimos y el único canal privado real; README lo enlaza. Sin email, PGP, SLA, recompensa ni *safe harbor* inventados.
 
 ### PROD-259 — Protección exigible de `main` y checks requeridos
 
 - **Prioridad:** P2
-- **Estado:** bloqueada
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** adoptantes necesitan que el proceso remoto impida integrar código que no haya pasado las puertas revisadas.
 - **Flujo completo afectado:** push/PR → revisión → cuatro jobs CI → conversaciones resueltas → integración autorizada.
 - **Áreas o archivos implicados:** branch protection/rulesets de GitHub, documentación de mantenimiento y evidencia remota.
@@ -4417,4 +4417,4 @@ estado funcional para la misma capacidad.
 - **Dependencias:** PROD-130 y SEC-012 completadas; bloqueada hasta autorización explícita para mutar configuración remota.
 - **Tamaño:** S
 - **Estrategia de pruebas:** lectura antes/después de rulesets/protection y PR sintética sin merge.
-- **Evidencia de validación al completarse:** bloqueada; el 2026-09-11 GitHub devolvió `404 Branch not protected` y una lista de rulesets vacía.
+- **Evidencia de validación al completarse:** 2026-09-11: tras confirmar `404 Branch not protected` y rulesets vacíos, la autorización explícita desbloqueó la tarea. La protección efectiva de `main` exige PR, rama actualizada, conversaciones resueltas y los cuatro checks reales de GitHub Actions; se aplica a administradores, exige cero aprobaciones porque solo existe un colaborador elegible, no añade bypass y bloquea force-push/eliminación. Secret Scanning y Push Protection siguen habilitados. La API confirmó todos los valores; la transición pending/verde del PR y el HEAD final se registran en el cierre para evitar un commit circular.

@@ -7,7 +7,7 @@ vulnerabilidades, triage, comparación, informes, automatización y una superfic
 Active acotada en una sola experiencia.
 
 > **Estado actual:** `0.3.0-beta.1` es una candidatura técnicamente validada en
-> un [PR borrador](https://github.com/dreykdrk7/inspectra/pull/1), no una versión
+> un [PR público](https://github.com/dreykdrk7/inspectra/pull/1), no una versión
 > estable ni publicada. La aceptación controlada validó OSV y CISA KEV con
 > identidades npm públicas exactas; GitHub Security Advisories y NVD continúan
 > validados solo con fixtures. El egress y todas las capacidades Active están
@@ -192,6 +192,7 @@ operativa y `TODO_PRODUCTO.md` mantiene el roadmap funcional sincronizado.
 
 - [Arquitectura](docs/architecture.md)
 - [Alcance y amenazas](docs/security-scope.md)
+- [Política y reporte privado de seguridad](SECURITY.md)
 - [Proyectos y fuentes](docs/product-projects.md)
 - [Contrato de hallazgos](docs/product-findings-contract.md)
 - [Inteligencia pública](docs/public-vulnerability-intelligence.md)
@@ -214,6 +215,10 @@ producto actual.
 Use Inspectra solo sobre proyectos y activos propios o con autorización expresa.
 Los resultados son señales de revisión y no sustituyen verificación humana,
 pruebas especializadas ni gestión de riesgo organizativa.
+
+Los defectos de seguridad del propio Inspectra deben comunicarse mediante la
+[política de seguridad y su canal privado](SECURITY.md), no como un issue
+público inicial.
 
 Inspectra se distribuye bajo la licencia [MIT](LICENSE). Sus dependencias de
 producción conservan licencias propias; el inventario fijado y sus fuentes se
