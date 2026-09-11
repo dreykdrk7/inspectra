@@ -33,6 +33,19 @@ def test_release_workflow_pins_actions_and_only_uploads_verified_assets() -> Non
     assert "retention-days: 1" in content
 
 
+def test_release_workflow_checks_the_real_cli_version_output() -> None:
+    content = WORKFLOW.read_text(encoding="utf-8")
+
+    assert (
+        'test "$(/tmp/inspectra-wheel/bin/inspectra --version)" '
+        '= "inspectra-cli 0.3.0-beta.1"'
+    ) in content
+    assert (
+        'test "$(/tmp/inspectra-sdist/bin/inspectra --version)" '
+        '= "inspectra-cli 0.3.0-beta.1"'
+    ) in content
+
+
 def test_release_workflow_cannot_publish_or_target_external_registries() -> None:
     content = WORKFLOW.read_text(encoding="utf-8").lower()
 
