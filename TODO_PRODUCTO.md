@@ -326,6 +326,10 @@ integración con esos proveedores.
 | PROD-253 | P2 | completada | Estabilizar la prueba asíncrona de paginación Active bajo carga |
 | PROD-254 | P1 | completada | Estado canónico y verificable de aceptación de despliegue |
 | PROD-255 | P2 | completada | Avisos verificables de dependencias runtime distribuidas |
+| PROD-256 | P2 | pendiente | Ligar webhooks de integración a la resolución validada |
+| PROD-257 | P2 | pendiente | Objetivos táctiles coherentes en los flujos principales |
+| PROD-258 | P2 | pendiente | Política de reporte responsable de vulnerabilidades |
+| PROD-259 | P2 | bloqueada | Protección exigible de `main` y checks requeridos |
 
 ## Evaluación de las P3 multiecosistema — 2026-09-10
 
@@ -4359,3 +4363,58 @@ estado funcional para la misma capacidad.
   frontend 424/424, CLI 66/66, build 303,8/322 KiB, compileall, Compose
   base/privado, release, backlogs y diff-check verdes. Documentada la garantía y
   el trade-off según SQLite oficial; sin proyecto real, push, PR o despliegue.
+### PROD-256 — Ligar webhooks de integración a la resolución validada
+
+- **Prioridad:** P2
+- **Estado:** pendiente
+- **Necesidad de usuario y valor aportado:** los operadores necesitan entregar eventos mínimos a un receptor HTTPS configurado sin que un cambio DNS entre validación y conexión permita alcanzar redes privadas.
+- **Flujo completo afectado:** configuración fija del operador → política SSRF → conexión ligada a IP aprobada con SNI/Host originales → entrega firmada → reintento y auditoría mínima.
+- **Áreas o archivos implicados:** `backend/app/integration_events.py`, configuración, transporte, pruebas y documentación operativa.
+- **Criterios de aceptación verificables:** no existe una segunda resolución; cada socket conecta solo a una IP global aprobada; HTTPS conserva certificado y SNI; redirecciones/proxy ambiental siguen deshabilitados. DNS mixto, rebinding, IPv4/IPv6, error TLS, reintento e idempotencia fallan sin payload ni destino en logs.
+- **Riesgos de seguridad, privacidad y operativa:** SSRF por rebinding o pinning que desactive TLS; la mitigación actual es mantener webhooks apagados y usar DNS confiable.
+- **Dependencias:** PROD-071 completada; requiere transporte acotado compatible con TLS.
+- **Tamaño:** M
+- **Estrategia de pruebas:** transporte simulado sin Internet, servidor TLS local y regresiones de ausencia de segunda resolución.
+- **Evidencia de validación al completarse:** pendiente.
+
+### PROD-257 — Objetivos táctiles coherentes en los flujos principales
+
+- **Prioridad:** P2
+- **Estado:** pendiente
+- **Necesidad de usuario y valor aportado:** personas en móvil o con movilidad fina limitada necesitan accionar formularios y navegación sin controles de 16–40 px difíciles de pulsar.
+- **Flujo completo afectado:** onboarding → proyecto → inventario/inteligencia → triage, comparación e informes, incluidos diálogos y acciones destructivas.
+- **Áreas o archivos implicados:** estilos/componentes frontend, pruebas de accesibilidad y `docs/frontend-visual-review.md`.
+- **Criterios de aceptación verificables:** acciones principales, inputs, selects, checkboxes y enlaces operativos ofrecen área mínima 44×44 CSS px o separación equivalente documentada; 320/390/768/1440 y 200 % conservan reflow, foco y flujo sin overflow global.
+- **Riesgos de seguridad, privacidad y operativa:** acciones erróneas o inaccesibles; un cambio global sin revisión puede degradar densidad y tablas.
+- **Dependencias:** PROD-114 y PROD-165 completadas.
+- **Tamaño:** M
+- **Estrategia de pruebas:** medición DOM, axe, teclado y navegador real en cuatro viewports y zoom 200 %.
+- **Evidencia de validación al completarse:** pendiente.
+
+### PROD-258 — Política de reporte responsable de vulnerabilidades
+
+- **Prioridad:** P2
+- **Estado:** pendiente
+- **Necesidad de usuario y valor aportado:** investigadores y clientes necesitan un canal privado y expectativas claras para comunicar fallos sin exponerlos en un issue público.
+- **Flujo completo afectado:** descubrir vulnerabilidad → consultar versiones soportadas → contacto privado → acuse/triage → divulgación coordinada.
+- **Áreas o archivos implicados:** `SECURITY.md`, README y configuración de seguridad del repositorio.
+- **Criterios de aceptación verificables:** política visible desde GitHub y README, versiones beta soportadas, canal privado real verificado, datos que no deben publicarse, tiempos realistas y límites de la candidatura; sin dirección ficticia ni promesa inoperable.
+- **Riesgos de seguridad, privacidad y operativa:** divulgación pública accidental, pérdida de reportes o compromiso de plazos inexistentes.
+- **Dependencias:** el mantenedor debe proporcionar o habilitar un canal privado verificable.
+- **Tamaño:** S
+- **Estrategia de pruebas:** revisión de enlaces y contacto por dos mantenedores, render GitHub y gate documental sin secretos.
+- **Evidencia de validación al completarse:** pendiente.
+
+### PROD-259 — Protección exigible de `main` y checks requeridos
+
+- **Prioridad:** P2
+- **Estado:** bloqueada
+- **Necesidad de usuario y valor aportado:** adoptantes necesitan que el proceso remoto impida integrar código que no haya pasado las puertas revisadas.
+- **Flujo completo afectado:** push/PR → revisión → cuatro jobs CI → conversaciones resueltas → integración autorizada.
+- **Áreas o archivos implicados:** branch protection/rulesets de GitHub, documentación de mantenimiento y evidencia remota.
+- **Criterios de aceptación verificables:** `main` exige PR, cuatro checks CI y conversaciones resueltas; bypass ordinario deshabilitado o acotado a emergencia auditada. Una PR sintética demuestra que fallo, job ausente y push directo quedan bloqueados.
+- **Riesgos de seguridad, privacidad y operativa:** integración o push directo sin escaneo, pruebas o auditorías pese a que el workflow exista.
+- **Dependencias:** PROD-130 y SEC-012 completadas; bloqueada hasta autorización explícita para mutar configuración remota.
+- **Tamaño:** S
+- **Estrategia de pruebas:** lectura antes/después de rulesets/protection y PR sintética sin merge.
+- **Evidencia de validación al completarse:** bloqueada; el 2026-09-11 GitHub devolvió `404 Branch not protected` y una lista de rulesets vacía.
