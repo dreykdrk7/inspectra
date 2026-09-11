@@ -330,6 +330,7 @@ integración con esos proveedores.
 | PROD-257 | P2 | pendiente | Objetivos táctiles coherentes en los flujos principales |
 | PROD-258 | P2 | completada | Política de reporte responsable de vulnerabilidades |
 | PROD-259 | P2 | completada | Protección exigible de `main` y checks requeridos |
+| PROD-260 | P0 | en progreso | Cadena reproducible y acotada de GitHub Prerelease |
 
 ## Evaluación de las P3 multiecosistema — 2026-09-10
 
@@ -4418,3 +4419,17 @@ estado funcional para la misma capacidad.
 - **Tamaño:** S
 - **Estrategia de pruebas:** lectura antes/después de rulesets/protection y PR sintética sin merge.
 - **Evidencia de validación al completarse:** 2026-09-11: tras confirmar `404 Branch not protected` y rulesets vacíos, la autorización explícita desbloqueó la tarea. La protección efectiva de `main` exige PR, rama actualizada, conversaciones resueltas y los cuatro checks reales de GitHub Actions; se aplica a administradores, exige cero aprobaciones porque solo existe un colaborador elegible, no añade bypass y bloquea force-push/eliminación. Secret Scanning y Push Protection siguen habilitados. La API confirmó todos los valores; la transición pending/verde del PR y el HEAD final se registran en el cierre para evitar un commit circular.
+
+### PROD-260 — Cadena reproducible y acotada de GitHub Prerelease
+
+- **Prioridad:** P0
+- **Estado:** en progreso
+- **Necesidad de usuario y valor aportado:** una persona que evalúa Inspectra necesita descargar artefactos ligados al SHA revisado y verificar localmente integridad, contenido y versión sin confiar en un build del portátil del mantenedor.
+- **Flujo completo afectado:** `main` protegido y verde → workflow manual ligado a SHA → artifact temporal → builds locales independientes → tag anotado inmutable → release draft → descarga/verificación → prerelease pública.
+- **Áreas o archivos implicados:** `.github/workflows/`, `cli/scripts/build_release.py`, guardas estáticas, README, changelog, notas de release y ambos backlogs.
+- **Criterios de aceptación verificables:** workflow solo `workflow_dispatch`/`main`, expected SHA obligatorio, permisos mínimos y acciones con SHA; build desde locks sin caché, exactamente wheel/sdist/SBOM/`SHA256SUMS`, reproducibilidad byte a byte, checksum/SBOM/Gitleaks válidos, instalación limpia y CLI `0.3.0-beta.1`. Release final debe ser `prerelease=true`, no latest estable, con riesgos y límites honestos.
+- **Riesgos de seguridad, privacidad y operativa:** confusión de ref, credenciales en logs, artifact contaminado, tag móvil, publicación estable accidental o sustitución silenciosa de bytes.
+- **Dependencias:** PR #1 y CI post-merge completados; `PROD-256`/`257` permanecen P2 visibles.
+- **Tamaño:** M
+- **Estrategia de pruebas:** guardas estáticas negativas, dos builds limpios, comparación binaria, instalación wheel/sdist, validación CycloneDX/checksums/contenido, Gitleaks, ejecución workflow y descarga previa/posterior.
+- **Evidencia de validación al completarse:** pendiente de implementar y validar mediante PR protegido.

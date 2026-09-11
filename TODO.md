@@ -846,6 +846,7 @@ no equivale a cobertura de proyectos analizados.
 | PROD-257 | P2 | pendiente | M | PROD-114 y PROD-165 completadas |
 | PROD-258 | P2 | completada | S | Política y canal privado real verificados |
 | PROD-259 | P2 | completada | S | Protección efectiva de `main` verificada por API |
+| PROD-260 | P0 | en progreso | M | Cadena reproducible de GitHub Prerelease sobre `main` |
 
 **Evaluación P3 del ciclo empresarial (2026-09-10):** no se promociona ninguna
 de `PROD-222`, `224`, `227`, `228`, `232`, `236` o `237`. El repositorio no
@@ -4693,3 +4694,15 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 - **Tamaño:** S
 - **Estrategia de pruebas:** lectura antes/después de rulesets/protection y PR sintética sin merge.
 - **Evidencia de validación al completarse:** 2026-09-11: tras confirmar `404 Branch not protected` y rulesets vacíos, la autorización explícita desbloqueó la tarea. La protección efectiva de `main` exige PR, rama actualizada, conversaciones resueltas y los cuatro checks reales de GitHub Actions; se aplica a administradores, exige cero aprobaciones porque solo existe un colaborador elegible, no añade bypass y bloquea force-push/eliminación. Secret Scanning y Push Protection siguen habilitados. La API confirmó todos los valores; la transición pending/verde del PR y el HEAD final se registran en el cierre para evitar un commit circular.
+
+### PROD-260 — Cadena reproducible y acotada de GitHub Prerelease
+
+- **Prioridad:** P0
+- **Estado:** en progreso
+- **Descripción y motivo:** publicar `0.3.0-beta.1` requiere construir wheel, sdist, SBOM y checksums desde el SHA verde exacto de `main`, verificar dos construcciones y mantener separadas construcción, tag y publicación. El repositorio solo disponía de un constructor local y no podía acreditar procedencia desde GitHub.
+- **Áreas:** workflow manual de release, `cli/scripts/build_release.py`, guardas estáticas, README, changelog y notas de prerelease.
+- **Aceptación:** workflow exclusivo `workflow_dispatch` sobre `main`, SHA esperado obligatorio, permisos `contents: read`, acciones fijadas por SHA, locks/runtime explícitos, sin caché ni registros externos; genera exactamente cuatro assets deterministas, verifica checksums/SBOM/archivos y Gitleaks, y los conserva temporalmente como artifact. Las notas declaran prerelease, Linux single-host/single-worker, Active experimental, proveedores realmente validados y P2 conocidos. Dos builds independientes e instalación wheel/sdist deben pasar antes del tag.
+- **Riesgo:** etiquetar bytes no reproducibles o artefactos construidos desde otro commit puede publicar material no revisado, privado o imposible de auditar.
+- **Estimación:** M
+- **Dependencias:** PR #1 fusionado por protección y CI `main` verde en `d443a5a1a100f2708268cc04dcdfbf1ceb745e3f`; `PROD-256`/`257` continúan aceptadas sin cerrarse.
+- **Evidencia:** pendiente de implementar y validar mediante PR protegido.

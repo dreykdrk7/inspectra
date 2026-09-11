@@ -1,9 +1,9 @@
 # Changelog
 
-Este proyecto sigue [Semantic Versioning](https://semver.org/). Las entradas
-marcadas como no publicadas describen únicamente candidatos locales.
+Este proyecto sigue [Semantic Versioning](https://semver.org/). Una prerelease
+no se considera una versión estable ni amplía por sí sola el soporte declarado.
 
-## 0.3.0-beta.1 — no publicada
+## 0.3.0-beta.1 — GitHub Prerelease
 
 ### Añadido
 
@@ -34,8 +34,9 @@ marcadas como no publicadas describen únicamente candidatos locales.
 - Vitest y `@vitest/mocker` actualizados a 4.1.11 para corregir
   [CVE-2026-84373 / GHSA-82fw-gwwq-j7x9](https://github.com/advisories/GHSA-82fw-gwwq-j7x9);
   la instalación limpia con Node 22 y la auditoría npm no conservan avisos.
-- Imágenes base y acciones CI declaradas por digest/SHA; la validación CI remota
-  sigue bloqueada y no forma parte de esta candidatura local.
+- Imágenes base y acciones CI declaradas por digest/SHA; la rama protegida exige
+  los cuatro jobs CI y la cadena de prerelease construye artefactos temporales
+  con permisos de solo lectura antes de cualquier publicación.
 
 ### Cambiado
 
@@ -46,7 +47,7 @@ marcadas como no publicadas describen únicamente candidatos locales.
 
 ### Límites conocidos
 
-- Candidatura local no estable, sin tag, publicación, despliegue ni CI remota.
+- Prerelease beta, no estable y sin despliegue de producción.
 - OSV npm y CISA KEV tienen aceptación real acotada; GHSA, NVD, OSV PyPI y otros
   ecosistemas no deben presentarse como integraciones reales sin una aceptación
   separada.
