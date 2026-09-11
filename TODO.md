@@ -846,7 +846,7 @@ no equivale a cobertura de proyectos analizados.
 | PROD-257 | P2 | pendiente | M | PROD-114 y PROD-165 completadas |
 | PROD-258 | P2 | completada | S | Política y canal privado real verificados |
 | PROD-259 | P2 | completada | S | Protección efectiva de `main` verificada por API |
-| PROD-260 | P0 | en progreso | M | Cadena reproducible de GitHub Prerelease sobre `main` |
+| PROD-260 | P0 | completada | M | Cadena reproducible de GitHub Prerelease sobre `main` |
 
 **Evaluación P3 del ciclo empresarial (2026-09-10):** no se promociona ninguna
 de `PROD-222`, `224`, `227`, `228`, `232`, `236` o `237`. El repositorio no
@@ -4698,11 +4698,11 @@ regresión completa `backend/tests tools/tests`, `compileall`, ambos Compose,
 ### PROD-260 — Cadena reproducible y acotada de GitHub Prerelease
 
 - **Prioridad:** P0
-- **Estado:** en progreso
+- **Estado:** completada
 - **Descripción y motivo:** publicar `0.3.0-beta.1` requiere construir wheel, sdist, SBOM y checksums desde el SHA verde exacto de `main`, verificar dos construcciones y mantener separadas construcción, tag y publicación. El repositorio solo disponía de un constructor local y no podía acreditar procedencia desde GitHub.
 - **Áreas:** workflow manual de release, `cli/scripts/build_release.py`, guardas estáticas, README, changelog y notas de prerelease.
 - **Aceptación:** workflow exclusivo `workflow_dispatch` sobre `main`, SHA esperado obligatorio, permisos `contents: read`, acciones fijadas por SHA, locks/runtime explícitos, sin caché ni registros externos; genera exactamente cuatro assets deterministas, verifica checksums/SBOM/archivos y Gitleaks, y los conserva temporalmente como artifact. Las notas declaran prerelease, Linux single-host/single-worker, Active experimental, proveedores realmente validados y P2 conocidos. Dos builds independientes e instalación wheel/sdist deben pasar antes del tag.
 - **Riesgo:** etiquetar bytes no reproducibles o artefactos construidos desde otro commit puede publicar material no revisado, privado o imposible de auditar.
 - **Estimación:** M
 - **Dependencias:** PR #1 fusionado por protección y CI `main` verde en `d443a5a1a100f2708268cc04dcdfbf1ceb745e3f`; `PROD-256`/`257` continúan aceptadas sin cerrarse.
-- **Evidencia:** 2026-09-11: el primer run remoto `34640304730` quedó detenido antes de publicar el artifact porque la guarda esperaba `0.3.0-beta.1`, mientras que el contrato real y probado de `inspectra --version` devuelve `inspectra-cli 0.3.0-beta.1`. No se creó tag ni release. Se prepara una corrección mínima con regresión estática; la tarea permanece en progreso hasta repetir la cadena completa sobre el nuevo SHA verde de `main`.
+- **Evidencia:** 2026-09-11: el run inicial `34640304730` falló de forma segura antes del artifact por una aserción incorrecta del texto de versión. La PR protegida #3 añadió la regresión y fue integrada sin bypass; sus cuatro checks y las ejecuciones de `main` `34641271374`/`34641277209` quedaron verdes en `db5d4e5fc3603c4ab070a90ecbf64cd8326b54fc`. El workflow manual de solo lectura `34641820976`, ligado a ese SHA, produjo exactamente wheel, sdist, CycloneDX 1.6 y `SHA256SUMS`; dos builds locales limpios fueron byte-idénticos al artifact remoto. Hashes: wheel `21a04b29…54ea5`, sdist `4722b742…30521`, SBOM `666a5b90…4580`, checksums `0424a123…bde9`. Wheel y sdist se instalaron en contenedores aislados, `--version`/`--help` pasaron, `doctor` devolvió la degradación documentada `not_ready` sin Gitleaks instalado, y el material empaquetado pasó inventario, rutas seguras y Gitleaks. La creación/verificación pública del tag y la prerelease se ejecuta como puerta operativa posterior sin alterar el commit etiquetado.

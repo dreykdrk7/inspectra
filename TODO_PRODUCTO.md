@@ -330,7 +330,7 @@ integración con esos proveedores.
 | PROD-257 | P2 | pendiente | Objetivos táctiles coherentes en los flujos principales |
 | PROD-258 | P2 | completada | Política de reporte responsable de vulnerabilidades |
 | PROD-259 | P2 | completada | Protección exigible de `main` y checks requeridos |
-| PROD-260 | P0 | en progreso | Cadena reproducible y acotada de GitHub Prerelease |
+| PROD-260 | P0 | completada | Cadena reproducible y acotada de GitHub Prerelease |
 
 ## Evaluación de las P3 multiecosistema — 2026-09-10
 
@@ -4423,7 +4423,7 @@ estado funcional para la misma capacidad.
 ### PROD-260 — Cadena reproducible y acotada de GitHub Prerelease
 
 - **Prioridad:** P0
-- **Estado:** en progreso
+- **Estado:** completada
 - **Necesidad de usuario y valor aportado:** una persona que evalúa Inspectra necesita descargar artefactos ligados al SHA revisado y verificar localmente integridad, contenido y versión sin confiar en un build del portátil del mantenedor.
 - **Flujo completo afectado:** `main` protegido y verde → workflow manual ligado a SHA → artifact temporal → builds locales independientes → tag anotado inmutable → release draft → descarga/verificación → prerelease pública.
 - **Áreas o archivos implicados:** `.github/workflows/`, `cli/scripts/build_release.py`, guardas estáticas, README, changelog, notas de release y ambos backlogs.
@@ -4432,4 +4432,4 @@ estado funcional para la misma capacidad.
 - **Dependencias:** PR #1 y CI post-merge completados; `PROD-256`/`257` permanecen P2 visibles.
 - **Tamaño:** M
 - **Estrategia de pruebas:** guardas estáticas negativas, dos builds limpios, comparación binaria, instalación wheel/sdist, validación CycloneDX/checksums/contenido, Gitleaks, ejecución workflow y descarga previa/posterior.
-- **Evidencia de validación al completarse:** 2026-09-11: el primer run remoto `34640304730` falló de forma segura antes de subir el artifact: la guarda comparaba contra `0.3.0-beta.1`, pero el contrato real de la CLI devuelve `inspectra-cli 0.3.0-beta.1`. No se creó tag ni release. Se añade una corrección mínima y una regresión estática; la tarea continúa en progreso hasta validar de nuevo el workflow y toda la cadena sobre el SHA final de `main`.
+- **Evidencia de validación al completarse:** 2026-09-11: el run inicial `34640304730` falló de forma segura antes del artifact por una aserción incorrecta del texto de versión. La PR protegida #3 añadió la regresión y fue integrada sin bypass; sus cuatro checks y las ejecuciones de `main` `34641271374`/`34641277209` quedaron verdes en `db5d4e5fc3603c4ab070a90ecbf64cd8326b54fc`. El workflow manual de solo lectura `34641820976`, ligado a ese SHA, produjo exactamente wheel, sdist, CycloneDX 1.6 y `SHA256SUMS`; dos builds locales limpios fueron byte-idénticos al artifact remoto. Hashes: wheel `21a04b29…54ea5`, sdist `4722b742…30521`, SBOM `666a5b90…4580`, checksums `0424a123…bde9`. Wheel y sdist se instalaron en contenedores aislados, `--version`/`--help` pasaron, `doctor` devolvió la degradación documentada `not_ready` sin Gitleaks instalado, y el material empaquetado pasó inventario, rutas seguras y Gitleaks. La creación/verificación pública del tag y la prerelease se ejecuta como puerta operativa posterior sin alterar el commit etiquetado.
